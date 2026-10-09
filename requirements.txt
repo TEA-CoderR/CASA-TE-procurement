@@ -1,0 +1,7 @@
+openpyxl==3.1.5
+pywin32==308
+ddgs>=9.14.1
+requests>=2.31.0
+numpy
+scipy
+PySide6-Essentials>=6.7

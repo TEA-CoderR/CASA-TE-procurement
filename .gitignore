@@ -1,0 +1,51 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual Environment
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Excel files (data)
+*.xlsx
+*.xls
+*.xlsm
+
+# Logs
+logs/
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Temporary files
+*.tmp
+*.bak
+
+# 运行时数据（不上传）
+settings.json
+_备份/
+.cache/
+performance_logs/
+shadow_results/
+test_perf_logs/
+test_shadow_results/
+*_learning.json
+benchmark_*.json
+.pytest_cache/

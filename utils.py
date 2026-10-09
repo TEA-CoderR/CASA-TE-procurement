@@ -1,0 +1,267 @@
+import os
+import re
+import gc
+import zipfile
+import win32com.client as win32
+
+from config import EXCEL_FILE_FORMAT_XLSX
+
+# 导入Excel连接池
+try:
+    from excel_pool import excel_pool, get_excel, release_excel
+    USE_POOL = True
+except ImportError:
+    USE_POOL = False
+
+# =====================
+# 判断是否真实xlsx
+# =====================
+def is_valid_xlsx(path):
+    """检查 .xlsx 文件是否为有效的 ZIP 格式"""
+    try:
+        with zipfile.ZipFile(path, 'r') as z:
+            return True
+    except (zipfile.BadZipFile, Exception):
+        return False
+
+
+# =====================
+# 安全关闭 Excel COM 对象
+# =====================
+def _safe_quit_excel(excel):
+    """安全关闭 Excel COM 对象，防止进程泄漏"""
+    try:
+        excel.DisplayAlerts = False
+        excel.Quit()
+    except Exception:
+        pass
+    finally:
+        del excel
+        gc.collect()
+
+
+# =====================
+# 用 Excel 计算公式并保存纯值副本
+# =====================
+_calculated_cache = {}  # 缓存已计算的文件，避免重复打开 Excel
+
+def calculate_formulas(path):
+    """
+    用 Excel COM 打开文件，保存为纯值副本。
+    Excel 在 SaveAs 时自动计算公式，Value=Value 覆盖为纯值。
+    返回纯值副本的路径（原文件不变）。
+    同一文件只计算一次（内存缓存）。
+    
+    优化版本：使用连接池复用Excel实例
+    """
+    if path in _calculated_cache:
+        return _calculated_cache[path]
+
+    # 创建纯值副本路径
+    calc_path = path + ".calc.xlsx"
+    
+    # 清理旧的 .calc 文件（防止累积）
+    if os.path.exists(calc_path):
+        try:
+            os.remove(calc_path)
+        except Exception:
+            pass
+
+    excel = None
+    try:
+        # 使用连接池获取Excel实例
+        if USE_POOL:
+            excel, is_new = get_excel()
+        else:
+            excel = win32.Dispatch("Excel.Application")
+            excel.Visible = False
+            excel.DisplayAlerts = False
+            excel.ScreenUpdating = False
+
+        wb = excel.Workbooks.Open(path)
+
+        # 遍历所有 sheet，将公式替换为纯值
+        for sheet in wb.Sheets:
+            try:
+                used = sheet.UsedRange
+                used.Value = used.Value
+            except Exception:
+                pass
+
+        # 保存为纯值副本
+        wb.SaveAs(calc_path, FileFormat=EXCEL_FILE_FORMAT_XLSX)
+        wb.Close(SaveChanges=False)
+
+        _calculated_cache[path] = calc_path
+        
+        # 释放连接回池
+        if USE_POOL:
+            release_excel(excel)
+        
+        return calc_path
+
+    except Exception as e:
+        print(f"[错误] 公式计算失败: {path} | 错误: {e}")
+        # 发生错误时也要释放连接
+        if USE_POOL and excel is not None:
+            try:
+                release_excel(excel)
+            except:
+                pass
+        return path  # 返回原路径，避免程序崩溃
+
+    finally:
+        # 不使用连接池时关闭Excel
+        if not USE_POOL and excel is not None:
+            _safe_quit_excel(excel)
+
+
+def cleanup_calculated_files():
+    """清理临时计算公式生成的 .calc.xlsx 文件"""
+    for calc_path in _calculated_cache.values():
+        try:
+            if os.path.exists(calc_path):
+                os.remove(calc_path)
+        except Exception:
+            pass
+    _calculated_cache.clear()
+
+
+# =====================
+# 强制转换（支持 .xls → .xlsx）
+# =====================
+def convert_to_xlsx(path):
+    """
+    将 .xls 文件转换为 .xlsx 格式。
+    如果是有效的 .xlsx，直接返回原路径。
+    
+    优化版本：使用连接池复用Excel实例
+    """
+    if path.lower().endswith(".xlsx") and is_valid_xlsx(path):
+        return path
+
+    new_path = path + ".xlsx"
+
+    excel = None
+    is_new = True
+    try:
+        # 使用连接池获取Excel实例
+        if USE_POOL:
+            excel, is_new = excel_pool.acquire()
+        else:
+            excel = win32.Dispatch("Excel.Application")
+            excel.Visible = False
+            excel.DisplayAlerts = False
+
+        wb = excel.Workbooks.Open(path)
+        wb.SaveAs(new_path, FileFormat=EXCEL_FILE_FORMAT_XLSX)
+        wb.Close()
+
+        return new_path
+
+    except Exception as e:
+        print(f"[错误] Excel转换失败: {path} | 错误: {e}")
+        return path  # 返回原路径，避免程序崩溃
+
+    finally:
+        # 释放连接回池
+        if USE_POOL and not is_new and excel is not None:
+            try:
+                excel_pool.release(excel)
+            except:
+                pass
+        elif not USE_POOL and excel is not None:
+            _safe_quit_excel(excel)
+
+
+# =====================
+# 查找列
+# =====================
+def find_col(ws, name):
+    """
+    在工作表中查找指定列名的列号和行号。
+    搜索前 10 行（兼容表头在第 8 行等较后位置的情况）。
+    """
+    for row_idx in range(1, min(11, ws.max_row + 1)):
+        for cell in ws[row_idx]:
+            if cell.value and str(cell.value).strip() == name:
+                return cell.column, cell.row
+    return None, None
+
+
+# =====================
+# 获取最后一行
+# =====================
+def get_last_row(ws, col):
+    """
+    获取指定列的最后一行有数据的行号。
+    使用 ws.max_row 作为起点，最小 100 行以防 openpyxl 计算不准确。
+    """
+    max_row = max(ws.max_row, 100)
+    for i in range(max_row, 0, -1):
+        if ws.cell(i, col).value:
+            return i
+    return 1
+
+
+# =====================
+# 清理 EAN 编码
+# =====================
+def clean_ean(val):
+    """
+    清理 EAN 编码：去除前后空格和前导零。
+    处理 None、数字、字符串等多种输入类型。
+    """
+    if val is None:
+        return ""
+    # 处理数字类型（如 12345.0）
+    if isinstance(val, (int, float)):
+        # 去掉小数部分
+        val = int(val) if val == int(val) else val
+    s = str(val).strip()
+    if not s:
+        return ""
+    return s.lstrip("0")
+
+
+# =====================
+# 标准化文件名
+# =====================
+def normalize(name):
+    """
+    去除文件扩展名，转为小写。
+    同时处理特殊空格字符和 .calc 后缀累积问题。
+    """
+    s = str(name).strip().lower()
+    # 将各种特殊空格替换为普通空格
+    s = s.replace("\xa0", " ").replace("\u3000", " ")
+    # 清理 .calc 后缀累积（如 .calc.xlsx.calc.xlsx → .xlsx）
+    # 修复：先去除扩展名，再清理 .calc
+    while ".calc" in s:
+        s = s.replace(".calc", "")
+    # 去除扩展名（可能在 .calc 之后还有 .xlsx/.xls）
+    s = s.replace(".xlsx", "").replace(".xls", "")
+    return s
+
+
+# =====================
+# 解析价格
+# =====================
+def parse_price(val):
+    """
+    从各种格式的价格字符串中提取数值。
+    支持 "€12.34", "12,34 EUR", "12.34" 等格式。
+    """
+    if val is None:
+        return None
+
+    s = str(val).replace("€", "").replace("EUR", "").strip()
+    m = re.findall(r"\d+[.,]?\d*", s)
+
+    if not m:
+        return None
+
+    try:
+        return float(m[0].replace(",", "."))
+    except (ValueError, IndexError) as e:
+        return None
