@@ -78,10 +78,10 @@ def bump(v):
 
 def set_version(v):
     p = os.path.join(HERE, "theme.py")
-    with open(p, encoding="utf-8") as f:
+    with open(p, encoding="utf-8", newline="") as f:          # newline="" 保持原来的换行符，不让 git 以为整个文件都改了
         s = f.read()
     s = re.sub(r'APP_VERSION\s*=\s*"[^"]+"', f'APP_VERSION = "{v}"', s, count=1)
-    with open(p, "w", encoding="utf-8") as f:
+    with open(p, "w", encoding="utf-8", newline="") as f:
         f.write(s)
 
 
