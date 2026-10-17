@@ -17,6 +17,11 @@ DEFAULT_SETTINGS = {
     "use_web": False,
     "review_before_write": False,  # 写入前总是打开手动调整窗口
     "allow_partial_purchase": False,  # 放弃供应商时允许只有它有货的商品不采购（默认不允许）
+    "history_keep_days": 180,     # 历史分配记录保留天数：180 = 半年，365 = 一年，0 = 永久保留
+    "db": {},                     # 货物分配数据库连接（空 = 用原程序的默认值）
+    "algo": {},                   # 订货算法（新算法参数，见 forecast.DEFAULT_PARAMS）
+    "store_orders": {},           # 门店配货页的文件夹、凑单设置、不再合作的供应商
+    "reorder": {},                # 订货建议页的门店、周期等
     # 起订量规则：每个供应商一条
     "rules": [
         {

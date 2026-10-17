@@ -15,7 +15,7 @@
 from i18n import tr
 import copy
 
-from min_order_optimizer import optimize_min_orders, optimize_min_order, _satisfied, _qty, _total_cost
+from min_order_optimizer import optimize_min_orders, optimize_min_order, _satisfied, _qty, _total_cost, _amt, _colli
 
 
 def _totals(rows, assign, target):
@@ -23,8 +23,8 @@ def _totals(rows, assign, target):
     for r in rows:
         if assign.get(r["row"]) == target:
             q = _qty(r["qty"])
-            c += q
-            a += q * (r["prices"].get(target) or 0)
+            c += _colli(r, target)
+            a += q * (_amt(r, target) or 0)
     return c, a
 
 
@@ -120,7 +120,7 @@ def build_plan(rows, rules, allow_partial=False):
             "drop_ok": drop_ok, "drop_total": drop_cost, "drop_extra": drop_cost - base_cost,
             "lost_count": len(lost), "lost_value": lost_value, "drop_cmp": drop_cmp,
             "lost_items": [{"row": r["row"], "ean": r.get("ean", ""), "articolo": r.get("articolo", ""),
-                            "qty": _qty(r["qty"]), "price": r["prices"].get(t)} for r in lost],
+                            "qty": _qty(r["qty"]), "price": (r.get("unit") or r["prices"]).get(t)} for r in lost],
             "drop_allowed": drop_allowed, "allow_partial": allow_partial,
             "reasons": reasons, "needs_decision": bool(reasons),
             "manual_reasons": manual_reasons, "needs_manual": bool(manual_reasons),
@@ -181,9 +181,13 @@ def build_report(rows, rules, baseline, final, sources=None):
         q = _qty(r["qty"])
         po = r["prices"].get(old) if old else None
         pn = r["prices"].get(new) if new else None
+        unit = r.get("unit") or r["prices"]
+        packs = r.get("packs") or {}
         changes.append({
             "row": r["row"], "ean": r.get("ean", ""), "articolo": r.get("articolo", ""), "qty": q,
-            "old": old, "old_price": po, "new": new, "new_price": pn,
+            "old": old, "old_price": unit.get(old) if old else None, "old_pack": packs.get(old) if old else None,
+            "new": new, "new_price": unit.get(new) if new else None, "new_pack": packs.get(new) if new else None,
+            # 多花多少：按单件价比（同样件数的差价）
             "delta": (pn or 0) * q - (po or 0) * q if (po is not None and pn is not None) else None,
             "source": sources.get(r["row"], tr("自动凑单")),
         })

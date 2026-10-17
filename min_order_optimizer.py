@@ -32,6 +32,22 @@ def _qty(v):
     return q if q > 0 else 0.0
 
 
+def _colli(r, s):
+    """这一行在供应商 s 那里订几箱（起订箱数用）：按件数订货时各家箱规不同，箱数也不同"""
+    c = r.get("colli")
+    if c is not None and c.get(s) is not None:
+        return c[s]
+    return _qty(r["qty"])
+
+
+def _amt(r, s):
+    """一箱在供应商 s 的金额（起订金额用）：有 amt（件价 × 这家每箱件数）就用它，没有就等于 prices"""
+    a = r.get("amt")
+    if a is not None and a.get(s) is not None:
+        return a[s]
+    return r["prices"][s]
+
+
 def _best(prices, exclude=None):
     """返回 (供应商, 价格) 的最低价；prices 按列顺序排列，同价取靠前者（与原逻辑一致）"""
     best_s, best_p = None, None
@@ -209,8 +225,8 @@ def optimize_min_order(rows, target, min_colli=0, min_amount=0, mode="all", allo
         c = a = 0.0
         for r in rows:
             if assign.get(r["row"]) == target:
-                c += _qty(r["qty"])
-                a += _qty(r["qty"]) * r["prices"][target]
+                c += _colli(r, target)
+                a += _qty(r["qty"]) * _amt(r, target)
         return c, a
 
     colli, amount = target_totals(assignment)
@@ -236,7 +252,7 @@ def optimize_min_order(rows, target, min_colli=0, min_amount=0, mode="all", allo
         if q <= 0 or pt is None or cur is None or cur == target:
             continue
         delta = (pt - base_price[r["row"]]) * q
-        cands.append((r["row"], delta, q, pt * q))
+        cands.append((r["row"], delta, _colli(r, target), _amt(r, target) * q))
 
     if mode == "all":
         fill, fill_cost = _best_fill(cands, colli, amount, min_colli, min_amount)
@@ -311,8 +327,8 @@ def _totals(rows, assign, target):
     for r in rows:
         if assign.get(r["row"]) == target:
             q = _qty(r["qty"])
-            c += q
-            a += q * r["prices"][target]
+            c += _colli(r, target)
+            a += q * _amt(r, target)
     return c, a
 
 
@@ -374,7 +390,7 @@ def _fill_sequence(rows, assign, seq, open_targets, lock_others, passes=3):
                     continue
                 if lock_others and cur in open_targets:
                     continue
-                cands.append((r["row"], (pt - r["prices"][cur]) * q, q, pt * q))
+                cands.append((r["row"], (pt - r["prices"][cur]) * q, _colli(r, t), _amt(r, t) * q))
             fill, _ = _fill_for(cands, c, a, ru["min_colli"], ru["min_amount"], ru["mode"])
             if fill is None:
                 return None
@@ -443,11 +459,11 @@ def _local_improve(rows, assign, rules, max_pair_rows=400):
             r = by_row[row]
             q = _qty(r["qty"])
             if old in d:
-                d[old][0] -= q
-                d[old][1] -= q * r["prices"][old]
+                d[old][0] -= _colli(r, old)
+                d[old][1] -= q * _amt(r, old)
             if new in d:
-                d[new][0] += q
-                d[new][1] += q * r["prices"][new]
+                d[new][0] += _colli(r, new)
+                d[new][1] += q * _amt(r, new)
         for t, (dc, da) in d.items():
             if dc == 0 and da == 0:
                 continue
@@ -465,11 +481,11 @@ def _local_improve(rows, assign, rules, max_pair_rows=400):
             r = by_row[row]
             q = _qty(r["qty"])
             if old in tot:
-                tot[old][0] -= q
-                tot[old][1] -= q * r["prices"][old]
+                tot[old][0] -= _colli(r, old)
+                tot[old][1] -= q * _amt(r, old)
             if new in tot:
-                tot[new][0] += q
-                tot[new][1] += q * r["prices"][new]
+                tot[new][0] += _colli(r, new)
+                tot[new][1] += q * _amt(r, new)
             assign[row] = new
 
     def moves(r):
@@ -531,7 +547,7 @@ def _milp_solve(rows, rules, baseline, time_limit=60):
         q = _qty(r["qty"])
         for sup, p in r["prices"].items():
             if p is not None:
-                xs.append((r["row"], sup, p * q, q, p * q))
+                xs.append((r["row"], sup, p * q, _colli(r, sup), _amt(r, sup) * q))
     nx = len(xs)
     tidx = {ru["target"]: k for k, ru in enumerate(rules)}
     ny = len(rules)

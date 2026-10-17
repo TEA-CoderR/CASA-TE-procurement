@@ -5,3 +5,7 @@ requests>=2.31.0
 numpy
 scipy
 PySide6-Essentials>=6.7
+pandas
+SQLAlchemy
+mysqlclient
+PyMySQL

@@ -251,3 +251,33 @@ def test_old_max_extra_setting_migrates_to_drop_line(tmp_path, monkeypatch):
     monkeypatch.setattr(S, "SETTINGS_PATH", str(f))
     r = S.load_settings()["rules"][0]
     assert r["drop_extra"] == 25 and r["manual_extra"] == 0 and "max_extra" not in r
+
+
+# ---------- 价格是单件价：金额 = 箱数 × 每箱件数 × 件价 ----------
+def _pr(row, qty, unit, packs):
+    import types, sys
+    if "win32com" not in sys.modules:
+        w = types.ModuleType("win32com"); c = types.ModuleType("win32com.client"); w.client = c
+        sys.modules["win32com"] = w; sys.modules["win32com.client"] = c
+    from service import _price_row
+    return _price_row(row, qty, unit, packs)
+
+
+def test_price_row_compares_unit_price_and_amount_uses_pack():
+    r = _pr(2, 3, {"A": 1.20, "M": 1.10}, {"A": 24, "M": 6})
+    # 比价按单件价：M 便宜
+    assert min((p, s) for s, p in r["prices"].items())[1] == "M"
+    # 一箱金额按各自的箱规
+    assert abs(r["amt"]["A"] - 1.20 * 24) < 1e-9 and abs(r["amt"]["M"] - 1.10 * 6) < 1e-9
+
+
+def test_min_amount_counts_pieces_per_box():
+    # 件价 2€，每箱 12 件：10 箱 = 240€；若按一箱 2€ 算只有 20€
+    rows = [_pr(2, 10, {"A": 1.9, "M": 2.0}, {"A": 12, "M": 12}),
+            _pr(3, 5, {"A": 3.0, "M": 2.9}, {"A": 6, "M": 6})]
+    rule = dict(target="M", name="M", min_colli=0, min_amount=200, mode="all", allow_drop=False)
+    a, rep = optimize_min_orders(rows, [rule])
+    # 最低价时 M 只有第 3 行：5 箱 × 6 件 × 2.9 = 87€，不够 200€
+    # 把第 2 行也给 M：10 箱 × 12 件 × 2.0 = 240€，合计 327€（若按一箱 2€ 算，永远凑不够）
+    assert a[3] == "M" and a[2] == "M"
+    assert not rep["warning"]

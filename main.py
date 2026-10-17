@@ -1,6 +1,7 @@
 """
-采购系统 v2.5 — 桌面界面（PySide6 / Qt）
-处理逻辑在 service.py / min_order_optimizer.py / matcher.py，本文件只负责界面。
+CASA&TE采购系统 v3.0 — 主程序（PySide6 / Qt）
+采购是其中一个模块（门店配货、批发商比价 …）；销售与库存模块第二期从旧程序移植。
+处理逻辑在 service.py / store_orders.py / reorder_service.py / forecast.py …，本文件只负责界面外壳。
 """
 import os
 import sys
@@ -23,6 +24,9 @@ from PySide6.QtWidgets import (QAbstractSpinBox,
 )
 
 from service import run_process
+from order_check import OrderCheck
+from store_order_page import StoreOrderPage
+import history
 from matcher import find_missing_items
 from settings import load_settings, save_settings, match_rules, SETTINGS_PATH
 from i18n import tr, kind_of, set_language, get_language, LANGS
@@ -30,9 +34,16 @@ from config import (ORDINE_FOLDER, ELIMINARE_FOLDER, DISTRIBUTUIRE_FOLDER,
                     LOG_DIR, LOG_FILE, LOG_FORMAT, LOG_DATE_FORMAT)
 
 settings = load_settings()
+# 旧版本把数据库密码明文存在 settings.json：启动时改成加密保存
+if (settings.get("db") or {}).get("password"):
+    import secure_store as _ss
+    if not _ss.is_protected(settings["db"]["password"]):
+        settings["db"]["password"] = _ss.protect(settings["db"]["password"])
+        save_settings(settings)
 set_language(settings.get("language", "zh"))
-APP_NAME = tr("采购系统")
-APP_VERSION = "v2.5"
+APP_NAME = tr("CASA&TE采购系统")
+import theme as _theme_mod  # noqa: E402
+APP_VERSION = theme_version = _theme_mod.APP_VERSION
 
 
 # =====================================================================
@@ -53,154 +64,11 @@ file_logger = _setup_file_logger()
 
 
 # =====================================================================
-# 主题
+# 主题（颜色 / 样式表 / 图标在 theme.py）
 # =====================================================================
-THEMES = {
-    "light": {
-        "bg": "#F3F4F1", "surface": "#FFFFFF", "surface2": "#F8F9F7", "line": "#DADDD6",
-        "text": "#1C2430", "muted": "#66707C", "faint": "#9AA2AB",
-        "accent": "#0E6E5C", "accent_hover": "#0B5B4C", "accent_soft": "#E2F0EC", "on_accent": "#FFFFFF",
-        "side": "#18212B", "side_text": "#C9D1D9", "side_muted": "#7D8894", "side_active": "#243140",
-        "ok": "#2F7D4A", "ok_soft": "#E5F2E9", "warn": "#B26B00", "warn_soft": "#FBF0DC",
-        "err": "#B42318", "err_soft": "#FBE7E5", "info": "#2B5C8A", "info_soft": "#E4EDF6",
-        "ghost": "#B9D7CF", "track": "#ECEEEA",
-    },
-    "dark": {
-        "bg": "#12171D", "surface": "#1A2129", "surface2": "#151B22", "line": "#2A333D",
-        "text": "#E3E7EA", "muted": "#9AA5B0", "faint": "#6B7682",
-        "accent": "#3FB89C", "accent_hover": "#56C9AE", "accent_soft": "#173A33", "on_accent": "#0D1A16",
-        "side": "#0E1318", "side_text": "#C9D1D9", "side_muted": "#6F7B87", "side_active": "#1C2630",
-        "ok": "#5CC48A", "ok_soft": "#183424", "warn": "#E9A93B", "warn_soft": "#3A2C12",
-        "err": "#F1786C", "err_soft": "#3D1B18", "info": "#7FB2E5", "info_soft": "#1B2C3D",
-        "ghost": "#2C5A50", "track": "#232B34",
-    },
-}
-
-
-def T(key):
-    return THEMES["dark" if settings.get("theme") == "dark" else "light"][key]
-
-
-UI_FONT = "Microsoft YaHei UI"
-NUM_FONT = "Bahnschrift"
-
-
-def build_qss():
-    t = THEMES["dark" if settings.get("theme") == "dark" else "light"]
-    return f"""
-    * {{ font-family: "{UI_FONT}", "Microsoft YaHei", "Noto Sans CJK SC", "Noto Sans CJK TC", sans-serif; font-size: 13px; color: {t['text']}; }}
-    QMainWindow, #Content {{ background: {t['bg']}; }}
-    QDialog {{ background: {t['surface']}; }}
-    #Sidebar {{ background: {t['side']}; }}
-    #Brand {{ color: #FFFFFF; font-size: 19px; font-weight: 700; }}
-    #BrandSub {{ color: {t['side_muted']}; font-size: 11px; }}
-    #NavBtn {{ background: transparent; color: {t['side_text']}; border: none; border-radius: 8px;
-               text-align: left; padding: 10px 14px; font-size: 14px; }}
-    #NavBtn:hover {{ background: {t['side_active']}; }}
-    #NavBtn:checked {{ background: {t['side_active']}; color: #FFFFFF; font-weight: 600; }}
-    #SideFoot {{ color: {t['side_muted']}; font-size: 11px; }}
-    QComboBox#LangBox {{ background: {t['side_active']}; color: {t['side_text']}; border: none; padding: 5px 8px; }}
-    QComboBox#LangBox QAbstractItemView {{ background: {t['side']}; color: {t['side_text']};
-        selection-background-color: {t['side_active']}; }}
-    #PageTitle {{ font-size: 24px; font-weight: 700; }}
-    #PageSub {{ color: {t['muted']}; font-size: 13px; }}
-    #Panel {{ background: {t['surface']}; border: 1px solid {t['line']}; border-radius: 10px; }}
-    #PanelTitle {{ font-size: 14px; font-weight: 600; }}
-    #Muted {{ color: {t['muted']}; }}
-    #Faint {{ color: {t['faint']}; font-size: 12px; }}
-    #Hint {{ color: {t['muted']}; font-size: 12px; }}
-    QLineEdit, QDoubleSpinBox, QComboBox {{
-        background: {t['surface2']}; border: 1px solid {t['line']}; border-radius: 6px;
-        padding: 7px 10px; selection-background-color: {t['accent']}; }}
-    QLineEdit:focus, QDoubleSpinBox:focus, QComboBox:focus {{ border: 1px solid {t['accent']}; }}
-    QDoubleSpinBox::up-button, QDoubleSpinBox::down-button {{ width: 0; border: none; }}
-    QComboBox QAbstractItemView {{ background: {t['surface']}; border: 1px solid {t['line']};
-        selection-background-color: {t['accent_soft']}; selection-color: {t['text']}; }}
-    QPushButton {{ background: {t['surface']}; border: 1px solid {t['line']}; border-radius: 6px;
-                   padding: 7px 14px; }}
-    QPushButton:hover {{ border-color: {t['accent']}; color: {t['accent']}; }}
-    QPushButton:disabled {{ color: {t['faint']}; border-color: {t['line']}; }}
-    QPushButton:checked {{ background: {t['accent_soft']}; color: {t['accent']}; border-color: {t['accent']}; font-weight: 600; }}
-    QPushButton#Primary {{ background: {t['accent']}; color: {t['on_accent']}; border: none; font-weight: 600; }}
-    QPushButton#Primary:hover {{ background: {t['accent_hover']}; color: {t['on_accent']}; }}
-    QPushButton#Primary:disabled {{ background: {t['line']}; color: {t['faint']}; }}
-    QPushButton#Run {{ background: {t['accent']}; color: {t['on_accent']}; border: none; border-radius: 8px;
-                       font-size: 16px; font-weight: 700; padding: 12px 34px; }}
-    QPushButton#Run:hover {{ background: {t['accent_hover']}; }}
-    QPushButton#Run:disabled {{ background: {t['line']}; color: {t['muted']}; }}
-    QPushButton#Link {{ background: transparent; border: none; color: {t['accent']}; padding: 4px 6px; }}
-    QPushButton#Link:hover {{ text-decoration: underline; }}
-    QPushButton#Danger:hover {{ border-color: {t['err']}; color: {t['err']}; }}
-    QPushButton#DangerSolid {{ background: {t['err']}; color: #FFFFFF; border: none; font-weight: 600; }}
-    QPushButton#DangerSolid:hover {{ background: {t['err']}; color: #FFFFFF; border: 2px solid {t['text']}; }}
-    QProgressBar {{ background: {t['track']}; border: none; border-radius: 4px; height: 8px; }}
-    QProgressBar::chunk {{ background: {t['accent']}; border-radius: 4px; }}
-    QTextEdit {{ background: {t['surface2']}; border: 1px solid {t['line']}; border-radius: 8px; padding: 6px;
-                 font-family: "Cascadia Mono", "Consolas", monospace; font-size: 12px; }}
-    QTableWidget {{ background: {t['surface']}; border: none; gridline-color: transparent;
-                    selection-background-color: {t['accent_soft']}; selection-color: {t['text']};
-                    alternate-background-color: {t['surface2']}; }}
-    QTableWidget::item {{ padding: 4px 8px; border-bottom: 1px solid {t['line']}; }}
-    QHeaderView::section {{ background: {t['surface']}; color: {t['muted']}; border: none;
-                            border-bottom: 1px solid {t['line']}; padding: 8px; font-weight: 600; font-size: 12px; }}
-    QScrollBar:vertical {{ background: transparent; width: 10px; margin: 2px; }}
-    QScrollBar::handle:vertical {{ background: {t['line']}; border-radius: 4px; min-height: 30px; }}
-    QScrollBar::handle:vertical:hover {{ background: {t['faint']}; }}
-    QScrollBar:horizontal {{ background: transparent; height: 10px; margin: 2px; }}
-    QScrollBar::handle:horizontal {{ background: {t['line']}; border-radius: 4px; min-width: 30px; }}
-    QScrollBar::add-line, QScrollBar::sub-line {{ width: 0; height: 0; }}
-    QScrollArea {{ background: transparent; border: none; }}
-    QRadioButton {{ spacing: 8px; }}
-    QToolTip {{ background: {t['side']}; color: #FFFFFF; border: none; padding: 6px; }}
-    #Banner {{ border-radius: 8px; padding: 10px 14px; }}
-    #KpiValue {{ font-family: "{NUM_FONT}", "{UI_FONT}"; font-size: 26px; font-weight: 600; }}
-    #KpiLabel {{ color: {t['muted']}; font-size: 12px; }}
-    #Toast {{ background: {t['side']}; color: #FFFFFF; border-radius: 8px; padding: 10px 16px; }}
-    """
-
-
-# =====================================================================
-# 图标（线条风格，按主题着色）
-# =====================================================================
-ICONS = {
-    "order": '<path d="M7 3h7l5 5v13H7z"/><path d="M14 3v5h5"/><path d="M10 13h6M10 17h6"/>',
-    "result": '<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>',
-    "search": '<circle cx="11" cy="11" r="6"/><path d="M20 20l-4.5-4.5"/>',
-    "rules": '<path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/>',
-    "log": '<path d="M5 4h14v16H5z"/><path d="M9 9h6M9 13h6M9 17h3"/>',
-    "folder": '<path d="M3 7h6l2 2h10v10H3z"/>',
-    "moon": '<path d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z"/>',
-    "sun": '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M5 5l1.5 1.5M17.5 17.5L19 19M5 19l1.5-1.5M17.5 6.5L19 5"/>',
-}
-
-
-def icon(name, color, size=20):
-    svg = (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="{color}" '
-           f'stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">{ICONS[name]}</svg>')
-    r = QSvgRenderer(QByteArray(svg.encode()))
-    pm = QPixmap(size * 2, size * 2)
-    pm.fill(Qt.transparent)
-    p = QPainter(pm)
-    r.render(p)
-    p.end()
-    pm.setDevicePixelRatio(2)
-    return QIcon(pm)
-
-
-def app_icon():
-    pm = QPixmap(64, 64)
-    pm.fill(Qt.transparent)
-    p = QPainter(pm)
-    p.setRenderHint(QPainter.Antialiasing)
-    p.setBrush(QColor("#0E6E5C"))
-    p.setPen(Qt.NoPen)
-    p.drawRoundedRect(4, 4, 56, 56, 12, 12)
-    p.setPen(QPen(QColor("#FFFFFF"), 5, Qt.SolidLine, Qt.RoundCap))
-    for i, h in enumerate((16, 28, 22)):
-        x = 20 + i * 12
-        p.drawLine(x, 48, x, 48 - h)
-    p.end()
-    return QIcon(pm)
+import theme
+from theme import T, build_qss, icon, app_icon, UI_FONT, NUM_FONT, ICONS, THEMES
+theme.set_theme(settings.get("theme", "light"))
 
 
 # =====================================================================
@@ -412,8 +280,18 @@ class StatusDelegate(QStyledItemDelegate):
         return QSize(opt.fontMetrics.horizontalAdvance(idx.data() or "") + 40, sz.height())
 
 
+class _BgDelegate(QStyledItemDelegate):
+    """样式表里的 QTableWidget::item 会盖住单元格自己的底色，这里先把底色画上"""
+    def paint(self, p, opt, idx):
+        bg = idx.data(Qt.BackgroundRole)
+        if bg is not None:
+            p.fillRect(opt.rect, bg)
+        super().paint(p, opt, idx)
+
+
 def make_table(headers, stretch_col=None, numeric_cols=()):
     t = QTableWidget(0, len(headers))
+    t.setItemDelegate(_BgDelegate(t))
     t.setHorizontalHeaderLabels(headers)
     t.verticalHeader().setVisible(False)
     t.setShowGrid(False)
@@ -422,6 +300,8 @@ def make_table(headers, stretch_col=None, numeric_cols=()):
     t.setSelectionMode(QAbstractItemView.SingleSelection)
     t.setEditTriggers(QAbstractItemView.NoEditTriggers)
     t.verticalHeader().setDefaultSectionSize(38)
+    t.setWordWrap(False)
+    t.setTextElideMode(Qt.ElideRight)
     t.setFocusPolicy(Qt.NoFocus)
     hh = t.horizontalHeader()
     hh.setHighlightSections(False)
@@ -552,6 +432,7 @@ class Bridge(QObject):
     decide = Signal(object)
     web_done = Signal(object)
     rewrite_done = Signal(object)
+    db_state = Signal(bool)
 
 
 # =====================================================================
@@ -685,6 +566,28 @@ class RuleDialog(QDialog):
 # =====================================================================
 # 凑单决定窗口：凑单太贵 / 超过设定值 / 凑不够 时让操作员选择
 # =====================================================================
+def fmt_unit(price, pack=None):
+    """单件价，箱规不是 1 时带上「×每箱件数」"""
+    if price is None:
+        return ""
+    t = f"{price:,.2f}"
+    if pack not in (None, 1, 1.0):
+        t += f" ×{pack:g}"
+    return t
+
+
+def _unit(r, s):
+    return (r.get("unit") or r["prices"]).get(s) if s else None
+
+
+def _pack(r, s):
+    return (r.get("packs") or {}).get(s) if s else None
+
+
+def _amt(r, s):
+    return (r.get("amt") or r["prices"]).get(s) if s else None
+
+
 def short(name):
     s = str(name or "")
     for ext in (".xlsx", ".xls"):
@@ -860,7 +763,7 @@ class SupplierComboDelegate(QStyledItemDelegate):
         cb = QComboBox(parent)
         for s, p in r["prices"].items():
             if p is not None:
-                cb.addItem(f"{short(s)}   €{p:,.2f}", s)
+                cb.addItem(f"{short(s)}   €{fmt_unit(_unit(r, s), _pack(r, s))}", s)
         cb.activated.connect(lambda _: self.commitData.emit(cb))
         return cb
 
@@ -941,8 +844,8 @@ class ManualDialog(QDialog):
         bar.addStretch()
         lay.addLayout(bar)
 
-        self.table = make_table([tr("行"), "EAN", "ARTICOLO", tr("箱数"), tr("最低价供应商"), tr("最低价"),
-                                 tr("当前供应商"), tr("当前单价"), tr("比最低价多花 €")],
+        self.table = make_table([tr("行"), "EAN", "ARTICOLO", tr("箱数"), tr("最低价供应商"), tr("件价"),
+                                 tr("当前供应商"), tr("当前件价"), tr("比最低价多花 €")],
                                 stretch_col=2, numeric_cols=(0, 3, 5, 7, 8))
         self.table.setFocusPolicy(Qt.StrongFocus)
         self.table.setEditTriggers(QAbstractItemView.CurrentChanged | QAbstractItemView.DoubleClicked |
@@ -984,6 +887,18 @@ class ManualDialog(QDialog):
                     pass
         return tot
 
+    def _money(self, a):
+        """真实采购金额：箱数 × 每箱件数 × 件价"""
+        tot = 0.0
+        for r in self.rows:
+            s = a.get(r["row"])
+            if s:
+                try:
+                    tot += float(r["qty"] or 0) * (_amt(r, s) or 0)
+                except (TypeError, ValueError):
+                    pass
+        return tot
+
     def _qty(self, r):
         try:
             return max(0.0, float(r["qty"] or 0))
@@ -1006,9 +921,9 @@ class ManualDialog(QDialog):
         extra = (pc - pb) * q if (pb is not None and pc is not None) else None
         n_offers = sum(1 for p in r["prices"].values() if p is not None)
         vals = [r["row"], r.get("ean", ""), r.get("articolo", ""), f"{q:g}",
-                short(b) if b else tr("无报价"), f"{pb:,.2f}" if pb is not None else "",
+                short(b) if b else tr("无报价"), fmt_unit(_unit(r, b), _pack(r, b)),
                 (short(c) + ("　▾" if n_offers > 1 else "")) if c else tr("无报价"),
-                f"{pc:,.2f}" if pc is not None else "",
+                fmt_unit(_unit(r, c), _pack(r, c)),
                 f"{extra:+,.2f}" if extra else ""]
         table_set_row(self.table, i, vals, color=None)
         self.table.item(i, 6).setData(Qt.UserRole, i)
@@ -1044,7 +959,7 @@ class ManualDialog(QDialog):
                 if self.assign.get(r["row"]) == ru["target"]:
                     q = self._qty(r)
                     c += q
-                    a += q * (r["prices"].get(ru["target"]) or 0)
+                    a += q * (_amt(r, ru["target"]) or 0)
             if c == 0:
                 kind, st = "info", tr("不下单")
             elif _satisfied(c, a, ru["min_colli"], ru["min_amount"], ru["mode"]):
@@ -1053,8 +968,8 @@ class ManualDialog(QDialog):
                 kind, st = "err", tr("未达标")
             lb.setText(tr("<b>{0}</b>　{1:,.0f} 箱 / €{2:,.2f}　要求 {3}　<b>{4}</b>", ru['name'], c, a, describe_condition(ru), st))
             lb.setStyleSheet(f"background:{T(kind + '_soft')}; color:{T(kind)};")
-        cost = self._cost(self.assign)
-        diff = cost - self.base_cost
+        cost = self._money(self.assign)
+        diff = self._cost(self.assign) - self.base_cost
         n = sum(1 for r in self.rows if self.assign.get(r["row"]) != self.baseline.get(r["row"]))
         self.total_lbl.setText(tr("采购总额 €{0:,.2f}　比只按最低价 {1:+,.2f}　改动 {2} 个商品", cost, diff, n))
         self.total_lbl.setStyleSheet(f"background:{T('surface2')}; color:{T('text')}; border:1px solid {T('line')};")
@@ -1082,7 +997,7 @@ class ManualDialog(QDialog):
                 if self.assign.get(r["row"]) == ru["target"]:
                     q = self._qty(r)
                     c += q
-                    a += q * (r["prices"].get(ru["target"]) or 0)
+                    a += q * (_amt(r, ru["target"]) or 0)
             if c > 0 and not _satisfied(c, a, ru["min_colli"], ru["min_amount"], ru["mode"]):
                 bad.append(ru["name"])
         if bad and QMessageBox.question(self, tr("手动调整"), tr("{0} 还没有达到起订条件。仍然按现在的方案写入？", ", ".join(bad))) \
@@ -1095,9 +1010,29 @@ class ManualDialog(QDialog):
 # =====================================================================
 # 主窗口
 # =====================================================================
+class _UI:
+    """给 store_order_page / order_check 用的界面小部件"""
+    pass
+
+
+# 比价处理的进度阶段（service.run_process 的百分比）
+CMP_STAGES = [(0, "备份、打开主订单"), (10, "扣减已处理数量"), (20, "读取供应商报价"),
+              (62, "选供应商、起订量凑单"), (70, "写回供应商文件"), (96, "保存主订单")]
+
+
 class MainWindow(QMainWindow):
-    NAV = [("order", tr("订单处理")), ("result", tr("分配结果")), ("search", tr("缺失查找")),
-           ("rules", tr("起订量")), ("log", tr("运行日志"))]
+    # 货物分配系统是主系统；采购管理是其中一个模块
+    NAV_GROUPS = [
+        (tr("概览"), [("home", tr("工作台"))]),
+        (tr("采购管理"), [("store_orders", tr("门店配货")), ("order", tr("批发商比价")), ("result", tr("比价结果")),
+                        ("tracking", tr("采购订单跟踪")), ("history", tr("历史记录")), ("rules", tr("起订规则")),
+                        ("search", tr("缺失查找"))]),
+        (tr("分货管理"), [("distribution", tr("分货数据处理")), ("import", tr("导入 / 导出"))]),
+        (tr("系统"), [("settings", tr("系统设置")), ("log", tr("运行日志"))]),
+    ]
+    NAV = [item for _, items in NAV_GROUPS for item in items]
+    NAV_SECTION = {k: g for g, items in NAV_GROUPS for k, _ in items}
+    SOON = {"tracking"}   # 还没做（采购订单跟踪）
 
     def __init__(self):
         super().__init__()
@@ -1114,6 +1049,7 @@ class MainWindow(QMainWindow):
         self.bridge.web_done.connect(self._on_web_done)
         self.bridge.decide.connect(self._on_decide)
         self.bridge.rewrite_done.connect(self._on_rewrite_done)
+        self.bridge.db_state.connect(self._on_db_state)
 
         self.log_entries = []      # [(level, text)]
         self.feed_entries = []     # 订单处理页的「处理过程」
@@ -1123,20 +1059,59 @@ class MainWindow(QMainWindow):
         self.info = {}
         self.last_summary = None
 
+        self.notes = []            # 通知中心：[(时间, 文字)]
+        self.unread = 0
         root = QWidget()
         self.setCentralWidget(root)
         h = QHBoxLayout(root)
         h.setContentsMargins(0, 0, 0, 0)
         h.setSpacing(0)
         h.addWidget(self._build_sidebar())
-
+        right = QWidget()
+        rv = QVBoxLayout(right)
+        rv.setContentsMargins(0, 0, 0, 0)
+        rv.setSpacing(0)
+        rv.addWidget(self._build_topbar())
         self.stack = QStackedWidget()
         self.stack.setObjectName("Content")
-        h.addWidget(self.stack, 1)
-        self.pages = [self._page_order(), self._page_result(), self._page_missing(),
-                      self._page_rules(), self._page_log()]
-        for pg in self.pages:
-            self.stack.addWidget(self._scroll(pg))
+        rv.addWidget(self.stack, 1)
+        h.addWidget(right, 1)
+
+        from dashboard_page import DashboardPage
+        from legacy_pages import LegacyPage
+        from settings_page import SettingsPage
+        self.store_orders = StoreOrderPage(self, settings, _UI)
+        self.order_check = OrderCheck(self, settings, _UI)
+        self.dashboard = DashboardPage(self, settings)
+        self.settings_page = SettingsPage(self, settings)
+        from distribution_page import DistributionPage
+        from import_page import ImportPage
+        self.distribution = DistributionPage(self, settings, _UI)
+        self.import_page = ImportPage(self, settings, _UI)
+        builders = {
+            "distribution": lambda: (self.distribution.build(), True),
+            "import": lambda: (self.import_page.build(), True),
+            "home": lambda: (self.dashboard.build(), True),
+            "store_orders": lambda: (self.store_orders.build(), False),
+            "order": lambda: (self._page_order(), True),
+            "result": lambda: (self._page_result(), True),
+            "history": lambda: (self._page_history(), True),
+            "rules": lambda: (self._page_rules(), True),
+            "search": lambda: (self._page_missing(), True),
+            "settings": lambda: (self.settings_page.build(), True),
+            "log": lambda: (self._page_log(), True),
+        }
+        self.pages = []
+        self.legacy_pages = []
+        for key, _ in self.NAV:
+            if key in builders:
+                pg, scroll = builders[key]()
+            else:
+                lp = LegacyPage(self, settings, key)
+                self.legacy_pages.append(lp)
+                pg, scroll = lp.build(), True
+            self.pages.append(pg)
+            self.stack.addWidget(self._scroll(pg) if scroll else pg)
 
         self.toast = QLabel(self)
         self.toast.setObjectName("Toast")
@@ -1151,10 +1126,18 @@ class MainWindow(QMainWindow):
         if settings.get("last_folder") and os.path.isdir(settings["last_folder"]):
             self.folder_edit.setText(settings["last_folder"])
         self.refresh_folder()
+        self._purge_history()
         self._load_saved_result()
+        self.refresh_history()
         self.apply_theme()
-        self.go(0)
+        self.go_page("home")
         self.log(tr("{0} {1} 启动 {2:%Y-%m-%d %H:%M:%S}", APP_NAME, APP_VERSION, datetime.now()))
+        QTimer.singleShot(300, self.check_db)
+        self.db_timer = QTimer(self, interval=5 * 60 * 1000, timeout=self.check_db)
+        self.db_timer.start()
+        from update_ui import Updater
+        self.updater = Updater(self, settings)
+        self.updater.start_auto()
 
     # ---------- 框架 ----------
     def _scroll(self, w):
@@ -1168,94 +1151,320 @@ class MainWindow(QMainWindow):
     def _page(self, title, sub):
         w = QWidget()
         lay = QVBoxLayout(w)
-        lay.setContentsMargins(36, 30, 36, 30)
-        lay.setSpacing(16)
+        lay.setContentsMargins(24, 20, 24, 24)
+        lay.setSpacing(14)
         t = QLabel(title)
         t.setObjectName("PageTitle")
         s = QLabel(sub)
         s.setObjectName("PageSub")
         s.setWordWrap(True)
-        lay.addWidget(t)
-        lay.addWidget(s)
-        lay.addSpacing(4)
+        head = QVBoxLayout()
+        head.setSpacing(3)
+        head.addWidget(t)
+        head.addWidget(s)
+        lay.addLayout(head)
+        lay.addSpacing(2)
         return w, lay
 
     def _build_sidebar(self):
         side = QFrame()
         side.setObjectName("Sidebar")
-        side.setFixedWidth(208)
+        side.setFixedWidth(232)
         v = QVBoxLayout(side)
-        v.setContentsMargins(14, 22, 14, 16)
-        v.setSpacing(4)
+        v.setContentsMargins(0, 0, 0, 10)
+        v.setSpacing(0)
+        top = QHBoxLayout()
+        top.setContentsMargins(18, 18, 18, 14)
+        top.setSpacing(10)
         logo = QLabel()
-        logo.setPixmap(app_icon().pixmap(36, 36))
+        logo.setPixmap(app_icon().pixmap(34, 34))
+        col = QVBoxLayout()
+        col.setSpacing(1)
         brand = QLabel(APP_NAME)
         brand.setObjectName("Brand")
-        sub = QLabel(tr("订单扣减与供应商分配"))
+        brand.setWordWrap(True)     # 英文 / 意大利文名字较长时换行
+        sub = QLabel(f"{tr('采购 · 分货管理')} · {APP_VERSION}")
         sub.setObjectName("BrandSub")
         sub.setWordWrap(True)
-        top = QHBoxLayout()
-        top.setContentsMargins(6, 0, 0, 0)
-        top.addWidget(logo)
-        col = QVBoxLayout()
-        col.setSpacing(0)
         col.addWidget(brand)
         col.addWidget(sub)
-        top.addLayout(col)
-        top.addStretch()
+        top.addWidget(logo)
+        top.addLayout(col, 1)
         v.addLayout(top)
-        v.addSpacing(26)
 
+        nav = QWidget()
+        nav.setObjectName("Sidebar")
+        nv = QVBoxLayout(nav)
+        nv.setContentsMargins(10, 0, 10, 0)
+        nv.setSpacing(2)
         self.nav_group = QButtonGroup(self)
         self.nav_btns = []
-        for i, (ic, text) in enumerate(self.NAV):
-            b = QPushButton(f"  {text}")
-            b.setObjectName("NavBtn")
-            b.setCheckable(True)
-            b.setCursor(Qt.PointingHandCursor)
-            b.setIconSize(QSize(18, 18))
-            b.clicked.connect(lambda _=False, i=i: self.go(i))
-            self.nav_group.addButton(b, i)
-            self.nav_btns.append((b, ic))
-            b.toggled.connect(lambda on, b=b, ic=ic: b.setIcon(icon(ic, "#FFFFFF" if on else T("side_text"))))
-            v.addWidget(b)
-        v.addStretch()
+        self.nav_badges = {}
+        idx = 0
+        for gname, items in self.NAV_GROUPS:
+            gl = QLabel(gname)
+            gl.setObjectName("NavGroup")
+            nv.addWidget(gl)
+            for key, text in items:
+                b = QPushButton("  " + text.replace("&", "&&"))
+                b.setObjectName("NavBtn")
+                b.setCheckable(True)
+                b.setCursor(Qt.PointingHandCursor)
+                b.setIconSize(QSize(17, 17))
+                b.clicked.connect(lambda _=False, i=idx: self.go(i))
+                self.nav_group.addButton(b, idx)
+                self.nav_btns.append((b, key))
+                b.toggled.connect(lambda on, b=b, k=key: b.setIcon(icon(k, "#FFFFFF" if on else T("side_text"))))
+                bl = QHBoxLayout(b)
+                bl.setContentsMargins(0, 0, 8, 0)
+                bl.addStretch()
+                if key in self.SOON:
+                    tag = QLabel(tr("二期"))
+                    tag.setObjectName("NavSoon")
+                    tag.setFixedHeight(17)
+                    tag.setAlignment(Qt.AlignCenter)
+                    bl.addWidget(tag, 0, Qt.AlignVCenter)
+                else:
+                    badge = QLabel("")
+                    badge.setObjectName("NavBadge")
+                    badge.setFixedHeight(17)
+                    badge.setMinimumWidth(20)
+                    badge.setAlignment(Qt.AlignCenter)
+                    badge.hide()
+                    bl.addWidget(badge, 0, Qt.AlignVCenter)
+                    self.nav_badges[key] = badge
+                nv.addWidget(b)
+                idx += 1
+            nv.addSpacing(6)
+        nv.addStretch()
+        sa = QScrollArea()
+        sa.setWidgetResizable(True)
+        sa.setFrameShape(QFrame.NoFrame)
+        sa.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        sa.setWidget(nav)
+        sa.setStyleSheet("QScrollArea{background:transparent;}")
+        v.addWidget(sa, 1)
 
+        db = QFrame()
+        db.setObjectName("DbBox")
+        dv = QVBoxLayout(db)
+        dv.setContentsMargins(12, 10, 12, 10)
+        dv.setSpacing(3)
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        self.db_dot = QLabel()
+        self.db_dot.setFixedSize(8, 8)
+        self.db_title = QLabel(tr("正在检查数据库…"))
+        self.db_title.setObjectName("DbTitle")
+        row.addWidget(self.db_dot)
+        row.addWidget(self.db_title, 1)
+        dv.addLayout(row)
+        self.db_sub = QLabel("")
+        self.db_sub.setObjectName("DbSub")
+        dv.addWidget(self.db_sub)
+        db.setCursor(Qt.PointingHandCursor)
+        db.mousePressEvent = lambda _e: self.go_page("settings")
+        wrap = QHBoxLayout()
+        wrap.setContentsMargins(10, 8, 10, 0)
+        wrap.addWidget(db)
+        v.addLayout(wrap)
+        self._set_db_state(None)
+        return side
+
+    def _build_topbar(self):
+        from PySide6.QtWidgets import QCompleter, QMenu
+        bar = QFrame()
+        bar.setObjectName("TopBar")
+        bar.setFixedHeight(56)
+        h = QHBoxLayout(bar)
+        h.setContentsMargins(24, 0, 20, 0)
+        h.setSpacing(10)
+        self.crumb_sec = QLabel("")
+        self.crumb_sec.setObjectName("Crumb")
+        sep = QLabel("/")
+        sep.setObjectName("Crumb")
+        self.crumb_cur = QLabel("")
+        self.crumb_cur.setObjectName("CrumbCur")
+        h.addWidget(self.crumb_sec)
+        h.addWidget(sep)
+        h.addWidget(self.crumb_cur)
+        h.addStretch()
+        self.search = QLineEdit()
+        self.search.setObjectName("Search")
+        self.search.setPlaceholderText(tr("搜索功能页面…  Ctrl K"))
+        self.search.setFixedWidth(320)
+        self.search_icon = QLabel(self.search)
+        self.search_icon.move(10, 9)
+        comp = QCompleter([t for _, t in self.NAV], self.search)
+        comp.setCaseSensitivity(Qt.CaseInsensitive)
+        comp.setFilterMode(Qt.MatchContains)
+        comp.activated.connect(self._search_go)
+        self.search.setCompleter(comp)
+        self.search.returnPressed.connect(lambda: self._search_go(self.search.text()))
+        h.addWidget(self.search)
+        QShortcut(QKeySequence("Ctrl+K"), self, activated=lambda: (self.search.setFocus(), self.search.selectAll()))
+
+        self.bell = QPushButton()
+        self.bell.setObjectName("TopBtn")
+        self.bell.setToolTip(tr("通知"))
+        self.bell.setCursor(Qt.PointingHandCursor)
+        self.bell_menu = QMenu(self)
+        self.bell.clicked.connect(self._show_notes)
+        self.bell_dot = QLabel(self.bell)
+        self.bell_dot.setFixedSize(8, 8)
+        self.bell_dot.move(21, 6)
+        self.bell_dot.hide()
+        h.addWidget(self.bell)
         self.theme_btn = QPushButton()
-        self.theme_btn.setObjectName("NavBtn")
+        self.theme_btn.setObjectName("TopBtn")
         self.theme_btn.setCursor(Qt.PointingHandCursor)
         self.theme_btn.clicked.connect(self.toggle_theme)
-        v.addWidget(self.theme_btn)
-        lang_row = QHBoxLayout()
-        lang_row.setContentsMargins(14, 6, 6, 0)
-        ll = QLabel("🌐")
-        ll.setObjectName("SideFoot")
+        h.addWidget(self.theme_btn)
         self.lang_box = QComboBox()
         self.lang_box.setObjectName("LangBox")
         for code, label in LANGS:
             self.lang_box.addItem(label, code)
         self.lang_box.setCurrentIndex(max(0, self.lang_box.findData(get_language())))
         self.lang_box.currentIndexChanged.connect(self.change_language)
-        lang_row.addWidget(ll)
-        lang_row.addWidget(self.lang_box, 1)
-        v.addLayout(lang_row)
-        foot = QLabel(APP_VERSION)
-        foot.setObjectName("SideFoot")
-        foot.setContentsMargins(14, 8, 0, 0)
-        v.addWidget(foot)
-        return side
+        h.addWidget(self.lang_box)
+        user = QHBoxLayout()
+        user.setSpacing(8)
+        name = settings.get("user_name") or tr("采购部")
+        av = QLabel(name[:1])
+        av.setObjectName("Avatar")
+        av.setFixedSize(30, 30)
+        av.setAlignment(Qt.AlignCenter)
+        uc = QVBoxLayout()
+        uc.setSpacing(0)
+        un = QLabel(name)
+        un.setObjectName("UserName")
+        us = QLabel(settings.get("user_site") or tr("BMS 总仓"))
+        us.setObjectName("UserSub")
+        uc.addWidget(un)
+        uc.addWidget(us)
+        user.addWidget(av)
+        user.addLayout(uc)
+        uw = QWidget()
+        uw.setLayout(user)
+        h.addSpacing(4)
+        h.addWidget(uw)
+        return bar
+
+    def _search_go(self, text):
+        text = (text or "").strip().lower()
+        if not text:
+            return
+        for i, (k, t) in enumerate(self.NAV):
+            if text in t.lower() or text == k:
+                self.go(i)
+                self.search.clear()
+                self.search.clearFocus()
+                return
+        self.show_toast(tr("没有找到「{0}」", text))
+
+    def _show_notes(self):
+        m = self.bell_menu
+        m.clear()
+        if not self.notes:
+            a = m.addAction(tr("暂时没有通知"))
+            a.setEnabled(False)
+        for when, text in reversed(self.notes[-20:]):
+            a = m.addAction(f"{when:%H:%M}   {text}")
+            a.setEnabled(True)
+        if self.notes:
+            m.addSeparator()
+            m.addAction(tr("清空通知"), lambda: (self.notes.clear(), self._update_bell()))
+        self.unread = 0
+        self._update_bell()
+        m.exec(self.bell.mapToGlobal(self.bell.rect().bottomLeft()))
+
+    def _update_bell(self):
+        self.bell_dot.setVisible(self.unread > 0)
+
+    def notify(self, text):
+        """进通知中心（不弹提示）"""
+        self.notes.append((datetime.now(), text))
+        self.unread += 1
+        self._update_bell()
+
+    def set_badge(self, key, value):
+        b = self.nav_badges.get(key)
+        if b is None:
+            return
+        b.setText(str(value) if value else "")
+        b.setVisible(bool(value))
+
+    # ---------- 数据库状态 ----------
+    def _set_db_state(self, ok, sub=None):
+        self._db_ok = ok
+        color = T("ok") if ok else ("#E7A23A" if ok is None else T("err"))
+        self.db_dot.setStyleSheet(f"background:{color}; border-radius:4px;")
+        self.db_title.setText(tr("数据库已连接") if ok else (tr("正在检查数据库…") if ok is None else tr("数据库未连接")))
+        if sub is not None:
+            self.db_sub.setText(sub)
+
+    def _on_db_state(self, ok):
+        self._set_db_state(ok)
+        if hasattr(self, "dashboard"):
+            self.dashboard.set_db(ok)
+        if hasattr(self, "settings_page"):
+            self.settings_page.refresh()
+
+    def check_db(self):
+        import reorder_service as R
+        from fenpei.config import DatabaseConfig as D
+        dbs = settings.get("db") or {}
+        host = dbs.get("host") or D.HOST
+        port = dbs.get("port") or D.PORT
+        name = dbs.get("database") or D.DATABASE
+        self._set_db_state(None, f"{name} @ {host}:{port}")
+
+        def work():
+            ok = False
+            try:
+                db = R.make_db(dbs or None)
+                R.test_connection(db)
+                try:
+                    self._db_account = R.account_info(db)
+                except Exception:
+                    self._db_account = None
+                db.engine.dispose()
+                ok = True
+            except Exception:
+                ok = False
+            self.bridge.db_state.emit(ok)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def go_page(self, key):
+        self.go([k for k, _ in self.NAV].index(key))
 
     def go(self, i):
         self.stack.setCurrentIndex(i)
         self.nav_group.button(i).setChecked(True)
+        key, text = self.NAV[i]
+        self.crumb_sec.setText(self.NAV_SECTION.get(key, ""))
+        self.crumb_cur.setText(text)
+        if key == "home" and hasattr(self, "dashboard"):
+            self.dashboard.refresh()
 
     def apply_theme(self):
+        theme.set_theme(settings.get("theme", "light"))
         QApplication.instance().setStyleSheet(build_qss())
         for b, ic in self.nav_btns:
             b.setIcon(icon(ic, "#FFFFFF" if b.isChecked() else T("side_text")))
         dark = settings.get("theme") == "dark"
-        self.theme_btn.setIcon(icon("sun" if dark else "moon", T("side_text")))
-        self.theme_btn.setText(tr("  浅色模式") if dark else tr("  深色模式"))
+        self.theme_btn.setIcon(icon("sun" if dark else "moon", T("muted"), 16))
+        self.theme_btn.setToolTip(tr("浅色模式") if dark else tr("深色模式"))
+        self.bell.setIcon(icon("bell", T("muted"), 16))
+        self.search_icon.setPixmap(icon("search", T("muted"), 14).pixmap(14, 14))
+        self.bell_dot.setStyleSheet(f"background:{T('err')}; border-radius:4px;")
+        self._set_db_state(getattr(self, "_db_ok", None))
+        for pg in (getattr(self, "dashboard", None), getattr(self, "store_orders", None),
+                   getattr(self, "settings_page", None), getattr(self, "order_check", None),
+                   getattr(self, "distribution", None), getattr(self, "import_page", None)):
+            if pg is not None and hasattr(pg, "restyle"):
+                pg.restyle()
         for b in (self.banner_folder, self.banner_result, self.banner_rules):
             if b.isVisible():
                 b.restyle()
@@ -1306,18 +1515,22 @@ class MainWindow(QMainWindow):
         self.apply_theme()
 
     def show_toast(self, text, ms=2600):
+        self.notify(text)
         self.toast.setText(text)
         self.toast.adjustSize()
-        self.toast.move(self.width() - self.toast.width() - 28, self.height() - self.toast.height() - 28)
+        self.toast.move(self.width() - self.toast.width() - 24, self.height() - self.toast.height() - 76)
         self.toast.raise_()
         self.toast.show()
         self.toast_timer.start(ms)
 
     # ---------- 页面：订单处理 ----------
     def _page_order(self):
-        w, lay = self._page(tr("订单处理"), tr("选好总文件夹，确认起订规则，然后开始处理。程序会扣减已处理数量、按最低价选供应商、帮起订供应商凑单，最后把订购数量写回各供应商文件。"))
+        w, lay = self._page(tr("批发商比价"), tr("几家批发商卖的商品差不多：按最低价给每个商品选供应商，帮有起订量的供应商凑单，把订购数量写回各家报价文件。"))
+        from erp_widgets import StepBar
+        self.cmp_steps = StepBar([(tr("总文件夹"), ""), (tr("检查门店清单"), tr("可选")), (tr("比价分配"), ""), (tr("查看结果"), "")])
+        lay.addWidget(self.cmp_steps)
 
-        p1 = Panel(tr("总文件夹"))
+        p1 = Panel(tr("① 总文件夹"))
         row = QHBoxLayout()
         self.folder_edit = QLineEdit()
         self.folder_edit.setPlaceholderText(tr("包含 ORDINE、eliminare、distribuire 三个子文件夹的文件夹"))
@@ -1345,7 +1558,9 @@ class MainWindow(QMainWindow):
         p1.lay.addWidget(self.banner_folder)
         lay.addWidget(p1)
 
-        p2 = Panel(tr("处理选项"))
+        lay.addWidget(self.order_check.build())
+
+        p2 = Panel(tr("③ 比价分配"))
         opts = QHBoxLayout()
         opts.setSpacing(30)
         self.t_backup = Toggle(tr("处理前自动备份原文件"), settings.get("auto_backup", True))
@@ -1362,7 +1577,7 @@ class MainWindow(QMainWindow):
         opts.addWidget(self.t_review)
         opts.addStretch()
         edit_rules = QPushButton(tr("管理起订规则"))
-        edit_rules.clicked.connect(lambda: self.go(3))
+        edit_rules.clicked.connect(lambda: self.go_page("rules"))
         opts.addWidget(edit_rules)
         p2.lay.addLayout(opts)
         self.rule_line = QLabel()
@@ -1419,7 +1634,7 @@ class MainWindow(QMainWindow):
 
     # ---------- 页面：分配结果 ----------
     def _page_result(self):
-        w, lay = self._page(tr("分配结果"), tr("最近一次处理的结果。起订量调整的每一行明细写在主订单的 AC 列。"))
+        w, lay = self._page(tr("分配结果"), tr("最近一次处理的结果；以前的结果在「历史记录」里打开。起订量调整的每一行明细写在主订单的 AC 列。"))
         self.banner_result = Banner()
         lay.addWidget(self.banner_result)
 
@@ -1459,7 +1674,7 @@ class MainWindow(QMainWindow):
         b1.setObjectName("Primary")
         b1.clicked.connect(self.open_main_order)
         b2 = QPushButton(tr("打开供应商文件夹"))
-        b2.clicked.connect(lambda: open_path(os.path.join(self.folder_edit.text().strip(), DISTRIBUTUIRE_FOLDER)))
+        b2.clicked.connect(self.open_supplier_folder)
         self.btn_backup = QPushButton(tr("打开备份"))
         self.btn_backup.clicked.connect(lambda: self.last_summary and open_path(self.last_summary.get("backup_dir")))
         self.btn_backup.setEnabled(False)
@@ -1490,7 +1705,7 @@ class MainWindow(QMainWindow):
         b.clicked.connect(self.export_changes)
         top.addWidget(b)
         pc.lay.addLayout(top)
-        self.chg_table = make_table([tr("行"), "EAN", "ARTICOLO", tr("箱数"), tr("原供应商"), tr("原单价"), tr("新供应商"), tr("新单价"),
+        self.chg_table = make_table([tr("行"), "EAN", "ARTICOLO", tr("箱数"), tr("原供应商"), tr("原件价"), tr("新供应商"), tr("新件价"),
                                      tr("多花 €"), tr("原因")], stretch_col=2, numeric_cols=(0, 3, 5, 7, 8))
         self.chg_table.setItemDelegateForColumn(9, StatusDelegate(self.chg_table))
         self.chg_table.setMinimumHeight(320)
@@ -1541,6 +1756,211 @@ class MainWindow(QMainWindow):
                 open_path(path)
         except Exception as e:
             QMessageBox.critical(self, tr("导出"), tr("导出失败：{0}", e))
+
+    # ---------- 页面：历史记录 ----------
+    def _page_history(self):
+        w, lay = self._page(tr("历史记录"), tr("每次处理和修改分配后自动保存一份结果，关掉程序以后也能随时打开查看。双击一行打开。"))
+        top = QHBoxLayout()
+        self.hist_filter = QLineEdit()
+        self.hist_filter.setPlaceholderText(tr("筛选文件夹或主订单名"))
+        self.hist_filter.setFixedWidth(260)
+        self.hist_filter.textChanged.connect(self._filter_history)
+        top.addWidget(self.hist_filter)
+        top.addStretch()
+        kl = QLabel(tr("保留"))
+        kl.setObjectName("Muted")
+        top.addWidget(kl)
+        self.keep_box = QComboBox()
+        self.keep_box.setMinimumWidth(120)
+        for days, label in history.KEEP_OPTIONS:
+            self.keep_box.addItem(tr(label), days)
+        idx = self.keep_box.findData(int(settings.get("history_keep_days", history.DEFAULT_KEEP_DAYS)))
+        self.keep_box.setCurrentIndex(max(0, idx))
+        self.keep_box.currentIndexChanged.connect(self._set_keep)
+        top.addWidget(self.keep_box)
+        lay.addLayout(top)
+
+        p = Panel()
+        self.hist_table = make_table([tr("处理时间"), tr("总文件夹"), tr("主订单"), tr("商品行"), tr("没有报价"),
+                                      tr("供应商数"), tr("采购总额 €"), tr("凑单多花 €"), tr("改了供应商"), tr("备注")],
+                                     stretch_col=9, numeric_cols=(3, 4, 5, 6, 7, 8))
+        self.hist_table.setMinimumHeight(460)
+        self.hist_table.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.hist_table.doubleClicked.connect(lambda _: self.view_history())
+        p.lay.addWidget(self.hist_table)
+        self.hist_empty = QLabel(tr("还没有历史记录。完成一次订单处理后会自动出现在这里。"))
+        self.hist_empty.setObjectName("Muted")
+        p.lay.addWidget(self.hist_empty)
+        acts = QHBoxLayout()
+        b = QPushButton(tr("打开查看"))
+        b.setObjectName("Primary")
+        b.clicked.connect(self.view_history)
+        acts.addWidget(b)
+        b = QPushButton(tr("打开这次的文件夹"))
+        b.clicked.connect(self.open_history_folder)
+        acts.addWidget(b)
+        b = QPushButton(tr("删除选中"))
+        b.setObjectName("Danger")
+        b.setToolTip(tr("按住 Ctrl 或 Shift 可以一次选多条"))
+        b.clicked.connect(self.delete_history)
+        acts.addWidget(b)
+        b = QPushButton(tr("清空全部"))
+        b.setObjectName("Danger")
+        b.clicked.connect(self.clear_history)
+        acts.addWidget(b)
+        acts.addStretch()
+        self.hist_info = QLabel()
+        self.hist_info.setObjectName("Faint")
+        acts.addWidget(self.hist_info)
+        p.lay.addLayout(acts)
+        lay.addWidget(p)
+        lay.addStretch()
+        return w
+
+    def refresh_history(self):
+        if not hasattr(self, "hist_table"):
+            return
+        try:
+            runs = history.list_runs()
+        except Exception as e:
+            file_logger.warning(f"read history failed: {e}")
+            runs = []
+        self.hist_runs = runs
+        t = self.hist_table
+        t.setRowCount(len(runs))
+        for i, e in enumerate(runs):
+            notes = []
+            if e.get("edits"):
+                notes.append(tr("改过 {0} 次", e["edits"]))
+            if e.get("warning"):
+                notes.append(tr("有起订供应商没达标"))
+            table_set_row(t, i, [e["time"][:16], os.path.basename(e.get("folder") or "") or (e.get("folder") or ""),
+                                 e.get("main_file") or "",
+                                 f"{e.get('total_rows', 0):,}", f"{e.get('missing', 0):,}",
+                                 f"{e.get('suppliers', 0):,}", f"{e.get('final_cost', 0):,.2f}",
+                                 f"{e.get('extra_cost', 0):,.2f}" if abs(e.get("extra_cost", 0)) >= 0.005 else "",
+                                 f"{e.get('changes', 0):,}" if e.get("changes") else "",
+                                 tr("；").join(notes)])
+            t.item(i, 1).setToolTip(e.get("folder") or "")
+            if e.get("edits"):
+                t.item(i, 9).setToolTip(tr("最后修改：{0}", (e.get("edited_at") or "")[:16]))
+            if e.get("missing"):
+                t.item(i, 4).setForeground(QColor(T("warn")))
+            if e.get("warning"):
+                t.item(i, 9).setForeground(QColor(T("err")))
+        t.setVisible(bool(runs))
+        self.hist_empty.setVisible(not runs)
+        keep = int(settings.get("history_keep_days", history.DEFAULT_KEEP_DAYS))
+        mb = history.disk_usage() / 1024 / 1024
+        self.hist_info.setText(tr("共 {0} 条，占用 {1:.1f} MB，{2}", len(runs), mb,
+                                  tr("超过 {0} 天的自动删除", keep) if keep else tr("永久保留")))
+        self._filter_history(self.hist_filter.text())
+        self._mark_shown_history()
+
+    def _mark_shown_history(self):
+        """历史表里把结果页正在显示的那条加粗"""
+        hid = (self.last_summary or {}).get("history_id")
+        t = self.hist_table
+        for i, e in enumerate(getattr(self, "hist_runs", [])):
+            for c in range(t.columnCount()):
+                it = t.item(i, c)
+                if it:
+                    f = it.font()
+                    f.setBold(e["id"] == hid)
+                    it.setFont(f)
+
+    def _filter_history(self, text):
+        text = (text or "").strip().lower()
+        t = self.hist_table
+        for r in range(t.rowCount()):
+            hay = " ".join(t.item(r, c).text() + " " + (t.item(r, c).toolTip() or "")
+                           for c in (0, 1, 2) if t.item(r, c)).lower()
+            t.setRowHidden(r, bool(text) and text not in hay)
+
+    def _sel_history(self):
+        rows = self.hist_table.selectionModel().selectedRows() if self.hist_table.selectionModel() else []
+        r = rows[0].row() if rows else self.hist_table.currentRow()
+        runs = getattr(self, "hist_runs", [])
+        if r is None or r < 0 or r >= len(runs):
+            QMessageBox.information(self, tr("历史记录"), tr("先在表里选一条记录。"))
+            return None
+        return runs[r]
+
+    def view_history(self):
+        e = self._sel_history()
+        if not e:
+            return
+        data = history.load_run(e["id"])
+        if not data:
+            QMessageBox.warning(self, tr("历史记录"), tr("这条记录读不出来，文件可能已经被删除或损坏。"))
+            self.refresh_history()
+            return
+        self.last_summary = data
+        self.show_summary(data)
+        self.go_page("result")
+
+    def open_history_folder(self):
+        e = self._sel_history()
+        if e and e.get("folder"):
+            open_path(e["folder"])
+
+    def delete_history(self):
+        runs = getattr(self, "hist_runs", [])
+        sel = sorted({ix.row() for ix in self.hist_table.selectionModel().selectedRows()}) \
+            if self.hist_table.selectionModel() else []
+        picked = [runs[r] for r in sel if 0 <= r < len(runs) and not self.hist_table.isRowHidden(r)]
+        if not picked:
+            QMessageBox.information(self, tr("历史记录"), tr("先在表里选要删除的记录（按住 Ctrl 或 Shift 可以多选）。"))
+            return
+        if len(picked) == 1:
+            msg = tr("删除 {0} 的这条历史记录？只删记录，不动订单和供应商文件。", picked[0]["time"][:16])
+        else:
+            msg = tr("删除选中的 {0} 条历史记录？只删记录，不动订单和供应商文件。", len(picked))
+        if QMessageBox.question(self, tr("删除"), msg) != QMessageBox.Yes:
+            return
+        n = history.delete_runs([e["id"] for e in picked])
+        self.refresh_history()
+        self.show_toast(tr("已删除 {0} 条", n))
+
+    def clear_history(self):
+        runs = getattr(self, "hist_runs", [])
+        if not runs:
+            self.show_toast(tr("没有历史记录"))
+            return
+        if QMessageBox.question(self, tr("清空全部"),
+                                tr("删除全部 {0} 条历史记录？只删记录，不动订单和供应商文件。删除后不能恢复。", len(runs))) \
+                != QMessageBox.Yes:
+            return
+        n = history.clear_all()
+        self.refresh_history()
+        self.show_toast(tr("已删除 {0} 条", n))
+
+    def _set_keep(self, _=None):
+        days = int(self.keep_box.currentData())
+        n_old = history.count_older(days)
+        if n_old and QMessageBox.question(
+                self, tr("历史记录"),
+                tr("改成「{0}」后，会删除 {1} 条更早的记录。继续？", self.keep_box.currentText(), n_old)) != QMessageBox.Yes:
+            prev = int(settings.get("history_keep_days", history.DEFAULT_KEEP_DAYS))
+            self.keep_box.blockSignals(True)
+            self.keep_box.setCurrentIndex(max(0, self.keep_box.findData(prev)))
+            self.keep_box.blockSignals(False)
+            return
+        settings["history_keep_days"] = days
+        save_settings(settings)
+        n = self._purge_history()
+        self.refresh_history()
+        msg = tr("历史记录：{0}", self.keep_box.currentText())
+        if n:
+            msg += tr("，已删除 {0} 条过期记录", n)
+        self.show_toast(msg)
+
+    def _purge_history(self):
+        try:
+            return history.purge(int(settings.get("history_keep_days", history.DEFAULT_KEEP_DAYS)))
+        except Exception as e:
+            file_logger.warning(f"purge history failed: {e}")
+            return 0
 
     # ---------- 页面：缺失查找 ----------
     def _page_missing(self):
@@ -1730,6 +2150,14 @@ class MainWindow(QMainWindow):
             self.banner_folder.hide()
         self.refresh_rule_line()
         self.refresh_rules_table()
+        if hasattr(self, "order_check"):
+            self.order_check.folder_changed()
+        if hasattr(self, "cmp_steps") and not self.running:
+            ok = bool(info.get("ok"))
+            self.cmp_steps.set_state(0, "done" if ok else "now", info.get("ordine") or tr("选择总文件夹"))
+            self.cmp_steps.set_state(1, "todo", tr("可选"))
+            self.cmp_steps.set_state(2, "now" if ok else "todo", tr("{0} 家供应商", len(info.get("suppliers") or [])) if ok else "")
+            self.cmp_steps.set_state(3, "todo", "")
 
     def refresh_rule_line(self):
         if not self.t_min.isChecked():
@@ -1749,8 +2177,19 @@ class MainWindow(QMainWindow):
             parts.append(f"{r.get('name') or r.get('keyword')}：{describe_condition(r)}{tail}")
         self.rule_line.setText(tr("起订规则　") + "　　".join(parts))
 
+    def _shown_state(self):
+        return (self.last_summary or {}).get("state") or {}
+
+    def open_supplier_folder(self):
+        p = self._shown_state().get("distribuire_path") or \
+            os.path.join(self.folder_edit.text().strip(), DISTRIBUTUIRE_FOLDER)
+        open_path(p)
+
     def open_main_order(self):
-        if self.info.get("ordine"):
+        p = self._shown_state().get("ordine_file")
+        if p and os.path.exists(p):
+            open_path(p)
+        elif self.info.get("ordine"):
             open_path(os.path.join(self.folder_edit.text().strip(), ORDINE_FOLDER, self.info["ordine"]))
         else:
             QMessageBox.information(self, APP_NAME, tr("请先选择包含 ORDINE 的总文件夹。"))
@@ -1792,6 +2231,12 @@ class MainWindow(QMainWindow):
         self.run_start = time.time()
         self.tick.start()
         self._tick()
+        from erp_widgets import TaskDialog
+        self._cmp_task = TaskDialog(self, tr("正在比价分配"), tr("{0} · {1} 家供应商", info["ordine"], len(info["suppliers"])),
+                                    [tr(x) for _, x in CMP_STAGES], cancellable=False)
+        self._cmp_task.went_background.connect(lambda: self.show_toast(tr("比价在后台进行，完成后会提醒")))
+        self._cmp_task.show()
+        self.cmp_steps.set_current(2)
 
         ordine_file = os.path.join(root_path, ORDINE_FOLDER, info["ordine"])
         elim = os.path.join(root_path, ELIMINARE_FOLDER)
@@ -1824,6 +2269,10 @@ class MainWindow(QMainWindow):
 
     def _on_decide(self, payload):
         plan, rows, rules, ev, box = payload
+        dlg = getattr(self, "_cmp_task", None)
+        was_visible = dlg is not None and dlg.isVisible()
+        if was_visible:
+            dlg.hide()            # 让决定窗口在最前面
         try:
             box["result"] = self._run_decision(plan, rows, rules)
         except Exception as e:
@@ -1832,6 +2281,8 @@ class MainWindow(QMainWindow):
             from allocation_plan import auto_assignment
             box["result"] = {"assignment": auto_assignment(rows, rules), "sources": {}}
         finally:
+            if was_visible and not dlg.is_done:
+                dlg.show()
             ev.set()
 
     def _run_decision(self, plan, rows, rules):
@@ -1922,15 +2373,43 @@ class MainWindow(QMainWindow):
         return {"assignment": final, "sources": sources}
 
     def _load_saved_result(self):
-        """打开程序时，载入这个文件夹上次的分配结果（可以继续修改）"""
-        from service import load_state
-        path = self.folder_edit.text().strip()
-        if not path or self.last_summary:
+        """打开程序时，载入这个文件夹上次的分配结果（可以继续修改）；没有的话显示最近一条历史记录"""
+        from service import load_state, save_state
+        if self.last_summary:
             return
-        data = load_state(path)
+        path = self.folder_edit.text().strip()
+        data = load_state(path) if path else None
         if data and data.get("ok"):
+            if not data.get("history_id"):
+                # 旧版本留下的结果：补存进历史记录
+                try:
+                    st_path = os.path.join(path, "_备份", "last_allocation.json")
+                    when = datetime.fromtimestamp(os.path.getmtime(st_path))
+                    history.save_run(data, when=when)
+                    save_state(data)
+                except Exception as e:
+                    file_logger.warning(f"import last allocation to history failed: {e}")
             self.last_summary = data
             self.show_summary(data)
+            return
+        runs = history.list_runs()
+        if runs:
+            data = history.load_run(runs[0]["id"])
+            if data and data.get("ok"):
+                self.last_summary = data
+                self.show_summary(data)
+
+    def _is_current(self, s):
+        """这条结果是不是它那个文件夹最近一次的分配（只有最近一次可以修改分配）"""
+        from service import load_state
+        st = (s or {}).get("state") or {}
+        ordine = st.get("ordine_file")
+        if not ordine or not os.path.exists(ordine):
+            return False
+        cur = load_state(os.path.dirname(os.path.dirname(ordine)))
+        if not cur:
+            return False
+        return cur.get("history_id") == s.get("history_id")
 
     def edit_allocation(self):
         from service import load_state
@@ -1939,6 +2418,10 @@ class MainWindow(QMainWindow):
         data = self.last_summary if (self.last_summary or {}).get("state") else load_state(self.folder_edit.text().strip())
         if not data or not data.get("state"):
             QMessageBox.information(self, tr("修改分配"), tr("没有可以修改的分配。先完成一次订单处理。"))
+            return
+        if not self._is_current(data):
+            QMessageBox.information(self, tr("修改分配"),
+                                    tr("这是历史记录，之后这个文件夹又处理过（或者文件已经不在了），所以不能再改。只能修改每个文件夹最近一次的分配。"))
             return
         st = data["state"]
         cur = dict(st["assignment"])
@@ -1966,7 +2449,7 @@ class MainWindow(QMainWindow):
         self.running = True
         self.btn_run.setEnabled(False)
         self.btn_edit.setEnabled(False)
-        self.go(0)
+        self.go_page("order")
         self.bar.setValue(0)
         self.run_start = time.time()
         self.tick.start()
@@ -2001,7 +2484,8 @@ class MainWindow(QMainWindow):
         out["elapsed"] = (self.last_summary or {}).get("elapsed", 0)
         self.last_summary = out
         self.show_summary(out)
-        self.go(1)
+        self.refresh_history()
+        self.go_page("result")
         self.show_toast(tr("已重新写入 {0} 个商品", n))
 
     def _tick(self):
@@ -2010,8 +2494,17 @@ class MainWindow(QMainWindow):
     def _on_progress(self, pct, text):
         self.bar.setValue(pct)
         self.stage.setText(text)
+        dlg = getattr(self, "_cmp_task", None)
+        if dlg is not None and not dlg.is_done:
+            i = max(k for k, (lo, _) in enumerate(CMP_STAGES) if pct >= lo)
+            dlg.post_step(i, "running", "", text)
+            dlg.post_progress(pct)
 
     def _on_done(self, summary):
+        dlg = getattr(self, "_cmp_task", None)
+        if dlg is not None and not dlg.is_done:
+            ok = bool(summary and summary.get("ok"))
+            dlg.post_finished(ok, tr("处理完成") if ok else (summary or {}).get("error") or tr("处理没有完成"))
         self.running = False
         self.tick.stop()
         self.btn_run.setEnabled(True)
@@ -2032,8 +2525,11 @@ class MainWindow(QMainWindow):
         self.stage.setText(tr("处理完成，主订单和供应商文件已保存"))
         self.last_summary = summary
         self.show_summary(summary)
-        self.go(1)
-        self.show_toast(tr("处理完成"))
+        self.refresh_history()
+        self.cmp_steps.set_current(3)
+        self.cmp_steps.set_state(3, "done", "")
+        self.go_page("result")
+        self.show_toast(tr("比价分配完成"))
 
     def show_summary(self, s):
         mo = s.get("min_order", {})
@@ -2047,6 +2543,11 @@ class MainWindow(QMainWindow):
         self.k_time.set(tr("{0:.0f} 秒", s.get('elapsed', 0)))
 
         msgs, kind = [], "ok"
+        current = self._is_current(s)
+        hmeta = s.get("_history") or {}
+        if s.get("history_id") and not current:
+            msgs.append(tr("这是历史记录：{0} 处理的结果。文件之后可能又改过，这里显示的是当时的分配，只能查看。",
+                           hmeta.get("time") or s["history_id"]))
         d, u = s.get("eliminare", (0, 0))
         msgs.append(tr("{0} 已处理：eliminare 删除 {1} 行、更新 {2} 行。", s.get('main_file'), d, u))
         if mo.get("warning"):
@@ -2063,6 +2564,8 @@ class MainWindow(QMainWindow):
             msgs.insert(len(msgs) - (1 if lost else 0),
                         tr("有 {0} 个商品没有采购，可以到「缺失查找」页找替代品。", s['missing']))
             kind = "warn" if kind == "ok" else kind
+        if kind == "ok" and s.get("history_id") and not current:
+            kind = "info"
         self.banner_result.show_msg("\n".join(msgs), kind)
 
         self.gauge.set_rules(mo.get("rules", []) if mo.get("enabled") else [])
@@ -2104,9 +2607,9 @@ class MainWindow(QMainWindow):
         for i, ch in enumerate(chs):
             table_set_row(ct, i, [ch["row"], ch.get("ean", ""), ch.get("articolo", ""), f"{ch['qty']:g}",
                                   short(ch["old"]) if ch["old"] else tr("无"),
-                                  f"{ch['old_price']:,.2f}" if ch["old_price"] is not None else "",
+                                  fmt_unit(ch["old_price"], ch.get("old_pack")),
                                   short(ch["new"]) if ch["new"] else tr("不采购"),
-                                  f"{ch['new_price']:,.2f}" if ch["new_price"] is not None else "",
+                                  fmt_unit(ch["new_price"], ch.get("new_pack")),
                                   (f"{ch['delta']:+,.2f}" if abs(ch["delta"]) >= 0.005 else "0.00") if ch["delta"] is not None else "",
                                   ch.get("source", "")])
             if ch["delta"] and ch["delta"] > 0:
@@ -2121,7 +2624,11 @@ class MainWindow(QMainWindow):
         self.chg_empty.setVisible(not chs)
         self._filter_changes(self.chg_filter.text())
         self.btn_backup.setEnabled(bool(s.get("backup_dir")))
-        self.btn_edit.setEnabled(bool(s.get("state")) and not self.running)
+        self.btn_edit.setEnabled(bool(s.get("state")) and current and not self.running)
+        self.btn_edit.setToolTip(tr("已经写入以后，还可以改商品的供应商并重新写回文件") if current
+                                 else tr("只能修改每个文件夹最近一次的分配"))
+        if hasattr(self, "hist_table"):
+            self._mark_shown_history()
 
     # ---------- 起订规则 ----------
     def refresh_rules_table(self):
@@ -2259,7 +2766,7 @@ class MainWindow(QMainWindow):
         self.miss_status.setText(msg + "。")
         self.log(tr("✔ 缺失查找完成：{0}", msg))
         self._filter_missing(self.miss_filter.text())
-        self.go(2)
+        self.go_page("search")
 
     def _filter_missing(self, text):
         text = text.strip().lower()
@@ -2336,10 +2843,131 @@ class MainWindow(QMainWindow):
     def resizeEvent(self, e):
         super().resizeEvent(e)
         if self.toast.isVisible():
-            self.toast.move(self.width() - self.toast.width() - 28, self.height() - self.toast.height() - 28)
+            self.toast.move(self.width() - self.toast.width() - 24, self.height() - self.toast.height() - 76)
+
+
+def _cleanup_old_temp():
+    """
+    旧版是单文件 exe，每次运行都解压到 Temp 下的 _MEIxxxx，偶尔删不掉会留在那里。
+    现在改成文件夹版不再产生这些文件夹；启动时顺手把以前留下的清掉
+    （只删本程序的：里面有 PySide6 和 scipy，且一小时以前创建；正在用的删不掉会自动跳过）。
+    """
+    import shutil
+    import tempfile
+    try:
+        tmp = tempfile.gettempdir()
+        own = os.path.normcase(os.path.abspath(getattr(sys, "_MEIPASS", "") or "?"))
+        for name in os.listdir(tmp):
+            p = os.path.join(tmp, name)
+            if not name.startswith("_MEI") or not os.path.isdir(p) or os.path.normcase(p) == own:
+                continue
+            if not (os.path.isdir(os.path.join(p, "PySide6")) and os.path.isdir(os.path.join(p, "scipy"))):
+                continue
+            if time.time() - os.path.getmtime(p) < 3600:
+                continue
+            shutil.rmtree(p, ignore_errors=True)
+    except Exception:
+        pass
+
+
+for _n in ("Panel", "Kpi", "Toggle", "make_table", "table_set_row", "T"):
+    setattr(_UI, _n, staticmethod(globals()[_n]))
+
+
+class WheelGuard(QObject):
+    """
+    鼠标滚轮防误触（全程序）：
+      · 数字框 / 下拉框：没点过（没有焦点）时滚轮不改数值，交给外面的页面滚动。
+      · 表格 / 列表 / 文本框：只有点过它，或者鼠标在它上面停了一会儿（HOVER_MS）没有滚页面，
+        滚轮才滚它自己；否则滚整个页面，避免滑页面时卡进表格里。
+    """
+    HOVER_MS = 600
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        import time
+        self._now = lambda: time.monotonic() * 1000
+        self.hover_view = None      # 鼠标当前所在的表格
+        self.hover_since = 0.0      # 鼠标停到这个表格上的时间
+        self.clicked_view = None    # 点过的表格（鼠标离开后失效）
+        self.last_page_wheel = -1e9 # 上一次把滚轮交给页面的时间
+
+    @staticmethod
+    def _view_of(obj):
+        """obj 是表格 / 列表 / 文本框（或它们的 viewport）→ 返回那个控件，否则 None"""
+        from PySide6.QtWidgets import QAbstractItemView, QTextEdit, QPlainTextEdit
+        kinds = (QAbstractItemView, QTextEdit, QPlainTextEdit)
+        w = obj if isinstance(obj, kinds) else None
+        if w is None:
+            par = obj.parentWidget() if hasattr(obj, "parentWidget") else None
+            if isinstance(par, kinds) and getattr(par, "viewport", lambda: None)() is obj:
+                w = par
+        if w is None:
+            return None
+        if w.window().windowType() == Qt.Popup:      # 下拉框弹出的列表照常滚
+            return None
+        return w
+
+    @staticmethod
+    def _outer_scroll(w):
+        from PySide6.QtWidgets import QAbstractScrollArea
+        p = w.parentWidget()
+        while p is not None and not isinstance(p, QAbstractScrollArea):
+            p = p.parentWidget()
+        return p
+
+    def _to_page(self, w, ev):
+        outer = self._outer_scroll(w)
+        if outer is None:
+            return False                              # 外面没有可滚的页面：照常处理
+        self.last_page_wheel = self._now()
+        QApplication.sendEvent(outer.viewport(), ev)
+        return True
+
+    def eventFilter(self, obj, ev):
+        from PySide6.QtCore import QEvent
+        t = ev.type()
+        if t == QEvent.Polish:
+            if isinstance(obj, (QAbstractSpinBox, QComboBox)):
+                obj.setFocusPolicy(Qt.StrongFocus)   # 默认 WheelFocus：滚一下就拿到焦点，这里去掉
+            return False
+        if t == QEvent.Wheel:
+            if isinstance(obj, (QAbstractSpinBox, QComboBox)):
+                if obj.hasFocus():
+                    return False
+                self._to_page(obj, ev)
+                return True
+            v = self._view_of(obj)
+            if v is None:
+                return False
+            now = self._now()
+            if v is not self.hover_view:              # 页面滚动时表格「滑到」鼠标下面：从现在开始计时
+                self.hover_view, self.hover_since = v, now
+            armed = (self.clicked_view is v) or \
+                (now - self.hover_since >= self.HOVER_MS and now - self.last_page_wheel >= self.HOVER_MS)
+            if armed:
+                return False
+            return self._to_page(v, ev)
+        if t in (QEvent.Enter, QEvent.MouseMove, QEvent.MouseButtonPress, QEvent.Leave):
+            v = self._view_of(obj)
+            if v is None:
+                return False
+            if t == QEvent.Leave:
+                if self.hover_view is v:
+                    self.hover_view = None
+                if self.clicked_view is v:
+                    self.clicked_view = None
+            elif t == QEvent.MouseButtonPress:
+                self.clicked_view = v
+                self.hover_view = v
+            elif v is not self.hover_view:
+                self.hover_view, self.hover_since = v, self._now()
+        return False
 
 
 def main():
+    if getattr(sys, "frozen", False):
+        threading.Thread(target=_cleanup_old_temp, daemon=True).start()
     if sys.platform == "win32":
         try:
             import ctypes
@@ -2358,6 +2986,8 @@ def main():
     except Exception:
         pass
     app.setStyle("Fusion")
+    app._wheel_guard = WheelGuard(app)
+    app.installEventFilter(app._wheel_guard)
     f = QFont(UI_FONT, 10)
     app.setFont(f)
     win = MainWindow()

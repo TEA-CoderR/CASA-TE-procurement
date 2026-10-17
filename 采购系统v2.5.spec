@@ -1,5 +1,6 @@
 # -*- mode: python ; coding: utf-8 -*-
-# 打包：python -m PyInstaller --noconfirm 采购系统v2.5.spec   （或双击 build.bat）
+# 打包：双击 build.bat（会自动保留 settings.json 和历史记录）
+# 输出：dist\Procurement\CASA&TE采购系统.exe（整个 Procurement 文件夹一起用，不能只拷 exe）
 
 a = Analysis(
     ['main.py'],
@@ -12,7 +13,9 @@ a = Analysis(
         'PySide6.QtSvg',
         'perf_monitor', 'shadow_test', 'excel_pool', 'supplier_cache',
         'ai_matcher', 'learning_router', 'optimized_search',
-        'min_order_optimizer', 'allocation_plan', 'settings', 'i18n', 'translations',
+        'min_order_optimizer', 'allocation_plan', 'settings', 'i18n', 'translations', 'history', 'supplier_layout',
+        'reorder_service', 'reorder_page', 'store_orders', 'store_order_page', 'order_check', 'forecast', 'theme', 'erp_widgets', 'dashboard_page', 'settings_page', 'legacy_pages', 'store_detail_window', 'distribution_service', 'distribution_page', 'import_page', 'app_update', 'update_ui', 'secure_store', 'fenpei', 'fenpei.config', 'fenpei.database', 'fenpei.models',
+        'pandas', 'sqlalchemy', 'sqlalchemy.dialects.mysql', 'sqlalchemy.dialects.mysql.mysqldb', 'MySQLdb', 'pymysql',
         'numpy', 'scipy.optimize', 'scipy.sparse',
         'ddgs', 'requests',
     ],
@@ -33,18 +36,18 @@ a = Analysis(
 )
 pyz = PYZ(a.pure)
 
+# 文件夹模式（onedir）：exe 和库文件放在 dist\Procurement\ 里，启动时不再解压到 Temp，
+# 关闭时也就不会出现「Failed to remove temporary directory」，Temp 里不会留下 _MEI 文件夹。
 exe = EXE(
     pyz,
     a.scripts,
-    a.binaries,
-    a.datas,
     [],
-    name='采购系统v2.5',
+    exclude_binaries=True,
+    name='CASA&TE采购系统',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
     upx=False,
-    runtime_tmpdir=None,
     console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
@@ -52,4 +55,14 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     icon='app.ico',
+)
+
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.datas,
+    strip=False,
+    upx=False,
+    upx_exclude=[],
+    name='Procurement',
 )

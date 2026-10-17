@@ -1,0 +1,1066 @@
+{
+    "version": "1.0",
+    "last_updated": "2026-08-24",
+    "description": "供应商 ID 配置 - 按星期分组",
+    "supplier_groups": {
+        "Lunedì": {
+            "suppliers": [
+                105,
+                212,
+                219,
+                242,
+                352,
+                411,
+                680,
+                802,
+                946,
+                950,
+                994,
+                1012,
+                1018,
+                1019,
+                1046,
+                234,
+                457,
+                885,
+                912,
+                1010,
+                992,
+                1031,
+                1045,
+                584,
+                1043
+            ],
+            "description": "周一供应商组"
+        },
+        "Martedì": {
+            "suppliers": [
+                255,
+                418,
+                425,
+                496,
+                510,
+                116,
+                681,
+                780,
+                824,
+                855,
+                919,
+                998,
+                1114,
+                1115,
+                860,
+                1137,
+                831,
+                854,
+                878,
+                898,
+                927,
+                1014,
+                103,
+                1130,
+                104,
+                849,
+                1029,
+                1138,
+                475
+            ],
+            "description": "周二供应商组"
+        },
+        "Mercoledì": {
+            "suppliers": [
+                238,
+                312,
+                314,
+                444,
+                536,
+                624,
+                993,
+                996,
+                1119,
+                1009,
+                674,
+                764,
+                935,
+                1120,
+                1122,
+                582
+            ],
+            "description": "周三供应商组"
+        },
+        "Giovedì": {
+            "suppliers": [
+                110,
+                240,
+                670,
+                682,
+                874,
+                962,
+                1016,
+                1039,
+                1049,
+                1116,
+                938,
+                567,
+                755,
+                857,
+                964,
+                970,
+                972,
+                1117,
+                1118
+            ],
+            "description": "周四供应商组"
+        },
+        "Venerdì": {
+            "suppliers": [
+                435,
+                465,
+                565,
+                566,
+                663,
+                672,
+                830,
+                876,
+                1006,
+                1131,
+                1041,
+                1013,
+                1024,
+                1110,
+                1140,
+                324,
+                499,
+                176,
+                227,
+                760,
+                793,
+                880,
+                914,
+                932,
+                945
+            ],
+            "description": "周五供应商组"
+        }
+    },
+    "supplier_details": {
+        "105": {
+            "name": "STORE SRL",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 1000,
+            "nota": "",
+            "reorder_cycle": 30
+        },
+        "212": {
+            "name": "CENTURY ITALIA SRL",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 500,
+            "nota": "",
+            "reorder_cycle": 30
+        },
+        "219": {
+            "name": "MASIDEF S.R.L.",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 500,
+            "nota": "",
+            "reorder_cycle": 60
+        },
+        "242": {
+            "name": "KUO MAO TRADE ITALIA SRL",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 1200,
+            "nota": "",
+            "reorder_cycle": 60
+        },
+        "352": {
+            "name": "LAMPA SPA",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 100,
+            "nota": "",
+            "reorder_cycle": 30
+        },
+        "411": {
+            "name": "COLZANI S.P.A. A SOCIO UNICO",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 400,
+            "nota": "",
+            "reorder_cycle": 30
+        },
+        "680": {
+            "name": "VIGLIETTA MATTEO S.P.A.",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 250,
+            "nota": "",
+            "reorder_cycle": 60
+        },
+        "802": {
+            "name": "S.N.COMMERCIALE DI NOEMI FUSCHILO E C. SAS",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 600,
+            "nota": "",
+            "reorder_cycle": 30
+        },
+        "946": {
+            "name": "AREXONS SPA",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 300,
+            "nota": "",
+            "reorder_cycle": 30
+        },
+        "950": {
+            "name": "GVP GRUPPO VIADANA PENNELLI SRL",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 500,
+            "nota": "",
+            "reorder_cycle": 60
+        },
+        "994": {
+            "name": "BELLI E FORTI S.R.L.",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 1000,
+            "nota": "",
+            "reorder_cycle": 60
+        },
+        "1012": {
+            "name": "ELECTRALINE 3PMARK S.P.A.",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 300,
+            "nota": "",
+            "reorder_cycle": 30
+        },
+        "1018": {
+            "name": "IDRO-BRIC SPA",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 300,
+            "nota": "",
+            "reorder_cycle": 60
+        },
+        "1019": {
+            "name": "SANIPLAST INDUSTRY SRL",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 300,
+            "nota": "",
+            "reorder_cycle": 60
+        },
+        "1046": {
+            "name": "E-ENERGY S.R.L. UNIPERSONALE",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 400,
+            "nota": "",
+            "reorder_cycle": 60
+        },
+        "234": {
+            "name": "HENKEL ITALIA SRL",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 500,
+            "nota": "",
+            "reorder_cycle": 30
+        },
+        "457": {
+            "name": "LUBEX SPA",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 650,
+            "nota": "",
+            "reorder_cycle": 30
+        },
+        "885": {
+            "name": "TAVOLA SPA",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 500,
+            "nota": "",
+            "reorder_cycle": 30
+        },
+        "912": {
+            "name": "STEFANPLAST S.P.A. SOCIETÀ UNIPERSONALE",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 1000,
+            "nota": "",
+            "reorder_cycle": 60
+        },
+        "1010": {
+            "name": "GEKO SPA",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 700,
+            "nota": "",
+            "reorder_cycle": 30
+        },
+        "992": {
+            "name": "ITALKALI SOCIETA' ITALIANA SALI ALCALINI S.P.A.",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 2300,
+            "nota": "",
+            "reorder_cycle": 60
+        },
+        "1031": {
+            "name": "KARCHER S.P.A.",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 350,
+            "nota": "",
+            "reorder_cycle": 30
+        },
+        "1045": {
+            "name": "CARTOTECNICA GRAFICA VICENTINA S.R.L.",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 900,
+            "nota": "",
+            "reorder_cycle": 60
+        },
+        "584": {
+            "name": "ROTOLIFICIO PUGLIESE SRL",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 3000,
+            "nota": "",
+            "reorder_cycle": 30
+        },
+        "1043": {
+            "name": "UMBRAPLAST SRL",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 3300,
+            "nota": "",
+            "reorder_cycle": 30
+        },
+        "255": {
+            "name": "BAMA S.P.A.",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 1000,
+            "nota": "",
+            "reorder_cycle": 60
+        },
+        "418": {
+            "name": "SAIS SRL",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 600,
+            "nota": "",
+            "reorder_cycle": 30
+        },
+        "425": {
+            "name": "LA BRIANTINA DI POLI GIOVANNI S.P.A",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 650,
+            "nota": "",
+            "reorder_cycle": 60
+        },
+        "496": {
+            "name": "BIACCHI ETTORE SRL",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 500,
+            "nota": "",
+            "reorder_cycle": 60
+        },
+        "510": {
+            "name": "CELMAX ITALIA SRL",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 600,
+            "nota": "",
+            "reorder_cycle": 60
+        },
+        "116": {
+            "name": "CLABER SPA",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 700,
+            "nota": "",
+            "reorder_cycle": 60
+        },
+        "681": {
+            "name": "MORANDO SPA",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 350,
+            "nota": "",
+            "reorder_cycle": 30
+        },
+        "780": {
+            "name": "POLIMEX SRL",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 1000,
+            "nota": "",
+            "reorder_cycle": 60
+        },
+        "824": {
+            "name": "ORGANICA S.R.L. - CON SOCIO UNICO",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 400,
+            "nota": "",
+            "reorder_cycle": 30
+        },
+        "855": {
+            "name": "VITAKRAFT ITALIA SPA",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 350,
+            "nota": "",
+            "reorder_cycle": 30
+        },
+        "919": {
+            "name": "COSWELL SPA",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 600,
+            "nota": "",
+            "reorder_cycle": 30
+        },
+        "998": {
+            "name": "MP ITALIA SRL",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 600,
+            "nota": "",
+            "reorder_cycle": 30
+        },
+        "1114": {
+            "name": "NESTLE' PURINA COMMERCIALE S.R.L",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 400,
+            "nota": "",
+            "reorder_cycle": 30
+        },
+        "1115": {
+            "name": "MONGE & C.S.P.A.",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 400,
+            "nota": "",
+            "reorder_cycle": 30
+        },
+        "860": {
+            "name": "MERCURY S.R.L.",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 400,
+            "nota": "",
+            "reorder_cycle": 60
+        },
+        "1137": {
+            "name": "TERCOMPOSTI SPA",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 2600,
+            "nota": "",
+            "reorder_cycle": 60
+        },
+        "831": {
+            "name": "AZ.AGRARIA GIROMAGI DI PIPPARELLI ROMANO",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 800,
+            "nota": "",
+            "reorder_cycle": 60
+        },
+        "854": {
+            "name": "ALESSI SRL",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 1000,
+            "nota": "",
+            "reorder_cycle": 60
+        },
+        "878": {
+            "name": "UNITEX ITALIA SRL",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 600,
+            "nota": "",
+            "reorder_cycle": 60
+        },
+        "898": {
+            "name": "PVG ITALY SRL",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 300,
+            "nota": "",
+            "reorder_cycle": 60
+        },
+        "927": {
+            "name": "ALMAPLAST SRL",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 600,
+            "nota": "",
+            "reorder_cycle": 60
+        },
+        "1014": {
+            "name": "CALOR LIGNORUM S.R.O.",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 23,
+            "nota": "",
+            "reorder_cycle": 30
+        },
+        "103": {
+            "name": "FLORICOLTURA LUCA MAFFUCCI",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 1100,
+            "nota": "",
+            "reorder_cycle": 60
+        },
+        "1130": {
+            "name": "EKLA SRL",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 2000,
+            "nota": "",
+            "reorder_cycle": 60
+        },
+        "104": {
+            "name": "AARON SRL",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 500,
+            "nota": "",
+            "reorder_cycle": 30
+        },
+        "849": {
+            "name": "ANTONELLI SRL",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 2600,
+            "nota": "",
+            "reorder_cycle": 30
+        },
+        "1029": {
+            "name": "STORE CASA SRL",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 650,
+            "nota": "",
+            "reorder_cycle": 30
+        },
+        "1138": {
+            "name": "ROYAL OFFICE SRL",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 650,
+            "nota": "",
+            "reorder_cycle": 30
+        },
+        "475": {
+            "name": "INDUSTRAUMBRA SPA",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 300,
+            "nota": "",
+            "reorder_cycle": 30
+        },
+        "238": {
+            "name": "DOPLA S.P.A.",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 850,
+            "nota": "",
+            "reorder_cycle": 30
+        },
+        "312": {
+            "name": "BEL FLOWERS SRL",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 600,
+            "nota": "",
+            "reorder_cycle": 60
+        },
+        "314": {
+            "name": "GICOS IMPORT EXPORT SRL",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 800,
+            "nota": "",
+            "reorder_cycle": 60
+        },
+        "444": {
+            "name": "TENDANCE",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 600,
+            "nota": "",
+            "reorder_cycle": 60
+        },
+        "536": {
+            "name": "PEDRINI P.P.L. S.P.A. A SOCIO UNICO",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 600,
+            "nota": "",
+            "reorder_cycle": 60
+        },
+        "624": {
+            "name": "CINQUENOVESETTE S.R.I. A SOCIO UNICO",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 400,
+            "nota": "",
+            "reorder_cycle": 30
+        },
+        "993": {
+            "name": "FAR S.R.L.",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 350,
+            "nota": "",
+            "reorder_cycle": 60
+        },
+        "996": {
+            "name": "DOMOLIVING S.R.L.",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 600,
+            "nota": "",
+            "reorder_cycle": 60
+        },
+        "1119": {
+            "name": "FACCO GIUSEPPE &C.S.P.A.",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 350,
+            "nota": "",
+            "reorder_cycle": 30
+        },
+        "1009": {
+            "name": "CARTIERA CONFALONE SPA",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 1500,
+            "nota": "",
+            "reorder_cycle": 60
+        },
+        "674": {
+            "name": "AMBROSIO VETRI SOC.COOP.",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 1000,
+            "nota": "",
+            "reorder_cycle": 60
+        },
+        "764": {
+            "name": "ANDAY SRL",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 600,
+            "nota": "",
+            "reorder_cycle": 60
+        },
+        "935": {
+            "name": "METALTEX ITALIA S.P.A.",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 800,
+            "nota": "",
+            "reorder_cycle": 90
+        },
+        "1120": {
+            "name": "FHP DI R. FREUDENBERG S.A.S(GIMI)",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 1000,
+            "nota": "",
+            "reorder_cycle": 30
+        },
+        "1122": {
+            "name": "CUKI COFRESCO SRL",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 300,
+            "nota": "",
+            "reorder_cycle": 30
+        },
+        "582": {
+            "name": "VISCIO TRADING SRL",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 800,
+            "nota": "",
+            "reorder_cycle": 30
+        },
+        "110": {
+            "name": "MONSTERA SRL",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 400,
+            "nota": "",
+            "reorder_cycle": 30
+        },
+        "240": {
+            "name": "JAVYK ITALIA, LUXURY PARFUMS AND COSMETICS DISTRIBUTION SRL",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 600,
+            "nota": "",
+            "reorder_cycle": 30
+        },
+        "670": {
+            "name": "NEWTOP STORE S.R.L.",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 300,
+            "nota": "",
+            "reorder_cycle": 60
+        },
+        "682": {
+            "name": "L'OREAL ITALIA SPA - SOC. A SOCIO U",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 500,
+            "nota": "",
+            "reorder_cycle": 30
+        },
+        "874": {
+            "name": "GIUFRA S.R.L.",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 400,
+            "nota": "",
+            "reorder_cycle": 60
+        },
+        "962": {
+            "name": "HD GROUP S.R.L.",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 300,
+            "nota": "",
+            "reorder_cycle": 30
+        },
+        "1016": {
+            "name": "COSMETICA 74 SRL",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 200,
+            "nota": "",
+            "reorder_cycle": 60
+        },
+        "1039": {
+            "name": "MARCHETTI ANGIOLO S.R.L",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 300,
+            "nota": "",
+            "reorder_cycle": 30
+        },
+        "1049": {
+            "name": "EURO MARKETING 90 S.R.L.",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 200,
+            "nota": "",
+            "reorder_cycle": 30
+        },
+        "1116": {
+            "name": "ESSECI ITALIA SPA",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 600,
+            "nota": "",
+            "reorder_cycle": 60
+        },
+        "938": {
+            "name": "NEW VISION MILANO SRL",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 300,
+            "nota": "",
+            "reorder_cycle": 60
+        },
+        "567": {
+            "name": "CFG SPA",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 200,
+            "nota": "",
+            "reorder_cycle": 60
+        },
+        "755": {
+            "name": "I.O.I INDUSTRIE OTTICHE ITALIANE S.R.L.",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 350,
+            "nota": "",
+            "reorder_cycle": 30
+        },
+        "857": {
+            "name": "TREVIDEA SRL",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 1000,
+            "nota": "",
+            "reorder_cycle": 30
+        },
+        "964": {
+            "name": "WOLSEN S.R.L.",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 800,
+            "nota": "",
+            "reorder_cycle": 60
+        },
+        "970": {
+            "name": "IDEA PIOGGIA SRL",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 500,
+            "nota": "",
+            "reorder_cycle": 60
+        },
+        "972": {
+            "name": "VARTA CONSUMER BATTERIES ITALIA S.R.L.",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 1000,
+            "nota": "",
+            "reorder_cycle": 60
+        },
+        "1117": {
+            "name": "BRITA ITALIA SRL",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 600,
+            "nota": "",
+            "reorder_cycle": 60
+        },
+        "1118": {
+            "name": "SODASTREAM INTERNATIONAL BV ITALIAN BRANCH",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 400,
+            "nota": "",
+            "reorder_cycle": 60
+        },
+        "435": {
+            "name": "NEW GRIECO S.R.L A SOCIO UNICO",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 600,
+            "nota": "",
+            "reorder_cycle": 60
+        },
+        "465": {
+            "name": "GLOBO SPA",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 500,
+            "nota": "",
+            "reorder_cycle": 60
+        },
+        "565": {
+            "name": "F.LLI ZAMBETTI SRL",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 500,
+            "nota": "",
+            "reorder_cycle": 60
+        },
+        "566": {
+            "name": "MELONI WALTER SPA",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 600,
+            "nota": "",
+            "reorder_cycle": 30
+        },
+        "663": {
+            "name": "F.LLI PETRILLO & C. S.R.L.",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 600,
+            "nota": "",
+            "reorder_cycle": 60
+        },
+        "672": {
+            "name": "SUN DISTRIBUZIONE SRL",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 1000,
+            "nota": "",
+            "reorder_cycle": 30
+        },
+        "830": {
+            "name": "LUANCE",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 400,
+            "nota": "",
+            "reorder_cycle": 60
+        },
+        "876": {
+            "name": "MEGA CASH & CARRY SRL",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 2000,
+            "nota": "",
+            "reorder_cycle": 30
+        },
+        "1006": {
+            "name": "GD S.R.L.",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 300,
+            "nota": "",
+            "reorder_cycle": 60
+        },
+        "1131": {
+            "name": "CANTINI RAFFAELLO SRL",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 500,
+            "nota": "",
+            "reorder_cycle": 30
+        },
+        "1041": {
+            "name": "LATEX SRLS",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 800,
+            "nota": "",
+            "reorder_cycle": 60
+        },
+        "1013": {
+            "name": "BINNEY & SMITH (EUROPE) LIMITED SOCIETA' LIMITATA PER AZIONI",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 400,
+            "nota": "",
+            "reorder_cycle": 60
+        },
+        "1024": {
+            "name": "ALPAX SRL",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 800,
+            "nota": "",
+            "reorder_cycle": 60
+        },
+        "1110": {
+            "name": "RINALDI GROUP SPA",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 1000,
+            "nota": "",
+            "reorder_cycle": 90
+        },
+        "1140": {
+            "name": "SMAPIU GROUP SRL",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 400,
+            "nota": "",
+            "reorder_cycle": 30
+        },
+        "324": {
+            "name": "COMART S.P.A.",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 600,
+            "nota": "",
+            "reorder_cycle": 60
+        },
+        "499": {
+            "name": "GEMITEX SPA",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 600,
+            "nota": "",
+            "reorder_cycle": 60
+        },
+        "176": {
+            "name": "NEW FADOR SRL",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 1400,
+            "nota": "",
+            "reorder_cycle": 60
+        },
+        "227": {
+            "name": "BLUINDACO S.R.L",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 200,
+            "nota": "",
+            "reorder_cycle": 60
+        },
+        "760": {
+            "name": "QI DIAN",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 100,
+            "nota": "",
+            "reorder_cycle": 60
+        },
+        "793": {
+            "name": "EURSHOES GROUP S.R.L.",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 800,
+            "nota": "",
+            "reorder_cycle": 60
+        },
+        "880": {
+            "name": "CLEMENTONI S.P.A",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 400,
+            "nota": "",
+            "reorder_cycle": 60
+        },
+        "914": {
+            "name": "MANDELLI SRL",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 300,
+            "nota": "",
+            "reorder_cycle": 60
+        },
+        "932": {
+            "name": "GAMEVISION SRL",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 250,
+            "nota": "",
+            "reorder_cycle": 60
+        },
+        "945": {
+            "name": "MONDO SPA",
+            "category": "General",
+            "lead_time_days": 3,
+            "min_order_amount": 500,
+            "nota": "",
+            "reorder_cycle": 60
+        }
+    },
+    "default_settings": {
+        "default_day": "Lunedì",
+        "default_sales_days": 180,
+        "default_store_id": 2,
+        "default_reorder_cycle": 30
+    }
+}

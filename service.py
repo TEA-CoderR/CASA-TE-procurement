@@ -1,5 +1,6 @@
 from i18n import tr
 import os
+import math
 import gc
 import time
 import win32com.client as win32
@@ -17,11 +18,60 @@ from config import (
 )
 from min_order_optimizer import optimize_min_order, optimize_min_orders
 from settings import load_settings, match_rules
+from supplier_layout import find_pack_col, find_order_input, order_formula, parse_pack
+from openpyxl.utils import get_column_letter
 
 
 # =====================
 # 供应商选择：最低价 + 起订量凑单（可由操作员决定 / 手动调整）
 # =====================
+def _price_row(row, qty, unit, packs, ean="", articolo=""):
+    """
+    一个商品的报价数据。
+      unit : {供应商: 单件价}
+      packs: {供应商: 每箱件数}
+      prices: 比价用的「一箱价」= 单件价 × 参考件数（参考件数 = 单件价最低那家的每箱件数），
+              所以选供应商就是比单件价；同一商品各家箱规一样时，就等于真实的一箱价。
+      amt  : 真实的一箱金额 = 单件价 × 这家的每箱件数（算起订金额、各家采购金额用）
+    """
+    best, ref = None, 1
+    for s, p in unit.items():
+        if p is not None and (best is None or p < best):
+            best, ref = p, packs.get(s) or 1
+    return {"row": row, "qty": qty, "ean": ean, "articolo": articolo,
+            "unit": dict(unit), "packs": dict(packs), "ref_pack": ref,
+            "prices": {s: (p * ref if p is not None else None) for s, p in unit.items()},
+            "amt": {s: (p * (packs.get(s) or 1) if p is not None else None) for s, p in unit.items()}}
+
+
+def _price_row_pieces(row, pieces, unit, packs, ean="", articolo=""):
+    """
+    主订单按件数（PEZZI 列，来自订货建议）时的一行：
+      每家要订的箱数 = ceil(件数 ÷ 这家每箱件数)；金额 = 箱数 × 每箱件数 × 件价（含凑整多买的件）。
+      比价就按这个真实金额比。
+    """
+    colli, total = {}, {}
+    for s, p in unit.items():
+        if p is None:
+            continue
+        pk = packs.get(s) or 1
+        c = math.ceil(pieces / pk) if pieces > 0 else 0
+        colli[s] = c
+        total[s] = c * pk * p
+    per = {s: (total[s] / pieces if (s in total and pieces > 0) else None) for s in unit}
+    return {"row": row, "qty": pieces, "pieces": pieces, "ean": ean, "articolo": articolo,
+            "unit": dict(unit), "packs": dict(packs), "ref_pack": 1,
+            "prices": dict(per), "amt": dict(per), "colli": colli}
+
+
+def _order_qty(r, s):
+    """写进供应商 s 订单的箱数：按件数订货时用这家的箱数，否则就是主订单的 COLLI"""
+    c = (r or {}).get("colli")
+    if c and s in c:
+        return c[s]
+    return (r or {}).get("qty")
+
+
 def _select_suppliers(rows_data, supplier_headers, ws_main, log, settings, summary, decide=None):
     """
     返回 {行号: 供应商}；返回 None 表示操作员取消了处理。
@@ -75,7 +125,9 @@ def _select_suppliers(rows_data, supplier_headers, ws_main, log, settings, summa
     for ru in rep["rules"]:
         log(tr("  {0}: {1:.0f} 箱 / €{2:.2f} → {3:.0f} 箱 / €{4:.2f}  【{5}】", ru['name'], ru['before_colli'], ru['before_amount'], ru['after_colli'], ru['after_amount'], tr(ru['status'])))
     if rep["changes"]:
-        log(tr("  ✔ 共改动 {0} 个商品，采购总额 €{1:,.2f} → €{2:,.2f}（{3:+,.2f}）", len(rep['changes']), rep['baseline_cost'], rep['final_cost'], rep['extra_cost']))
+        m0 = sum(x["before_amount"] for x in rep["suppliers"])
+        m1 = sum(x["after_amount"] for x in rep["suppliers"])
+        log(tr("  ✔ 共改动 {0} 个商品，采购金额 €{1:,.2f} → €{2:,.2f}，按件价比多花 €{3:+,.2f}", len(rep['changes']), m0, m1, rep['extra_cost']))
         ws_main.cell(1, MIN_ORDER_NOTE_COL).value = tr("供应商调整")
         for ch in rep["changes"]:
             old = normalize(ch["old"]) if ch["old"] else tr("无")
@@ -454,6 +506,7 @@ def run_process(ordine_file, eliminare_path, distribuire_path, log, progress=Non
                    and ".calc." not in f.lower() and not f.lower().endswith(".xls.xlsx")
                    and not f.startswith("~$")]
     supplier_hits = {}
+    pack_maps = {}   # {供应商文件: {EAN: 每箱件数}}
     for n_file, file in enumerate(price_files):
         P(20 + int(40 * n_file / max(1, len(price_files))),
           tr("读取供应商报价 {0}/{1}: {2}", n_file + 1, len(price_files), file))
@@ -477,6 +530,17 @@ def run_process(ordine_file, eliminare_path, distribuire_path, log, progress=Non
         # 数据从表头行之后开始
         header_row = max(row_ean, row_price)
 
+        # 每箱件数（PREZZO NETTO 是单件价，一箱金额 = 件价 × 每箱件数）
+        col_ord_p, _ = find_col(ws, COL_ORDINE)
+        pack_col, pack_how = _detect_pack_col(ws, path, header_row, col_ord_p, col_price)
+        if pack_col:
+            head = ws.cell(header_row, pack_col).value
+            log(tr("  {0} 每箱件数：{1} 列{2}", file, get_column_letter(pack_col),
+                   tr("（表头「{0}」）", str(head).strip()) if head not in (None, "") else tr("（从公式推断）")))
+        else:
+            log(tr("⚠ {0} 找不到每箱件数列，金额按每箱 1 件计算", file))
+        pack_map = {}
+
         # 构建价格字典，同时统计 EAN 出现次数
         price_map = {}
         last_row = get_last_row(ws, col_ean)
@@ -485,6 +549,7 @@ def run_process(ordine_file, eliminare_path, distribuire_path, log, progress=Non
             p = parse_price(ws.cell(i, col_price).value)
             if e and p is not None:
                 price_map[e] = p
+                pack_map[e] = parse_pack(ws.cell(i, pack_col).value) if pack_col else 1
                 # 统计 EAN 在多少个供应商文件中出现
                 if e not in ean_supplier_count:
                     ean_supplier_count[e] = 0
@@ -495,6 +560,7 @@ def run_process(ordine_file, eliminare_path, distribuire_path, log, progress=Non
         # 写入主表，统计命中数
         ws_main.cell(1, q).value = file
         supplier_files.append(file)
+        pack_maps[file] = pack_map
 
         main_last = get_last_row(ws_main, col_ean_main)
         hit_count = 0
@@ -553,14 +619,25 @@ def run_process(ordine_file, eliminare_path, distribuire_path, log, progress=Non
     # 读取每行的价格（按供应商列顺序）和箱数
     supplier_headers = [ws_main.cell(1, col).value for col in range(SUPPLIER_MATRIX_START_COL, q)]
     rows_data = []
+    col_pezzi, _ = find_col(ws_main, "PEZZI")
+    if col_pezzi:
+        log(tr("主订单有 PEZZI 列：按件数订货，各家箱数 = 件数 ÷ 这家每箱件数（向上取整）"))
     for i in range(2, main_last + 1):
-        prices = {}
+        unit = {}
         for k, col in enumerate(range(SUPPLIER_MATRIX_START_COL, q)):
-            prices[supplier_headers[k]] = parse_price(ws_main.cell(i, col).value)
+            unit[supplier_headers[k]] = parse_price(ws_main.cell(i, col).value)
         qty = ws_main.cell(i, col_colli_sel).value if col_colli_sel else 0
-        rows_data.append({"row": i, "qty": qty, "prices": prices,
-                          "ean": clean_ean(ws_main.cell(i, col_ean_main).value),
-                          "articolo": str(ws_main.cell(i, col_articolo).value or "") if col_articolo else ""})
+        ean = clean_ean(ws_main.cell(i, col_ean_main).value)
+        packs_i = {h: pack_maps.get(h, {}).get(ean, 1) for h in supplier_headers}
+        art = str(ws_main.cell(i, col_articolo).value or "") if col_articolo else ""
+        if col_pezzi:
+            try:
+                pieces = max(0.0, float(ws_main.cell(i, col_pezzi).value or 0))
+            except (TypeError, ValueError):
+                pieces = 0.0
+            rows_data.append(_price_row_pieces(i, pieces, unit, packs_i, ean, art))
+        else:
+            rows_data.append(_price_row(i, qty, unit, packs_i, ean, art))
 
     # 最低价分配 + 起订量凑单优化
     P(62, tr("选择供应商（最低价 + 起订量凑单）..."))
@@ -583,8 +660,8 @@ def run_process(ordine_file, eliminare_path, distribuire_path, log, progress=Non
                     qv = float(r["qty"] or 0)
                 except (TypeError, ValueError):
                     qv = 0
-                colli_n += qv
-                amount_n += qv * (r["prices"][h] or 0)
+                colli_n += float(_order_qty(r, h) or 0) if r.get("colli") else qv
+                amount_n += qv * ((r.get("amt") or r["prices"]).get(h) or 0)
         n_price, n_hit = supplier_hits.get(h, (0, 0))
         dl = summary.get("supplier_delta", {}).get(h, {})
         summary["suppliers"].append({"name": h, "prices": n_price, "hits": n_hit,
@@ -597,11 +674,15 @@ def run_process(ordine_file, eliminare_path, distribuire_path, log, progress=Non
 
     missing_count = 0
     missing_items = []  # [(ean, articolo), ...]
+    row_by_i = {r["row"]: r for r in rows_data}
     for i in range(2, main_last + 1):
         best_supplier = assignment.get(i)
 
         if best_supplier:
             ws_main.cell(i, SUPPLIER_RESULT_COL).value = best_supplier
+            if col_pezzi and col_colli_sel:
+                # 按件数订货：COLLI 改成选中那家的箱数（回写供应商订单用的就是这一列）
+                ws_main.cell(i, col_colli_sel).value = _order_qty(row_by_i.get(i), best_supplier)
         else:
             missing_count += 1
             ean = clean_ean(ws_main.cell(i, col_ean_main).value)
@@ -674,6 +755,9 @@ def run_process(ordine_file, eliminare_path, distribuire_path, log, progress=Non
     # 找到主表 COLLI 列
     col_colli_main, _ = find_col(ws_main, COL_COLLI)
 
+    # 同一个文件夹上次处理时写进供应商表的数量：这次先清掉，再写新的
+    prev_written = _previous_written(os.path.dirname(os.path.dirname(ordine_file)))
+
     # 从备份恢复原始供应商文件（确保回写时使用的是原始文件）
     import shutil
     backup_dir = os.path.join(distribuire_path, ".backup")
@@ -733,6 +817,12 @@ def run_process(ordine_file, eliminare_path, distribuire_path, log, progress=Non
 
         # 数据从表头行之后开始
         supplier_header_row = max(row_ean_supplier, row_ord)
+        # ORDINE 是公式（比如 Meloni 的 =L*E：L 填箱数）时，箱数写进箱数列，ORDINE 公式保留
+        col_price_w, _ = find_col(ws, COL_PREZZO_NETTO)
+        pack_col_w, _ = find_pack_col(ws, supplier_header_row, col_ord, col_price_w or 0)
+        order_input = find_order_input(ws, supplier_header_row, col_ord, pack_col_w)
+        if order_input:
+            log(tr("  {0}：ORDINE 列是公式（箱数 × 每箱件数），箱数写进 {1} 列", file, get_column_letter(order_input[0])))
 
         # 构建供应商文件 EAN 索引
         # 如果 EAN 列有公式，需要用 Excel COM 计算
@@ -767,6 +857,10 @@ def run_process(ordine_file, eliminare_path, distribuire_path, log, progress=Non
                 if e:
                     supplier_ean_index[e] = j
 
+        cleared = _clear_previous(ws, col_ord, order_input, supplier_ean_index, prev_written.get(file, {}))
+        if cleared:
+            log(tr("  {0}：清掉上次写入的 {1} 个数量", file, cleared))
+
         count = 0
         main_last = get_last_row(ws_main, col_ean_main)
         for i in range(2, main_last + 1):
@@ -779,8 +873,7 @@ def run_process(ordine_file, eliminare_path, distribuire_path, log, progress=Non
 
             if ean in supplier_ean_index:
                 j = supplier_ean_index[ean]
-                # 只写入 ORDINE 列
-                ws.cell(j, col_ord).value = ws_main.cell(i, col_colli_main).value
+                _write_order(ws, j, col_ord, order_input, ws_main.cell(i, col_colli_main).value)
                 count += 1
 
         for sup in summary["suppliers"]:
@@ -853,8 +946,21 @@ def run_process(ordine_file, eliminare_path, distribuire_path, log, progress=Non
         "rows": rows_data, "rules": ps.get("rules", []), "baseline": ps.get("baseline", {}),
         "assignment": assignment, "sources": ps.get("sources", {}),
     }
+    _save_history(summary, log, settings.get("history_keep_days", 180))
     save_state(summary)
     return summary
+
+
+def _save_history(summary, log, keep_days=None, update=False):
+    """存一份到历史记录（失败只提醒，不影响处理结果）"""
+    try:
+        import history
+        if update:
+            history.update_run(summary)
+        else:
+            history.save_run(summary, keep_days=keep_days)
+    except Exception as e:
+        log(tr("⚠ 历史记录保存失败：{0}", e))
 
 
 # =====================
@@ -899,6 +1005,85 @@ def load_state(root_path):
         return None
 
 
+def _previous_written(root):
+    """上次处理（_备份/last_allocation.json）写进各供应商表的数量：{供应商: {EAN: 箱数}}"""
+    prev = load_state(root) if root else None
+    out = {}
+    if not prev:
+        return out
+    st = prev.get("state") or {}
+    assign = st.get("assignment") or {}
+    for r in st.get("rows") or []:
+        s_ = assign.get(r.get("row"))
+        if s_ and r.get("ean"):
+            out.setdefault(s_, {})[r["ean"]] = _order_qty(r, s_)   # 同一 EAN 多行时取最后一行，和回写一致
+    return out
+
+
+def _same_qty(a, b):
+    try:
+        return abs(float(a) - float(b)) < 1e-9
+    except (TypeError, ValueError):
+        return False
+
+
+def _clear_previous(ws, col_ord, order_input, index, prev):
+    """
+    清掉上次程序写进这个供应商表的数量。
+    只清「现在的值 == 上次写的值」的格子，别人手动改过的不动。
+    """
+    n = 0
+    for e, q_old in prev.items():
+        j = index.get(e)
+        if not j or q_old in (None, ""):
+            continue
+        hit = False
+        if order_input:
+            colli_col, pair = order_input
+            if _same_qty(ws.cell(j, colli_col).value, q_old):
+                ws.cell(j, colli_col).value = None
+                hit = True
+            cur = ws.cell(j, col_ord).value
+            if not (isinstance(cur, str) and cur.startswith("=")):
+                # 旧版本把箱数直接写进了 ORDINE、盖掉了公式：恢复公式
+                if cur in (None, "") or _same_qty(cur, q_old):
+                    ws.cell(j, col_ord).value = order_formula(pair, j)
+                    hit = hit or cur not in (None, "")
+        elif _same_qty(ws.cell(j, col_ord).value, q_old):
+            ws.cell(j, col_ord).value = None
+            hit = True
+        n += hit
+    return n
+
+
+def _write_order(ws, j, col_ord, order_input, colli):
+    """把箱数写进供应商表第 j 行：一般写 ORDINE；ORDINE 是公式时写箱数列，并保证 ORDINE 公式还在"""
+    if order_input:
+        colli_col, pair = order_input
+        ws.cell(j, colli_col).value = colli
+        cur = ws.cell(j, col_ord).value
+        if not (isinstance(cur, str) and cur.startswith("=")):
+            ws.cell(j, col_ord).value = order_formula(pair, j)
+    else:
+        ws.cell(j, col_ord).value = colli
+
+
+def _detect_pack_col(ws_values, path, header_row, col_ord, col_price):
+    """每箱件数列：先在值副本里按表头找，找不到再打开原文件看公式"""
+    pc, how = find_pack_col(ws_values, header_row, col_ord or 0, col_price)
+    if pc:
+        return pc, how
+    try:
+        src = convert_to_xlsx(path)
+        wb_f = load_workbook(src, read_only=True)
+        try:
+            return find_pack_col(wb_f.active, header_row, col_ord or 0, col_price)
+        finally:
+            wb_f.close()
+    except Exception:
+        return None, None
+
+
 def _supplier_work_path(path):
     """回写时实际写入的文件（.xls 会写进转换出来的 .xls.xlsx）"""
     if path.lower().endswith(".xlsx") and is_valid_xlsx(path):
@@ -910,11 +1095,11 @@ def _supplier_work_path(path):
 
 
 def _supplier_index(ws, work_path):
-    """返回 (ORDINE 列号, {EAN: 行号})，找不到列返回 (None, None)"""
+    """返回 (ORDINE 列号, {EAN: 行号}, 箱数写法)，找不到列返回 (None, None, None)"""
     col_ean, row_ean = find_col(ws, COL_CODICE_EAN)
     col_ord, row_ord = find_col(ws, COL_ORDINE)
     if not col_ean or not col_ord:
-        return None, None
+        return None, None, None
     header = max(row_ean, row_ord)
     last = get_last_row(ws, col_ean)
     src = ws
@@ -932,7 +1117,9 @@ def _supplier_index(ws, work_path):
             index[e] = j
     if wb_calc:
         wb_calc.close()
-    return col_ord, index
+    col_price, _ = find_col(ws, COL_PREZZO_NETTO)
+    pack_col, _ = find_pack_col(ws, header, col_ord, col_price or 0)
+    return col_ord, index, find_order_input(ws, header, col_ord, pack_col)
 
 
 def _write_missing_report(distribuire_path, rows, assignment):
@@ -1003,8 +1190,11 @@ def rewrite_assignment(data, new_assign, new_sources, log, progress=None):
     with open(ordine_file, "rb") as f:
         wb = load_workbook(io.BytesIO(f.read()))
     ws = wb.active
+    col_colli_m, _ = find_col(ws, COL_COLLI)
     for r in changed:
         ws.cell(r["row"], SUPPLIER_RESULT_COL).value = new_assign.get(r["row"])
+        if r.get("colli") and col_colli_m and new_assign.get(r["row"]):
+            ws.cell(r["row"], col_colli_m).value = _order_qty(r, new_assign.get(r["row"]))
     last = max([r["row"] for r in rows] + [2])
     for i in range(1, last + 1):
         ws.cell(i, MIN_ORDER_NOTE_COL).value = None
@@ -1032,7 +1222,7 @@ def rewrite_assignment(data, new_assign, new_sources, log, progress=None):
     for r in rows:
         s_ = new_assign.get(r["row"])
         if s_ and r.get("ean"):
-            want[(s_, r["ean"])] = r["qty"]
+            want[(s_, r["ean"])] = _order_qty(r, s_)
     written_delta = defaultdict(int)
     files = sorted(affected)
     for n, file in enumerate(files):
@@ -1041,7 +1231,7 @@ def rewrite_assignment(data, new_assign, new_sources, log, progress=None):
             work = _supplier_work_path(os.path.join(dist, file))
             wb_s = load_workbook(work)
             ws_s = wb_s.active
-            col_ord, index = _supplier_index(ws_s, work)
+            col_ord, index, order_input = _supplier_index(ws_s, work)
             if not col_ord:
                 log(tr("⚠ {0} 缺少必要列 ({1}/{2})", file, COL_CODICE_EAN, COL_ORDINE))
                 wb_s.close()
@@ -1052,7 +1242,7 @@ def rewrite_assignment(data, new_assign, new_sources, log, progress=None):
                 if not j:
                     continue
                 v = want.get((file, e))
-                ws_s.cell(j, col_ord).value = v
+                _write_order(ws_s, j, col_ord, order_input, v)
                 if v is None:
                     clear_n += 1
                 else:
@@ -1090,6 +1280,7 @@ def rewrite_assignment(data, new_assign, new_sources, log, progress=None):
               warning=None if all(r["status"] != "未达标" for r in rep["rules"])
               else tr("有起订供应商没有达标，请检查"))
     out["state"] = dict(st, assignment=dict(new_assign), sources=dict(new_sources))
+    _save_history(out, log, update=True)
     save_state(out)
     log(tr("[完成] 修改分配已写入"))
     P(100, tr("修改分配已写入"))

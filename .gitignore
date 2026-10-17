@@ -49,3 +49,10 @@ test_shadow_results/
 *_learning.json
 benchmark_*.json
 .pytest_cache/
+
+# 发布 / 更新（令牌，不上传）
+publish_config.json
+update_config.json
+# 历史记录（本机数据）
+history/
+*.keys.json
