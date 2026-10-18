@@ -817,7 +817,7 @@ class StoreOrderPage:
         for i, (d, p) in enumerate(self.files):
             name = S.supplier_short_name(p)
             m = self.moq_of(p)
-            self.ui.table_set_row(t, i, ["", name, S.moq_label(m), "", tr(d)])
+            self.ui.table_set_row(t, i, ["", name, S.moq_label(m, short=True), "", tr(d)])
             self._moq_tip(i, p)
             f = t.item(i, 1).font()
             f.setBold(True)
@@ -861,7 +861,7 @@ class StoreOrderPage:
         t.blockSignals(True)
         for i, (_, p) in enumerate(self.files):
             if p in self.moq:
-                t.item(i, 2).setText(S.moq_label(self.moq_of(p)))
+                t.item(i, 2).setText(S.moq_label(self.moq_of(p), short=True))
                 self._moq_tip(i, p)
         t.blockSignals(False)
         if hasattr(self.win, "dashboard"):
@@ -1109,7 +1109,7 @@ class StoreOrderPage:
             on = sc["path"] in self.alloc_on
             plan = self._preview(sc)
             self._plans[sc["path"]] = plan
-            vals = ["", f"{sc['name']}（{tr(sc['day'])}）", S.moq_label(S.sc_moq(sc))]
+            vals = ["", f"{sc['name']}（{tr(sc['day'])}）", S.moq_label(S.sc_moq(sc), short=True)]
             states = []
             rc = ra = 0.0
             for sid in S.STORE_SHEETS:
@@ -1137,6 +1137,7 @@ class StoreOrderPage:
             vals.append(tr("{0:g} 箱 · €{1:,.0f}", rc, ra) if rc else "—")
             orderable = any(x in ("ok", "fill", "bms_ok") for x in states)
             self.ui.table_set_row(t, r, vals)
+            t.item(r, 2).setToolTip(tr("起订量：{0}", S.moq_label(S.sc_moq(sc), mark=False)) + "\n" + tr("点一下修改起订量"))
             chk = QTableWidgetItem()
             chk.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled)
             chk.setCheckState(Qt.Checked if on else Qt.Unchecked)
@@ -1346,11 +1347,11 @@ class StoreOrderPage:
         self._show_route()
 
         # 表格
-        rows, self.row_files = [], []
+        rows, self.row_files, self._res_index = [], [], []
         files = {(S.written_source(w, res), w[2]): w[0] for w in res["written"]}
-        for day, sc, plan in res["results"]:
+        for k_res, (day, sc, plan) in enumerate(res["results"]):
             items = {it["row"]: it for it in sc["items"]}
-            moq = S.moq_label(S.sc_moq(sc))
+            moq = S.moq_label(S.sc_moq(sc), short=True)
             for sid, st in plan["stores"].items():
                 if st["status"] == "none":
                     continue
@@ -1367,6 +1368,7 @@ class StoreOrderPage:
                 if st["status"] == "merged":
                     notes.append(tr("和 BMS 同一个仓库，整单并进 BMS"))
                 rows.append((tr(day), sc["name"], moq, name, st, st["status"], "；".join(x for x in notes if x)))
+                self._res_index.append(k_res)
                 self.row_files.append(files.get((sc["path"], name)))
             b = plan.get("bms")
             if b:
@@ -1382,6 +1384,7 @@ class StoreOrderPage:
                 if "manual" in b.get("how", []):
                     note += "；" + tr("手动选择：全部并入 BMS")
                 rows.append((tr(day), sc["name"], moq, S.BMS, b, b["status"], note))
+                self._res_index.append(k_res)
                 self.row_files.append(files.get((sc["path"], S.BMS)))
         t = self.rtable
         t.setRowCount(len(rows))
@@ -1391,6 +1394,7 @@ class StoreOrderPage:
             self.ui.table_set_row(t, i, [day, sup, moq, dest, f"{st['colli']:g}", f"€{st['amount']:,.2f}", "", note],
                                   bold=dest == S.BMS)
             t.item(i, 2).setForeground(QColor(T("muted")))
+            t.item(i, 2).setToolTip(S.moq_label(S.sc_moq(self.result["results"][self._res_index[i]][1]), mark=False))
             if status in ("short", "dropped"):
                 for c in (4, 5):
                     t.item(i, c).setForeground(QColor(T("faint")))
@@ -1608,7 +1612,9 @@ class StoreOrderPage:
             lines.append(tr("文件里写的起订量：{0}", m["raw"]))
         t.item(i, 1).setToolTip("\n".join(lines))
         cur = self.moq_of(p) or {}
-        tip = tr("点一下修改起订量")
+        tip = tr("起订量：{0}", S.moq_label(cur, mark=False)) + "\n" + tr("点一下修改起订量")
+        if cur.get("pallets") and not cur.get("per_pallet"):
+            tip = tr("按板起订，还没填每板几箱（点起订量修改）") + "\n" + tip
         if cur.get("source") == "manual":
             tip = tr("已手动修改（文件里写的是：{0}）", m.get("raw") or tr("无")) + "\n" + tip
         elif cur.get("uncertain"):
@@ -1648,7 +1654,7 @@ class StoreOrderPage:
         for i, (_, p) in enumerate(self.files):
             if S.supplier_short_name(p) == name and self.ftable.item(i, 2):
                 self.ftable.blockSignals(True)
-                self.ftable.item(i, 2).setText(S.moq_label(self.moq_of(p)))
+                self.ftable.item(i, 2).setText(S.moq_label(self.moq_of(p), short=True))
                 self._moq_tip(i, p)
                 self.ftable.blockSignals(False)
         if self.calc:

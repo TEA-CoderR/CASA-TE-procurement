@@ -278,7 +278,7 @@ class DashboardPage:
         t.setRowCount(len(files))
         for i, (_, p) in enumerate(files):
             name = S.supplier_short_name(p)
-            cells = [name, S.moq_label(so.moq_of(p)) if hasattr(so, "moq_of") else "…", "", ""]
+            cells = [name, S.moq_label(so.moq_of(p), short=True) if hasattr(so, "moq_of") else "…", "", ""]
             for c, v in enumerate(cells):
                 it = QTableWidgetItem(v)
                 if c == 0:

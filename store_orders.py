@@ -216,8 +216,8 @@ def pallet_unknown(sc):
     return math.isinf(sc.get("moq_colli") or 0)
 
 
-def moq_parts(m, t=None):
-    """起订量的几段文字；t = 翻译函数（界面用 tr，文件里用中文原文）"""
+def moq_parts(m, t=None, short=False):
+    """起订量的几段文字；t = 翻译函数（界面用 tr，文件里用中文原文）；short = 窄的列表里用的简短写法"""
     t = t or (lambda s, *a: s.format(*a))
     parts = []
     if m.get("colli"):
@@ -225,11 +225,20 @@ def moq_parts(m, t=None):
     if m.get("amount"):
         parts.append(f"€{m['amount']:g}")
     if m.get("pallets"):
-        parts.append(t("{0:g} 板（{1:g} 箱/板）", m["pallets"], m["per_pallet"]) if m.get("per_pallet")
-                     else t("{0:g} 板（每板箱数没填）", m["pallets"]))
+        if short:
+            parts.append(t("{0:g} 板", m["pallets"]))
+        else:
+            parts.append(t("{0:g} 板（{1:g} 箱/板）", m["pallets"], m["per_pallet"]) if m.get("per_pallet")
+                         else t("{0:g} 板（每板箱数没填）", m["pallets"]))
     if m.get("multiple"):
-        parts.append(t("{0:g} 箱的倍数", m["multiple"]))
+        parts.append(t("×{0:g} 箱", m["multiple"]) if short else t("{0:g} 箱的倍数", m["multiple"]))
     return parts
+
+
+def moq_needs_check(m):
+    """要提醒去确认：读的时候拿不准（没手动改过），或者按板起订但还没填每板几箱"""
+    return bool(m) and ((m.get("uncertain") and m.get("source") != "manual") or
+                        (bool(m.get("pallets")) and not m.get("per_pallet")))
 
 
 # ---------------------------------------------------------------------
@@ -426,15 +435,18 @@ def moq_text(m):
     return " / ".join(moq_parts(m)) or "无"
 
 
-def moq_label(m, mark=True):
-    """界面显示用（翻译后）；手动改过的前面加 ✎，拿不准的后面加 ⚠"""
+def moq_label(m, mark=True, short=False):
+    """
+    界面显示用（翻译后）；手动改过的前面加 ✎，要确认的后面加 ⚠。
+    short=True：供应商列表这种窄列用简短写法（"1 板 ⚠"），完整说明放在鼠标提示里，免得把供应商名挤掉。
+    """
     from i18n import tr
     if m is None:
         return "…"
-    s = " / ".join(moq_parts(m, tr)) or tr("无")
+    s = " / ".join(moq_parts(m, tr, short)) or tr("无")
     if mark and m.get("source") == "manual":
         s = "✎ " + s
-    elif mark and m.get("uncertain"):
+    if mark and moq_needs_check(m):
         s += " ⚠"
     return s
 
