@@ -68,29 +68,50 @@ def test_check_rows_verdicts_and_units():
     assert R.qty_unit("COLLI") == "colli" and R.qty_unit("数量") == "pcs"
 
 
-def test_negative_stock_counts_as_zero(monkeypatch):
+def _neg_db():
     import pandas as pd
-    from fenpei import models
-    seen = {}
+    e = pd.DataFrame({"CodArticolo": [], "sales_qty": []})
 
     class DB:
         def query_reorder_data(self, *a):
-            e = pd.DataFrame({"CodArticolo": [], "sales_qty": []})
             return {"inventory": pd.DataFrame({"CodArticolo": [1, 2], "store_inventory": [-50, 3],
                                                "total_inventory": [-10, 8]}),
                     "suppliers": pd.DataFrame(), "sales_1": e, "sales_2": e, "sales_3": e, "sales_4": e,
                     "margin_1": e, "margin_2": e, "margin_3": e}
+    return DB()
+
+
+def test_negative_stock_counts_as_zero(monkeypatch):
+    """新算法：负库存计算时当 0，表里显示原值"""
+    from fenpei import models
+    seen = {}
 
     def fake(inventory_df, *a, **k):
         seen["inv"] = inventory_df
         return inventory_df
     monkeypatch.setattr(models.ProductDataProcessor, "process_reorder_data", staticmethod(fake))
-    out = R.compute_suggestions(DB(), 1, ["1", "2"])
+    monkeypatch.setattr(R, "apply_v2", lambda db, sid, df, algo, *a, **k: df)
+    out = R.compute_suggestions(_neg_db(), 1, ["1", "2"], algo={"engine": "v2"})
     assert list(seen["inv"]["store_inventory"]) == [0, 3]          # 计算用 0
     assert list(out["store_inventory_raw"]) == [-50, 3]             # 表里显示原来的负数
     rows = R.to_rows(out)
     assert sorted(x["store_inv"] for x in rows) == [-50, 3]
     assert list(seen["inv"]["total_inventory"]) == [0, 8]
+
+
+def test_old_algorithm_keeps_inventory_as_is(monkeypatch):
+    """原程序算法：严格按原程序，负库存原样传给原程序的计算，按数据库箱规取整"""
+    from fenpei import models
+    seen = {}
+
+    def fake(inventory_df, *a, **k):
+        seen["inv"] = inventory_df
+        return inventory_df
+    monkeypatch.setattr(models.ProductDataProcessor, "process_reorder_data", staticmethod(fake))
+    for algo in (None, {"engine": "v1", "service": 0.99}):
+        R.compute_suggestions(_neg_db(), 1, ["1", "2"], algo=algo)
+        assert list(seen["inv"]["store_inventory"]) == [-50, 3]
+        assert list(seen["inv"]["total_inventory"]) == [-10, 8]
 
 
 def _proc(inv_rows, sales_1, sales_3, packaging=12):

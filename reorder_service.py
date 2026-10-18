@@ -245,7 +245,8 @@ def compute_suggestions(db, store_id, product_codes, days_list=None, reorder_cyc
             codes.append(c)
     product_codes = codes
     data = db.query_reorder_data(store_id, product_codes, days_list, supplier_ids)
-    # 负库存（盘点误差等）当 0 算：不然库存天数是负数，建议量也会把负数补上
+    # 新算法：负库存（盘点误差等）当 0 算，不然库存天数是负数，建议量也会把负数补上。
+    # 原程序算法：严格按原程序，库存原样传进去（负数也不改）。
     inv = data.get("inventory")
     raw_inv = None
     if inv is not None and len(inv):
@@ -253,9 +254,10 @@ def compute_suggestions(db, store_id, product_codes, days_list=None, reorder_cyc
         if "store_inventory" in inv.columns:
             raw_inv = inv[["CodArticolo", "store_inventory"]].rename(columns={"store_inventory": "store_inventory_raw"})
             raw_inv = raw_inv.drop_duplicates("CodArticolo")
-        for col in ("store_inventory", "total_inventory"):
-            if col in inv.columns:
-                inv[col] = pd.to_numeric(inv[col], errors="coerce").fillna(0).clip(lower=0)
+        if use_v2:
+            for col in ("store_inventory", "total_inventory"):
+                if col in inv.columns:
+                    inv[col] = pd.to_numeric(inv[col], errors="coerce").fillna(0).clip(lower=0)
         if not round_to_db_pack and "qtasmallbox" in inv.columns:
             inv["qtasmallbox_db"] = inv["qtasmallbox"]
             inv["qtasmallbox"] = 0          # 原算法只在 qtasmallbox > 1 时取整

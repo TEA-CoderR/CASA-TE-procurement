@@ -63,6 +63,243 @@ def supplier_short_name(path):
     return n.strip() or os.path.basename(path)
 
 
+# =====================================================================
+# 起订量（SCHEDA ANAGRAFICA 页「MINIMO ORDINE VOLUME / IMPORTO」两行）
+# 文件里经常填错行：金额写在「箱数」那行（LAMPA "100€"）、板数写在「金额」那行（"7 PANCALI"），
+# 所以不看行，先看文字里的单位：€ / EURO → 金额；BANCALE / PEDANE / PALLET → 板；COLLI → 箱；
+# 没写单位的纯数字才按行算。拿不准的（有 %、几个不同的数、倍数规则）标 uncertain，界面上提醒去确认。
+# 用户手动改过的（settings.json → store_orders.moq_override[供应商名]）优先。
+# =====================================================================
+_NUM_RE = r"\d+(?:[.,]\d+)?"
+_PALLET_RE = re.compile(r"BANCAL|PEDAN|PALLET|PALET|PANCAL|BILIC", re.I)
+_EURO_RE = re.compile(r"€|\bEUR|\bERUO|EURO", re.I)
+_COLLI_RE = re.compile(r"COLL[IO]|CARTON|SCATOL|\bCT\b", re.I)
+_MIN_AMOUNT = 20.0      # 低于 20 欧的金额当作运费 / 杂费，不是起订金额（"sotto 100€ c'è 8€ di trasp."）
+_NAME_STOP = {"SPA", "SRL", "SRLS", "SAS", "SNC", "ITALIA", "ITALY", "GROUP", "SOCIETA", "THE", "AND"}
+
+
+def _f(x):
+    return float(str(x).replace(",", "."))
+
+
+def _name_tokens(name):
+    return {t for t in re.findall(r"[A-Z]{3,}", _norm(name)) if t not in _NAME_STOP}
+
+
+def _euro_amounts(s):
+    """文字里紧挨着 € / EURO 的金额：[(金额, 起始位置, 结束位置)]"""
+    out = []
+    for m in re.finditer(r"(" + _NUM_RE + r")\s*(?:€|EURO|ERUO|EUR)|(?:€|EURO|EUR)\s*(" + _NUM_RE + r")", s, re.I):
+        out.append((_f(m.group(1) or m.group(2)), m.start(), m.end()))
+    return out
+
+
+def parse_moq_cell(val, row_kind, supplier=""):
+    """
+    一格的起订量。row_kind: "colli"（MINIMO ORDINE VOLUME 那行）/ "amount"（MINIMO ORDINE IMPORTO 那行）
+    返回 {"colli", "amount", "pallets", "multiple", "uncertain"}（没有就是空 dict）
+    """
+    if val in (None, ""):
+        return {}
+    if isinstance(val, (int, float)):
+        return {row_kind: float(val)} if val > 0 else {}
+    s = str(val).strip()
+    nums = [_f(x) for x in re.findall(_NUM_RE, s)]
+    if not nums:
+        return {}                       # 「口 SI : 口 NO」之类的空表格
+    U = s.upper()
+    unsure = "%" in s or bool(re.search(r"\d\s*-\s*\d", s))
+    if "MULTIPL" in U:                  # "Quantità ordinabile in multipli di 10 colli" → 不是起订量，是倍数
+        return {"multiple": nums[0], "uncertain": True}
+    if _PALLET_RE.search(U):
+        m = re.search(r"(" + _NUM_RE + r")\s*(?:" + _PALLET_RE.pattern + ")", s, re.I)
+        return {"pallets": _f(m.group(1)) if m else nums[0], "uncertain": unsure}
+    if _EURO_RE.search(U):
+        amts = [a for a in _euro_amounts(s) if a[0] >= _MIN_AMOUNT] or \
+               [(n, 0, 0) for n in nums if n >= _MIN_AMOUNT][:1]
+        if not amts:
+            return {"uncertain": True}
+        distinct = sorted({a[0] for a in amts})
+        pick = amts[0][0]
+        if len(distinct) > 1:
+            # 一格里几个金额（"500€ GIMI  600€ VILEDA"）：找后面 / 前面紧挨着的名字和供应商名对得上的那个
+            # 名字只看两个金额之间那一段：先看金额后面（"500€ GIMI"），都对不上再看前面（"TOYS:400€"）
+            mine = _name_tokens(supplier)
+            found = None
+            for side in ("after", "before"):
+                for k, (amt, a, b) in enumerate(amts):
+                    seg = s[b:amts[k + 1][1]] if side == "after" and k + 1 < len(amts) else \
+                        s[b:] if side == "after" else s[(amts[k - 1][2] if k else 0):a]
+                    if mine & _name_tokens(seg):
+                        found = amt
+                        break
+                if found is not None:
+                    break
+            if found is None:
+                unsure = True
+            else:
+                pick = found
+        return {"amount": pick, "uncertain": unsure}
+    if _COLLI_RE.search(U):
+        return {"colli": nums[0], "uncertain": unsure or len(set(nums)) > 1}
+    return {row_kind: nums[0], "uncertain": unsure or len(set(nums)) > 1}
+
+
+def read_moq(ana, supplier=""):
+    """从 ANAGRAFICA 工作表读起订量 → moq dict（见 moq_effective）；ana 为 None 时返回空的"""
+    m = {"colli": 0.0, "amount": 0.0, "pallets": 0.0, "per_pallet": 0.0, "multiple": 0.0, "uncertain": False,
+         "raw": "", "company": "", "source": "file"}
+    if ana is None:
+        return m
+    raws = []
+    for r in ana.iter_rows(min_row=1, max_row=60, max_col=6, values_only=True):
+        label = _norm(r[1] if len(r) > 1 else "")
+        cells = [v for v in r[2:6] if v not in (None, "") and str(v).strip()]
+        val = cells[0] if cells else None
+        if label.startswith("RAGIONE SOCIALE"):
+            m["company"] = str(val or "").strip()
+            continue
+        if label.startswith("MINIMO ORDINE VOLUME"):
+            kind = "colli"
+        elif label.startswith("MINIMO ORDINE IMPORTO"):
+            kind = "amount"
+        else:
+            continue
+        if val is not None:
+            raws.append(re.sub(r"\s+", " ", str(val)).strip())
+        got = parse_moq_cell(val, kind, supplier)
+        for k in ("colli", "amount", "pallets", "multiple"):
+            if got.get(k) and not m[k]:
+                m[k] = got[k]
+        m["uncertain"] = m["uncertain"] or bool(got.get("uncertain"))
+    m["raw"] = " | ".join(x for x in raws if x)
+    return m
+
+
+def apply_override(m, override):
+    """手动改过的起订量盖掉文件里读到的"""
+    if not override:
+        return dict(m)
+    out = dict(m)
+    for k in ("colli", "amount", "pallets", "per_pallet", "multiple"):
+        out[k] = float(override.get(k) or 0)
+    out["uncertain"] = False
+    out["source"] = "manual"
+    out["note"] = override.get("note", "")
+    return out
+
+
+def moq_effective(m):
+    """判断起订量用的 (箱数, 金额)。按板起订但没填每板几箱 → 箱数 = 无穷大（单独永远不够，等手动填）"""
+    colli = float(m.get("colli") or 0)
+    if m.get("pallets"):
+        if m.get("per_pallet"):
+            colli = max(colli, float(m["pallets"]) * float(m["per_pallet"]))
+        else:
+            colli = math.inf
+    return colli, float(m.get("amount") or 0)
+
+
+def set_moq(info, m):
+    """把 moq dict 放进 SCHEDA 信息里（moq_colli / moq_amount 是配货判断用的有效值）"""
+    info["moq"] = m
+    info["moq_colli"], info["moq_amount"] = moq_effective(m)
+    return info
+
+
+def sc_moq(sc):
+    """SCHEDA 信息里的 moq dict（老数据 / 测试里只有 moq_colli、moq_amount 时现拼一个）"""
+    return sc.get("moq") or {"colli": sc.get("moq_colli") or 0, "amount": sc.get("moq_amount") or 0}
+
+
+def pallet_unknown(sc):
+    return math.isinf(sc.get("moq_colli") or 0)
+
+
+def moq_parts(m, t=None):
+    """起订量的几段文字；t = 翻译函数（界面用 tr，文件里用中文原文）"""
+    t = t or (lambda s, *a: s.format(*a))
+    parts = []
+    if m.get("colli"):
+        parts.append(t("{0:g} 箱", m["colli"]))
+    if m.get("amount"):
+        parts.append(f"€{m['amount']:g}")
+    if m.get("pallets"):
+        parts.append(t("{0:g} 板（{1:g} 箱/板）", m["pallets"], m["per_pallet"]) if m.get("per_pallet")
+                     else t("{0:g} 板（每板箱数没填）", m["pallets"]))
+    if m.get("multiple"):
+        parts.append(t("{0:g} 箱的倍数", m["multiple"]))
+    return parts
+
+
+# ---------------------------------------------------------------------
+# 和 suppliers_config.json（supplier_details：数据库供应商 ID → 名字、起订金额 …）对应
+# ---------------------------------------------------------------------
+def _letters(s):
+    return re.sub(r"[^A-Z]", "", _norm(s))
+
+
+def match_config_supplier(name, company, details):
+    """
+    SCHEDA 的供应商（文件名里的短名 + 公司名）→ suppliers_config.json 里的供应商 ID（字符串）；对不上返回 None。
+    短名里的每个词都要在配置的名字里找到（允许拼错一两个字母，例如 INDUSTRIAUMBRA / INDUSTRAUMBRA），
+    只对上一部分（FHP(VILEDA) 只对上 FHP）不算，交给用户自己选。
+    """
+    import difflib
+    mine = _name_tokens(name) or ({_letters(name)} if _letters(name) else set())
+    if not mine:
+        return None
+    best, best_score, tie = None, 0.0, False
+    for sid, d in (details or {}).items():
+        cname = d.get("name", "")
+        ctoks = _name_tokens(cname) | {w for w in re.findall(r"[A-Z]+", _norm(cname))}
+        joined = _letters(cname)
+        hit = 0
+        for tkn in mine:
+            if tkn in ctoks or (len(tkn) >= 4 and tkn in joined) or \
+                    any(len(c) >= 4 and difflib.SequenceMatcher(None, tkn, c).ratio() >= 0.85 for c in ctoks):
+                hit += 1
+        score = hit / len(mine)
+        if company and _letters(company) and _letters(company) == joined:
+            score = 2.0
+        if score > best_score + 1e-9:
+            best, best_score, tie = sid, score, False
+        elif score > 0 and abs(score - best_score) < 1e-9:
+            tie = True
+    if best is None or tie or best_score < 0.6 or (best_score < 0.99 and len(mine) < 3):
+        return None
+    return best
+
+
+def load_suppliers_config(path):
+    import json
+    with open(path, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def save_config_moq(path, supplier_id, m, scheda_name=""):
+    """把手动改的起订量写进 suppliers_config.json 的 supplier_details[ID]（min_order_amount 等），保持原来的格式"""
+    import json
+    cfg = load_suppliers_config(path)
+    d = cfg.setdefault("supplier_details", {}).get(str(supplier_id))
+    if d is None:
+        raise KeyError(f"suppliers_config.json 里没有供应商 {supplier_id}")
+    amt = float(m.get("amount") or 0)
+    d["min_order_amount"] = int(amt) if amt == int(amt) else amt
+    for key, src in (("min_order_colli", "colli"), ("min_order_pallets", "pallets"), ("colli_per_pallet", "per_pallet")):
+        v = float(m.get(src) or 0)
+        if v or key in d:
+            d[key] = int(v) if v == int(v) else v
+    if scheda_name:
+        d["scheda_name"] = scheda_name
+    cfg["last_updated"] = datetime.now().strftime("%Y-%m-%d")
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8", newline="") as f:
+        json.dump(cfg, f, ensure_ascii=False, indent=4)
+    os.replace(tmp, path)
+    return d
+
+
 def list_schede(root, day=None):
     """采购配单文件夹里的 SCHEDA 文件：[(星期, 路径)]"""
     out = []
@@ -80,31 +317,26 @@ def list_schede(root, day=None):
 # =====================================================================
 # 读取 SCHEDA
 # =====================================================================
-def parse_scheda(path):
+def parse_scheda(path, overrides=None):
     """
-    返回 {"path", "name", "company", "moq_colli", "moq_amount", "moq_text",
+    返回 {"path", "name", "company", "moq": {...}, "moq_colli", "moq_amount",
           "items": [{row, code, ean, desc, pack, price}], "sheets": {门店号: 工作表名}, "header_row", "cols"}
+    overrides: {供应商名: 手动改的起订量}（settings.json → store_orders.moq_override）
     """
     from openpyxl import load_workbook
     wb = load_workbook(path, read_only=True, data_only=True)
     try:
-        info = {"path": path, "name": supplier_short_name(path), "company": "", "moq_colli": 0.0,
-                "moq_amount": 0.0, "moq_text": "", "items": [], "sheets": {}, "warnings": []}
+        name = supplier_short_name(path)
+        info = {"path": path, "name": name, "company": "", "items": [], "sheets": {}, "warnings": []}
         ana = next((ws for ws in wb.worksheets if "ANAGRAFICA" in ws.title.upper()), None)
-        if ana is not None:
-            for r in ana.iter_rows(min_row=1, max_row=60, max_col=4, values_only=True):
-                label = _norm(r[1] if len(r) > 1 else "")
-                val = r[2] if len(r) > 2 else None
-                if label.startswith("RAGIONE SOCIALE"):
-                    info["company"] = str(val or "").strip()
-                elif label.startswith("MINIMO ORDINE VOLUME"):
-                    info["moq_colli"] = _first_number(val)
-                    info["moq_text"] += f"{val} " if val not in (None, "") else ""
-                elif label.startswith("MINIMO ORDINE IMPORTO"):
-                    info["moq_amount"] = _first_number(val)
-                    info["moq_text"] += f"€{val}" if val not in (None, "") else ""
-        else:
+        m = read_moq(ana, name)
+        info["company"] = m["company"]
+        info["moq_file"] = m
+        set_moq(info, apply_override(m, (overrides or {}).get(name)))
+        if ana is None:
             info["warnings"].append("没有 SCHEDA ANAGRAFICA FORNITORI 页，读不到起订量")
+        elif m["uncertain"] and info["moq"]["source"] == "file":
+            info["warnings"].append(f"起订量拿不准（文件里写的是：{m['raw']}），请在起订量那一格点开确认")
         titles = {ws.title.strip().upper(): ws.title for ws in wb.worksheets}
         for sid, name in STORE_SHEETS.items():
             if name in titles:
@@ -179,36 +411,32 @@ def parse_scheda(path):
 
 
 def parse_moq(path):
-    """只读起订量（列表里显示用，比 parse_scheda 快）：返回 (箱数, 金额, 公司名)"""
+    """只读起订量（列表里显示用，比 parse_scheda 快）：返回文件里读到的 moq dict（还没套手动修改）"""
     from openpyxl import load_workbook
     wb = load_workbook(path, read_only=True, data_only=True)
     try:
-        mc = ma = 0.0
-        company = ""
         ana = next((ws for ws in wb.worksheets if "ANAGRAFICA" in ws.title.upper()), None)
-        if ana is not None:
-            for r in ana.iter_rows(min_row=1, max_row=60, max_col=4, values_only=True):
-                label = _norm(r[1] if len(r) > 1 else "")
-                val = r[2] if len(r) > 2 else None
-                if label.startswith("RAGIONE SOCIALE"):
-                    company = str(val or "").strip()
-                elif label.startswith("MINIMO ORDINE VOLUME"):
-                    mc = _first_number(val)
-                elif label.startswith("MINIMO ORDINE IMPORTO"):
-                    ma = _first_number(val)
-        return mc, ma, company
+        return read_moq(ana, supplier_short_name(path))
     finally:
         wb.close()
 
 
-def moq_text(mc, ma):
-    return " / ".join(x for x in ((f"{mc:g} 箱" if mc else ""), (f"€{ma:g}" if ma else "")) if x) or "无"
+def moq_text(m):
+    """汇总表 / 日志用（中文）"""
+    return " / ".join(moq_parts(m)) or "无"
 
 
-def moq_label(mc, ma):
-    """界面显示用（翻译后）"""
+def moq_label(m, mark=True):
+    """界面显示用（翻译后）；手动改过的前面加 ✎，拿不准的后面加 ⚠"""
     from i18n import tr
-    return " / ".join(x for x in ((tr("{0:g} 箱", mc) if mc else ""), (f"€{ma:g}" if ma else "")) if x) or tr("无")
+    if m is None:
+        return "…"
+    s = " / ".join(moq_parts(m, tr)) or tr("无")
+    if mark and m.get("source") == "manual":
+        s = "✎ " + s
+    elif mark and m.get("uncertain"):
+        s += " ⚠"
+    return s
 
 
 # =====================================================================
@@ -241,9 +469,11 @@ def demand_by_store(db, schede, stores, days_list, reorder_cycle, use_supplier_c
     for k, sid in enumerate(stores):
         if on_store:
             on_store(k, sid)      # 进度：第 k 家门店开始查
-        # 不按数据库箱规取整：箱数按 SCHEDA 的每箱件数换算（base_colli / plan_supplier）
+            # 新算法：不按数据库箱规取整，箱数按 SCHEDA 的每箱件数智能取整（colli_for）
+        # 原程序算法：建议件数完全按原程序算（含按数据库箱规取整），再按 SCHEDA 每箱件数换成箱
+        v2 = bool(algo) and algo.get("engine") == "v2"
         df = R.compute_suggestions(db, sid, codes, days_list, reorder_cycle, None,
-                                   use_supplier_cycles=use_supplier_cycles, round_to_db_pack=False, algo=algo)
+                                   use_supplier_cycles=use_supplier_cycles, round_to_db_pack=not v2, algo=algo)
         d = {}
         for _, r in df.iterrows():
             code = str(int(r["CodArticolo"]))
@@ -268,7 +498,7 @@ def demand_by_store(db, schede, stores, days_list, reorder_cycle, use_supplier_c
 
 
 def colli_for(d, pack, algo=None):
-    """建议件数 → SCHEDA 箱数。新算法：智能取整（零头够多才多订一箱）；原算法：向上取整"""
+    """建议件数 → SCHEDA 箱数。新算法：智能取整（零头够多才多订一箱）；原程序算法：件数（已按原程序取整）÷ 每箱件数，向上取整"""
     if not d or d["sugg"] <= 0:
         return 0
     if algo and algo.get("engine") == "v2":
@@ -731,6 +961,17 @@ def write_order_file(scheda, per_store_lines, out_path):
     return out_path
 
 
+def written_source(w, result=None):
+    """生成的文件是哪个 SCHEDA 的：新版本记在第 7 项；老结果（只有 6 项）按「星期文件夹 + 供应商名」找回来"""
+    if len(w) > 6:
+        return w[6]
+    day = os.path.basename(os.path.dirname(w[0]))
+    for d, sc, _ in (result or {}).get("results", []):
+        if sc["name"] == w[1] and d == day:
+            return sc["path"]
+    return None
+
+
 def write_plans(results, out_root, date_tag=None, on_file=None):
     """
     results: [(星期, scheda, plan)]。每家直接送店的门店一个文件，BMS 一个文件。
@@ -750,13 +991,13 @@ def write_plans(results, out_root, date_tag=None, on_file=None):
                 p = os.path.join(folder, f"Ordine_{safe}_{STORE_SHEETS[sid]}_{date_tag}.xlsx")
                 on_file(len(written), total, os.path.basename(p))
                 write_order_file(sc, {sid: st["lines"]}, p)
-                written.append((p, sc["name"], STORE_SHEETS[sid], st["colli"], st["amount"], st["status"]))
+                written.append((p, sc["name"], STORE_SHEETS[sid], st["colli"], st["amount"], st["status"], sc["path"]))
         b = plan.get("bms")
         if bms_ordered(b):        # BMS 不够起订量的不生成文件（这次不订）
             p = os.path.join(folder, f"Ordine_{safe}_{BMS}_{date_tag}.xlsx")
             on_file(len(written), total, os.path.basename(p))
             write_order_file(sc, b["per_store"], p)
-            written.append((p, sc["name"], BMS, b["colli"], b["amount"], b["status"]))
+            written.append((p, sc["name"], BMS, b["colli"], b["amount"], b["status"], sc["path"]))
     return written
 
 
@@ -855,7 +1096,7 @@ def export_summary(results, path, demand=None, base=None, edited=None, days_list
     for c in ws[1]:
         c.font = Font(bold=True)
     for day, sc, plan in results:
-        cond = moq_text(sc["moq_colli"], sc["moq_amount"])
+        cond = moq_text(sc_moq(sc))
         for sid, st in plan["stores"].items():
             ws.append([day, sc["name"], cond, STORE_SHEETS[sid], st["colli"], round(st["amount"], 2),
                        status_text(STORE_SHEETS[sid], st["status"]), sum(n for _, n, _ in st["added"]) or None,
@@ -941,7 +1182,7 @@ ALLOCATE_STEPS = ["判断起订量、凑单和 BMS", "生成订单文件", "生�
 
 
 def compute(db, schede_paths, stores, days_list, reorder_cycle, log=print, use_supplier_cycles=True, algo=None,
-            progress=None, cancel=None):
+            progress=None, cancel=None, moq_overrides=None):
     """
     返回 {"schede", "demand", "base", "missing", "errors"}；base = {路径: {门店号: {行号: 建议箱数}}}
     progress(步骤下标, 状态, 计数, 说明, 总百分比)；cancel() 返回 True 时抛出取消
@@ -955,10 +1196,10 @@ def compute(db, schede_paths, stores, days_list, reorder_cycle, log=print, use_s
             raise InterruptedError("cancelled")
         progress(0, "running", f"{i + 1} / {len(schede_paths)}", os.path.basename(p), 30.0 * i / n)
         try:
-            sc = parse_scheda(p)
+            sc = parse_scheda(p, moq_overrides)
             sc["day"] = day
             schede.append(sc)
-            log(f"读取 {os.path.basename(p)}：{len(sc['items'])} 个商品，起订 {moq_text(sc['moq_colli'], sc['moq_amount'])}")
+            log(f"读取 {os.path.basename(p)}：{len(sc['items'])} 个商品，起订 {moq_text(sc_moq(sc))}")
             for w in sc["warnings"]:
                 log(f"  ⚠ {w}")
         except Exception as e:
@@ -1019,12 +1260,15 @@ def allocate(calc, colli, fill, out_root, log=print, date_tag=None, edited=None,
 
 
 def reallocate_one(calc, colli, fill, result, index, mode, edited=None, log=print):
-    """配货结果页手动改一个供应商的去向：重新配这一家，删掉它在这次文件夹里的旧文件、写新文件，重做汇总表。"""
+    """
+    配货结果页手动改一个供应商的去向：重新配这一家，删掉它在这次文件夹里的旧文件、写新文件，重做汇总表。
+    只删这一个 SCHEDA（这个星期的这家供应商）的文件：同一家供应商在别的星期也有 SCHEDA 时不能动它的文件。
+    """
     day, sc, _old = result["results"][index]
     plan = plan_supplier(sc, calc["demand"], fill, calc["stores"], colli.get(sc["path"], {}), mode)
     keep = []
     for w in result["written"]:
-        if w[1] == sc["name"]:
+        if written_source(w, result) == sc["path"]:
             try:
                 os.remove(w[0])
             except OSError:
@@ -1035,8 +1279,8 @@ def reallocate_one(calc, colli, fill, result, index, mode, edited=None, log=prin
     new = write_plans([(day, sc, plan)], result["out_root"], date_tag)
     results = list(result["results"])
     results[index] = (day, sc, plan)
-    order = {id(x[1]): k for k, x in enumerate(results)}
-    written = sorted(keep + new, key=lambda w: next((order[id(s_)] for _, s_, _ in results if s_["name"] == w[1]), 0))
+    order = {x[1]["path"]: k for k, x in enumerate(results)}
+    written = sorted(keep + new, key=lambda w: order.get(written_source(w, result), 0))
     export_summary(results, result["summary"], calc["demand"], calc["base"], edited, calc.get("days"))
     log(f"手动调整 {sc['name']}：{mode}，生成 {len(new)} 个文件")
     return dict(result, results=results, written=written)

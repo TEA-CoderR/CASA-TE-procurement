@@ -213,6 +213,9 @@ def algo_widgets(page, ui):
                     w._tip0 = w.toolTip()
                 w.setEnabled(v1)
                 w.setToolTip(w._tip0 if v1 else tr("新算法按「算法设置」里的下单间隔和到货天数算，不用订货周期"))
+        # 原程序算法严格按原程序算，「算法设置」里的参数（服务水平、到货天数 …）都用不到
+        btn.setEnabled(not v1)
+        btn.setToolTip(tr("原程序算法严格按原程序计算，不用填算法设置") if v1 else "")
 
     def open_dialog():
         if AlgoDialog(page.win, page.settings).exec():

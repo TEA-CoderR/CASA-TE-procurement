@@ -183,6 +183,105 @@ class FillDialog(QDialog):
         self.accept()
 
 
+class MoqDialog(QDialog):
+    """修改一家供应商的起订量（文件里读错了自己改）；保存到 settings.json，选了对应供应商的话同时写进 suppliers_config.json"""
+
+    def __init__(self, page, name, path, file_m, override):
+        super().__init__(page.win)
+        self.setWindowTitle(tr("起订量 · {0}", name))
+        self.result_override = override
+        cur = S.apply_override(file_m, override)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(20, 18, 20, 16)
+        lay.setSpacing(10)
+        t = QLabel(name)
+        t.setObjectName("Section")
+        lay.addWidget(t)
+        info = QLabel(tr("文件：{0}", os.path.basename(path)) + "\n" +
+                      tr("文件里写的起订量：{0}", file_m.get("raw") or tr("（空）")) + "\n" +
+                      tr("程序读到：{0}", S.moq_label(dict(file_m, source="file"))))
+        info.setObjectName("Faint")
+        info.setWordWrap(True)
+        info.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        lay.addWidget(info)
+        g = QGridLayout()
+        g.setSpacing(8)
+
+        def spin(v, decimals=0, top=1000000):
+            w = QDoubleSpinBox()
+            w.setDecimals(decimals)
+            w.setRange(0, top)
+            w.setValue(float(v or 0))
+            w.setFixedWidth(110)
+            return w
+
+        self.w_colli = spin(cur.get("colli"))
+        self.w_amount = spin(cur.get("amount"), 2)
+        self.w_pallets = spin(cur.get("pallets"), 1)
+        self.w_per = spin(cur.get("per_pallet"))
+        self.w_mult = spin(cur.get("multiple"))
+        rows = ((tr("起订箱数"), self.w_colli, tr("0 = 不按箱数")),
+                (tr("起订金额 €"), self.w_amount, tr("0 = 不按金额")),
+                (tr("起订板数"), self.w_pallets, tr("按板（BANCALE / PEDANE）起订时填")),
+                (tr("每板多少箱"), self.w_per, tr("按板起订时必须填，否则判断不了够不够")),
+                (tr("按几箱的倍数订"), self.w_mult, tr("只做提示，不影响配货判断")))
+        for r, (lab, w, hint) in enumerate(rows):
+            g.addWidget(QLabel(lab), r, 0)
+            g.addWidget(w, r, 1)
+            h = QLabel(hint)
+            h.setObjectName("Faint")
+            g.addWidget(h, r, 2)
+        lay.addLayout(g)
+        self.w_note = QLineEdit((override or {}).get("note", ""))
+        self.w_note.setPlaceholderText(tr("备注（可不填）"))
+        lay.addWidget(self.w_note)
+
+        # suppliers_config.json 里对应的供应商
+        cl = QLabel(tr("同时写进配置文件 suppliers_config.json 的供应商："))
+        lay.addWidget(cl)
+        self.w_cfg = QComboBox()
+        self.w_cfg.addItem(tr("不写进配置文件"), "")
+        details = {}
+        try:
+            from fenpei.config import SUPPLIERS_CONFIG_FILE
+            details = S.load_suppliers_config(SUPPLIERS_CONFIG_FILE).get("supplier_details", {})
+        except Exception as e:
+            cl.setText(tr("读不了 suppliers_config.json：{0}", e))
+        for sid, d in sorted(details.items(), key=lambda kv: kv[1].get("name", "")):
+            self.w_cfg.addItem(tr("{0}（ID {1}）· 现在起订 €{2}", d.get("name", ""), sid, d.get("min_order_amount", "—")), sid)
+        guess = (override or {}).get("config_id") or S.match_config_supplier(name, file_m.get("company"), details)
+        self.w_cfg.setCurrentIndex(max(0, self.w_cfg.findData(guess or "")))
+        lay.addWidget(self.w_cfg)
+        h2 = QLabel(tr("会更新这个供应商的 min_order_amount（起订金额），按箱 / 按板的也一起记下。"))
+        h2.setObjectName("Faint")
+        h2.setWordWrap(True)
+        lay.addWidget(h2)
+
+        bb = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        self.btn_reset = bb.addButton(tr("恢复成文件里的值"), QDialogButtonBox.ResetRole)
+        self.btn_reset.setEnabled(override is not None)
+        self.btn_reset.clicked.connect(self._reset)
+        bb.accepted.connect(self._save)
+        bb.rejected.connect(self.reject)
+        lay.addWidget(bb)
+        self.setMinimumWidth(560)
+
+    def _save(self):
+        if self.w_pallets.value() and not self.w_per.value():
+            if QMessageBox.question(self, tr("起订量"), tr("按板起订但没填每板多少箱，程序判断不了够不够起订量，"
+                                                         "这家会一直算作「不够」。仍然保存？")) != QMessageBox.Yes:
+                return
+        self.result_override = {"colli": self.w_colli.value(), "amount": self.w_amount.value(),
+                                "pallets": self.w_pallets.value(), "per_pallet": self.w_per.value(),
+                                "multiple": self.w_mult.value(), "note": self.w_note.text().strip(),
+                                "config_id": self.w_cfg.currentData() or ""}
+        self.accept()
+
+    def _reset(self):
+        self.result_override = None
+        self.accept()
+
+
 # =====================================================================
 # 页面
 # =====================================================================
@@ -191,11 +290,12 @@ class StoreOrderPage:
         self.win, self.settings, self.ui = win, settings, ui
         self.cfg = settings.setdefault("store_orders", {})
         self.files = []          # [(星期, 路径)]
-        self.moq = {}            # 路径 → (箱, 金额, 公司)
+        self.moq = {}            # 路径 → 文件里读到的起订量（S.read_moq 的 dict，还没套手动修改）
         self.calc = None         # S.compute() 的结果
         self.colli = {}          # {路径: {门店号: {行号: 箱数}}}（当前值，含手动修改）
         self.edited = set()      # {(路径, 门店号, 行号)}
         self.result = None
+        self.result_sig = None     # 配货时的输入（箱数、勾选、配货设置、起订量）；返回修改后没变 → 直接回结果页
         self.alloc_on = set()      # 起订量检查里勾选、要配货的供应商（SCHEDA 路径）
         self.running = False
         self.list_token = 0
@@ -329,6 +429,8 @@ class StoreOrderPage:
         self.ftable.setItemDelegateForColumn(3, DotsDelegate(self.ftable))
         self.ftable.verticalHeader().setDefaultSectionSize(40)
         self.ftable.itemChanged.connect(self._item_changed)
+        self.ftable.cellClicked.connect(lambda r, c: c == 2 and 0 <= r < len(self.files) and self.edit_moq(self.files[r][1]))
+        self.ftable.horizontalHeaderItem(2).setToolTip(tr("点起订量那一格可以修改（读错了自己改，会保存）"))
         self.ftable.setMinimumHeight(420)
         lv.addWidget(self.ftable, 1)
         hint = QLabel(tr("不再合作的供应商取消勾选，下次会记住"))
@@ -414,6 +516,7 @@ class StoreOrderPage:
         self.mtable.horizontalHeaderItem(3 + len(S.STORE_SHEETS)).setToolTip(
             tr("不够单独送店的门店合起来由 BMS 订（含同仓并单、借货、凑单之后）"))
         self.mtable.horizontalHeaderItem(0).setToolTip(tr("勾选的供应商才会配货、生成订单"))
+        self.mtable.horizontalHeaderItem(2).setToolTip(tr("点起订量那一格可以修改（读错了自己改，会保存）"))
         self.mtable.verticalHeader().setDefaultSectionSize(40)
         mh_ = self.mtable.horizontalHeader()
         mh_.setSectionResizeMode(QHeaderView.ResizeToContents)
@@ -628,8 +731,11 @@ class StoreOrderPage:
         self.btn_recalc.setVisible(bool(self.calc) and not in_result)
         self.btn_back.setVisible(in_result)
         self.btn_fill.setVisible(not in_result)
+        unchanged = self._result_current()
         if in_result:
             self.btn_main.setText(tr("完成，回到工作台"))
+        elif unchanged:
+            self.btn_main.setText(tr("回到配货结果  →"))
         elif self.calc:
             n_on, n_all = len(self.alloc_on), len(self.calc["schede"])
             self.btn_main.setText(tr("开始配货  →") if n_on == n_all else tr("配货 {0} 家  →", n_on))
@@ -643,6 +749,8 @@ class StoreOrderPage:
         fc = self.fill_cfg()
         if in_result:
             self.bar_text.setText(tr("订单文件已生成；要改的话点「返回修改」再配货一次（会另存为新的一次，不覆盖这次的文件）"))
+        elif unchanged:
+            self.bar_text.setText(tr("和上次配货相比没有改动，点「回到配货结果」直接回去，不用重新配货；改了箱数、勾选或配货设置后会重新配货"))
         else:
             self.bar_text.setText(tr("凑单：金额差 ≤ €{0:g} · 箱数差 ≤ {1} · 凑后最多够卖 {2} 天 · 订单放到 {3}\\第几次_时间",
                                      fc["max_amount_gap"], fc["max_colli_gap"], fc["max_stock_days"],
@@ -652,6 +760,8 @@ class StoreOrderPage:
         if self.views.currentIndex() == 1:
             self.win.go_page("home")
             self._show_view(0)
+        elif self._result_current():
+            self._show_view(1)
         elif self.calc:
             self.start_allocate()
         else:
@@ -706,9 +816,9 @@ class StoreOrderPage:
         t.setRowCount(len(self.files))
         for i, (d, p) in enumerate(self.files):
             name = S.supplier_short_name(p)
-            mc, ma, comp = self.moq.get(p, (None, None, ""))
-            self.ui.table_set_row(t, i, ["", name, S.moq_label(mc, ma) if mc is not None else "…", "", tr(d)])
-            t.item(i, 1).setToolTip(f"{comp}\n{os.path.basename(p)}" if comp else os.path.basename(p))
+            m = self.moq_of(p)
+            self.ui.table_set_row(t, i, ["", name, S.moq_label(m), "", tr(d)])
+            self._moq_tip(i, p)
             f = t.item(i, 1).font()
             f.setBold(True)
             t.item(i, 1).setFont(f)
@@ -736,8 +846,8 @@ class StoreOrderPage:
                 for p in todo:
                     try:
                         self.moq[p] = S.parse_moq(p)
-                    except Exception:
-                        self.moq[p] = (0.0, 0.0, tr("读不出来"))
+                    except Exception as e:
+                        self.moq[p] = dict(S.read_moq(None), raw=tr("读不出来：{0}", e))
                 self.sig.listed.emit(token)
 
             threading.Thread(target=work, daemon=True).start()
@@ -751,9 +861,8 @@ class StoreOrderPage:
         t.blockSignals(True)
         for i, (_, p) in enumerate(self.files):
             if p in self.moq:
-                mc, ma, comp = self.moq[p]
-                t.item(i, 2).setText(S.moq_label(mc, ma))
-                t.item(i, 1).setToolTip(f"{comp}\n{os.path.basename(p)}")
+                t.item(i, 2).setText(S.moq_label(self.moq_of(p)))
+                self._moq_tip(i, p)
         t.blockSignals(False)
         if hasattr(self.win, "dashboard"):
             self.win.dashboard.refresh()
@@ -858,7 +967,7 @@ class StoreOrderPage:
             try:
                 db = R.make_db(dbs)
                 calc = S.compute(db, chosen, stores, days, cycle, log=lambda m: log("[门店配货] " + m),
-                                 use_supplier_cycles=use_cfg, algo=algo,
+                                 use_supplier_cycles=use_cfg, algo=algo, moq_overrides=dict(self.moq_overrides()),
                                  progress=lambda i, st, cnt, det, pct: (dlg.post_step(i, st, cnt, det), dlg.post_progress(pct)),
                                  cancel=lambda: dlg.cancel_event.is_set())
                 db.engine.dispose()
@@ -892,6 +1001,7 @@ class StoreOrderPage:
         # 默认只勾选订得起来的供应商：有门店单独够起订量（含凑单），或合起来够 BMS 起订量
         self.alloc_on = {sc["path"] for sc in calc["schede"] if self._orderable(self._preview(sc))}
         self.result = None
+        self.result_sig = None
         self._refresh_matrix()
         if self.detail_win is not None:
             self.detail_win.load()
@@ -999,7 +1109,7 @@ class StoreOrderPage:
             on = sc["path"] in self.alloc_on
             plan = self._preview(sc)
             self._plans[sc["path"]] = plan
-            vals = ["", f"{sc['name']}（{tr(sc['day'])}）", S.moq_label(sc["moq_colli"], sc["moq_amount"])]
+            vals = ["", f"{sc['name']}（{tr(sc['day'])}）", S.moq_label(S.sc_moq(sc))]
             states = []
             rc = ra = 0.0
             for sid in S.STORE_SHEETS:
@@ -1096,6 +1206,9 @@ class StoreOrderPage:
         path = ALL if row == len(self.calc["schede"]) else self.calc["schede"][row]["path"]
         if col == 0:
             return
+        if col == 2 and path != ALL:
+            self.edit_moq(path)
+            return
         stores = list(S.STORE_SHEETS)
         sid = stores[col - 3] if 3 <= col < 3 + len(stores) else ALL     # BMS / 合计列：这家供应商全部门店
         self.open_detail(path, sid)
@@ -1141,6 +1254,7 @@ class StoreOrderPage:
             return
         fill = self.fill_cfg()
         keep = {sc["path"] for sc in chosen}
+        sig = self._alloc_sig()
         calc = dict(self.calc, schede=chosen)
         colli = {p: v for p, v in copy.deepcopy(self.colli).items() if p in keep}
         edited = {k for k in self.edited if k[0] in keep}
@@ -1157,6 +1271,7 @@ class StoreOrderPage:
                 res = S.allocate(calc, colli, fill, out_root, log=lambda m: log("[门店配货] " + m), edited=edited,
                                  progress=lambda i, st, cnt, det, pct: (dlg.post_step(i, st, cnt, det), dlg.post_progress(pct)))
                 dlg.post_finished(True, tr("生成 {0} 个订单文件", len(res["written"])))
+                res["sig"] = sig
                 self.sig.done.emit((res, None))
             except Exception as e:
                 import traceback
@@ -1175,6 +1290,7 @@ class StoreOrderPage:
             self.win.notify(tr("门店配货失败：{0}", err))
             return
         self.result = res
+        self.result_sig = res.get("sig")
         self._fill_result()
         self._show_view(1)
         self.win.show_toast(tr("门店配货完成：{0} 个订单文件", len(res["written"])))
@@ -1231,10 +1347,10 @@ class StoreOrderPage:
 
         # 表格
         rows, self.row_files = [], []
-        files = {(w[1], w[2]): w[0] for w in res["written"]}
+        files = {(S.written_source(w, res), w[2]): w[0] for w in res["written"]}
         for day, sc, plan in res["results"]:
             items = {it["row"]: it for it in sc["items"]}
-            moq = S.moq_label(sc["moq_colli"], sc["moq_amount"])
+            moq = S.moq_label(S.sc_moq(sc))
             for sid, st in plan["stores"].items():
                 if st["status"] == "none":
                     continue
@@ -1251,7 +1367,7 @@ class StoreOrderPage:
                 if st["status"] == "merged":
                     notes.append(tr("和 BMS 同一个仓库，整单并进 BMS"))
                 rows.append((tr(day), sc["name"], moq, name, st, st["status"], "；".join(x for x in notes if x)))
-                self.row_files.append(files.get((sc["name"], name)))
+                self.row_files.append(files.get((sc["path"], name)))
             b = plan.get("bms")
             if b:
                 note = tr("合并：") + tr("、").join(S.STORE_SHEETS[s] for s in b["stores"])
@@ -1266,7 +1382,7 @@ class StoreOrderPage:
                 if "manual" in b.get("how", []):
                     note += "；" + tr("手动选择：全部并入 BMS")
                 rows.append((tr(day), sc["name"], moq, S.BMS, b, b["status"], note))
-                self.row_files.append(files.get((sc["name"], S.BMS)))
+                self.row_files.append(files.get((sc["path"], S.BMS)))
         t = self.rtable
         t.setRowCount(len(rows))
         kind = {"direct": "ok", "filled": "accent", "bms": "gray", "short": "err", "merged": "gray", "dropped": "gray",
@@ -1341,7 +1457,7 @@ class StoreOrderPage:
             btn.setChecked(m == mode)
         self.mode_note.setText(tr("已手动修改，订单文件已按这个重新生成") if mode != "auto" else
                                tr("点上面的选项会马上重新生成这家的订单文件（只改这一家）"))
-        set_chip(self.route_moq, tr("起订量 {0}", S.moq_label(sc["moq_colli"], sc["moq_amount"])), "accent")
+        set_chip(self.route_moq, tr("起订量 {0}", S.moq_label(S.sc_moq(sc))), "accent")
         self.route_title.setText(tr("{0} 配货路线", sc["name"]))
 
         def node(title, sub, kind=None, strong=False):
@@ -1449,8 +1565,104 @@ class StoreOrderPage:
         self._update_state()
         self.win.show_toast(tr("{0} 已按「{1}」重新生成订单文件", sc["name"], self.mode_btns[mode].text()))
 
+    # =================================================================
+    # 返回修改：判断和上次配货相比有没有改动
+    # =================================================================
+    def _alloc_sig(self):
+        """配货的全部输入：勾选的供应商、每个供应商每家店的箱数、配货设置、起订量"""
+        if not self.calc:
+            return None
+        on = sorted(self.alloc_on)
+        colli = tuple((p, tuple(sorted((sid, tuple(sorted((r, n) for r, n in lines.items() if n)))
+                                       for sid, lines in self.colli.get(p, {}).items())))
+                      for p in on)
+        moq = tuple((sc["path"], sc.get("moq_colli"), sc.get("moq_amount")) for sc in self.calc["schede"]
+                    if sc["path"] in self.alloc_on)
+        return repr((on, colli, sorted(self.fill_cfg().items()), moq, id(self.calc)))
+
+    def _result_current(self):
+        """有配货结果，而且回来以后什么都没改"""
+        return bool(self.result and self.calc and self.result_sig is not None
+                    and self.views.currentIndex() == 0 and self._alloc_sig() == self.result_sig)
+
+    # =================================================================
+    # 起订量：手动修改
+    # =================================================================
+    def moq_overrides(self):
+        return self.cfg.setdefault("moq_override", {})
+
+    def moq_of(self, path):
+        """这个 SCHEDA 现在用的起订量（文件里读的 + 手动修改）；还没读出来返回 None"""
+        m = self.moq.get(path)
+        if m is None:
+            return None
+        return S.apply_override(m, self.moq_overrides().get(S.supplier_short_name(path)))
+
+    def _moq_tip(self, i, p):
+        t = self.ftable
+        m = self.moq.get(p) or {}
+        lines = [os.path.basename(p)]
+        if m.get("company"):
+            lines.insert(0, m["company"])
+        if m.get("raw"):
+            lines.append(tr("文件里写的起订量：{0}", m["raw"]))
+        t.item(i, 1).setToolTip("\n".join(lines))
+        cur = self.moq_of(p) or {}
+        tip = tr("点一下修改起订量")
+        if cur.get("source") == "manual":
+            tip = tr("已手动修改（文件里写的是：{0}）", m.get("raw") or tr("无")) + "\n" + tip
+        elif cur.get("uncertain"):
+            tip = tr("拿不准，请确认（文件里写的是：{0}）", m.get("raw") or tr("无")) + "\n" + tip
+        if t.item(i, 2):
+            t.item(i, 2).setToolTip(tip)
+
+    def edit_moq(self, path):
+        name = S.supplier_short_name(path)
+        file_m = self.moq.get(path)
+        if file_m is None:
+            try:
+                file_m = self.moq[path] = S.parse_moq(path)
+            except Exception as e:
+                QMessageBox.warning(self.win, tr("起订量"), tr("读不出这个 SCHEDA：{0}", e))
+                return
+        dlg = MoqDialog(self, name, path, file_m, self.moq_overrides().get(name))
+        if not dlg.exec():
+            return
+        ov = dlg.result_override
+        if ov is None:
+            self.moq_overrides().pop(name, None)
+        else:
+            self.moq_overrides()[name] = ov
+        save_settings(self.settings)
+        msg = tr("{0} 的起订量已保存", name)
+        if ov is not None and ov.get("config_id"):
+            try:
+                from fenpei.config import SUPPLIERS_CONFIG_FILE, AppConfig
+                S.save_config_moq(SUPPLIERS_CONFIG_FILE, ov["config_id"], ov, name)
+                AppConfig._suppliers_config = None          # 下次重新读
+                msg += tr("，也已写进 suppliers_config.json")
+            except Exception as e:
+                QMessageBox.warning(self.win, tr("起订量"), tr("已保存到程序设置，但写 suppliers_config.json 失败：{0}", e))
+        self.win.log("[门店配货] " + msg + "：" + S.moq_text(S.apply_override(file_m, ov)))
+        # 列表、起订量检查马上按新的起订量刷新（不用重新计算）
+        for i, (_, p) in enumerate(self.files):
+            if S.supplier_short_name(p) == name and self.ftable.item(i, 2):
+                self.ftable.blockSignals(True)
+                self.ftable.item(i, 2).setText(S.moq_label(self.moq_of(p)))
+                self._moq_tip(i, p)
+                self.ftable.blockSignals(False)
+        if self.calc:
+            for sc in self.calc["schede"]:
+                if sc["name"] == name:
+                    S.set_moq(sc, S.apply_override(sc.get("moq_file") or file_m, ov))
+            self._refresh_matrix()
+        self._update_state()
+        self.win.show_toast(msg)
+
     def _gap_note(self, sc, st):
         parts = []
+        if S.pallet_unknown(sc):
+            return tr("按板起订，还没填每板几箱（点起订量修改）")
         if sc["moq_colli"] and st["colli"] < sc["moq_colli"]:
             parts.append(tr("差 {0:g} 箱", sc["moq_colli"] - st["colli"]))
         if sc["moq_amount"] and st["amount"] < sc["moq_amount"]:

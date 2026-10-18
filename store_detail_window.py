@@ -7,13 +7,14 @@ import math
 import os
 from datetime import datetime
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QColor, QFontMetrics
 from PySide6.QtWidgets import (QSizePolicy, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QPushButton, QComboBox,
                                QLineEdit, QFrame, QTableWidgetItem, QAbstractItemView, QHeaderView, QButtonGroup,
-                               QScrollArea, QFileDialog, QMessageBox)
+                               QScrollArea, QFileDialog, QMessageBox, QMenu)
 
 from i18n import tr
+from settings import save_settings
 from theme import T, num_font
 from erp_widgets import ToolWindow, Sparkline
 import store_orders as S
@@ -63,9 +64,10 @@ def explain(x, it, algo):
     if not x:
         return tr("数据库里找不到这个商品，没有建议量；需要的话手动填箱数。")
     pack = it["pack"] or 1
-    if x.get("target") is None:       # 原程序算法
-        return tr("原程序算法：日均 {0:.2f} 件 × 订货周期 {1} 天 × 系数，减去本店库存，得到建议 {2} 件；按每箱 {3:g} 件换成箱数。",
-                  x.get("daily") or 0, x.get("cycle") or "?", x["sugg"], pack)
+    if x.get("target") is None:       # 原程序算法：完全按原程序算，这里只说明换成 SCHEDA 箱数
+        return tr("原程序算法（严格按原程序计算，没有任何调整）：日均 {0:.2f} 件 × 订货周期 {1} 天 × 系数，减去本店库存 {2:g} 件，"
+                  "按数据库箱规取整，得到建议 {3} 件；按 SCHEDA 每箱 {4:g} 件换成箱数（向上取整）。",
+                  x.get("daily") or 0, x.get("cycle") or "?", x.get("inv_raw", x["inv"]), x["sugg"], pack)
     R = (algo or {}).get("review_days", 7)
     L = (algo or {}).get("lead_days", 5)
     inv = max(0.0, x["inv"])
@@ -182,6 +184,19 @@ class DetailWindow(ToolWindow):
         self.table.horizontalHeaderItem(EDIT_COL).setText(tr("订货箱数") + " ✎")
         self.table.horizontalHeaderItem(EDIT_COL).setToolTip(tr("双击修改箱数，0 = 不订"))
         self.table.horizontalHeaderItem(_col(18)).setToolTip(tr("销量等级：A 卖得快，B 一般，C 卖得慢"))
+        # 列可以拖动换位置（例如把「每箱件数」拖到前面）；顺序和宽度记在 settings.json，下次打开照旧
+        hh.setSectionsMovable(True)
+        hh.setFirstSectionMovable(True)
+        self._col_timer = QTimer(self)
+        self._col_timer.setSingleShot(True)
+        self._col_timer.setInterval(400)
+        self._col_timer.timeout.connect(self._save_columns)
+        self._restore_columns()
+        hh.sectionMoved.connect(lambda *_: self._col_timer.start())
+        hh.sectionResized.connect(lambda *_: self._col_timer.start())
+        hh.setContextMenuPolicy(Qt.CustomContextMenu)
+        hh.customContextMenuRequested.connect(self._header_menu)
+        hh.setToolTip(tr("拖动表头可以换列的位置，下次打开保持；右键可以恢复默认顺序"))
         hh.setSectionsClickable(True)
         hh.setSortIndicatorShown(True)
         hh.setSortIndicator(0, Qt.AscendingOrder)
@@ -206,6 +221,50 @@ class DetailWindow(ToolWindow):
         sh.addWidget(self.status_l, 1)
         sh.addWidget(self.status_r)
         v.addWidget(sb)
+
+    # ---------- 列顺序 / 宽度（记住） ----------
+    def _restore_columns(self):
+        cfg = self.page.cfg
+        hh = self.table.horizontalHeader()
+        hh.blockSignals(True)
+        for field, wd in (cfg.get("detail_widths") or {}).items():
+            try:
+                c = _col(int(field))
+            except ValueError:
+                continue
+            if wd and wd > 20:
+                self.table.setColumnWidth(c, int(wd))
+        order = [int(f) for f in (cfg.get("detail_columns") or []) if str(f).lstrip("-").isdigit() and int(f) in _ORDER]
+        for v, field in enumerate(order):
+            cur = hh.visualIndex(_col(field))
+            if cur != v and 0 <= cur:
+                hh.moveSection(cur, v)
+        hh.blockSignals(False)
+
+    def _save_columns(self):
+        hh = self.table.horizontalHeader()
+        n = self.table.columnCount()
+        self.page.cfg["detail_columns"] = [_ORDER[hh.logicalIndex(v)] for v in range(n)]
+        self.page.cfg["detail_widths"] = {str(_ORDER[c]): self.table.columnWidth(c) for c in range(n)}
+        save_settings(self.page.settings)
+
+    def _header_menu(self, pos):
+        m = QMenu(self)
+        a = m.addAction(tr("恢复默认列顺序"))
+        if m.exec(self.table.horizontalHeader().mapToGlobal(pos)) == a:
+            hh = self.table.horizontalHeader()
+            hh.blockSignals(True)
+            for c in range(self.table.columnCount()):
+                cur = hh.visualIndex(c)
+                if cur != c:
+                    hh.moveSection(cur, c)
+            hh.blockSignals(False)
+            self.page.cfg.pop("detail_columns", None)
+            save_settings(self.page.settings)
+
+    def _visual_cols(self):
+        hh = self.table.horizontalHeader()
+        return [hh.logicalIndex(v) for v in range(self.table.columnCount())]
 
     def _chip(self, text, on):
         b = QPushButton(text)
@@ -323,7 +382,8 @@ class DetailWindow(ToolWindow):
             inv_raw = x.get("inv_raw", x["inv"])
             a1.setText(f"{inv_raw:g}")
             a1.setStyleSheet(f"color:{T('err')};" if inv_raw < 0 else "")
-            a2.setText(tr("计算时按 0") if inv_raw < 0 else tr("件"))
+            v1 = x.get("target") is None
+            a2.setText(tr("计算时按 0") if inv_raw < 0 and not v1 else tr("件"))
             b1.setText(f"{(x.get('daily') or 0):.2f}")
             b2.setText(tr("季节系数 {0:.2f}", x.get("season") or 1) if x.get("season") else tr("件 / 天"))
             c1.setText(f"{x['target']:.0f}" if isinstance(x.get("target"), (int, float)) else "—")
@@ -625,14 +685,15 @@ class DetailWindow(ToolWindow):
         wb = Workbook()
         ws = wb.active
         ws.title = "订货明细"
-        heads = [self.table.horizontalHeaderItem(c).text().replace(" ✎", "") for c in range(self.table.columnCount())]
+        cols = self._visual_cols()          # 按现在看到的列顺序导出
+        heads = [self.table.horizontalHeaderItem(c).text().replace(" ✎", "") for c in cols]
         ws.append(heads)
         for c in ws[1]:
             c.font = Font(bold=True)
         for r in range(self.table.rowCount()):
             if self.table.isRowHidden(r):
                 continue
-            ws.append([self.table.item(r, c).text() for c in range(self.table.columnCount())])
+            ws.append([self.table.item(r, c).text() for c in cols])
         ws.freeze_panes = "A2"
         try:
             wb.save(path)

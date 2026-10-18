@@ -183,6 +183,7 @@ class DistributionPage:
             self.mode_group.addButton(rb)
             self.mode_cards[mode] = (card, rb)
             card.mousePressEvent = lambda _e, rb=rb: rb.setChecked(True)
+            card.setProperty("noTextSelect", True)      # 整张卡片可以点，里面的字不做成可选（不然点字没反应）
             mv.addWidget(card)
         cur = self.cfg.get("mode", "unified")
         self.mode_cards.get(cur, self.mode_cards["unified"])[1].setChecked(True)

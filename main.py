@@ -286,6 +286,10 @@ class _BgDelegate(QStyledItemDelegate):
         bg = idx.data(Qt.BackgroundRole)
         if bg is not None:
             p.fillRect(opt.rect, bg)
+        if opt.state & QStyle.State_HasFocus:      # 表格可以点进去（为了 Ctrl+C 复制），但不画虚线焦点框
+            from PySide6.QtWidgets import QStyleOptionViewItem
+            opt = QStyleOptionViewItem(opt)
+            opt.state &= ~QStyle.State_HasFocus
         super().paint(p, opt, idx)
 
 
@@ -302,7 +306,7 @@ def make_table(headers, stretch_col=None, numeric_cols=()):
     t.verticalHeader().setDefaultSectionSize(38)
     t.setWordWrap(False)
     t.setTextElideMode(Qt.ElideRight)
-    t.setFocusPolicy(Qt.NoFocus)
+    t.setFocusPolicy(Qt.ClickFocus)       # 点过以后 Ctrl+C 能复制选中的行
     hh = t.horizontalHeader()
     hh.setHighlightSections(False)
     hh.setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
@@ -2988,6 +2992,9 @@ def main():
     app.setStyle("Fusion")
     app._wheel_guard = WheelGuard(app)
     app.installEventFilter(app._wheel_guard)
+    from erp_widgets import CopyHelper
+    app._copy_helper = CopyHelper(app)          # 程序里的文字都可以选中复制，表格 Ctrl+C / 右键复制
+    app.installEventFilter(app._copy_helper)
     f = QFont(UI_FONT, 10)
     app.setFont(f)
     win = MainWindow()

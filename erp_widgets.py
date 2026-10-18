@@ -641,3 +641,134 @@ def set_chip(lbl, text, kind="accent"):
     lbl.setAlignment(Qt.AlignCenter)
     from PySide6.QtWidgets import QSizePolicy as _SP
     lbl.setSizePolicy(_SP.Maximum, _SP.Fixed)
+
+
+# =====================================================================
+# 全程序可复制：文字标签可以用鼠标选中复制；表格 Ctrl+C / 右键复制
+# =====================================================================
+def _table_text(view, rows, cols):
+    """rows / cols：模型里的行号、列号（cols 按屏幕上看到的顺序）→ 制表符分隔的文字（贴到 Excel 正好分列）"""
+    m = view.model()
+    out = []
+    for r in rows:
+        vals = []
+        for c in cols:
+            v = m.index(r, c).data(Qt.DisplayRole)
+            if (v is None or v == "") and hasattr(view, "cellWidget"):
+                w = view.cellWidget(r, c)        # 状态列这种放了小标签控件的格子
+                if w is not None:
+                    v = " ".join(x.text() for x in w.findChildren(QLabel) + w.findChildren(QPushButton) if x.text())
+            vals.append("" if v is None else str(v).replace("\t", " ").replace("\n", " "))
+        out.append("\t".join(vals))
+    return "\n".join(out)
+
+
+def _visible_cols(view):
+    hh = view.horizontalHeader() if hasattr(view, "horizontalHeader") else None
+    n = view.model().columnCount()
+    if hh is None:
+        return list(range(n))
+    cols = [hh.logicalIndex(v) for v in range(n)]
+    return [c for c in cols if not hh.isSectionHidden(c)]
+
+
+def _visible_rows(view):
+    return [r for r in range(view.model().rowCount()) if not (hasattr(view, "isRowHidden") and view.isRowHidden(r))]
+
+
+def copy_view_selection(view, whole_rows=False):
+    from PySide6.QtWidgets import QApplication
+    sel = view.selectionModel().selectedIndexes() if view.selectionModel() else []
+    if not sel and view.currentIndex().isValid():
+        sel = [view.currentIndex()]
+    if not sel:
+        return False
+    rows = sorted({i.row() for i in sel})
+    rows = [r for r in rows if r in set(_visible_rows(view))] or rows
+    vis = _visible_cols(view)
+    picked = {i.column() for i in sel}
+    cols = vis if whole_rows or picked >= set(vis) else [c for c in vis if c in picked]
+    QApplication.clipboard().setText(_table_text(view, rows, cols))
+    return True
+
+
+class CopyHelper(QObject):
+    """装在 QApplication 上：
+      · 所有文字标签（QLabel）可以用鼠标选中、右键复制（按钮里的、表格格子里的、可点的卡片里的除外，免得点不动）
+      · 所有表格：Ctrl+C 复制选中的行 / 格子；右键菜单「复制这一格 / 这一行 / 选中的行 / 整个表格」
+    不想让某个控件里的文字可选：给它或它的上级设属性 noTextSelect=True。"""
+
+    def eventFilter(self, obj, ev):
+        from PySide6.QtCore import QEvent
+        from PySide6.QtGui import QKeySequence
+        t = ev.type()
+        if t == QEvent.Show and isinstance(obj, QLabel):
+            self._make_selectable(obj)
+        elif t == QEvent.KeyPress and ev.matches(QKeySequence.Copy):
+            view = self._view_of(obj, viewport_only=False)
+            if view is not None and copy_view_selection(view):
+                return True
+        elif t == QEvent.ContextMenu:
+            view = self._view_of(obj, viewport_only=True)
+            if view is not None and view.contextMenuPolicy() == Qt.DefaultContextMenu:
+                self._table_menu(view, ev)
+                return True
+        return False
+
+    @staticmethod
+    def _make_selectable(lab):
+        if lab.property("_copyDone"):
+            return
+        lab.setProperty("_copyDone", True)
+        from PySide6.QtWidgets import QAbstractButton, QAbstractItemView
+        pm = lab.pixmap()
+        if pm is not None and not pm.isNull():
+            return
+        w = lab
+        while w is not None:
+            if w.property("noTextSelect") or isinstance(w, (QAbstractButton, QAbstractItemView)):
+                return
+            if w is not lab and w.testAttribute(Qt.WA_SetCursor) and w.cursor().shape() == Qt.PointingHandCursor:
+                return                  # 整块可以点的卡片（例如侧边栏的数据库状态）
+            if w.isWindow():
+                break
+            w = w.parentWidget()
+        lab.setTextInteractionFlags(lab.textInteractionFlags() | Qt.TextSelectableByMouse)
+
+    @staticmethod
+    def _view_of(obj, viewport_only):
+        from PySide6.QtWidgets import QAbstractItemView
+        p = obj.parent() if hasattr(obj, "parent") else None
+        if isinstance(p, QAbstractItemView) and obj is p.viewport():
+            return p
+        if not viewport_only and isinstance(obj, QAbstractItemView):
+            return obj
+        return None
+
+    def _table_menu(self, view, ev):
+        from PySide6.QtWidgets import QMenu, QApplication
+        idx = view.indexAt(ev.pos())
+        rows_sel = sorted({i.row() for i in (view.selectionModel().selectedIndexes() if view.selectionModel() else [])})
+        menu = QMenu(view)
+        a_cell = menu.addAction(tr("复制这一格"))
+        a_row = menu.addAction(tr("复制这一行"))
+        a_sel = menu.addAction(tr("复制选中的 {0} 行", len(rows_sel))) if len(rows_sel) > 1 else None
+        menu.addSeparator()
+        a_all = menu.addAction(tr("复制整个表格（显示的行，含表头）"))
+        a_cell.setEnabled(idx.isValid())
+        a_row.setEnabled(idx.isValid())
+        got = menu.exec(ev.globalPos())
+        if got is None:
+            return
+        cols = _visible_cols(view)
+        cb = QApplication.clipboard()
+        if got == a_cell:
+            cb.setText(_table_text(view, [idx.row()], [idx.column()]))
+        elif got == a_row:
+            cb.setText(_table_text(view, [idx.row()], cols))
+        elif a_sel is not None and got == a_sel:
+            cb.setText(_table_text(view, rows_sel, cols))
+        elif got == a_all:
+            m = view.model()
+            head = "\t".join(str(m.headerData(c, Qt.Horizontal, Qt.DisplayRole) or "").replace(" ✎", "") for c in cols)
+            cb.setText(head + "\n" + _table_text(view, _visible_rows(view), cols))

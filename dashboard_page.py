@@ -276,11 +276,9 @@ class DashboardPage:
         # 今日供应商
         t = self.sup_table
         t.setRowCount(len(files))
-        moq = getattr(so, "moq", {})
         for i, (_, p) in enumerate(files):
             name = S.supplier_short_name(p)
-            mc, ma, _comp = moq.get(p, (None, None, ""))
-            cells = [name, S.moq_label(mc, ma) if mc is not None else "…", "", ""]
+            cells = [name, S.moq_label(so.moq_of(p)) if hasattr(so, "moq_of") else "…", "", ""]
             for c, v in enumerate(cells):
                 it = QTableWidgetItem(v)
                 if c == 0:
