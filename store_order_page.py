@@ -365,6 +365,7 @@ class StoreOrderPage:
         left.setObjectName("Panel")
         left.setMinimumWidth(360)
         left.setMaximumWidth(400)
+        self.left_panel = left
         lv = QVBoxLayout(left)
         lv.setContentsMargins(0, 12, 0, 8)
         lv.setSpacing(8)
@@ -424,6 +425,11 @@ class StoreOrderPage:
         fh_ = self.ftable.horizontalHeader()
         fh_.setSectionResizeMode(0, QHeaderView.Fixed)
         fh_.setSectionResizeMode(3, QHeaderView.Fixed)
+        # 起订量、星期两列固定宽度（不跟着内容变宽），供应商名那一列拿剩下的地方，不会被挤成「B…」
+        fh_.setSectionResizeMode(2, QHeaderView.Fixed)
+        fh_.setSectionResizeMode(4, QHeaderView.Fixed)
+        self.ftable.setColumnWidth(2, 92)
+        self.ftable.setColumnWidth(4, 52)
         self.ftable.setColumnWidth(0, 34)
         self.ftable.setColumnWidth(3, 104)
         self.ftable.setItemDelegateForColumn(3, DotsDelegate(self.ftable))
@@ -829,6 +835,9 @@ class StoreOrderPage:
             t.setItem(i, 0, it)
         t.blockSignals(False)
         t.setColumnHidden(4, day != ALL)
+        # 「全部」多一列星期：左边面板放宽一点补回这一列的宽度
+        self.left_panel.setMinimumWidth(412 if day == ALL else 360)
+        self.left_panel.setMaximumWidth(452 if day == ALL else 400)
         self._update_dots()
         if not os.path.isdir(root):
             self.list_msg.setText(tr("文件夹不存在"))
