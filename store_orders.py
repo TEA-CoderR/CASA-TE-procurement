@@ -472,8 +472,11 @@ def demand_by_store(db, schede, stores, days_list, reorder_cycle, use_supplier_c
             # 新算法：不按数据库箱规取整，箱数按 SCHEDA 的每箱件数智能取整（colli_for）
         # 原程序算法：建议件数完全按原程序算（含按数据库箱规取整），再按 SCHEDA 每箱件数换成箱
         v2 = bool(algo) and algo.get("engine") == "v2"
+        # 原程序算法：每个 SCHEDA（供应商）单独算，和原程序一次导入一个 SCHEDA 一样（A/B/C 等级在同一家供应商的商品里比）
+        groups = None if v2 else [sorted({it["db_code"] for it in s["items"] if it.get("db_code")}) for s in schede]
         df = R.compute_suggestions(db, sid, codes, days_list, reorder_cycle, None,
-                                   use_supplier_cycles=use_supplier_cycles, round_to_db_pack=not v2, algo=algo)
+                                   use_supplier_cycles=use_supplier_cycles, round_to_db_pack=not v2, algo=algo,
+                                   groups=groups)
         d = {}
         for _, r in df.iterrows():
             code = str(int(r["CodArticolo"]))
@@ -492,7 +495,8 @@ def demand_by_store(db, schede, stores, days_list, reorder_cycle, use_supplier_c
                        "cycle": R._val(r, "reorder_cycle_used", reorder_cycle),
                        "safety": R._val(r, "safety_stock"), "target": R._val(r, "target_stock"),
                        "season": R._val(r, "season_factor"), "weekly": R._val(r, "weekly_26"),
-                       "service": R._val(r, "service_level")}
+                       "service": R._val(r, "service_level"),
+                       "db_pack": R._val(r, "qtasmallbox")}          # 数据库箱规（和 SCHEDA 每箱件数对照用）
         out[sid] = d
     return out
 

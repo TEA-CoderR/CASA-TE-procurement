@@ -1352,4 +1352,5 @@ TRANSLATIONS = {
     '{0:g} 板（{1:g} 箱/板）': ('{0:g} pallets ({1:g} boxes/pallet)', '{0:g} bancali ({1:g} colli/bancale)'),
     '{0:g} 板（每板箱数没填）': ('{0:g} pallets (boxes per pallet missing)', '{0:g} bancali (colli per bancale mancanti)'),
     '{0:g} 箱的倍数': ('multiples of {0:g} boxes', 'multipli di {0:g} colli'),
+    '注意：数据库箱规是每箱 {0:g} 件，SCHEDA 是每箱 {1:g} 件，不一样，请核对。': ('Note: the database pack is {0:g} pcs per box but the SCHEDA says {1:g} pcs per box; please check.', 'Attenzione: nel database la confezione è di {0:g} pz, nella SCHEDA di {1:g} pz per collo; verificare.'),
 }

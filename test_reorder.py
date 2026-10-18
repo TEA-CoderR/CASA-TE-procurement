@@ -163,3 +163,33 @@ def test_apply_v2_overrides_columns():
     no_oo = R.apply_v2(None, 1, df, dict(F.DEFAULT_PARAMS), weekly=weekly, revenue={1: 100, 2: 100, 3: 0})
     assert no_oo.loc[0, "suggested_order_qty"] - out.loc[0, "suggested_order_qty"] == 3
     assert list(out["sales_tier"]) == ["A", "A", "C"]          # 两个各占 50% 销售额 → 都在前 80%
+
+
+def test_old_algorithm_per_supplier_groups_match_original():
+    """原程序算法按供应商分组：结果和原程序一次只算一个 SCHEDA 完全一样（等级在同一家供应商里比）"""
+    import pandas as pd
+
+    def mk_data(codes):
+        inv = pd.DataFrame([dict(CodArticolo=c, store_inventory=0, total_inventory=0, qtasmallbox=1, PrezzoVedi1=1,
+                                 PrezzoForn=1, CodIva=22) for c in codes])
+        sales = {1: 300, 2: 200, 3: 100, 11: 6, 12: 3, 13: 1}       # 供应商甲卖得多，乙卖得少
+        s = pd.DataFrame({"CodArticolo": codes, "sales_qty": [sales[c] for c in codes]})
+        m = pd.DataFrame({"CodArticolo": codes, "total_guadagno": [1.0] * len(codes), "total_net_sales": [2.0] * len(codes)})
+        return {"inventory": inv, "suppliers": pd.DataFrame({"CodArticolo": codes, "IDFornitore": [501 if c < 10 else 502 for c in codes]}),
+                "sales_1": s, "sales_2": s, "sales_3": s, "sales_4": s, "margin_1": m, "margin_2": m, "margin_3": m}
+
+    class DB:
+        def query_reorder_data(self, store, codes, *a):
+            return mk_data([int(c) for c in codes])
+
+    a, b = ["1", "2", "3"], ["11", "12", "13"]
+    grouped = R.compute_suggestions(DB(), 1, a + b, algo={"engine": "v1"}, groups=[a, b], use_supplier_cycles=False)
+    alone = pd.concat([R.compute_suggestions(DB(), 1, g, algo={"engine": "v1"}, use_supplier_cycles=False) for g in (a, b)],
+                      ignore_index=True)
+    cols = ["CodArticolo", "sales_tier", "decision_text", "suggested_order_qty"]
+    assert grouped[cols].sort_values("CodArticolo").reset_index(drop=True).equals(
+        alone[cols].sort_values("CodArticolo").reset_index(drop=True))
+    tiers = dict(zip(grouped["CodArticolo"], grouped["sales_tier"]))
+    mixed = R.compute_suggestions(DB(), 1, a + b, algo={"engine": "v1"}, use_supplier_cycles=False)
+    mixed_t = dict(zip(mixed["CodArticolo"], mixed["sales_tier"]))
+    assert tiers[11] != mixed_t[11]          # 混在一起算时，乙的畅销品会被甲压成低等级

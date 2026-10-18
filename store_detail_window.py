@@ -60,7 +60,19 @@ def _dec_rank(text):
 
 
 def explain(x, it, algo):
-    """「为什么建议这么多箱」的说明文字"""
+    """「为什么建议这么多箱」的说明文字（数据库箱规和 SCHEDA 每箱件数不一样时，后面加一句提醒）"""
+    txt = _explain(x, it, algo)
+    dbp = (x or {}).get("db_pack")
+    try:
+        dbp = float(dbp or 0)
+    except (TypeError, ValueError):
+        dbp = 0
+    if x and dbp > 1 and abs(dbp - float(it["pack"] or 1)) > 1e-9:
+        txt += "\n" + tr("注意：数据库箱规是每箱 {0:g} 件，SCHEDA 是每箱 {1:g} 件，不一样，请核对。", dbp, it["pack"] or 1)
+    return txt
+
+
+def _explain(x, it, algo):
     if not x:
         return tr("数据库里找不到这个商品，没有建议量；需要的话手动填箱数。")
     pack = it["pack"] or 1

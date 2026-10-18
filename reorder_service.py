@@ -217,7 +217,7 @@ def extract_products(db, store_id, day, query_days, supplier_groups=None):
 
 
 def compute_suggestions(db, store_id, product_codes, days_list=None, reorder_cycle=30, supplier_ids=None,
-                        use_supplier_cycles=True, round_to_db_pack=True, algo=None):
+                        use_supplier_cycles=True, round_to_db_pack=True, algo=None, groups=None):
     """
     原程序 Suggerimenti Ordini 的 query_reorder()：查数据 → process_reorder_data。
     返回每个商品一行的 DataFrame（suggested_order_qty = 建议件数）。
@@ -227,6 +227,9 @@ def compute_suggestions(db, store_id, product_codes, days_list=None, reorder_cyc
                          False = 不取整，交给调用方按自己的箱规换算（门店配货按 SCHEDA 每箱件数）。
     algo: 算法参数（forecast.DEFAULT_PARAMS）；engine = "v2" 时用新算法（服务水平法）重算
           建议件数 / 判断 / 等级 / 库存天数，建议件数不取整（下游按各自箱规智能取整）。
+    groups: 原程序算法时，把商品分成几组分别算（门店配货：每个 SCHEDA 一组）。原程序一次只算一个导入的 SCHEDA，
+            A/B/C 等级是和「这一批商品的 30 天平均销量」比的，所以要按供应商分开算才和原程序一样。
+            数据库只查一次，查回来再按组拆开，速度不变。
     """
     import pandas as pd
     from fenpei.config import AppConfig
@@ -264,28 +267,47 @@ def compute_suggestions(db, store_id, product_codes, days_list=None, reorder_cyc
             inv["qtasmallbox_db"] = inv["qtasmallbox"]
             inv["qtasmallbox"] = 0          # 原算法只在 qtasmallbox > 1 时取整
         data["inventory"] = inv
-    if not data["sales_1"].empty:
-        avg_sales_30 = data["sales_1"]["sales_qty"].mean()
-    else:
-        avg_sales_30 = 1
     supplier_reorder_cycles = {}
-    if use_supplier_cycles and "suppliers" in data and not data["suppliers"].empty:
-        for sid in data["suppliers"]["IDFornitore"].unique():
-            if pd.notna(sid):
-                sid = int(sid)
-                supplier_reorder_cycles[sid] = AppConfig.get_supplier_reorder_cycle(sid, fallback=reorder_cycle)
-    result_df = ProductDataProcessor.process_reorder_data(
-        data["inventory"], data["suppliers"],
-        {"df_sales_1": data["sales_1"], "df_sales_2": data["sales_2"],
-         "df_sales_3": data["sales_3"], "df_sales_4": data["sales_4"]},
-        {"df_margin_1": data["margin_1"], "df_margin_2": data["margin_2"], "df_margin_3": data["margin_3"]},
-        avg_sales_30, days_list, reorder_cycle=reorder_cycle,
-        supplier_reorder_cycles=supplier_reorder_cycles or None)
-    if "sales_after_last_in" in data and len(data["sales_after_last_in"]) > 0:
-        result_df = result_df.merge(data["sales_after_last_in"], on="CodArticolo", how="left")
-        result_df["SalesAfterLastIn"] = result_df["SalesAfterLastIn"].fillna(0).astype(int)
-    if "last_sale_date" in data and len(data["last_sale_date"]) > 0:
-        result_df = result_df.merge(data["last_sale_date"], on="CodArticolo", how="left")
+
+    def run(part):
+        """原程序 query_reorder() 里查完数据之后的那一段（avg_sales_30、供应商周期、process_reorder_data、两个合并）"""
+        if not part["sales_1"].empty:
+            avg_sales_30 = part["sales_1"]["sales_qty"].mean()
+        else:
+            avg_sales_30 = 1
+        if use_supplier_cycles and "suppliers" in part and not part["suppliers"].empty:
+            for sid in part["suppliers"]["IDFornitore"].unique():
+                if pd.notna(sid):
+                    sid = int(sid)
+                    supplier_reorder_cycles[sid] = AppConfig.get_supplier_reorder_cycle(sid, fallback=reorder_cycle)
+        cycles = {int(s): supplier_reorder_cycles[int(s)] for s in part["suppliers"]["IDFornitore"].unique()
+                  if pd.notna(s)} if use_supplier_cycles and "suppliers" in part and not part["suppliers"].empty else {}
+        df = ProductDataProcessor.process_reorder_data(
+            part["inventory"], part["suppliers"],
+            {"df_sales_1": part["sales_1"], "df_sales_2": part["sales_2"],
+             "df_sales_3": part["sales_3"], "df_sales_4": part["sales_4"]},
+            {"df_margin_1": part["margin_1"], "df_margin_2": part["margin_2"], "df_margin_3": part["margin_3"]},
+            avg_sales_30, days_list, reorder_cycle=reorder_cycle,
+            supplier_reorder_cycles=cycles or None)
+        if "sales_after_last_in" in part and len(part["sales_after_last_in"]) > 0:
+            df = df.merge(part["sales_after_last_in"], on="CodArticolo", how="left")
+            df["SalesAfterLastIn"] = df["SalesAfterLastIn"].fillna(0).astype(int)
+        if "last_sale_date" in part and len(part["last_sale_date"]) > 0:
+            df = df.merge(part["last_sale_date"], on="CodArticolo", how="left")
+        return df
+
+    if groups and not use_v2:
+        frames = []
+        for g in groups:
+            keep = {int(c) for c in g if str(c).strip().isdigit()}
+            part = {k: (v[v["CodArticolo"].isin(keep)] if isinstance(v, pd.DataFrame) and "CodArticolo" in v.columns
+                        else v) for k, v in data.items()}
+            if part.get("inventory") is None or part["inventory"].empty:
+                continue
+            frames.append(run(part))
+        result_df = pd.concat(frames, ignore_index=True) if frames else run(data)
+    else:
+        result_df = run(data)
     # 每个商品实际用的订货周期（界面显示用）
     if "IDFornitore" in result_df.columns:
         result_df["reorder_cycle_used"] = result_df["IDFornitore"].apply(
