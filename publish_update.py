@@ -1,16 +1,17 @@
 """
-发布新版本到 GitHub（在你自己的电脑上运行：双击 publish_update.bat）
+发布新版本到 GitHub（双击 publish_update.bat）
 
 第一次运行会问：
-  · GitHub 仓库（例如 casate/caigou-update，建议「私有」仓库）
-  · 发布令牌（有这个仓库 Contents 读写权限的 fine-grained token，只存在你电脑的 publish_config.json 里）
-  · 只读令牌（只有 Contents 只读权限，会随程序发给同事，用来下载更新）
+  · GitHub 仓库（TEA-CoderR/CASA-TE-procurement）
+  · 发布令牌（这个仓库 Contents 读写的 fine-grained token，加密存在本机 publish_config.json）
+  · 只读令牌（Contents 只读，会随程序发给同事，用来下载更新）
 
 每次发布：
+  0. 检查 git：有没提交的改动会提示先提交；GitHub 上有你本地没有的提交会要求先 git pull
   1. 输入新版本号和更新说明
-  2. 自动改版本号 → 打包（build.bat）→ 生成 manifest、完整包、补丁包
-  3. 在 GitHub 建 Release 并上传；同事那边程序会提示「发现新版本」，点一下就更新
-源代码不会上传，仓库里只有打包好的程序。
+  2. 改 theme.APP_VERSION → 打包（build.bat）→ 生成 manifest、完整包、补丁包（和上一版对比；
+     上一版清单本机没有就从 GitHub 最新 Release 取，所以换电脑 / 换人也能出补丁包）
+  3. 自动提交版本号并 git push，在 GitHub 建 Release（标签指向这次提交）并上传
 """
 import json
 import os
@@ -106,6 +107,71 @@ def ensure_repo_has_commit(cfg):
            json={"message": "init", "content": base64.b64encode(text.encode("utf-8")).decode()})
 
 
+# ---------------------------------------------------------------------
+# git：发布前检查、发布后自动提交版本号并推送，Release 的标签指向这次提交
+# ---------------------------------------------------------------------
+def _git(*args, check=True):
+    r = subprocess.run(["git", *args], cwd=HERE, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    if check and r.returncode != 0:
+        raise SystemExit(f"git {' '.join(args)} 失败：{(r.stderr or r.stdout).strip()}")
+    return r.stdout.strip()
+
+
+def in_git():
+    import shutil
+    return os.path.isdir(os.path.join(HERE, ".git")) and bool(shutil.which("git"))
+
+
+def git_precheck():
+    """有没提交的改动 / 没推送的提交时先处理，保证发布的程序 = GitHub 上的代码"""
+    if not in_git():
+        print("（这个文件夹不是 git 仓库，跳过提交检查）")
+        return
+    _git("fetch", "-q", "origin", check=False)
+    dirty = _git("status", "--porcelain", "--untracked-files=no")
+    if dirty:
+        print("有还没提交的改动：\n" + dirty)
+        if ask("先把这些改动提交再发布？(y/n)", "y").lower() != "y":
+            raise SystemExit("已取消。先提交（git add / git commit）再发布。")
+        msg = ask("提交说明", "发布前的改动")
+        _git("add", "-u")
+        _git("commit", "-q", "-m", msg)
+    behind = _git("rev-list", "--count", "HEAD..@{u}", check=False)
+    if behind and behind != "0":
+        raise SystemExit(f"GitHub 上有 {behind} 个新提交你本地还没有。先 git pull 再发布。")
+
+
+def git_commit_release(ver, notes):
+    """提交改过的版本号并推送；返回这次提交的 SHA（Release 标签指向它）"""
+    if not in_git():
+        return None
+    _git("add", "theme.py")
+    if _git("status", "--porcelain", "--untracked-files=no"):
+        _git("commit", "-q", "-m", f"发布 {ver}\n\n{notes}")
+    _git("push", "-q")                     # 推到当前分支跟踪的远程分支（一般是 origin/main）
+    return _git("rev-parse", "HEAD")
+
+
+def last_release_manifest(cfg):
+    """上一版的文件清单：先找本机记录，没有（换了电脑 / 换了人）就从 GitHub 最新 Release 下载"""
+    if os.path.exists(LAST_MANIFEST):
+        with open(LAST_MANIFEST, encoding="utf-8") as f:
+            return json.load(f)
+    try:
+        r = requests.get(f"{API}/repos/{cfg['repo']}/releases/latest", timeout=30,
+                         headers={"Authorization": f"Bearer {cfg['publish_token']}", "Accept": "application/vnd.github+json"})
+        if r.status_code != 200:
+            return None
+        a = next((x for x in r.json().get("assets", []) if x["name"] == U.MANIFEST), None)
+        if not a:
+            return None
+        m = requests.get(a["url"], timeout=60, headers={"Authorization": f"Bearer {cfg['publish_token']}",
+                                                       "Accept": "application/octet-stream"})
+        return m.json() if m.status_code == 200 else None
+    except Exception:
+        return None
+
+
 def zip_files(folder, files, dest):
     with zipfile.ZipFile(dest, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as z:
         for rel in files:
@@ -125,6 +191,7 @@ def upload(cfg, release, path, name):
 def main():
     os.chdir(HERE)
     cfg = load_cfg()
+    git_precheck()
     cur = current_version()
     print(f"\n现在的版本：{cur}")
     ver = ask("新版本号", bump(cur))
@@ -154,10 +221,7 @@ def main():
 
     print("[2/4] 生成文件清单…")
     man = U.build_manifest(DIST, ver, notes)
-    last = None
-    if os.path.exists(LAST_MANIFEST):
-        with open(LAST_MANIFEST, encoding="utf-8") as f:
-            last = json.load(f)
+    last = last_release_manifest(cfg)
     if last:
         man["patch_base"] = last.get("version")
         man["patch_files"] = [rel for rel, info in man["files"].items()
@@ -175,11 +239,13 @@ def main():
     full = zip_files(DIST, list(man["files"]), os.path.join(OUT, U.FULL_ZIP))
     patch = zip_files(DIST, man["patch_files"], os.path.join(OUT, U.PATCH_ZIP)) if man["patch_files"] else None
 
-    print("[4/4] 上传到 GitHub…")
+    print("[4/4] 提交版本号、上传到 GitHub…")
+    sha = git_commit_release(ver, notes)
     ensure_repo_has_commit(cfg)
-    rel = gh(cfg, "POST", f"{API}/repos/{cfg['repo']}/releases",
-             json={"tag_name": ver, "name": f"CASA&TE采购系统 {ver}", "body": notes, "draft": False,
-                   "prerelease": False})
+    body = {"tag_name": ver, "name": f"CASA&TE采购系统 {ver}", "body": notes, "draft": False, "prerelease": False}
+    if sha:
+        body["target_commitish"] = sha          # 标签指向发布时的代码
+    rel = gh(cfg, "POST", f"{API}/repos/{cfg['repo']}/releases", json=body)
     upload(cfg, rel, mpath, U.MANIFEST)
     if patch:
         upload(cfg, rel, patch, U.PATCH_ZIP)
