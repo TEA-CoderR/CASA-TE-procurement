@@ -100,7 +100,7 @@ def test_negative_stock_counts_as_zero(monkeypatch):
 
 
 def test_old_algorithm_keeps_inventory_as_is(monkeypatch):
-    """原程序算法：严格按原程序，负库存原样传给原程序的计算，按数据库箱规取整"""
+    """原程序算法：库存原样交给原程序（负库存由原程序自己按 0 算，见下一个测试）"""
     from fenpei import models
     seen = {}
 
@@ -125,6 +125,14 @@ def _proc(inv_rows, sales_1, sales_3, packaging=12):
         inv, pd.DataFrame({"CodArticolo": [], "IDFornitore": []}),
         {"df_sales_1": mk(sales_1), "df_sales_2": mk(sales_3), "df_sales_3": mk(sales_3), "df_sales_4": mk(sales_3)},
         {}, 10.0, [30, 60, 90, 180], reorder_cycle=30)
+
+
+def test_old_algorithm_counts_negative_stock_as_zero():
+    """原程序本身：订货量按 max(0, 库存) 算 → 库存 -50 和库存 0 的建议量一样"""
+    neg = _proc([(1, -50)], {1: 30}, {1: 90})
+    zero = _proc([(1, 0)], {1: 30}, {1: 90})
+    assert neg.loc[0, "suggested_order_qty"] == zero.loc[0, "suggested_order_qty"] > 0
+    assert neg.loc[0, "store_inventory"] == -50                     # 原值保留
 
 
 def test_fallback_tier_uses_30_day_equivalent():

@@ -65,9 +65,11 @@ def explain(x, it, algo):
         return tr("数据库里找不到这个商品，没有建议量；需要的话手动填箱数。")
     pack = it["pack"] or 1
     if x.get("target") is None:       # 原程序算法：完全按原程序算，这里只说明换成 SCHEDA 箱数
-        return tr("原程序算法（严格按原程序计算，没有任何调整）：日均 {0:.2f} 件 × 订货周期 {1} 天 × 系数，减去本店库存 {2:g} 件，"
-                  "按数据库箱规取整，得到建议 {3} 件；按 SCHEDA 每箱 {4:g} 件换成箱数（向上取整）。",
-                  x.get("daily") or 0, x.get("cycle") or "?", x.get("inv_raw", x["inv"]), x["sugg"], pack)
+        inv_raw = x.get("inv_raw", x["inv"])
+        return tr("原程序算法（严格按原程序计算）：日均 {0:.2f} 件 × 订货周期 {1} 天 × 系数，减去本店库存 {2:g} 件{3}，"
+                  "按数据库箱规取整，得到建议 {4} 件；按 SCHEDA 每箱 {5:g} 件换成箱数（向上取整）。",
+                  x.get("daily") or 0, x.get("cycle") or "?", max(0.0, inv_raw),
+                  tr("（负数按 0 算）") if inv_raw < 0 else "", x["sugg"], pack)
     R = (algo or {}).get("review_days", 7)
     L = (algo or {}).get("lead_days", 5)
     inv = max(0.0, x["inv"])
@@ -382,8 +384,7 @@ class DetailWindow(ToolWindow):
             inv_raw = x.get("inv_raw", x["inv"])
             a1.setText(f"{inv_raw:g}")
             a1.setStyleSheet(f"color:{T('err')};" if inv_raw < 0 else "")
-            v1 = x.get("target") is None
-            a2.setText(tr("计算时按 0") if inv_raw < 0 and not v1 else tr("件"))
+            a2.setText(tr("计算时按 0") if inv_raw < 0 else tr("件"))      # 新算法、原程序算法都按 0 算
             b1.setText(f"{(x.get('daily') or 0):.2f}")
             b2.setText(tr("季节系数 {0:.2f}", x.get("season") or 1) if x.get("season") else tr("件 / 天"))
             c1.setText(f"{x['target']:.0f}" if isinstance(x.get("target"), (int, float)) else "—")
