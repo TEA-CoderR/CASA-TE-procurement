@@ -23,8 +23,18 @@ from reorder_page import short_decision
 ALL = "__all__"
 # 明细表列（逻辑顺序）→ 显示顺序：常看、要改的列放前面
 # 22~31 是和订单文件附加列一样的：月均、需求、GIA.0~GIA.5（各门店库存，0 = BMS）、GIA-period、period_sales
-# 32 = 订后够卖（天）：放在库存够卖（11）旁边
-_ORDER = [0, 1, 5, 15, 16, 17, 2, 18, 6, 11, 32, 20, 21, 7, 8, 9, 10, 14, 19, 12, 13, 3, 4] + list(range(22, 32))
+# 32 = 订后够卖（天）
+# 默认列顺序（2026-10-19 重排，按看一行时的顺序）：
+#   是哪个商品：门店、供应商、名称
+#   要不要订：判断、等级
+#   订多少：建议箱数、订货箱数 ✎、每箱件数、金额
+#   够不够卖：本店库存、日均、库存够卖、订后够卖
+#   编号：商品编号、条码
+#   怎么算出来的：建议件数、目标库存、周期、件价
+#   销量：30 / 60 / 90 / 180 天、月均、需求
+#   各店库存：GIA.0 ~ GIA.5、GIA-period、period_sales
+_ORDER = [1, 0, 5, 2, 18, 15, 16, 12, 17, 6, 20, 11, 32, 3, 4, 14, 21, 19, 13, 7, 8, 9, 10] + list(range(22, 32))
+_LAYOUT_VER = 2           # 改了默认顺序就加 1：用户以前拖过的顺序作废一次，换成新的默认顺序
 _EXTRA = list(range(22, 32))
 
 
@@ -622,6 +632,10 @@ class DetailWindow(ToolWindow):
     # ---------- 列顺序 / 宽度（记住） ----------
     def _restore_columns(self):
         cfg = self.page.cfg
+        if cfg.get("detail_columns_ver") != _LAYOUT_VER:
+            cfg.pop("detail_columns", None)        # 默认顺序重排过：旧的拖动顺序不用了（列宽保留）
+            cfg["detail_columns_ver"] = _LAYOUT_VER
+            save_settings(self.page.settings)
         hh = self.table.horizontalHeader()
         hh.blockSignals(True)
         for field, wd in (cfg.get("detail_widths") or {}).items():
