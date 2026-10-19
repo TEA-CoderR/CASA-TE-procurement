@@ -584,8 +584,14 @@ def apply_transfers(calc, cfg=None, far_stores=None):
     out = []
     for m in moves:
         sc, it = info[m["need_id"]]
-        out.append(dict(m, path=sc["path"], supplier=sc["name"], row=it["row"], code=it.get("db_code") or it["code"],
-                        ean=it.get("ean", ""), desc=it.get("desc", ""), price=it.get("price") or 0.0))
+        code = it.get("db_code") or it["code"]
+        d_from = demand.get(m["from"], {}).get(code)
+        d_to = demand.get(m["to"], {}).get(code)
+        out.append(dict(m, path=sc["path"], supplier=sc["name"], row=it["row"], code=code,
+                        ean=it.get("ean", ""), desc=it.get("desc", ""), price=it.get("price") or 0.0,
+                        # 调完以后：调出店还够卖几天、调入店（加上这次订的）够卖几天
+                        from_days=cover_days(d_from, -m["pieces"]),
+                        to_days=cover_days(d_to, m["pieces"] + m["colli_after"] * it["pack"])))
     out.sort(key=lambda x: (x["from"], x["to"], x["supplier"], x["desc"]))
     calc["base"] = base
     calc["transfers"] = out
@@ -607,12 +613,14 @@ def export_transfers(transfers, path, date_tag=""):
         c.font = Font(bold=True)
     for sid in sorted({t["from"] for t in transfers}):
         w = wb.create_sheet(f"从 {STORE_SHEETS.get(sid, sid)}"[:31])
-        w.append(["调入门店", "供应商", "Cod.Art.", "EAN", "品名", "调货件数", "件价 €", "货值 €", "原来订（箱）", "现在订（箱）"])
+        w.append(["调入门店", "供应商", "Cod.Art.", "EAN", "品名", "调货件数", "件价 €", "货值 €", "原来订（箱）", "现在订（箱）",
+                  "调出后本店够卖（天）", "调入店够卖（天）"])
         for t in transfers:
             if t["from"] != sid:
                 continue
             w.append([STORE_SHEETS.get(t["to"], str(t["to"])), t["supplier"], t["code"], t["ean"], t["desc"],
-                      t["pieces"], round(t["price"], 2), round(t["value"], 2), t["colli_before"], t["colli_after"]])
+                      t["pieces"], round(t["price"], 2), round(t["value"], 2), t["colli_before"], t["colli_after"],
+                      _fmt_days(t.get("from_days")), _fmt_days(t.get("to_days"))])
         for c in w[1]:
             c.font = Font(bold=True)
         w.column_dimensions["E"].width = 40
@@ -724,6 +732,27 @@ def _try_fill(lines, scheda, dem_rows, fill):
     return lines, [(r, v[0], v[1]) for r, v in merged.items()]
 
 
+def cover_days(d, pieces=0):
+    """
+    够卖几天 =（现有库存 + pieces 件）÷ 日均。负库存当 0；没有销量 → 无穷大（∞）；没有数据 → None。
+    「库存够卖」pieces = 0；「订后够卖」pieces = 订货箱数 × 每箱件数。
+    """
+    if not d:
+        return None
+    daily = float(d.get("daily") or 0)
+    have = max(0.0, float(d.get("inv") or 0)) + float(pieces or 0)
+    if daily <= 0:
+        return float("inf") if have > 0 else None
+    return have / daily
+
+
+def days_text(v):
+    """够卖天数的显示：∞ / 整数天 / 空"""
+    if v is None:
+        return ""
+    return "∞" if math.isinf(v) else f"{v:,.0f}"
+
+
 def add_candidates(scheda, sid, demand, lines):
     """
     订货明细「加商品凑单」：这家店在这个供应商能加的所有商品（包括没被选进来的），按卖得快排在前面。
@@ -738,6 +767,7 @@ def add_candidates(scheda, sid, demand, lines):
         ordered = int((lines or {}).get(it["row"], 0))
         have = inv + ordered * it["pack"]
         out.append({"row": it["row"], "item": it, "daily": daily, "inv": inv, "ordered": ordered,
+                    "days_stock": cover_days(d) if d else None,
                     "days_now": (have / daily) if daily > 0 else float("inf"),
                     "box": it["pack"] * it["price"], "tier": d.get("tier") or "", "decision": d.get("decision") or "",
                     "known": bool(d)})
@@ -1475,7 +1505,8 @@ def export_summary(results, path, demand=None, base=None, edited=None, days_list
     d = list(days_list or [30, 60, 90, 180])
     ws2 = wb.create_sheet("订货明细")
     ws2.append(["星期", "供应商", "门店", "去向", "商品编号", "条码", "名称", "每箱件数", "件价", "本店库存",
-                *[f"{x}天销量" for x in d], "库存天数", "判断", "建议件数", "建议箱数", "订货箱数", "金额 €", "备注"])
+                *[f"{x}天销量" for x in d], "库存够卖（天）", "订后够卖（天）", "判断", "建议件数", "建议箱数", "订货箱数",
+                "金额 €", "备注"])
     for c in ws2[1]:
         c.font = bold
     edited = edited or set()
@@ -1500,6 +1531,8 @@ def export_summary(results, path, demand=None, base=None, edited=None, days_list
                     parts.append((BMS, via_bms[it["row"]], it["row"] in bms_added, it["row"] in lent))
                 if not parts and sg:
                     parts.append((STORE_SHEETS[sid], 0, False, False))
+                got = (direct.get(it["row"], 0) + via_bms.get(it["row"], 0)) * it["pack"]   # 这家店这次一共到货的件数
+                after = _fmt_days(cover_days(x, got)) if x else None
                 for dest, n, is_fill, is_lent in parts:
                     note = []
                     if (sc["path"], sid, it["row"]) in edited:
@@ -1514,12 +1547,12 @@ def export_summary(results, path, demand=None, base=None, edited=None, days_list
                         note.append("并入帮其他店凑起订量")
                     ws2.append([day, sc["name"], STORE_SHEETS[sid], dest, it.get("db_code") or it["code"], it["ean"],
                                 it["desc"], it["pack"], it["price"], x.get("inv_raw", x["inv"]) if x else None,
-                                *((x["sales"] if x else [None] * 4)), _fmt_days(x["inv_days"]) if x else None,
+                                *((x["sales"] if x else [None] * 4)), _fmt_days(x["inv_days"]) if x else None, after,
                                 x["decision"] if x else "数据库没有", x["sugg"] if x else None, sg or None, n or None,
                                 round(n * it["pack"] * it["price"], 2) if n else None, "、".join(note)])
                     ws2.cell(ws2.max_row, 6).number_format = "@"
     ws2.freeze_panes = "A2"
-    for col, w in zip("ABCDEFGHIJKLMNOPQRSTUV", (6, 22, 12, 12, 10, 15, 40, 8, 8, 8, 8, 8, 8, 8, 8, 24, 8, 8, 8, 10, 16)):
+    for col, w in zip("ABCDEFGHIJKLMNOPQRSTUVW", (6, 22, 12, 12, 10, 15, 40, 8, 8, 8, 8, 8, 8, 8, 10, 10, 24, 8, 8, 8, 10, 16)):
         ws2.column_dimensions[col].width = w
     wb.save(path)
     return path

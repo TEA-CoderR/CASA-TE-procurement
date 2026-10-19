@@ -23,7 +23,8 @@ from reorder_page import short_decision
 ALL = "__all__"
 # 明细表列（逻辑顺序）→ 显示顺序：常看、要改的列放前面
 # 22~31 是和订单文件附加列一样的：月均、需求、GIA.0~GIA.5（各门店库存，0 = BMS）、GIA-period、period_sales
-_ORDER = [0, 1, 5, 15, 16, 17, 2, 18, 6, 20, 21, 7, 8, 9, 10, 11, 14, 19, 12, 13, 3, 4] + list(range(22, 32))
+# 32 = 订后够卖（天）：放在库存够卖（11）旁边
+_ORDER = [0, 1, 5, 15, 16, 17, 2, 18, 6, 11, 32, 20, 21, 7, 8, 9, 10, 14, 19, 12, 13, 3, 4] + list(range(22, 32))
 _EXTRA = list(range(22, 32))
 
 
@@ -37,6 +38,7 @@ def _perm(vals):
 
 EDIT_COL = _col(16)
 AMOUNT_COL = _col(17)
+AFTER_COL = _col(32)
 DEC_COL = _col(2)
 DI_ROLE = Qt.UserRole + 1       # 第 0 列存 detail 下标（排序后靠它找到行）
 KEY_ROLE = Qt.UserRole + 2      # 排序用的值
@@ -110,9 +112,10 @@ class AddItemsDialog(QDialog):
     上面实时显示现在多少、起订量、还差多少；表格按日均销量从高到低排；「按销量推荐」一键补齐差额；
     改的都是「加几箱」，确认后才写进订货箱数（标成手动改过，可以「恢复建议值」）。
     """
-    COLS = [tr("名称"), tr("商品编号"), tr("等级"), tr("日均"), tr("本店库存"), tr("现在够卖（天）"), tr("已订（箱）"),
-            tr("每箱件数"), tr("一箱 €"), tr("加（箱）") + " ✎", tr("加后够卖（天）"), tr("加的金额 €")]
-    ADD = 9
+    COLS = [tr("名称"), "EAN", tr("商品编号"), tr("等级"), tr("日均"), tr("本店库存"), tr("库存够卖（天）"), tr("已订（箱）"),
+            tr("每箱件数"), tr("一箱 €"), tr("加（箱）") + " ✎", tr("订后够卖（天）"), tr("加的金额 €")]
+    ADD = 10
+    WIDTHS = (300, 130, 80, 50, 60, 70, 100, 70, 70, 70, 76, 100, 90)
 
     def __init__(self, win, path=None, sid=None):
         super().__init__(win)
@@ -121,7 +124,7 @@ class AddItemsDialog(QDialog):
         self.cands = []
         self._filling = False
         self.setWindowTitle(tr("加商品凑单"))
-        self.resize(1180, 720)
+        self.resize(1320, 760)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(20, 16, 20, 14)
         lay.setSpacing(10)
@@ -177,7 +180,16 @@ class AddItemsDialog(QDialog):
         self.note_box.setLayout(nb)
         self.note_box.hide()
         lay.addWidget(self.note_box)
-        self.table = self.page.ui.make_table(self.COLS, stretch_col=0, numeric_cols=tuple(range(3, 12)))
+        self.table = self.page.ui.make_table(self.COLS, stretch_col=None, numeric_cols=tuple(range(4, 13)))
+        hh = self.table.horizontalHeader()
+        hh.setSectionResizeMode(QHeaderView.Interactive)     # 列宽可以拖；名称默认够宽，鼠标停上去看全称
+        hh.setStretchLastSection(False)
+        for c, wd in enumerate(self.WIDTHS):
+            need = hh.fontMetrics().horizontalAdvance(self.COLS[c]) + 28
+            self.table.setColumnWidth(c, max(wd, need))
+        self.table.setTextElideMode(Qt.ElideRight)
+        self.table.horizontalHeaderItem(6).setToolTip(tr("库存够卖 = 现在的库存按日均还能卖几天"))
+        self.table.horizontalHeaderItem(11).setToolTip(tr("订后够卖 =（库存 + 已订和加的箱数 × 每箱件数）÷ 日均"))
         self.table.setEditTriggers(QAbstractItemView.DoubleClicked | QAbstractItemView.SelectedClicked |
                                    QAbstractItemView.EditKeyPressed | QAbstractItemView.AnyKeyPressed)
         self.table.horizontalHeaderItem(self.ADD).setToolTip(tr("双击填要加几箱，0 = 不加"))
@@ -249,11 +261,16 @@ class AddItemsDialog(QDialog):
         def days(v):
             return "∞" if v == float("inf") else f"{v:.0f}"
 
-        vals = [(it["desc"], it["desc"]), (str(it.get("db_code") or it["code"]), str(it.get("db_code") or it["code"])),
+        ds = c.get("days_stock")
+        total = c["ordered"] + add
+        vals = [(it["desc"], it["desc"]), (str(it.get("ean") or ""), str(it.get("ean") or "")),
+                (str(it.get("db_code") or it["code"]), str(it.get("db_code") or it["code"])),
                 (c["tier"], _TIER_RANK.get(c["tier"], 9)), (f"{c['daily']:.2f}", c["daily"]), (f"{c['inv']:g}", c["inv"]),
-                (days(c["days_now"]), c["days_now"]), (f"{c['ordered']:g}" if c["ordered"] else "", c["ordered"]),
+                (S.days_text(ds), 1e12 if ds is None or math.isinf(ds) else ds),
+                (f"{c['ordered']:g}" if c["ordered"] else "", c["ordered"]),
                 (f"{it['pack']:g}", it["pack"]), (f"{c['box']:,.2f}", c["box"]), (f"{add:g}" if add else "", add),
-                (days(da) if add else "", da if add else -1), (f"{add * c['box']:,.2f}" if add else "", add * c["box"])]
+                (days(da) if total else "", (1e12 if math.isinf(da) else da) if total else -1),
+                (f"{add * c['box']:,.2f}" if add else "", add * c["box"])]
         for k, (text, key) in enumerate(vals):
             item = _SortItem(text)
             item.setData(KEY_ROLE, key)
@@ -271,6 +288,7 @@ class AddItemsDialog(QDialog):
             item.setFlags(flags)
             if k == 0:
                 item.setData(DI_ROLE, c["row"])
+                item.setToolTip(f"{it['desc']}\nEAN {it.get('ean') or '—'} · {tr('编号')} {it.get('db_code') or it['code']}")
             self.table.setItem(r, k, item)
         if add and da > float(self.page.fill_cfg().get("max_stock_days") or 60):
             self.table.item(r, self.ADD + 1).setForeground(QColor(T("warn")))
@@ -530,12 +548,12 @@ class DetailWindow(ToolWindow):
         mid.setContentsMargins(0, 0, 0, 0)
         mid.setSpacing(0)
         self.table = self.ui.make_table(_perm([tr("供应商"), tr("门店"), tr("判断"), tr("商品编号"), tr("条码"), tr("名称"),
-                                               tr("本店库存"), "30", "60", "90", "180", tr("库存天数"), tr("每箱件数"),
+                                               tr("本店库存"), "30", "60", "90", "180", tr("库存够卖（天）"), tr("每箱件数"),
                                                tr("件价"), tr("建议件数"), tr("建议箱数"), tr("订货箱数"), tr("金额"),
                                                tr("等级"), tr("周期"), tr("日均"), tr("目标库存"),
                                                tr("月均"), tr("需求")] + [f"GIA.{i}" for i in range(6)] +
-                                              ["GIA-period", "period_sales"]),
-                                        numeric_cols=[_col(k) for k in list(range(6, 18)) + [19, 20, 21] + _EXTRA])
+                                              ["GIA-period", "period_sales", tr("订后够卖（天）")]),
+                                        numeric_cols=[_col(k) for k in list(range(6, 18)) + [19, 20, 21, 32] + _EXTRA])
         self.table.setEditTriggers(QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed |
                                    QAbstractItemView.AnyKeyPressed)
         self.table.setFocusPolicy(Qt.StrongFocus)
@@ -544,13 +562,16 @@ class DetailWindow(ToolWindow):
         hh.setSectionResizeMode(QHeaderView.Interactive)
         hh.setStretchLastSection(False)
         for c, wd in enumerate(_perm((130, 92, 84, 80, 120, 270, 70, 50, 50, 50, 50, 70, 66, 62, 70, 66, 76, 80, 46, 46, 60, 70,
-                                      56, 56, 54, 54, 54, 54, 54, 54, 80, 86))):
+                                      56, 56, 54, 54, 54, 54, 54, 54, 80, 86, 96))):
             hdr = self.table.horizontalHeaderItem(c)
             need = hh.fontMetrics().horizontalAdvance(hdr.text() if hdr else "") + 26
             self.table.setColumnWidth(c, max(wd, need))
         self.table.horizontalHeaderItem(EDIT_COL).setText(tr("订货箱数") + " ✎")
         self.table.horizontalHeaderItem(EDIT_COL).setToolTip(tr("双击修改箱数，0 = 不订"))
         self.table.horizontalHeaderItem(_col(18)).setToolTip(tr("销量等级：A 卖得快，B 一般，C 卖得慢"))
+        self.table.horizontalHeaderItem(_col(11)).setToolTip(tr("库存够卖 = 现在的库存按日均还能卖几天（算法给的库存天数）"))
+        self.table.horizontalHeaderItem(AFTER_COL).setToolTip(
+            tr("订后够卖 =（库存 + 订货箱数 × 每箱件数）÷ 日均：这次的货到了以后能卖几天；超过凑单天数标黄，可能压货"))
         for k, tip in ((22, tr("月均 = 最长周期销量 ÷ 月数（默认 180 天 ÷ 6）")),
                        (23, tr("需求 = 第 3 个周期（默认 90 天）的日均 × 订货周期")),
                        (24, tr("GIA.0 = BMS 总仓库存；GIA.1 ~ GIA.5 = 各门店库存")),
@@ -796,8 +817,12 @@ class DetailWindow(ToolWindow):
                 continue
             ox = calc["demand"].get(osid, {}).get(it.get("db_code") or it["code"])
             on = self._cur(sc, osid, it["row"])
-            l = QLabel(f"{S.STORE_SHEETS[osid]}    " + (tr("库存 {0:g} · 订 {1:g} 箱", ox.get("inv_raw", ox["inv"]), on) if ox
-                                                       else tr("数据库没有")))
+            if ox:
+                dv = S.cover_days(ox)
+                body = tr("库存 {0:g} · 够卖 {1} 天 · 订 {2:g} 箱", ox.get("inv_raw", ox["inv"]), S.days_text(dv) or "—", on)
+            else:
+                body = tr("数据库没有")
+            l = QLabel(f"{S.STORE_SHEETS[osid]}    " + body)
             l.setObjectName("Faint" if not on else "")
             self.others.addWidget(l)
 
@@ -847,8 +872,8 @@ class DetailWindow(ToolWindow):
                 f"{x['cycle']:g}" if x and isinstance(x.get("cycle"), (int, float)) else "",
                 f"{x['daily']:.2f}" if x and x.get("daily") else "",
                 f"{x['target']:.0f}" if x and isinstance(x.get("target"), (int, float)) else ""] +
-                self._extra_texts(x, sug_c, d)))
-            keys = _perm(self._sort_keys(i, x, sug_c) + self._extra_keys(x, sug_c, d))
+                self._extra_texts(x, sug_c, d) + [""]))
+            keys = _perm(self._sort_keys(i, x, sug_c) + self._extra_keys(x, sug_c, d) + [0.0])
             for c in range(t.columnCount()):
                 src = t.item(i, c)
                 item = _SortItem(src.text())
@@ -966,6 +991,14 @@ class DetailWindow(ToolWindow):
         amt = self.table.item(r, AMOUNT_COL)
         amt.setText(f"{n * it['pack'] * it['price']:,.2f}" if n else "")
         amt.setData(KEY_ROLE, n * it["pack"] * it["price"])
+        # 订后够卖：随订货箱数一起变
+        x = self.page.calc["demand"].get(sid, {}).get(it.get("db_code") or it["code"])
+        v = S.cover_days(x, n * it["pack"])
+        af = self.table.item(r, AFTER_COL)
+        af.setText(S.days_text(v))
+        af.setData(KEY_ROLE, None if v is None else (1e12 if math.isinf(v) else v))
+        limit = float(self.page.fill_cfg().get("max_stock_days") or 60)
+        af.setForeground(QColor(T("warn") if (n and v is not None and v > limit) else T("text") if n else T("muted")))
         self._filling = was
 
     def _cell_edited(self, item):

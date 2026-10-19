@@ -131,12 +131,15 @@ class TransferDialog(QDialog):
         self.count = QLabel("")
         self.count.setObjectName("Faint")
         exp = QPushButton(tr("导出调货单"))
-        heads = [tr("调出门店"), tr("调入门店"), tr("供应商"), "Cod.Art.", tr("品名"), tr("调货件数"), tr("货值 €"),
-                 tr("原来订（箱）"), tr("现在订（箱）")]
+        heads = [tr("调出门店"), tr("调入门店"), tr("供应商"), "Cod.Art.", "EAN", tr("品名"), tr("调货件数"), tr("货值 €"),
+                 tr("原来订（箱）"), tr("现在订（箱）"), tr("调出后够卖（天）"), tr("调入后够卖（天）")]
         self._set_row = ui.table_set_row
-        self.table = ui.make_table(heads, stretch_col=4, numeric_cols=(5, 6, 7, 8))
+        self.table = ui.make_table(heads, stretch_col=5, numeric_cols=(6, 7, 8, 9, 10, 11))
+        self.table.horizontalHeaderItem(10).setToolTip(tr("调出门店把这些货调走以后，剩下的库存还能卖几天"))
+        self.table.horizontalHeaderItem(11).setToolTip(tr("调入门店收到调货（加上这次还订的箱数）以后能卖几天"))
         from erp_widgets import TableSortFilter, ColumnFilterBox
-        self.ctl = TableSortFilter(self.table, lambda: len(self.ts), self._text, self._fill, numeric=(5, 6, 7, 8))
+        self.ctl = TableSortFilter(self.table, lambda: len(self.ts), self._text, self._fill, key=self._key,
+                                   numeric=(6, 7, 8, 9, 10, 11))
         bar.addWidget(ColumnFilterBox(self.ctl, 0, tr("调出门店")))
         bar.addSpacing(12)
         bar.addWidget(ColumnFilterBox(self.ctl, 1, tr("调入门店")))
@@ -158,11 +161,19 @@ class TransferDialog(QDialog):
     def _text(self, i, c):
         x = self.ts[i]
         return [S.STORE_SHEETS.get(x["from"], str(x["from"])), S.STORE_SHEETS.get(x["to"], str(x["to"])),
-                x["supplier"], str(x["code"]), x["desc"], f"{x['pieces']:g}", f"{x['value']:,.2f}",
-                f"{x['colli_before']}", f"{x['colli_after']}"][c]
+                x["supplier"], str(x["code"]), str(x.get("ean") or ""), x["desc"], f"{x['pieces']:g}",
+                f"{x['value']:,.2f}", f"{x['colli_before']}", f"{x['colli_after']}",
+                S.days_text(x.get("from_days")), S.days_text(x.get("to_days"))][c]
+
+    def _key(self, i, c):
+        if c in (10, 11):
+            v = self.ts[i].get("from_days" if c == 10 else "to_days")
+            return -1.0 if v is None else (1e12 if v == float("inf") else v)
+        return None
 
     def _fill(self, i, k):
-        self._set_row(self.table, k, [self._text(i, c) for c in range(9)])
+        self._set_row(self.table, k, [self._text(i, c) for c in range(12)])
+        self.table.item(k, 5).setToolTip(self.ts[i]["desc"])
 
     def export(self):
         path, _ = QFileDialog.getSaveFileName(self, tr("导出调货单"), "调货单.xlsx", tr("Excel 文件 (*.xlsx)"))

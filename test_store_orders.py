@@ -295,3 +295,15 @@ class AddItemsTest(unittest.TestCase):
         self.assertNotIn(8, add)                                          # 不动销的不加
         self.assertEqual(S.suggest_fill(sc, 2, dem, {7: 3}), {})          # 已经够了
         self.assertIsNone(S.suggest_fill(sc, 2, dem, {7: 1}, max_days=16))   # 天数限制内凑不齐
+
+
+class CoverDaysTest(unittest.TestCase):
+    def test_cover_days(self):
+        self.assertAlmostEqual(S.cover_days({"inv": 10, "daily": 2}), 5)
+        self.assertAlmostEqual(S.cover_days({"inv": -3, "daily": 2}, 12), 6)      # 负库存当 0
+        self.assertEqual(S.cover_days({"inv": 4, "daily": 0}), float("inf"))
+        self.assertIsNone(S.cover_days({"inv": 0, "daily": 0}))
+        self.assertIsNone(S.cover_days(None))
+        self.assertEqual(S.days_text(float("inf")), "∞")
+        self.assertEqual(S.days_text(12.4), "12")
+        self.assertEqual(S.days_text(None), "")
