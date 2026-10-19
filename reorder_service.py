@@ -622,6 +622,108 @@ def check_rows(file_rows, result_rows, unit="colli"):
     return out
 
 
+# =====================================================================
+# 各门店库存快照（检查门店清单时一起查，批发商比价用来算门店间调货、够卖天数）
+# =====================================================================
+def daily_of(r, days_list):
+    """一行计算结果的日均：新算法有加权日均；原程序算法用最近一个周期（没有就用第 3 个周期）的销量"""
+    v = _val(r, "daily_rate")
+    if v is not None:
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            pass
+    s1 = float(_val(r, "sales_1", 0) or 0)
+    s3 = float(_val(r, "sales_3", 0) or 0)
+    if s1 > 0:
+        return s1 / days_list[0]
+    if s3 > 0:
+        return s3 / days_list[2]
+    return 0.0
+
+
+def stock_of(df, days_list):
+    """一家门店的计算结果 → {商品编号: {"inv", "daily", "cycle", "ean"}}（负库存当 0）"""
+    out = {}
+    if df is None or not len(df):
+        return out
+    for _, r in df.iterrows():
+        if _val(r, "CodArticolo") is None:
+            continue
+        code = str(int(r["CodArticolo"]))
+        out[code] = {"inv": max(0.0, float(_val(r, "store_inventory", 0) or 0)),
+                     "daily": daily_of(r, days_list),
+                     "cycle": float(_val(r, "reorder_cycle_used", 30) or 30),
+                     "ean": _clean_code(_val(r, "CodBarre", "")) or ""}
+    return out
+
+
+def stock_snapshot(db, codes, days_list, reorder_cycle, stores, use_supplier_cycles=True, algo=None,
+                   own=None, own_df=None, on_store=None):
+    """
+    几家门店同一批商品的库存和日均：{门店号: {商品编号: {inv, daily, cycle, ean}}}。
+    own / own_df：本店已经算过的结果，直接用，不再查。
+    """
+    snap = {}
+    for k, sid in enumerate(stores):
+        if on_store:
+            on_store(k, sid)
+        if sid == own and own_df is not None:
+            df = own_df
+        else:
+            df = compute_suggestions(db, sid, codes, days_list, reorder_cycle, None,
+                                     use_supplier_cycles=use_supplier_cycles, algo=algo)
+        snap[sid] = stock_of(df, days_list)
+    return snap
+
+
+def snapshot_path(main_order_path):
+    """主订单旁边的库存快照文件：总文件夹/_备份/门店库存/<主订单文件名>.json"""
+    root = os.path.dirname(os.path.dirname(main_order_path))
+    return os.path.join(root, "_备份", "门店库存", os.path.basename(main_order_path) + ".json")
+
+
+def save_snapshot(main_order_path, store_id, snap, rows=None):
+    """
+    存快照：按条码（主订单按条码找商品）→ {"code", "stores": {门店号: {inv, daily, cycle}}}
+    rows：检查清单的行（补上快照里没有条码的商品的条码）
+    """
+    import json
+    ean_of = {}
+    for x in rows or []:
+        if x.get("code") and x.get("ean"):
+            ean_of[str(x["code"])] = _clean_code(x["ean"])
+    by_ean = {}
+    for sid, d in snap.items():
+        for code, v in d.items():
+            ean = ean_of.get(code) or v.get("ean")
+            if not ean:
+                continue
+            e = by_ean.setdefault(ean, {"code": code, "stores": {}})
+            e["stores"][str(sid)] = {"inv": v["inv"], "daily": v["daily"], "cycle": v["cycle"]}
+    path = snapshot_path(main_order_path)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump({"store": store_id, "made": datetime.now().isoformat(timespec="seconds"),
+                   "main_order": os.path.basename(main_order_path), "by_ean": by_ean}, f, ensure_ascii=False)
+    return path
+
+
+def load_snapshot(main_order_path):
+    """读快照；没有 / 读不了 / 不是这份主订单的 → None。门店号转回 int"""
+    import json
+    try:
+        with open(snapshot_path(main_order_path), encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return None
+    if data.get("main_order") != os.path.basename(main_order_path):
+        return None
+    for e in data.get("by_ean", {}).values():
+        e["stores"] = {int(k): v for k, v in e.get("stores", {}).items()}
+    return data
+
+
 def write_checked_order(rows, root_folder, store_id, source_name=""):
     """
     确认后的订货量写成采购主订单（ORDINE 文件夹）：PEZZI = 确定件数，COLLI = 按数据库箱规折合的箱数。

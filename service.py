@@ -95,6 +95,75 @@ def _order_qty(r, s):
     return (r or {}).get("qty")
 
 
+def attach_stock(rows_data, snapshot):
+    """主订单的每一行加上本店库存、日均、订货周期（来自检查门店清单时的快照），算够卖天数用"""
+    if not snapshot:
+        return 0
+    own = snapshot.get("store")
+    n = 0
+    for r in rows_data:
+        e = (snapshot.get("by_ean") or {}).get(r.get("ean"))
+        d = (e or {}).get("stores", {}).get(own) if e else None
+        if d:
+            r["inv"], r["daily"], r["cycle"] = d["inv"], d["daily"], d["cycle"]
+            n += 1
+    return n
+
+
+def wholesale_transfers(rows_data, supplier_headers, snapshot, settings, labels=None):
+    """
+    批发商比价的门店间调货（规则和门店配货一样，transfers.py）：
+      只对按件数订货的主订单（PEZZI）；箱规按最低价那家算（零头 = 要的件数按它的箱规取整多出来的）；
+      其他门店留够自己一个订货周期，多出来的才调；每家调出门店货值 ≥ 门槛才调；远的门店不参与。
+    调到货的商品，主订单件数减掉调货件数（rows_data 里直接换成新的行），起订量 / 比价按减完的件数算。
+    返回调货清单（格式和门店配货的调货单一样）
+    """
+    import transfers as TR
+    import store_orders as SO
+    so = (settings or {}).get("store_orders") or {}
+    cfg = TR.config(so.get("transfer"))
+    if not snapshot or not cfg.get("enabled"):
+        return []
+    own = snapshot.get("store")
+    far = (dict(SO.DEFAULT_FILL, **(so.get("fill") or {}))).get("far_stores") or []
+    by_ean = snapshot.get("by_ean") or {}
+    labels = labels or {}
+    needs, info, avail = [], {}, {}
+    for k, r in enumerate(rows_data):
+        if r.get("pieces") is None or not r.get("ean") or (r.get("qty") or 0) <= 0:
+            continue
+        priced = [(p, h) for h, p in (r.get("unit") or {}).items() if p is not None]
+        if not priced:
+            continue
+        price, s0 = min(priced)
+        pack = (r.get("packs") or {}).get(s0) or 1
+        colli = (r.get("colli") or {}).get(s0) or 0
+        needs.append({"id": k, "store": own, "key": r["ean"], "need": r["qty"], "pack": pack, "colli": colli,
+                      "price": price})
+        info[k] = (r, s0)
+        for sid, d in (by_ean.get(r["ean"]) or {}).get("stores", {}).items():
+            if sid != own:
+                sp = TR.surplus(d)
+                if sp > 0:
+                    avail[(sid, r["ean"])] = sp
+    if not needs:
+        return []
+    moves, _ = TR.plan(needs, avail, cfg, far)
+    out = []
+    for m in moves:
+        r, s0 = info[m["need_id"]]
+        new = set_row_qty(r, max(0.0, r["qty"] - m["pieces"]))
+        rows_data[m["need_id"]] = new
+        d_from = by_ean[r["ean"]]["stores"].get(m["from"])
+        d_to = by_ean[r["ean"]]["stores"].get(own)
+        out.append(dict(m, row=r["row"], ean=r["ean"], code=by_ean[r["ean"]].get("code", ""), desc=r.get("articolo", ""),
+                        supplier=labels.get(s0) or s0, price=m["value"] / m["pieces"] if m["pieces"] else 0.0,
+                        from_days=SO.cover_days(d_from, -m["pieces"]),
+                        to_days=SO.cover_days(d_to, new["qty"] + m["pieces"])))
+    out.sort(key=lambda x: (x["from"], x["desc"]))
+    return out
+
+
 def _select_suppliers(rows_data, supplier_headers, ws_main, log, settings, summary, decide=None, choose=None):
     """
     返回 {行号: 供应商}；返回 None 表示操作员取消了处理。
@@ -743,6 +812,25 @@ def run_process(ordine_file, eliminare_path, distribuire_path, log, progress=Non
 
     # 最低价分配 + 起订量凑单优化
     P(62, tr("选择供应商（最低价 + 起订量凑单）..."))
+    # 检查门店清单时存的各门店库存快照：够卖天数、门店间调货
+    import reorder_service as RS
+    snapshot = RS.load_snapshot(ordine_file)
+    summary["transfers"] = []
+    if snapshot:
+        n_stock = attach_stock(rows_data, snapshot)
+        log(tr("门店库存快照：{0} 个商品有库存和日均（来自「检查门店清单」）", n_stock))
+        try:
+            import supplier_names as SN
+            summary["transfers"] = wholesale_transfers(rows_data, supplier_headers, snapshot, settings,
+                                                       SN.labels(supplier_headers, settings))
+        except Exception as e:
+            log(tr("⚠ 调货计算失败（按原来的件数订）：{0}", e))
+        if summary["transfers"]:
+            log(tr("门店间调货：{0} 个商品，少订 {1} 箱", len(summary["transfers"]),
+                   sum(t["colli_before"] - t["colli_after"] for t in summary["transfers"])))
+    else:
+        log(tr("这份主订单没有门店库存快照（不是「检查门店清单」生成的），不算调货和够卖天数"))
+    transfer_rows = {t["row"]: t for t in summary["transfers"]}
     assignment = _select_suppliers(rows_data, supplier_headers, ws_main, log, settings, summary, decide, choose)
     if assignment is None:
         log(tr("⚠ 操作员取消了处理，主订单和供应商文件都没有改动"))
@@ -751,6 +839,10 @@ def run_process(ordine_file, eliminare_path, distribuire_path, log, progress=Non
         summary["error"] = tr("已取消，文件没有改动")
         summary["cancelled"] = True
         return summary
+    # 全部靠调货的商品（件数减到 0）：不向批发商订
+    for r in rows_data:
+        if r["row"] in transfer_rows and (r.get("qty") or 0) <= 0:
+            assignment.pop(r["row"], None)
 
     # 各供应商分配汇总
     for h in supplier_headers:
@@ -777,8 +869,21 @@ def run_process(ordine_file, eliminare_path, distribuire_path, log, progress=Non
     missing_count = 0
     missing_items = []  # [(ean, articolo), ...]
     row_by_i = {r["row"]: r for r in rows_data}
+    # 调货：主订单 PEZZI 改成减完的件数，备注写从哪家店调了几件；全部靠调货的商品不向批发商订
+    for i, t in transfer_rows.items():
+        r = row_by_i.get(i)
+        if col_pezzi and r is not None:
+            ws_main.cell(i, col_pezzi).value = int(r["qty"]) if float(r["qty"]).is_integer() else r["qty"]
+        note = tr("调货 {0:g} 件（从 {1}）", t["pieces"], RS.STORES.get(t["from"], t["from"]))
+        old = ws_main.cell(i, MIN_ORDER_NOTE_COL).value
+        ws_main.cell(i, MIN_ORDER_NOTE_COL).value = f"{old}；{note}" if old else note
     for i in range(2, main_last + 1):
         best_supplier = assignment.get(i)
+        if i in transfer_rows and not best_supplier:
+            ws_main.cell(i, SUPPLIER_RESULT_COL).value = tr("调货")
+            if col_colli_sel:
+                ws_main.cell(i, col_colli_sel).value = 0
+            continue
 
         if best_supplier:
             ws_main.cell(i, SUPPLIER_RESULT_COL).value = best_supplier
@@ -1059,6 +1164,18 @@ def run_process(ordine_file, eliminare_path, distribuire_path, log, progress=Non
         # 写完以后的文件指纹：下次处理时认出「还是程序写的」→ 恢复原文件再算
         "written": _written_fingerprints(ordine_file, distribuire_path),
     }
+    summary["transfers_file"] = None
+    if summary.get("transfers"):
+        try:
+            import store_orders as SO
+            store_name = RS.STORES.get((snapshot or {}).get("store"), "")
+            from datetime import datetime as _dt
+            tf = os.path.join(root_dir, f"调货单_{store_name}_{_dt.now():%Y%m%d_%H%M}.xlsx")
+            SO.export_transfers(summary["transfers"], tf)
+            summary["transfers_file"] = tf
+            log(tr("✔ 调货单：{0}", os.path.basename(tf)))
+        except Exception as e:
+            log(tr("⚠ 调货单生成失败：{0}", e))
     _save_history(summary, log, settings.get("history_keep_days", 180))
     save_state(summary)
     return summary

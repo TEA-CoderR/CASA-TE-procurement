@@ -59,3 +59,29 @@ def test_store_orders_apply_transfers():
     assert calc["base"] == {"p": {2: {}}} and calc["base_orig"] == {"p": {2: {5: 1}}}
     S.apply_transfers(calc, {"enabled": False})
     assert calc["base"] == {"p": {2: {5: 1}}} and calc["transfers"] == []
+
+
+def test_snapshot_roundtrip_and_wholesale(tmp_path):
+    """批发商比价：检查门店清单时存的各门店库存快照 → 比价时算调货、够卖天数"""
+    import os
+    import reorder_service as RS
+    import service
+    root = tmp_path / "root"
+    (root / "ORDINE").mkdir(parents=True)
+    main = str(root / "ORDINE" / "确认订单_MARLIA.xlsx")
+    snap = {2: {"1": {"inv": 0, "daily": 0.1, "cycle": 30, "ean": "800001"}},
+            4: {"1": {"inv": 40, "daily": 0.5, "cycle": 30, "ean": "800001"}}}
+    RS.save_snapshot(main, 2, snap)
+    got = RS.load_snapshot(main)
+    assert got["store"] == 2 and got["by_ean"]["800001"]["stores"][4]["inv"] == 40
+    assert RS.load_snapshot(str(root / "ORDINE" / "别的.xlsx")) is None
+    rows = [service._price_row_pieces(2, 3, {"MEGA": 1.0, "MELONI": 1.2}, {"MEGA": 12, "MELONI": 12}, "800001", "A")]
+    assert service.attach_stock(rows, got) == 1 and rows[0]["daily"] == 0.1
+    ts = service.wholesale_transfers(rows, ["MEGA", "MELONI"], got, {"store_orders": {"transfer": {"min_value": 1}}})
+    assert [(t["from"], t["pieces"], t["colli_before"], t["colli_after"]) for t in ts] == [(4, 3, 1, 0)]
+    assert rows[0]["qty"] == 0 and rows[0]["qty_orig"] == 3                  # 主订单件数减掉调货的
+    assert ts[0]["supplier"] == "MEGA" and abs(ts[0]["value"] - 3.0) < 1e-9
+    # 关掉调货 / 没有快照 → 不调
+    rows2 = [service._price_row_pieces(2, 3, {"MEGA": 1.0}, {"MEGA": 12}, "800001", "A")]
+    assert service.wholesale_transfers(rows2, ["MEGA"], got, {"store_orders": {"transfer": {"enabled": False}}}) == []
+    assert service.wholesale_transfers(rows2, ["MEGA"], None, {}) == []

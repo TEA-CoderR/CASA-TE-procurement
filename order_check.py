@@ -55,8 +55,8 @@ class OrderCheck:
 
     def build(self):
         ui = self.ui
-        p = ui.Panel(tr("② 检查门店订货清单（可选）"))
-        intro = QLabel(tr("先按销量和数据库库存检查清单里订的数量是否合理（增加 / 减少 / 不订），确认后生成新的主订单，再点下面的「开始处理」做供应商比价。不需要检查就直接开始处理。"))
+        p = ui.Panel(tr("② 检查门店订货清单（推荐）"))
+        intro = QLabel(tr("把门店发来的订货清单拖进来：按销量和数据库库存检查数量是否合理（增加 / 减少 / 不订），同时查其他门店的库存；确认后生成新的主订单，再点下面的「开始处理」做供应商比价。这样比价时还能算门店间调货和够卖天数。"))
         intro.setObjectName("Faint")
         intro.setWordWrap(True)
         p.lay.addWidget(intro)
@@ -300,7 +300,8 @@ class OrderCheck:
         self.msg.setText(tr("正在连接数据库并计算，商品多时要几十秒…"))
         from erp_widgets import TaskDialog
         dlg = TaskDialog(self.win, tr("正在检查订货清单"), tr("{0} · {1} 个商品", store_label(store), len(file_rows)),
-                         [tr("读取清单、对上商品编号"), tr("查询门店销量与库存"), tr("对比清单数量")], cancellable=False)
+                         [tr("读取清单、对上商品编号"), tr("查询门店销量与库存"), tr("查询其他门店库存（调货用）"),
+                          tr("对比清单数量")], cancellable=False)
         dlg.went_background.connect(lambda: self.win.show_toast(tr("清单在后台检查，完成后会提醒")))
         dlg.show()
 
@@ -320,18 +321,34 @@ class OrderCheck:
                 dlg.post_step(0, "done", f"{len(codes)} / {len(file_rows)}", "")
                 dlg.post_step(1, "running", "", "")
                 dlg.post_progress(20)
-                result = []
+                result, df, snap = [], None, None
                 if codes:
                     df = R.compute_suggestions(db, store, codes, days, cycle, None, use_supplier_cycles=use_cfg,
                                                algo=algo)
                     result = R.to_rows(df, file_rows)
-                db.engine.dispose()
                 dlg.post_step(1, "done", "", "")
+                # 其他门店同一批商品的库存和日均：批发商比价时算门店间调货、够卖天数（查不到不影响检查）
                 dlg.post_step(2, "running", "", "")
+                dlg.post_progress(55)
+                if codes:
+                    try:
+                        others = [k for k in R.STORES if k != 0]
+                        snap = R.stock_snapshot(
+                            db, codes, days, cycle, others, use_cfg, algo, own=store, own_df=df,
+                            on_store=lambda k, sid: (dlg.post_step(2, "running", f"{k + 1} / {len(others)}", R.STORES.get(sid, "")),
+                                                     dlg.post_progress(55 + 30 * k / max(1, len(others)))))
+                        dlg.post_step(2, "done", f"{len(others)} / {len(others)}", "")
+                    except Exception as e:
+                        log(tr("⚠ 其他门店库存没查到（不能算调货）：{0}", e))
+                        dlg.post_step(2, "error", "", str(e))
+                else:
+                    dlg.post_step(2, "done", "", "")
+                db.engine.dispose()
+                dlg.post_step(3, "running", "", "")
                 dlg.post_progress(90)
                 rows = R.check_rows(file_rows, result, unit)
                 dlg.post_finished(True, tr("完成：{0} 个商品", len(rows)))
-                self.sig.done.emit((rows, None, dict(store=store, days=days, cycle=cycle, unit=unit)))
+                self.sig.done.emit((rows, None, dict(store=store, days=days, cycle=cycle, unit=unit, snap=snap)))
             except Exception as e:
                 import traceback
                 log(tr("❌ 检查清单失败：{0}", e))
@@ -533,6 +550,11 @@ class OrderCheck:
             QMessageBox.critical(self.win, tr("确认，生成主订单"), tr("写入失败：{0}", e))
             return
         self.win.log(tr("✔ 采购主订单：{0}（{1} 个商品）", path, written))
+        if self.meta.get("snap"):
+            try:
+                R.save_snapshot(path, self.meta["store"], self.meta["snap"], self.rows)
+            except Exception as e:
+                self.win.log(tr("⚠ 门店库存快照没存上（批发商比价不能算调货）：{0}", e))
         if skipped:
             self.win.log(tr("⚠ {0} 个商品没有条码，没写进主订单：{1}", len(skipped),
                             "、".join(f"{x['code']} {x['name'][:20]}" for x in skipped[:10])))

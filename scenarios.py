@@ -96,8 +96,11 @@ def missing_items(rows_all, assign, excluded=()):
             reason = "只有被排除的供应商有报价"
         else:
             reason = "起订量放弃了有报价的供应商"
-        out.append({"row": r["row"], "ean": r.get("ean", ""), "articolo": r.get("articolo", ""),
-                    "qty": _qty(r), "reason": reason, "offers": offers})
+        m = {"row": r["row"], "ean": r.get("ean", ""), "articolo": r.get("articolo", ""),
+             "qty": _qty(r), "reason": reason, "offers": offers}
+        if r.get("daily") is not None:                  # 有门店库存快照：这个商品店里还能撑几天
+            m["inv"], m["daily"] = r.get("inv") or 0, r.get("daily") or 0
+        out.append(m)
     return out
 
 
