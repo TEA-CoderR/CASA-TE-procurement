@@ -1596,4 +1596,7 @@ TRANSLATIONS = {
     '选用': ('Chosen', 'Scelto'),
     '排除 MEGA': ('Without MEGA', 'Senza MEGA'),
     '排除 NEW GRIECO': ('Without NEW GRIECO', 'Senza NEW GRIECO'),
+    '选这个方案': ('Choose this plan', 'Scegli questo scenario'),
+    '✔ 已选这个方案': ('✔ Plan chosen', '✔ Scenario scelto'),
+    '在上面的卡片里选方案。表格可以选中格子按 Ctrl+C 复制，或右键复制；鼠标停在左边的项目或格子上看说明。': ('Choose a plan with the cards above. Select cells and press Ctrl+C, or right-click, to copy; hover a label or cell for details.', 'Scegli lo scenario con le schede in alto. Seleziona celle e premi Ctrl+C, o tasto destro, per copiare; passa il mouse su voci o celle per i dettagli.'),
 }

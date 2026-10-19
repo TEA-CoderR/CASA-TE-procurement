@@ -1445,13 +1445,12 @@ def scenario_advice(results, rec):
 
 
 class ScenarioCard(QFrame):
-    """方案卡片：总额、和 A 比、缺失商品；点一下选这个方案"""
+    """方案卡片：总额、和 A 比、缺失商品。点卡片（或「选这个方案」）选方案；卡片上的文字可以选中复制"""
 
     def __init__(self, parent, i, r, rec, on_pick, on_missing):
         super().__init__(parent)
         self.i, self.on_pick = i, on_pick
         self.setObjectName("ScenCard")
-        self.setCursor(Qt.PointingHandCursor)
         v = QVBoxLayout(self)
         v.setContentsMargins(16, 12, 16, 12)
         v.setSpacing(4)
@@ -1485,13 +1484,31 @@ class ScenarioCard(QFrame):
         mb.setStyleSheet(f"text-align:left; padding:2px 0; color:{T('warn') if nm else T('muted')};")
         mb.clicked.connect(lambda: on_missing(i))
         v.addWidget(mb, 0, Qt.AlignLeft)
+        self.pick_btn = QPushButton(tr("选这个方案"))
+        self.pick_btn.clicked.connect(lambda: on_pick(i))
+        v.addWidget(self.pick_btn, 0, Qt.AlignLeft)
+        # 文字可以选中复制；单击文字（没有选中文字时）也算选这个方案
+        for lb in (self.title, self.tag, tot, dl):
+            lb.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            lb.installEventFilter(self)
         self.set_selected(False)
+
+    def eventFilter(self, obj, ev):
+        from PySide6.QtCore import QEvent
+        if ev.type() == QEvent.MouseButtonRelease and isinstance(obj, QLabel) and not obj.hasSelectedText():
+            self.on_pick(self.i)
+        return False
 
     def set_selected(self, on):
         bd = T("accent") if on else T("line")
         bg = T("accent_soft") if on else T("surface")
         self.setStyleSheet(f"#ScenCard {{ background:{bg}; border:{2 if on else 1}px solid {bd}; border-radius:10px; }}")
         self.tag.setText("  ".join(x for x in (self.base_tag, ("✔ " + tr("选用")) if on else "") if x))
+        if hasattr(self, "pick_btn"):
+            self.pick_btn.setText(tr("✔ 已选这个方案") if on else tr("选这个方案"))
+            self.pick_btn.setObjectName("Primary" if on else "")
+            self.pick_btn.style().unpolish(self.pick_btn)
+            self.pick_btn.style().polish(self.pick_btn)
 
     def mousePressEvent(self, e):
         self.on_pick(self.i)
@@ -1725,9 +1742,11 @@ class ScenarioDialog(QDialog):
         lay.addLayout(cards)
 
         self.table = make_table([""], stretch_col=None)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectItems)
+        self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.table.cellClicked.connect(self._clicked)
         lay.addWidget(self.table, 1)
-        hint = QLabel(tr("点卡片或某一列选方案；鼠标停在左边的项目或格子上看说明。"))
+        hint = QLabel(tr("在上面的卡片里选方案。表格可以选中格子按 Ctrl+C 复制，或右键复制；鼠标停在左边的项目或格子上看说明。"))
         hint.setObjectName("Faint")
         lay.addWidget(hint)
         btns = QHBoxLayout()
@@ -1761,6 +1780,8 @@ class ScenarioDialog(QDialog):
                       tr("缺失商品 · {0} {1}", scen_letter(i), tr(self.results[i]["name"]))).exec()
 
     def _pick(self, i):
+        if i == self.chosen and getattr(self, "links", None) is not None:
+            return
         self.chosen = i
         for c in self.cards:
             c.set_selected(c.i == i)
@@ -1770,8 +1791,6 @@ class ScenarioDialog(QDialog):
     def _clicked(self, row, col):
         if (row, col) in self.links:
             self._missing(self.links[(row, col)])
-        elif col >= 1:
-            self._pick(col - 1)
 
     def export(self):
         path, _ = QFileDialog.getSaveFileName(self, tr("导出对比"), "方案对比.xlsx", tr("Excel 文件 (*.xlsx)"))
@@ -2564,6 +2583,8 @@ class MainWindow(QMainWindow):
         sh.setObjectName("Faint")
         self.scen_panel.lay.addWidget(sh)
         self.scen_table = make_table([""], stretch_col=None)
+        self.scen_table.setSelectionBehavior(QAbstractItemView.SelectItems)
+        self.scen_table.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.scen_table.setMinimumHeight(200)
         self.scen_table.cellClicked.connect(self._scen_clicked)
         self.scen_panel.lay.addWidget(self.scen_table)
