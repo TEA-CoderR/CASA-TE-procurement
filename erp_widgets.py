@@ -1043,6 +1043,26 @@ class TableSortFilter(QObject):
         hh.viewport().update()
         self.rendered.emit(len(vis), n)
 
+    def set_filter(self, c, values=None):
+        """这一列只显示 values 里的值；values 为 None / 空 = 不筛选这一列"""
+        if values:
+            self.filters[c] = set(values)
+        else:
+            self.filters.pop(c, None)
+        self.render()
+
+    def values_of(self, c):
+        """这一列现在可选的值和行数（只算其他筛选条件之后还看得到的行，和 Excel 一样）"""
+        others = {cc: a for cc, a in self.filters.items() if cc != c}
+        vals = {}
+        for i in range(self.count()):
+            if self.hide and self.hide(i):
+                continue
+            if all(self.text(i, cc) in a for cc, a in others.items()):
+                v = self.text(i, c)
+                vals[v] = vals.get(v, 0) + 1
+        return [(v, vals[v]) for v in sorted(vals, key=_sort_key)]
+
     def update_row(self, i):
         """数据行 i 变了（例如换了供应商）：只重画这一行"""
         if i in self.pos:
@@ -1180,3 +1200,57 @@ class TableSortFilter(QObject):
             QMessageBox.critical(parent, tr("导出"), tr("导出失败：{0}", e))
             return None
         return path
+
+
+class ColumnFilterBox(QWidget):
+    """
+    表格上方的筛选下拉框：「最低价供应商：[全部 ▾]」，选 MEGA 就只看 MEGA 的行。
+    和右键表头的筛选是同一个筛选条件（那边改了，这里跟着变）。
+    """
+
+    def __init__(self, ctl, col, label, short=None, parent=None):
+        from PySide6.QtWidgets import QComboBox
+        super().__init__(parent)
+        self.ctl, self.col, self.short = ctl, col, short or (lambda v: v)
+        h = QHBoxLayout(self)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.setSpacing(6)
+        lb = QLabel(label)
+        lb.setObjectName("Muted")
+        h.addWidget(lb)
+        self.box = QComboBox()
+        self.box.setMinimumWidth(150)
+        self.box.setSizeAdjustPolicy(QComboBox.AdjustToContents)
+        self.box.currentIndexChanged.connect(self._picked)
+        h.addWidget(self.box)
+        ctl.rendered.connect(lambda *_: self.refresh())
+        self.refresh()
+
+    def refresh(self):
+        allowed = self.ctl.filters.get(self.col)
+        self.box.blockSignals(True)
+        self.box.clear()
+        self.box.addItem(tr("全部"), None)
+        vals = self.ctl.values_of(self.col)
+        for v, n in vals:
+            self.box.addItem(f"{self.short(v) if v != '' else tr('（空白）')}  ({n})", v)
+        cur = 0
+        if allowed:
+            if len(allowed) == 1:
+                v = next(iter(allowed))
+                k = self.box.findData(v)
+                if k < 0:
+                    self.box.addItem(f"{self.short(v) if v != '' else tr('（空白）')}  (0)", v)
+                    k = self.box.count() - 1
+                cur = k
+            else:
+                self.box.addItem(tr("多个值（右键表头修改）"), "__multi__")
+                cur = self.box.count() - 1
+        self.box.setCurrentIndex(cur)
+        self.box.blockSignals(False)
+
+    def _picked(self, k):
+        v = self.box.itemData(k)
+        if v == "__multi__":
+            return
+        self.ctl.set_filter(self.col, None if v is None else {v})

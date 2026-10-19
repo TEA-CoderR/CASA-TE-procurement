@@ -29,6 +29,8 @@ def _int_keys_to_str(st):
     for k in ("assignment", "baseline", "sources"):
         if isinstance(st.get(k), dict):
             st[k] = {str(r): v for r, v in st[k].items()}
+    if isinstance(st.get("scenario_assigns"), list):
+        st["scenario_assigns"] = [{str(r): v for r, v in a.items()} for a in st["scenario_assigns"]]
     return st
 
 
@@ -36,6 +38,8 @@ def _str_keys_to_int(st):
     for k in ("assignment", "baseline", "sources"):
         if isinstance(st.get(k), dict):
             st[k] = {int(r): v for r, v in st[k].items()}
+    if isinstance(st.get("scenario_assigns"), list):
+        st["scenario_assigns"] = [{int(r): v for r, v in a.items()} for a in st["scenario_assigns"]]
     return st
 
 

@@ -934,6 +934,18 @@ class ManualDialog(QDialog):
                                    hide=self._hidden, numeric=(0, 3, 8))
         self.ctl.rendered.connect(lambda n, tot: self.count_lbl.setText(
             tr("显示 {0} / {1} 行 · 点表头排序，右键表头筛选", n, tot)))
+        # 按供应商筛选：选 MEGA 就只看 MEGA 的商品
+        from erp_widgets import ColumnFilterBox
+        fbar = QHBoxLayout()
+        fbar.setSpacing(18)
+        fbar.addWidget(ColumnFilterBox(self.ctl, 4, tr("最低价供应商")))
+        fbar.addWidget(ColumnFilterBox(self.ctl, 6, tr("当前供应商")))
+        b_clear = QPushButton(tr("清除筛选"))
+        b_clear.setObjectName("Link")
+        b_clear.clicked.connect(self.ctl.clear_filters)
+        fbar.addWidget(b_clear)
+        fbar.addStretch()
+        lay.insertLayout(lay.indexOf(self.table), fbar)
         self._fill_table()
 
         btns = QHBoxLayout()
@@ -1152,6 +1164,9 @@ class MissingDialog(QDialog):
         self.ctl.rendered.connect(lambda n, tot: self.count.setText(
             tr("显示 {0} / {1} 个 · 点表头排序，右键表头筛选", n, tot)))
         self.search.textChanged.connect(lambda _: self.ctl.render())
+        from erp_widgets import ColumnFilterBox
+        bar.insertSpacing(1, 14)
+        bar.insertWidget(2, ColumnFilterBox(self.ctl, 4, tr("原因")))
         exp.clicked.connect(lambda: self.ctl.export(self, "缺失商品.xlsx", tr("缺失商品")))
         bb = QHBoxLayout()
         bb.addStretch()
@@ -2100,6 +2115,12 @@ class MainWindow(QMainWindow):
         self.scen_table.setMinimumHeight(200)
         self.scen_table.cellClicked.connect(self._scen_clicked)
         self.scen_panel.lay.addWidget(self.scen_table)
+        # 换方案：不重算，直接改用当时算好的另一个方案
+        self.scen_switch = QWidget()
+        self.scen_switch_lay = QHBoxLayout(self.scen_switch)
+        self.scen_switch_lay.setContentsMargins(0, 4, 0, 0)
+        self.scen_switch_lay.setSpacing(8)
+        self.scen_panel.lay.addWidget(self.scen_switch)
         lay.addWidget(self.scen_panel)
         self.scen_panel.hide()
 
@@ -2930,7 +2951,7 @@ class MainWindow(QMainWindow):
         msg = (tr("主订单：{0}\n扣减文件：{1} 个　供应商：{2} 家\n起订量凑单：{3}\n\n这次处理会按 eliminare 扣减主订单数量并覆盖保存主订单，然后把订购数量写进各供应商文件的 ORDINE 列。\n\n", info['ordine'], len(info['eliminare']), len(info['suppliers']), tr("开启，{0} 条规则", n_rules) if self.t_min.isChecked() else tr("关闭"))
                + (tr("处理前会自动备份到 总文件夹\\_备份。") if self.t_backup.isChecked()
                   else tr("自动备份已关闭，建议先手动备份。"))
-               + tr("\n\n同一批文件重复处理会再扣减一次。")
+               + tr("\n\n重复处理同一批文件时，会先恢复成原文件再算，不会重复扣减，结果和上次一样。")
                + (("\n\n" + self._scenario_line()) if self._scenario_line() else ""))
         box = QMessageBox(self)
         box.setWindowTitle(tr("开始处理"))
@@ -3308,6 +3329,75 @@ class MainWindow(QMainWindow):
         MissingDialog(self, items, tr("缺失商品 · {0}", s.get("main_file") or "") +
                       (f" · {tr(name)}" if name else "")).exec()
 
+    def _fill_scen_switch(self, s, res):
+        """方案对比下面的「改用 xx」按钮（只有每个文件夹最近一次的结果、而且存了各方案分配时才能换）"""
+        from service import can_switch_scenario
+        while self.scen_switch_lay.count():
+            it = self.scen_switch_lay.takeAt(0)
+            if it.widget():
+                it.widget().deleteLater()
+        if not res:
+            return
+        if not can_switch_scenario(s):
+            lb = QLabel(tr("这条结果是旧版本处理的，没有存各方案的分配；要换方案请重新处理。"))
+        elif not self._is_current(s):
+            lb = QLabel(tr("这是历史记录，之后这个文件夹又处理过（或者文件已经不在了），不能再换方案。"))
+        else:
+            lb = QLabel(tr("对选的方案不满意？不用重算，直接改用："))
+        lb.setObjectName("Faint")
+        self.scen_switch_lay.addWidget(lb)
+        if can_switch_scenario(s) and self._is_current(s):
+            for i, r in enumerate(res):
+                if r.get("chosen"):
+                    continue
+                b = QPushButton(tr("改用「{0}」", tr(r["name"])))
+                b.setObjectName("Outline")
+                b.setCursor(Qt.PointingHandCursor)
+                b.clicked.connect(lambda _=False, k=i: self.switch_scenario(k))
+                self.scen_switch_lay.addWidget(b)
+        self.scen_switch_lay.addStretch(1)
+
+    def switch_scenario(self, idx):
+        """结果页换方案：用当时算好的分配，只重新写入换了供应商的商品；历史记录同一条跟着改"""
+        from service import can_switch_scenario
+        if self.running:
+            return
+        data = self.last_summary or {}
+        res = data.get("scenarios") or []
+        if not can_switch_scenario(data) or not self._is_current(data) or not 0 <= idx < len(res):
+            return
+        st = data["state"]
+        new = st["scenario_assigns"][idx]
+        n = sum(1 for r in st["rows"] if new.get(r["row"]) != st["assignment"].get(r["row"]))
+        manual = sum(1 for v in (st.get("sources") or {}).values() if v == "手动")
+        msg = tr("把最终方案换成「{0}」？\n\n采购总额 €{1:,.2f}，缺失商品 {2} 个；有 {3} 个商品要换供应商，会重新写入主订单和供应商文件（写入前自动备份）。不需要重新计算。",
+                 tr(res[idx]["name"]), res[idx]["total"], len(res[idx]["missing"]), n)
+        if manual:
+            msg += tr("\n\n注意：之前在「修改分配」里手动改的 {0} 个商品会按新方案重新分配。", manual)
+        msg += tr("\n\n历史记录里这一条也会改成新方案。")
+        if QMessageBox.question(self, tr("换方案"), msg) != QMessageBox.Yes:
+            return
+        self.running = True
+        self.btn_run.setEnabled(False)
+        self.btn_edit.setEnabled(False)
+        self.go_page("order")
+        self.bar.setValue(0)
+        self.run_start = time.time()
+        self.tick.start()
+
+        def work():
+            from service import switch_scenario
+            try:
+                out, k = switch_scenario(data, idx, self.log,
+                                         progress=lambda p, t: self.bridge.progress.emit(int(p), t))
+                self.bridge.rewrite_done.emit((out, k, None))
+            except Exception as e:
+                file_logger.error(f"switch scenario failed: {e}", exc_info=True)
+                self.log(tr("❌ 处理失败：{0}", e))
+                self.bridge.rewrite_done.emit((None, 0, str(e)))
+
+        threading.Thread(target=work, daemon=True).start()
+
     def _scen_clicked(self, row, col):
         res = (self.last_summary or {}).get("scenarios") or []
         i = getattr(self, "_scen_links", {}).get((row, col))
@@ -3322,6 +3412,7 @@ class MainWindow(QMainWindow):
             chosen = next((i for i, r in enumerate(res) if r.get("chosen")), None)
             self._scen_links = fill_scenario_table(self.scen_table, res, chosen)
             self.scen_table.setFixedHeight(min(520, 44 + 36 * self.scen_table.rowCount()))
+        self._fill_scen_switch(s, res)
         self.btn_missing.setText(tr("缺失商品 ({0})", len(s.get("missing_items") or [])) if s.get("missing_items") is not None
                                  else tr("缺失商品"))
         self.k_rows.set(f"{s.get('total_rows', 0):,}")
@@ -3674,7 +3765,7 @@ class WheelGuard(QObject):
       · 表格 / 列表 / 文本框：只有点过它，或者鼠标在它上面停了一会儿（HOVER_MS）没有滚页面，
         滚轮才滚它自己；否则滚整个页面，避免滑页面时卡进表格里。
     """
-    HOVER_MS = 600
+    HOVER_MS = 200
 
     def __init__(self, parent=None):
         super().__init__(parent)

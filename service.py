@@ -100,6 +100,7 @@ def _select_suppliers(rows_data, supplier_headers, ws_main, log, settings, summa
 
     baseline = baseline_assignment(rows_data)
     sources = {}
+    rules_all, scen_assigns = list(rules), []
     # ---- 几种方案对比（全部供应商 / 不含 MEGA / 不含 NEW GRIECO …），由用户选一种 ----
     import scenarios as SC
     defs = SC.scenario_defs(settings)
@@ -112,6 +113,7 @@ def _select_suppliers(rows_data, supplier_headers, ws_main, log, settings, summa
         idx = choose(results)
         if idx is None:
             return None
+        scen_assigns = [dict(x["assignment"]) for x in results]
         chosen = results[idx]
         summary["scenarios"] = SC.compact(results, idx)
         summary["scenario"] = chosen["name"]
@@ -182,7 +184,8 @@ def _select_suppliers(rows_data, supplier_headers, ws_main, log, settings, summa
     summary["changes"] = rep["changes"]
     summary["supplier_delta"] = {x["name"]: x for x in rep["suppliers"]}
     summary["baseline_cost"], summary["final_cost"] = rep["baseline_cost"], rep["final_cost"]
-    summary["_plan_state"] = {"rules": rules, "baseline": baseline, "sources": sources}
+    summary["_plan_state"] = {"rules": rules, "baseline": baseline, "sources": sources,
+                              "scenario_assigns": scen_assigns, "rules_all": rules_all}
     return assignment
 
 # 导入性能监控和影子测试
@@ -429,6 +432,27 @@ def run_process(ordine_file, eliminare_path, distribuire_path, log, progress=Non
                "priced_rows": 0, "missing": 0, "missing_report": None, "elapsed": 0.0,
                "min_order": {"enabled": False, "rules": [], "unmatched": [], "extra_cost": 0.0,
                              "changes": 0, "warning": None}}
+
+    # 每次都从原文件开始算（重复处理结果一样）：文件还是上次程序写出来的样子 → 先恢复成原文件
+    import originals as OG
+    root_dir = os.path.dirname(os.path.dirname(ordine_file))
+    prev_state = (load_state(root_dir) or {}).get("state") or {}
+    prev_fp = prev_state.get("written") or {}
+    try:
+        how = OG.prepare(ordine_file, root_dir, "ORDINE", prev_fp.get("ORDINE"))
+        if how == "restored":
+            log(tr("✔ 主订单还是上次处理后的样子，已恢复成原文件再算（eliminare 不会重复扣减）"))
+        for f in _price_files(distribuire_path):
+            if OG.prepare(os.path.join(distribuire_path, f), root_dir, "distribuire",
+                          prev_fp.get("distribuire")) == "restored":
+                    log(tr("  {0}：恢复成原报价文件再算", f))
+    except Exception as e:
+        log(tr("⚠ 恢复原文件失败（按现在的文件算）：{0}", e))
+    # 上次（例如中途取消）留下的公式计算副本不能再用：文件可能刚恢复 / 换过
+    try:
+        safe_cleanup_calculated_files(lambda *a: None)
+    except Exception:
+        pass
 
     if settings.get("auto_backup", True):
         P(2, tr("备份原始文件..."))
@@ -989,10 +1013,31 @@ def run_process(ordine_file, eliminare_path, distribuire_path, log, progress=Non
         "ordine_file": ordine_file, "distribuire_path": distribuire_path,
         "rows": rows_data, "rules": ps.get("rules", []), "baseline": ps.get("baseline", {}),
         "assignment": assignment, "sources": ps.get("sources", {}),
+        # 换方案用：每个方案的分配和完整的起订规则
+        "scenario_assigns": ps.get("scenario_assigns") or [], "rules_all": ps.get("rules_all") or [],
+        # 写完以后的文件指纹：下次处理时认出「还是程序写的」→ 恢复原文件再算
+        "written": _written_fingerprints(ordine_file, distribuire_path),
     }
     _save_history(summary, log, settings.get("history_keep_days", 180))
     save_state(summary)
     return summary
+
+
+def _price_files(folder):
+    """distribuire 里的报价文件（不含临时文件、缺失报告、.xls 转换出来的 .xls.xlsx）"""
+    out = []
+    for f in sorted(os.listdir(folder)):
+        lf = f.lower()
+        if lf.endswith((".xls", ".xlsx")) and not f.startswith("~") and "缺失报告" not in f \
+                and ".calc." not in lf and not lf.endswith(".xls.xlsx"):
+            out.append(f)
+    return out
+
+
+def _written_fingerprints(ordine_file, distribuire_path):
+    import originals as OG
+    return {"ORDINE": OG.record([ordine_file]),
+            "distribuire": OG.record([os.path.join(distribuire_path, f) for f in _price_files(distribuire_path)])}
 
 
 def _save_history(summary, log, keep_days=None, update=False):
@@ -1025,7 +1070,9 @@ def save_state(summary):
         data = {k: v for k, v in summary.items() if k != "state"}
         data["state"] = dict(st, assignment={str(k): v for k, v in st["assignment"].items()},
                              baseline={str(k): v for k, v in st["baseline"].items()},
-                             sources={str(k): v for k, v in st["sources"].items()})
+                             sources={str(k): v for k, v in st["sources"].items()},
+                             scenario_assigns=[{str(k): v for k, v in a.items()}
+                                               for a in st.get("scenario_assigns") or []])
         with open(path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, default=str)
     except Exception:
@@ -1042,6 +1089,7 @@ def load_state(root_path):
         st = data["state"]
         for k in ("assignment", "baseline", "sources"):
             st[k] = {int(r): v for r, v in st[k].items()}
+        st["scenario_assigns"] = [{int(r): v for r, v in a.items()} for a in st.get("scenario_assigns") or []]
         if not os.path.exists(st["ordine_file"]):
             return None
         return data
@@ -1192,7 +1240,43 @@ def _write_missing_report(distribuire_path, rows, assignment):
     return path
 
 
-def rewrite_assignment(data, new_assign, new_sources, log, progress=None):
+def can_switch_scenario(data):
+    """结果里存了每个方案的分配，才能不重算直接换方案"""
+    st = (data or {}).get("state") or {}
+    scs = (data or {}).get("scenarios") or []
+    return len(scs) > 1 and len(st.get("scenario_assigns") or []) == len(scs)
+
+
+def switch_scenario(data, idx, log, progress=None):
+    """
+    结果页换方案：不重算，直接用当时算好的第 idx 个方案的分配，只把换了供应商的商品重新写入文件，
+    历史记录同一条跟着改（选用的方案、金额、缺失商品）。之前手动修改的分配会被这个方案替换掉。
+    返回 (新 summary, 换了供应商的商品数)
+    """
+    import copy as _copy
+    st = data["state"]
+    scs = data["scenarios"]
+    if not can_switch_scenario(data) or not 0 <= idx < len(scs):
+        raise ValueError(tr("这次结果没有存各方案的分配，不能直接换方案，请重新处理"))
+    excl = set(scs[idx].get("excluded") or [])
+    new = dict(st["scenario_assigns"][idx])
+    baseline = st["baseline"]
+    sources = {}
+    for r in st["rows"]:
+        b, f = baseline.get(r["row"]), new.get(r["row"])
+        if b != f:
+            sources[r["row"]] = "方案排除" if b in excl else "自动凑单"
+    d2 = _copy.deepcopy(data)
+    d2["state"]["rules"] = [ru for ru in (st.get("rules_all") or st["rules"]) if ru["target"] not in excl]
+    for i, x in enumerate(d2["scenarios"]):
+        x["chosen"] = (i == idx)
+    d2["scenario"] = scs[idx]["name"]
+    log("\n" + "=" * 50)
+    log(tr("[换方案] 改用：{0}", tr(scs[idx]["name"])))
+    return rewrite_assignment(d2, new, sources, log, progress, force=True)
+
+
+def rewrite_assignment(data, new_assign, new_sources, log, progress=None, force=False):
     """
     data: 上次处理的 summary（含 state）
     new_assign: {行号: 供应商}，new_sources: {行号: 来源}
@@ -1217,7 +1301,7 @@ def rewrite_assignment(data, new_assign, new_sources, log, progress=None):
     ordine_file, dist = st["ordine_file"], st["distribuire_path"]
     changed = [r for r in rows if old.get(r["row"]) != new_assign.get(r["row"])]
     out = _copy.deepcopy(data)
-    if not changed:
+    if not changed and not force:
         return out, 0
 
     log("\n" + "=" * 50)
@@ -1330,6 +1414,10 @@ def rewrite_assignment(data, new_assign, new_sources, log, progress=None):
               warning=None if all(r["status"] != "未达标" for r in rep["rules"])
               else tr("有起订供应商没有达标，请检查"))
     out["state"] = dict(st, assignment=dict(new_assign), sources=dict(new_sources))
+    try:
+        out["state"]["written"] = _written_fingerprints(ordine_file, dist)
+    except Exception as e:
+        log(tr("⚠ {0}", e))
     _save_history(out, log, update=True)
     save_state(out)
     log(tr("[完成] 修改分配已写入"))
