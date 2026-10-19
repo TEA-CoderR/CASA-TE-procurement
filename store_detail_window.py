@@ -11,7 +11,7 @@ from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QColor, QFontMetrics
 from PySide6.QtWidgets import (QSizePolicy, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QPushButton, QComboBox,
                                QLineEdit, QFrame, QTableWidgetItem, QAbstractItemView, QHeaderView, QButtonGroup,
-                               QScrollArea, QFileDialog, QMessageBox, QMenu)
+                               QScrollArea, QFileDialog, QMessageBox, QMenu, QDialog, QCheckBox)
 
 from i18n import tr
 from settings import save_settings
@@ -104,6 +104,305 @@ def _explain(x, it, algo):
     return txt
 
 
+class AddItemsDialog(QDialog):
+    """
+    加商品凑单：同一个供应商、同一家门店，把没被选进来（库存还够）但卖得快的商品加进订单，凑够起订箱数 / 金额。
+    上面实时显示现在多少、起订量、还差多少；表格按日均销量从高到低排；「按销量推荐」一键补齐差额；
+    改的都是「加几箱」，确认后才写进订货箱数（标成手动改过，可以「恢复建议值」）。
+    """
+    COLS = [tr("名称"), tr("商品编号"), tr("等级"), tr("日均"), tr("本店库存"), tr("现在够卖（天）"), tr("已订（箱）"),
+            tr("每箱件数"), tr("一箱 €"), tr("加（箱）") + " ✎", tr("加后够卖（天）"), tr("加的金额 €")]
+    ADD = 9
+
+    def __init__(self, win, path=None, sid=None):
+        super().__init__(win)
+        self.win, self.page = win, win.page
+        self.adds = {}                     # {(路径, 门店, 行号): 加几箱}
+        self.cands = []
+        self._filling = False
+        self.setWindowTitle(tr("加商品凑单"))
+        self.resize(1180, 720)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(20, 16, 20, 14)
+        lay.setSpacing(10)
+        top = QHBoxLayout()
+        top.setSpacing(10)
+        self.c_sup = QComboBox()
+        self.c_sup.setMinimumWidth(240)
+        for sc in self.page.calc["schede"]:
+            self.c_sup.addItem(f"{sc['name']}（{tr(sc.get('day') or '')}）", sc["path"])
+        self.c_store = QComboBox()
+        for k, name in S.STORE_SHEETS.items():
+            if k in self.page.calc["stores"]:
+                self.c_store.addItem(name, k)
+        if path not in (None, ALL):
+            self.c_sup.setCurrentIndex(max(0, self.c_sup.findData(path)))
+        if sid not in (None, ALL):
+            self.c_store.setCurrentIndex(max(0, self.c_store.findData(sid)))
+        top.addWidget(QLabel(tr("供应商")))
+        top.addWidget(self.c_sup)
+        top.addSpacing(8)
+        top.addWidget(QLabel(tr("门店")))
+        top.addWidget(self.c_store)
+        top.addSpacing(8)
+        self.search = QLineEdit()
+        self.search.setPlaceholderText(tr("编号、条码或名称"))
+        self.search.setMaximumWidth(200)
+        top.addWidget(self.search)
+        self.only_sell = QCheckBox(tr("只看卖得动的"))
+        self.only_sell.setChecked(True)
+        self.only_new = QCheckBox(tr("只看这次没订的"))
+        top.addWidget(self.only_sell)
+        top.addWidget(self.only_new)
+        top.addStretch()
+        lay.addLayout(top)
+        self.state = QLabel("")
+        self.state.setObjectName("Banner")
+        self.state.setTextFormat(Qt.RichText)
+        self.state.setWordWrap(True)
+        lay.addWidget(self.state)
+        self.table = self.page.ui.make_table(self.COLS, stretch_col=0, numeric_cols=tuple(range(3, 12)))
+        self.table.setEditTriggers(QAbstractItemView.DoubleClicked | QAbstractItemView.SelectedClicked |
+                                   QAbstractItemView.EditKeyPressed | QAbstractItemView.AnyKeyPressed)
+        self.table.horizontalHeaderItem(self.ADD).setToolTip(tr("双击填要加几箱，0 = 不加"))
+        self.table.itemChanged.connect(self._edited)
+        lay.addWidget(self.table, 1)
+        tip = QLabel(tr("按日均销量从高到低排：卖得快、加了以后也不会压太久的排前面。「按销量推荐」只加加完后库存够卖不超过 {0} 天的商品（配货设置里的凑单天数）。",
+                        int(self.page.fill_cfg().get("max_stock_days") or 60)))
+        tip.setObjectName("Faint")
+        tip.setWordWrap(True)
+        lay.addWidget(tip)
+        btns = QHBoxLayout()
+        b_sug = QPushButton(tr("按销量推荐补齐起订量"))
+        b_sug.setObjectName("Outline")
+        b_sug.clicked.connect(self.suggest)
+        b_clear = QPushButton(tr("清空这家的"))
+        b_clear.clicked.connect(self.clear)
+        btns.addWidget(b_sug)
+        btns.addWidget(b_clear)
+        btns.addStretch()
+        cancel = QPushButton(tr("取消"))
+        cancel.clicked.connect(self.reject)
+        self.ok = QPushButton(tr("加入订单"))
+        self.ok.setObjectName("Primary")
+        self.ok.clicked.connect(self.apply)
+        btns.addWidget(cancel)
+        btns.addWidget(self.ok)
+        lay.addLayout(btns)
+        self.c_sup.currentIndexChanged.connect(lambda _: self.load())
+        self.c_store.currentIndexChanged.connect(lambda _: self.load())
+        self.search.textChanged.connect(lambda _: self._filter())
+        self.only_sell.toggled.connect(lambda _: self._filter())
+        self.only_new.toggled.connect(lambda _: self._filter())
+        self.load()
+
+    # ---- 数据 ----
+    def _sc(self):
+        p = self.c_sup.currentData()
+        return next((x for x in self.page.calc["schede"] if x["path"] == p), None)
+
+    def _lines(self, sc, sid):
+        return self.page.colli.get(sc["path"], {}).get(sid, {})
+
+    def load(self):
+        sc, sid = self._sc(), self.c_store.currentData()
+        self.table.setSortingEnabled(False)
+        self.table.setRowCount(0)
+        self.cands = []
+        if not sc or sid is None:
+            self._update_state()
+            return
+        if sid not in sc["sheets"]:
+            self.state.setText(tr("这个 SCHEDA 里没有 {0} 的页，这家店不能从这个供应商订货", S.STORE_SHEETS.get(sid, sid)))
+            return
+        self.cands = S.add_candidates(sc, sid, self.page.calc["demand"], self._lines(sc, sid))
+        self._filling = True
+        self.table.setRowCount(len(self.cands))
+        for r, c in enumerate(self.cands):
+            self._fill_row(r, c, sc, sid)
+        self._filling = False
+        self.table.setSortingEnabled(True)
+        self._filter()
+        self._update_state()
+
+    def _fill_row(self, r, c, sc, sid):
+        it = c["item"]
+        add = self.adds.get((sc["path"], sid, c["row"]), 0)
+        da = S.days_after(c, add)
+
+        def days(v):
+            return "∞" if v == float("inf") else f"{v:.0f}"
+
+        vals = [(it["desc"], it["desc"]), (str(it.get("db_code") or it["code"]), str(it.get("db_code") or it["code"])),
+                (c["tier"], _TIER_RANK.get(c["tier"], 9)), (f"{c['daily']:.2f}", c["daily"]), (f"{c['inv']:g}", c["inv"]),
+                (days(c["days_now"]), c["days_now"]), (f"{c['ordered']:g}" if c["ordered"] else "", c["ordered"]),
+                (f"{it['pack']:g}", it["pack"]), (f"{c['box']:,.2f}", c["box"]), (f"{add:g}" if add else "", add),
+                (days(da) if add else "", da if add else -1), (f"{add * c['box']:,.2f}" if add else "", add * c["box"])]
+        for k, (text, key) in enumerate(vals):
+            item = _SortItem(text)
+            item.setData(KEY_ROLE, key)
+            flags = item.flags() & ~Qt.ItemIsEditable
+            if k == self.ADD:
+                flags |= Qt.ItemIsEditable
+                item.setToolTip(tr("双击填要加几箱"))
+                if add:
+                    item.setForeground(QColor(T("accent")))
+                    f = item.font()
+                    f.setBold(True)
+                    item.setFont(f)
+            if k >= 3:
+                item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            item.setFlags(flags)
+            if k == 0:
+                item.setData(DI_ROLE, c["row"])
+            self.table.setItem(r, k, item)
+        if add and da > float(self.page.fill_cfg().get("max_stock_days") or 60):
+            self.table.item(r, self.ADD + 1).setForeground(QColor(T("warn")))
+            self.table.item(r, self.ADD + 1).setToolTip(tr("加完以后库存要很久才卖得完"))
+
+    def _filter(self):
+        q = self.search.text().strip().lower()
+        sc, sid = self._sc(), self.c_store.currentData()
+        by_row = {c["row"]: c for c in self.cands}
+        for r in range(self.table.rowCount()):
+            c = by_row.get(self.table.item(r, 0).data(DI_ROLE))
+            if c is None:
+                continue
+            it = c["item"]
+            added = self.adds.get((sc["path"], sid, c["row"]), 0) if sc else 0
+            hide = False
+            if self.only_sell.isChecked() and c["daily"] <= 0 and not added:
+                hide = True
+            if self.only_new.isChecked() and c["ordered"] > 0 and not added:
+                hide = True
+            if q and q not in f"{it.get('db_code') or it['code']} {it.get('ean', '')} {it['desc']}".lower():
+                hide = True
+            self.table.setRowHidden(r, hide)
+
+    def _edited(self, item):
+        if self._filling or item.column() != self.ADD:
+            return
+        row = self.table.item(item.row(), 0).data(DI_ROLE)
+        text = item.text().strip().replace(",", ".")
+        try:
+            n = float(text or 0)
+            if n < 0 or n != int(n):
+                raise ValueError
+            n = int(n)
+        except ValueError:
+            self.page.win.show_toast(tr("箱数要填 0 或正整数"))
+            n = None
+        # 等编辑框关掉以后再重画这一行（编辑中途换掉格子会让程序卡住）
+        QTimer.singleShot(0, lambda: self._set_add(row, n))
+
+    def _set_add(self, row, n):
+        sc, sid = self._sc(), self.c_store.currentData()
+        if not sc:
+            return
+        key = (sc["path"], sid, row)
+        if n is not None:
+            if n > 0:
+                self.adds[key] = n
+            else:
+                self.adds.pop(key, None)
+        self._refresh_row(row)
+        self._update_state()
+
+    def _refresh_row(self, row):
+        sc, sid = self._sc(), self.c_store.currentData()
+        c = next((x for x in self.cands if x["row"] == row), None)
+        if c is None:
+            return
+        for r in range(self.table.rowCount()):
+            if self.table.item(r, 0) and self.table.item(r, 0).data(DI_ROLE) == row:
+                sorting = self.table.isSortingEnabled()
+                self.table.setSortingEnabled(False)
+                self._filling = True
+                self._fill_row(r, c, sc, sid)
+                self._filling = False
+                self.table.setSortingEnabled(sorting)
+                break
+
+    def _update_state(self):
+        sc, sid = self._sc(), self.c_store.currentData()
+        if not sc or sid is None:
+            self.state.setText("")
+            return
+        items = {it["row"]: it for it in sc["items"]}
+        cur = dict(self._lines(sc, sid))
+        c0, a0 = S._totals(cur, items)
+        new = dict(cur)
+        n_add = 0
+        for (p, s_, row), n in self.adds.items():
+            if p == sc["path"] and s_ == sid:
+                new[row] = new.get(row, 0) + n
+                n_add += n
+        c1, a1 = S._totals(new, items)
+        mc, ma = sc.get("moq_colli") or 0, sc.get("moq_amount") or 0
+        need = S.moq_label(S.sc_moq(sc), mark=False)
+        ok = not math.isinf(mc) and S._satisfied(c1, a1, mc, ma)
+        gap = []
+        if mc and not math.isinf(mc) and c1 < mc:
+            gap.append(tr("{0:g} 箱", mc - c1))
+        if ma and a1 < ma:
+            gap.append(f"€{ma - a1:,.2f}")
+        txt = tr("<b>{0} · {1}</b>　现在 {2:g} 箱 / €{3:,.2f}　起订 {4}", S.STORE_SHEETS.get(sid, sid), sc["name"], c0, a0, need)
+        if n_add:
+            txt += tr("　→　加 {0:g} 箱后 <b>{1:g} 箱 / €{2:,.2f}</b>", n_add, c1, a1)
+        txt += "　" + (tr("<b>✔ 够起订量</b>") if ok else tr("还差 <b>{0}</b>", tr(" 和 ").join(gap)) if gap else "")
+        self.state.setText(txt)
+        kind = "ok" if ok else "warn"
+        self.state.setStyleSheet(f"background:{T(kind + '_soft')}; color:{T(kind)}; padding:8px 12px; border-radius:8px;")
+        total = sum(self.adds.values())
+        self.ok.setText(tr("加入订单（{0} 箱）", total) if total else tr("加入订单"))
+        self.ok.setEnabled(bool(total))
+
+    # ---- 按钮 ----
+    def suggest(self):
+        sc, sid = self._sc(), self.c_store.currentData()
+        if not sc or sid not in sc["sheets"]:
+            return
+        cur = dict(self._lines(sc, sid))
+        for (p, s_, row), n in self.adds.items():
+            if p == sc["path"] and s_ == sid:
+                cur[row] = cur.get(row, 0) + n
+        got = S.suggest_fill(sc, sid, self.page.calc["demand"], cur,
+                             float(self.page.fill_cfg().get("max_stock_days") or 60))
+        if got is None:
+            self.page.win.show_toast(tr("在库存天数限制内凑不齐，可以自己在表里加"))
+            return
+        if not got:
+            self.page.win.show_toast(tr("已经够起订量了"))
+            return
+        for row, n in got.items():
+            key = (sc["path"], sid, row)
+            self.adds[key] = self.adds.get(key, 0) + n
+        self.load()
+        self.page.win.show_toast(tr("推荐加 {0} 个商品、{1:g} 箱", len(got), sum(got.values())))
+
+    def clear(self):
+        sc, sid = self._sc(), self.c_store.currentData()
+        if not sc:
+            return
+        for key in [k for k in self.adds if k[0] == sc["path"] and k[1] == sid]:
+            self.adds.pop(key)
+        self.load()
+
+    def apply(self):
+        by_path = {sc["path"]: sc for sc in self.page.calc["schede"]}
+        paths = set()
+        for (path, sid, row), n in self.adds.items():
+            sc = by_path.get(path)
+            if not sc or n <= 0:
+                continue
+            cur = self.page.colli.get(path, {}).get(sid, {}).get(row, 0)
+            self.page.set_qty(sc, sid, row, cur + n, refresh=False)
+            paths.add(path)
+        for p in paths:
+            self.page.lines_changed(p)
+        self.accept()
+
+
 class DetailWindow(ToolWindow):
     def __init__(self, page):
         super().__init__(page.win, tr("订货明细"), (1400, 860))
@@ -172,6 +471,10 @@ class DetailWindow(ToolWindow):
         self.btn_reset.setToolTip(tr("把当前筛选出来的行恢复成系统建议的箱数"))
         self.btn_reset.clicked.connect(self.reset_shown)
         tb.addWidget(self.btn_reset)
+        b_add = QPushButton(tr("加商品凑单"))
+        b_add.setToolTip(tr("同一个供应商、同一家店：把没被选进来但卖得快的商品加进订单，凑够起订箱数或金额"))
+        b_add.clicked.connect(self.add_items)
+        tb.addWidget(b_add)
         exp = QPushButton(tr("导出 Excel"))
         exp.clicked.connect(self.export)
         tb.addWidget(exp)
@@ -640,6 +943,22 @@ class DetailWindow(ToolWindow):
         self._update_status()
         if self.cur_di == i:
             self._select_row(self.pos[i])
+
+    def add_items(self):
+        if not self.page.calc:
+            return
+        btn = self.store_group.checkedButton()
+        sid = btn.property("sid") if btn else ALL
+        path = self.f_sup.currentData()
+        if (path in (None, ALL) or sid in (None, ALL)) and self.cur_di is not None:
+            sc, _it, s2 = self.detail[self.cur_di]      # 没选具体的供应商 / 门店：用选中的那一行
+            path = sc["path"] if path in (None, ALL) else path
+            sid = s2 if sid in (None, ALL) else sid
+        dlg = AddItemsDialog(self, path, sid)
+        if dlg.exec():
+            self.refresh_rows()
+            n = sum(dlg.adds.values())
+            self.page.win.show_toast(tr("已加入 {0} 箱（标成手动改过，可以「恢复建议值」）", n))
 
     def refresh_rows(self):
         """主窗口那边改了数（比如恢复建议值）→ 刷新显示"""

@@ -264,3 +264,34 @@ def test_new_run_folder_never_overwrites(tmp_path):
     (d / "周四").mkdir()                      # 以前直接放在日期文件夹里的旧文件不受影响
     c = S.new_run_folder(str(d), datetime(2026, 10, 17, 14, 5))
     assert [p.split("/")[-1].split("\\")[-1] for p in (a, b, c)] == ["第01次_0930", "第02次_0930", "第03次_1405"]
+
+
+class AddItemsTest(unittest.TestCase):
+    """订货明细「加商品凑单」：列出同一个供应商没被选进来的商品，按销量推荐补齐起订量"""
+
+    def _setup(self):
+        sc = _scheda(moq_amount=40)
+        dem = {2: {"1": {"daily": 2.0, "inv": 30, "sugg": 0},        # 卖得快、库存够（没被选进来）
+                   "2": {"daily": 0.2, "inv": 1, "sugg": 6},          # 要订 1 箱 €15
+                   "3": {"daily": 0.0, "inv": 5, "sugg": 0}}}         # 不动销
+        return sc, dem
+
+    def test_candidates_sorted_by_sales(self):
+        sc, dem = self._setup()
+        c = S.add_candidates(sc, 2, dem, {7: 1})
+        self.assertEqual([x["row"] for x in c], [6, 7, 8])
+        self.assertEqual(c[1]["ordered"], 1)
+        self.assertAlmostEqual(c[0]["days_now"], 15.0)
+        self.assertAlmostEqual(S.days_after(c[0], 2), (30 + 20) / 2.0)
+
+    def test_suggest_fill(self):
+        sc, dem = self._setup()
+        add = S.suggest_fill(sc, 2, dem, {7: 1}, max_days=60)
+        # 差 €25：加卖得快的 A（一箱 €10）… 直到够 €40
+        lines = {7: 1}
+        for r, n in add.items():
+            lines[r] = lines.get(r, 0) + n
+        self.assertGreaterEqual(S._totals(lines, {it["row"]: it for it in sc["items"]})[1], 40)
+        self.assertNotIn(8, add)                                          # 不动销的不加
+        self.assertEqual(S.suggest_fill(sc, 2, dem, {7: 3}), {})          # 已经够了
+        self.assertIsNone(S.suggest_fill(sc, 2, dem, {7: 1}, max_days=16))   # 天数限制内凑不齐

@@ -724,6 +724,55 @@ def _try_fill(lines, scheda, dem_rows, fill):
     return lines, [(r, v[0], v[1]) for r, v in merged.items()]
 
 
+def add_candidates(scheda, sid, demand, lines):
+    """
+    订货明细「加商品凑单」：这家店在这个供应商能加的所有商品（包括没被选进来的），按卖得快排在前面。
+    返回 [{row, item, daily, inv, days_now, ordered, box, tier, decision}]
+    """
+    dem = demand.get(sid, {}) if demand else {}
+    out = []
+    for it in scheda["items"]:
+        d = dem.get(it.get("db_code") or it["code"]) or {}
+        daily = float(d.get("daily") or 0)
+        inv = max(0.0, float(d.get("inv") or 0))
+        ordered = int((lines or {}).get(it["row"], 0))
+        have = inv + ordered * it["pack"]
+        out.append({"row": it["row"], "item": it, "daily": daily, "inv": inv, "ordered": ordered,
+                    "days_now": (have / daily) if daily > 0 else float("inf"),
+                    "box": it["pack"] * it["price"], "tier": d.get("tier") or "", "decision": d.get("decision") or "",
+                    "known": bool(d)})
+    out.sort(key=lambda x: (-x["daily"], x["days_now"]))
+    return out
+
+
+def days_after(c, add):
+    """加 add 箱以后够卖几天"""
+    if c["daily"] <= 0:
+        return float("inf")
+    return (c["inv"] + (c["ordered"] + add) * c["item"]["pack"]) / c["daily"]
+
+
+def suggest_fill(scheda, sid, demand, lines, max_days=60):
+    """
+    按销量推荐加哪些商品补齐起订量（不管差多少都试，和配货时自动凑单一样：
+    先加卖得最快的；只差金额时找一箱就够、多出来最少的；加完库存最多够卖 max_days 天）。
+    返回 {行号: 加几箱}；已经够起订量返回 {}；在天数限制内凑不齐返回 None
+    """
+    dem_rows = {}
+    for it in scheda["items"]:
+        d = (demand.get(sid, {}) if demand else {}).get(it.get("db_code") or it["code"])
+        if d:
+            dem_rows[it["row"]] = {"daily": float(d.get("daily") or 0), "inv": float(d.get("inv") or 0)}
+    mc, ma = scheda.get("moq_colli") or 0, scheda.get("moq_amount") or 0
+    if math.isinf(mc) or math.isinf(ma):
+        return None
+    r = _try_fill(dict(lines or {}), scheda, dem_rows,
+                  {"max_colli_gap": float("inf"), "max_amount_gap": float("inf"), "max_stock_days": max_days})
+    if r is None:
+        return None
+    return {row: n for row, n, _ in r[1]}
+
+
 _URGENT = "🔴"
 
 
