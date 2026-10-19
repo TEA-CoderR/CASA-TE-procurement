@@ -376,6 +376,12 @@ def parse_scheda(path, overrides=None):
         if not hdr:
             raise ValueError("门店页没有找到表头（Cod.Art. / Codice EAN / Colli）")
         info["header_row"], info["cols"] = hdr, cols
+        # 订单文件里附加数据列（GIA、ROT.30d …）的起始列：表头里已经有 GIA 就用那一列（以前写过的文件），
+        # 否则接在表头最后一列（一般是 IMPORTO）后面
+        hrow = next(ws.iter_rows(min_row=hdr, max_row=hdr, values_only=True), ())
+        filled = [c for c, v in enumerate(hrow, 1) if v not in (None, "") and str(v).strip()]
+        gia = next((c for c, v in enumerate(hrow, 1) if _norm(v) == "GIA"), None)
+        info["extra_col"] = gia or ((max(filled) + 1) if filled else len(hrow) + 1)
         for r_idx, row in enumerate(ws.iter_rows(min_row=hdr + 1, values_only=True), hdr + 1):
             def g(k):
                 c = cols.get(k)
@@ -481,7 +487,7 @@ def demand_by_store(db, schede, stores, days_list, reorder_cycle, use_supplier_c
     for k, sid in enumerate(stores):
         if on_store:
             on_store(k, sid)      # 进度：第 k 家门店开始查
-            # 新算法：不按数据库箱规取整，箱数按 SCHEDA 的每箱件数智能取整（colli_for）
+        # 新算法：不按数据库箱规取整，箱数按 SCHEDA 的每箱件数智能取整（colli_for）
         # 原程序算法：建议件数完全按原程序算（含按数据库箱规取整），再按 SCHEDA 每箱件数换成箱
         v2 = bool(algo) and algo.get("engine") == "v2"
         # 原程序算法：每个 SCHEDA（供应商）单独算，和原程序一次导入一个 SCHEDA 一样（A/B/C 等级在同一家供应商的商品里比）
@@ -508,7 +514,8 @@ def demand_by_store(db, schede, stores, days_list, reorder_cycle, use_supplier_c
                        "safety": R._val(r, "safety_stock"), "target": R._val(r, "target_stock"),
                        "season": R._val(r, "season_factor"), "weekly": R._val(r, "weekly_26"),
                        "service": R._val(r, "service_level"),
-                       "db_pack": R._val(r, "qtasmallbox")}          # 数据库箱规（和 SCHEDA 每箱件数对照用）
+                       "db_pack": R._val(r, "qtasmallbox"),          # 数据库箱规（和 SCHEDA 每箱件数对照用）
+                       "gia_all": [R._val(r, f"Negozio{i}_Giacenza", 0) or 0 for i in range(6)]}   # GIA.0（BMS）~ GIA.5
         out[sid] = d
     return out
 
@@ -935,9 +942,141 @@ def _set_cells(xml, col_letter, values):
     return xml
 
 
-def write_order_file(scheda, per_store_lines, out_path):
+# =====================================================================
+# 订单文件里每家店页附加的数据列（和原程序「中央采购」批量写回 SCHEDA 的列一样：L~AC）
+# =====================================================================
+def extra_headers(days=None):
+    d = list(days or [30, 60, 90, 180])
+    return (["GIA"] + [f"ROT.{x}d" for x in d[:4]] + ["月均", "采购量", "箱数", "需求", "Livello"] +
+            [f"GIA.{i}" for i in range(6)] + ["GIA-period", "period_sales"])
+
+
+def extra_fields(x, sugg_colli, days=None):
+    """
+    一个商品在一家店的附加数据（顺序同 extra_headers）；数据库里没有这个商品 → None（那一行留空）
+      GIA 本店库存（原值）· ROT 各周期销量 · 月均 = 最长周期销量 ÷ 月数 · 采购量 = 系统建议件数 · 箱数 = 系统建议箱数
+      需求 = 第 3 个周期（默认 90 天）的日均 × 订货周期 · Livello = 等级 · GIA.0~5 各门店库存（0 = BMS 总仓）
+      period_sales = 第 3 个周期的销量 · GIA-period = 本店库存（负数按 0）− period_sales
+    """
+    if not x:
+        return None
+    d = list(days or [30, 60, 90, 180])
+    sales = [float(v or 0) for v in (x.get("sales") or [0, 0, 0, 0])][:4] + [0.0] * max(0, 4 - len(x.get("sales") or []))
+    inv = float(x.get("inv_raw", x.get("inv", 0)) or 0)
+    months = max(1.0, d[3] / 30.0)
+    cyc = x.get("cycle") if isinstance(x.get("cycle"), (int, float)) else 30
+    period = sales[2]
+    demand = round(period / d[2] * float(cyc)) if d[2] else 0
+    gia = [float(v or 0) for v in (x.get("gia_all") or [0] * 6)][:6]
+    gia += [0.0] * (6 - len(gia))
+    return ([inv] + sales + [round(sales[3] / months, 1), float(x.get("sugg") or 0), float(sugg_colli or 0),
+                             float(demand), x.get("tier") or ""] + gia + [max(0.0, inv) - period, period])
+
+
+def extra_data(sc, demand, base, days=None):
+    """{门店号: {SCHEDA 行号: [附加列的值]}}，写订单文件用"""
+    out = {}
+    for sid in sc["sheets"]:
+        dem = (demand or {}).get(sid)
+        if not dem:
+            continue
+        sug = ((base or {}).get(sc["path"]) or {}).get(sid) or {}
+        rows = {}
+        for it in sc["items"]:
+            v = extra_fields(dem.get(it.get("db_code") or it["code"]), sug.get(it["row"], 0), days)
+            if v is not None:
+                rows[it["row"]] = v
+        out[sid] = rows
+    return out
+
+
+def _cell_style(xml, ref):
+    m = re.search(r'<c\b[^>]*\br="' + ref + r'"[^>]*?(?:/>|>)', xml)
+    if not m:
+        return ""
+    s_ = re.search(r'\bs="(\d+)"', m.group(0))
+    return f' s="{s_.group(1)}"' if s_ else ""
+
+
+def _cell_xml(ref, val, style):
+    import html
+    if val is None or val == "":
+        return f'<c r="{ref}"{style}/>'
+    if isinstance(val, str):
+        return f'<c r="{ref}"{style} t="inlineStr"><is><t>{html.escape(val)}</t></is></c>'
+    v = float(val)
+    return f'<c r="{ref}"{style}><v>{int(v) if v == int(v) else round(v, 4)}</v></c>'
+
+
+_ROW_RE = re.compile(r'<row\b([^>]*?)(/>|>(.*?)</row>)', re.S)
+_CELL_RE = re.compile(r'<c\b[^>]*?\br="([A-Z]+)(\d+)"[^>]*?(?:/>|>.*?</c>)', re.S)
+
+
+def _set_row_cells(xml, values, styles=None):
+    """
+    一次过把很多格写进工作表 XML（比一格一格搜快得多）。
+    values: {行号: {列号: 值}}（值：数字 / 文字 / None = 清空）；styles: {(行号, 列号): ' s="n"'}
+    行不存在时不写（数据行一定存在）。
+    """
+    styles = styles or {}
+
+    def fix(m):
+        attrs, inner = m.group(1), m.group(3) or ""
+        rn = re.search(r'\br="(\d+)"', attrs)
+        if not rn or int(rn.group(1)) not in values:
+            return m.group(0)
+        r = int(rn.group(1))
+        cells = {}
+        order = []
+        for cm in _CELL_RE.finditer(inner):
+            c = _col_num(cm.group(1))
+            cells[c] = cm.group(0)
+            order.append(c)
+        for c, val in values[r].items():
+            ref = f"{_col_letter(c)}{r}"
+            st = styles.get((r, c))
+            if st is None:
+                st = _cell_style(cells[c], ref) if c in cells else ""
+            cells[c] = _cell_xml(ref, val, st)
+        body = "".join(cells[c] for c in sorted(cells))
+        attrs = re.sub(r'\s*\bspans="[^"]*"', "", attrs)     # 列范围变了，spans 去掉让 Excel 自己算
+        return f"<row{attrs}>{body}</row>"
+
+    xml = _ROW_RE.sub(fix, xml)
+    # 表格范围（dimension）放大到新写的列
+    last = max((c for r in values.values() for c in r), default=0)
+    dm = re.search(r'<dimension ref="([A-Z]+)(\d+)(?::([A-Z]+)(\d+))?"', xml)
+    if dm and dm.group(3) and _col_num(dm.group(3)) < last:
+        xml = xml[:dm.start()] + f'<dimension ref="{dm.group(1)}{dm.group(2)}:{_col_letter(last)}{dm.group(4)}"' + xml[dm.end():]
+    return xml
+
+
+def _write_extra(xml, scheda, rows_vals, headers, row_map):
+    """一家店页：表头 + 每个商品行的附加数据。row_map：SCHEDA 第一页的行号 → 这一页的行号（None = 这一页没有）"""
+    hdr = scheda["header_row"]
+    start = scheda.get("extra_col") or 12
+    cols = scheda["cols"]
+    hstyle = _cell_style(xml, f"{_col_letter(cols['colli'])}{hdr}")
+    first = min((it["row"] for it in scheda["items"]), default=hdr + 1)
+    vcol = cols.get("code") or cols.get("ean") or cols["colli"]
+    vstyle = _cell_style(xml, f"{_col_letter(vcol)}{first}")
+    values = {hdr: {start + i: h for i, h in enumerate(headers)}}
+    styles = {(hdr, start + i): hstyle for i in range(len(headers))}
+    for it in scheda["items"]:
+        r = row_map.get(it["row"], it["row"])
+        if r is None:
+            continue
+        vals = rows_vals.get(it["row"])
+        values[r] = {start + i: (vals[i] if vals else None) for i in range(len(headers))}
+        for i in range(len(headers)):
+            styles[(r, start + i)] = vstyle
+    return _set_row_cells(xml, values, styles)
+
+
+def write_order_file(scheda, per_store_lines, out_path, extra=None, headers=None):
     """
     复制 SCHEDA → out_path，各门店页 Colli 列：per_store_lines 里有的门店写箱数，其余门店清空。
+    extra：{门店号: {行号: [附加列的值]}}（extra_data），有的话在各门店页 IMPORTO 后面加 GIA、ROT.30d … 这些列。
     打开时让 Excel / WPS 重新计算合计。
     """
     colli_col = _col_letter(scheda["cols"]["colli"])
@@ -945,7 +1084,7 @@ def write_order_file(scheda, per_store_lines, out_path):
     tmp = out_path + ".tmp"
     with zipfile.ZipFile(scheda["path"]) as zin:
         paths = _sheet_paths(zin)
-        targets = {}
+        targets, extra_by_path = {}, {}
         for sid, sheet in scheda["sheets"].items():
             p = paths.get(sheet)
             if p:
@@ -957,11 +1096,17 @@ def write_order_file(scheda, per_store_lines, out_path):
                     if tr is not None:
                         cells[tr] = lines.get(r)
                 targets[p] = cells
+                if extra and sid in extra:
+                    extra_by_path[p] = (extra[sid], rm)
         with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zout:
             for item in zin.infolist():
                 data = zin.read(item.filename)
                 if item.filename in targets:
-                    data = _set_cells(data.decode("utf-8"), colli_col, targets[item.filename]).encode("utf-8")
+                    x = _set_cells(data.decode("utf-8"), colli_col, targets[item.filename])
+                    if item.filename in extra_by_path:
+                        vals, rm = extra_by_path[item.filename]
+                        x = _write_extra(x, scheda, vals, headers or extra_headers(), rm)
+                    data = x.encode("utf-8")
                 elif item.filename == "xl/workbook.xml":
                     wbx = data.decode("utf-8")
                     if "<calcPr" in wbx:
@@ -988,9 +1133,10 @@ def written_source(w, result=None):
     return None
 
 
-def write_plans(results, out_root, date_tag=None, on_file=None):
+def write_plans(results, out_root, date_tag=None, on_file=None, calc=None):
     """
     results: [(星期, scheda, plan)]。每家直接送店的门店一个文件，BMS 一个文件。
+    calc: compute() 的结果；有的话各门店页加上 GIA、ROT.30d … 附加数据列
     返回 [(文件路径, 供应商, 去向, 箱数, 金额, 状态)]
     """
     date_tag = date_tag or datetime.now().strftime("%d%m")
@@ -1002,17 +1148,19 @@ def write_plans(results, out_root, date_tag=None, on_file=None):
         folder = os.path.join(out_root, day)
         os.makedirs(folder, exist_ok=True)
         safe = re.sub(r'[\\/:*?"<>|]', "_", sc["name"])
+        extra = extra_data(sc, calc.get("demand"), calc.get("base"), calc.get("days")) if calc else None
+        heads = extra_headers(calc.get("days")) if calc else None
         for sid, st in plan["stores"].items():
             if st["status"] in ("direct", "filled"):
                 p = os.path.join(folder, f"Ordine_{safe}_{STORE_SHEETS[sid]}_{date_tag}.xlsx")
                 on_file(len(written), total, os.path.basename(p))
-                write_order_file(sc, {sid: st["lines"]}, p)
+                write_order_file(sc, {sid: st["lines"]}, p, extra, heads)
                 written.append((p, sc["name"], STORE_SHEETS[sid], st["colli"], st["amount"], st["status"], sc["path"]))
         b = plan.get("bms")
         if bms_ordered(b):        # BMS 不够起订量的不生成文件（这次不订）
             p = os.path.join(folder, f"Ordine_{safe}_{BMS}_{date_tag}.xlsx")
             on_file(len(written), total, os.path.basename(p))
-            write_order_file(sc, b["per_store"], p)
+            write_order_file(sc, b["per_store"], p, extra, heads)
             written.append((p, sc["name"], BMS, b["colli"], b["amount"], b["status"], sc["path"]))
     return written
 
@@ -1265,7 +1413,8 @@ def allocate(calc, colli, fill, out_root, log=print, date_tag=None, edited=None,
     progress(0, "done", f"{len(todo)} / {len(todo)}", "", 40.0)
     os.makedirs(out_root, exist_ok=True)
     written = write_plans(results, out_root, date_tag,
-                          lambda k, n, name: progress(1, "running", f"{k + 1} / {n}", name, 40.0 + 50.0 * k / max(1, n)))
+                          lambda k, n, name: progress(1, "running", f"{k + 1} / {n}", name, 40.0 + 50.0 * k / max(1, n)),
+                          calc=calc)
     progress(1, "done", f"{len(written)}", "", 90.0)
     progress(2, "running", "", "", 92.0)
     summary = os.path.join(out_root, f"配货汇总_{date_tag or datetime.now().strftime('%d%m')}.xlsx")
@@ -1292,7 +1441,7 @@ def reallocate_one(calc, colli, fill, result, index, mode, edited=None, log=prin
         else:
             keep.append(w)
     date_tag = os.path.basename(result["summary"]).rsplit("_", 1)[-1].split(".")[0]
-    new = write_plans([(day, sc, plan)], result["out_root"], date_tag)
+    new = write_plans([(day, sc, plan)], result["out_root"], date_tag, calc=calc)
     results = list(result["results"])
     results[index] = (day, sc, plan)
     order = {x[1]["path"]: k for k, x in enumerate(results)}

@@ -22,7 +22,9 @@ from reorder_page import short_decision
 
 ALL = "__all__"
 # 明细表列（逻辑顺序）→ 显示顺序：常看、要改的列放前面
-_ORDER = [0, 1, 5, 15, 16, 17, 2, 18, 6, 20, 21, 7, 8, 9, 10, 11, 14, 19, 12, 13, 3, 4]
+# 22~31 是和订单文件附加列一样的：月均、需求、GIA.0~GIA.5（各门店库存，0 = BMS）、GIA-period、period_sales
+_ORDER = [0, 1, 5, 15, 16, 17, 2, 18, 6, 20, 21, 7, 8, 9, 10, 11, 14, 19, 12, 13, 3, 4] + list(range(22, 32))
+_EXTRA = list(range(22, 32))
 
 
 def _col(k):
@@ -182,8 +184,10 @@ class DetailWindow(ToolWindow):
         self.table = self.ui.make_table(_perm([tr("供应商"), tr("门店"), tr("判断"), tr("商品编号"), tr("条码"), tr("名称"),
                                                tr("本店库存"), "30", "60", "90", "180", tr("库存天数"), tr("每箱件数"),
                                                tr("件价"), tr("建议件数"), tr("建议箱数"), tr("订货箱数"), tr("金额"),
-                                               tr("等级"), tr("周期"), tr("日均"), tr("目标库存")]),
-                                        numeric_cols=[_col(k) for k in list(range(6, 18)) + [19, 20, 21]])
+                                               tr("等级"), tr("周期"), tr("日均"), tr("目标库存"),
+                                               tr("月均"), tr("需求")] + [f"GIA.{i}" for i in range(6)] +
+                                              ["GIA-period", "period_sales"]),
+                                        numeric_cols=[_col(k) for k in list(range(6, 18)) + [19, 20, 21] + _EXTRA])
         self.table.setEditTriggers(QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed |
                                    QAbstractItemView.AnyKeyPressed)
         self.table.setFocusPolicy(Qt.StrongFocus)
@@ -191,13 +195,23 @@ class DetailWindow(ToolWindow):
         hh = self.table.horizontalHeader()
         hh.setSectionResizeMode(QHeaderView.Interactive)
         hh.setStretchLastSection(False)
-        for c, wd in enumerate(_perm((130, 92, 84, 80, 120, 270, 70, 50, 50, 50, 50, 70, 66, 62, 70, 66, 76, 80, 46, 46, 60, 70))):
+        for c, wd in enumerate(_perm((130, 92, 84, 80, 120, 270, 70, 50, 50, 50, 50, 70, 66, 62, 70, 66, 76, 80, 46, 46, 60, 70,
+                                      56, 56, 54, 54, 54, 54, 54, 54, 80, 86))):
             hdr = self.table.horizontalHeaderItem(c)
             need = hh.fontMetrics().horizontalAdvance(hdr.text() if hdr else "") + 26
             self.table.setColumnWidth(c, max(wd, need))
         self.table.horizontalHeaderItem(EDIT_COL).setText(tr("订货箱数") + " ✎")
         self.table.horizontalHeaderItem(EDIT_COL).setToolTip(tr("双击修改箱数，0 = 不订"))
         self.table.horizontalHeaderItem(_col(18)).setToolTip(tr("销量等级：A 卖得快，B 一般，C 卖得慢"))
+        for k, tip in ((22, tr("月均 = 最长周期销量 ÷ 月数（默认 180 天 ÷ 6）")),
+                       (23, tr("需求 = 第 3 个周期（默认 90 天）的日均 × 订货周期")),
+                       (24, tr("GIA.0 = BMS 总仓库存；GIA.1 ~ GIA.5 = 各门店库存")),
+                       (30, tr("GIA-period = 本店库存（负数按 0）− period_sales")),
+                       (31, tr("period_sales = 第 3 个周期（默认 90 天）的销量"))):
+            self.table.horizontalHeaderItem(_col(k)).setToolTip(tip)
+        for i in range(1, 6):
+            self.table.horizontalHeaderItem(_col(24 + i)).setToolTip(
+                tr("GIA.{0} = {1} 的库存", i, S.STORE_SHEETS.get(i, "")))
         # 列可以拖动换位置（例如把「每箱件数」拖到前面）；顺序和宽度记在 settings.json，下次打开照旧
         hh.setSectionsMovable(True)
         hh.setFirstSectionMovable(True)
@@ -484,8 +498,9 @@ class DetailWindow(ToolWindow):
                 (x["tier"] or "") if x else "",
                 f"{x['cycle']:g}" if x and isinstance(x.get("cycle"), (int, float)) else "",
                 f"{x['daily']:.2f}" if x and x.get("daily") else "",
-                f"{x['target']:.0f}" if x and isinstance(x.get("target"), (int, float)) else ""]))
-            keys = _perm(self._sort_keys(i, x, sug_c))
+                f"{x['target']:.0f}" if x and isinstance(x.get("target"), (int, float)) else ""] +
+                self._extra_texts(x, sug_c, d)))
+            keys = _perm(self._sort_keys(i, x, sug_c) + self._extra_keys(x, sug_c, d))
             for c in range(t.columnCount()):
                 src = t.item(i, c)
                 item = _SortItem(src.text())
@@ -526,6 +541,20 @@ class DetailWindow(ToolWindow):
         t.setUpdatesEnabled(True)
         self._filling = False
         self._filter()
+
+    @staticmethod
+    def _extra_vals(x, sug_c, days):
+        """订单文件附加列里明细表还没有的那几项：月均、需求、GIA.0~5、GIA-period、period_sales"""
+        v = S.extra_fields(x, sug_c, days)
+        return None if v is None else [v[5], v[8]] + v[10:16] + [v[16], v[17]]
+
+    def _extra_texts(self, x, sug_c, days):
+        v = self._extra_vals(x, sug_c, days)
+        return [f"{n:g}" for n in v] if v else [""] * len(_EXTRA)
+
+    def _extra_keys(self, x, sug_c, days):
+        v = self._extra_vals(x, sug_c, days)
+        return [float(n) for n in v] if v else [None] * len(_EXTRA)
 
     def _sort_keys(self, i, x, sug_c):
         sc, it, sid = self.detail[i]

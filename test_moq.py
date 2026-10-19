@@ -124,7 +124,7 @@ def test_save_config_moq_keeps_format(tmp_path):
 # bug：同一家供应商在两个星期都有 SCHEDA，手动改其中一天的去向，不能删掉另一天的订单文件
 # ---------------------------------------------------------------------
 def test_reallocate_one_keeps_same_supplier_other_day(tmp_path, monkeypatch):
-    def fake_write(sc, per_store, out):
+    def fake_write(sc, per_store, out, *a, **k):
         open(out, "w").close()
         return out
     monkeypatch.setattr(S, "write_order_file", fake_write)
@@ -152,3 +152,45 @@ def test_written_source_old_results():
     res = {"results": [("周一", sc_a, {}), ("周三", sc_b, {})]}
     w = (os.path.join("out", "周三", "Ordine_ACME_MARLIA_1810.xlsx"), "ACME", "MARLIA", 1, 10.0, "direct")
     assert S.written_source(w, res) == "B"
+
+
+# ---------------------------------------------------------------------
+# 订单文件附加列（GIA、ROT.30d … period_sales），和原程序「中央采购」写回 SCHEDA 的列一样
+# ---------------------------------------------------------------------
+def test_extra_fields_like_original():
+    x = {"sugg": 48, "inv": 24, "inv_raw": 24, "sales": [27, 52, 75, 145], "tier": "A", "cycle": 60,
+         "gia_all": [0, 38, 24, 55, 11, 48]}
+    v = S.extra_fields(x, 2, [30, 60, 90, 180])
+    # 模板 SCHEDA ESSECI MARLIA 第 6 行：24 27 52 75 145 24.2 48 2 50 A 0 38 24 55 11 48 -51 75
+    assert v == [24, 27, 52, 75, 145, 24.2, 48, 2, 50, "A", 0, 38, 24, 55, 11, 48, -51, 75]
+    assert S.extra_fields(dict(x, inv_raw=-5), 2)[16] == -75          # GIA-period：负库存按 0
+    assert S.extra_fields(None, 0) is None
+    assert S.extra_headers()[:6] == ["GIA", "ROT.30d", "ROT.60d", "ROT.90d", "ROT.180d", "月均"]
+
+
+def test_write_extra_columns(tmp_path):
+    from openpyxl import Workbook, load_workbook
+    src = tmp_path / "SCHEDA T.xlsx"
+    wb = Workbook()
+    wb.active.title = "SCHEDA ANAGRAFICA FORNITORI"
+    for name in ("FOIANO", "MARLIA"):
+        ws = wb.create_sheet(name)
+        ws.append(["NO.", "Cod.Art.", "Codice EAN", "Descrizione", "PZ*COLLI", "Colli", "PREZZO NETTO", "IMPORTO"])
+        ws.append([1, 101, "800", "A", 12, None, 1.5, "=F2*E2*G2"])
+        ws.append([2, 102, "801", "B", 6, None, 2.0, "=F3*E3*G3"])
+    wb.save(src)
+    sc = S.parse_scheda(str(src))
+    assert sc["extra_col"] == 9                                            # 接在 IMPORTO（H）后面
+    for it in sc["items"]:
+        it["db_code"] = it["code"]
+    x = {"sugg": 12, "inv": 1, "inv_raw": 1, "sales": [3, 6, 9, 18], "tier": "B", "cycle": 30, "gia_all": [5, 1, 2, 3, 4, 0]}
+    dem = {2: {"101": x}}
+    out = tmp_path / "o.xlsx"
+    S.write_order_file(sc, {2: {2: 1}}, str(out), S.extra_data(sc, dem, {}, None), S.extra_headers())
+    ws = load_workbook(out)["MARLIA"]
+    assert ws.cell(1, 9).value == "GIA" and ws.cell(1, 26).value == "period_sales"
+    assert ws.cell(2, 6).value == 1                                        # Colli 照样写
+    assert [ws.cell(2, c).value for c in range(9, 27)] == [1, 3, 6, 9, 18, 3, 12, 0, 3, "B", 5, 1, 2, 3, 4, 0, -8, 9]
+    assert ws.cell(3, 9).value is None                                     # 数据库没有的商品留空
+    assert ws.cell(2, 8).value == "=F2*E2*G2"                              # 公式不动
+    assert load_workbook(out)["FOIANO"].cell(1, 9).value is None          # 没算的门店不加

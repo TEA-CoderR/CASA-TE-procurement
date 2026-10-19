@@ -1356,4 +1356,12 @@ TRANSLATIONS = {
     '{0:g} 板': ('{0:g} pallets', '{0:g} bancali'),
     '×{0:g} 箱': ('×{0:g} boxes', '×{0:g} colli'),
     '起订量：{0}': ('Minimum order: {0}', 'Ordine minimo: {0}'),
+    '月均': ('Monthly avg', 'Media mensile'),
+    '需求': ('Demand', 'Fabbisogno'),
+    '月均 = 最长周期销量 ÷ 月数（默认 180 天 ÷ 6）': ('Monthly avg = sales of the longest period ÷ months (default 180 days ÷ 6)', 'Media mensile = vendite del periodo più lungo ÷ mesi (predefinito 180 giorni ÷ 6)'),
+    '需求 = 第 3 个周期（默认 90 天）的日均 × 订货周期': ('Demand = daily average of the 3rd period (default 90 days) × order cycle', 'Fabbisogno = media giornaliera del 3° periodo (predefinito 90 giorni) × ciclo di riordino'),
+    'GIA.0 = BMS 总仓库存；GIA.1 ~ GIA.5 = 各门店库存': ('GIA.0 = BMS warehouse stock; GIA.1 ~ GIA.5 = stock of each store', 'GIA.0 = giacenza magazzino BMS; GIA.1 ~ GIA.5 = giacenza di ogni negozio'),
+    'GIA-period = 本店库存（负数按 0）− period_sales': ('GIA-period = store stock (negative as 0) − period_sales', 'GIA-period = giacenza negozio (negativa = 0) − period_sales'),
+    'period_sales = 第 3 个周期（默认 90 天）的销量': ('period_sales = sales of the 3rd period (default 90 days)', 'period_sales = vendite del 3° periodo (predefinito 90 giorni)'),
+    'GIA.{0} = {1} 的库存': ('GIA.{0} = stock of {1}', 'GIA.{0} = giacenza di {1}'),
 }
