@@ -4,6 +4,7 @@ CASA&TE采购系统 v3.0 — 主程序（PySide6 / Qt）
 处理逻辑在 service.py / store_orders.py / reorder_service.py / forecast.py …，本文件只负责界面外壳。
 """
 import os
+import re
 import sys
 import time
 import copy
@@ -384,6 +385,70 @@ def scan_folder(root_path):
         info["warnings"].append(tr("eliminare 里有和主订单同名的文件，请确认是否放错"))
     info["ok"] = not info["errors"]
     return info
+
+
+class SupplierDropDialog(QDialog):
+    """拖进来的供应商报价：每个新文件替换哪个旧文件（自动认出的已经选好，认不出的让用户选）"""
+
+    def __init__(self, parent, plan, existing):
+        super().__init__(parent)
+        self.setWindowTitle(tr("更新供应商报价"))
+        self.plan = plan
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(20, 18, 20, 16)
+        lay.setSpacing(10)
+        t = QLabel(tr("每个新文件替换哪一家的旧报价？旧文件会挪进 distribuire\\_旧文件（不删除）。"))
+        t.setWordWrap(True)
+        lay.addWidget(t)
+        g = QGridLayout()
+        g.setHorizontalSpacing(12)
+        g.setVerticalSpacing(8)
+        hd1, hd2 = QLabel(tr("新文件")), QLabel(tr("替换"))
+        for h in (hd1, hd2):
+            h.setObjectName("Faint")
+        g.addWidget(hd1, 0, 0)
+        g.addWidget(hd2, 0, 1)
+        self.combos = []
+        for i, p in enumerate(plan, 1):
+            name = os.path.basename(p["src"])
+            l = QLabel(name)
+            l.setToolTip(p["src"])
+            g.addWidget(l, i, 0)
+            cb = QComboBox()
+            cb.addItem(tr("新供应商（不替换）"), "")
+            for e in existing:
+                cb.addItem(tr("替换 {0}", e), e)
+            if p["replace"] and cb.findData(p["replace"]) < 0:
+                cb.addItem(tr("替换 {0}", p["replace"]), p["replace"])
+            cb.setCurrentIndex(max(0, cb.findData(p["replace"] or "")))
+            cb.setMinimumWidth(280)
+            g.addWidget(cb, i, 1)
+            note = QLabel(tr("自动认出") if p["auto"] else tr("认不出是哪家，请选"))
+            note.setObjectName("Faint" if p["auto"] else "")
+            if not p["auto"]:
+                note.setStyleSheet(f"color:{T('warn')};")
+            g.addWidget(note, i, 2)
+            self.combos.append(cb)
+        lay.addLayout(g)
+        self.err = QLabel("")
+        self.err.setStyleSheet(f"color:{T('err')};")
+        lay.addWidget(self.err)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.button(QDialogButtonBox.Ok).setText(tr("放进去"))
+        bb.accepted.connect(self._ok)
+        bb.rejected.connect(self.reject)
+        lay.addWidget(bb)
+        self.setMinimumWidth(640)
+
+    def result_plan(self):
+        return [dict(p, replace=cb.currentData() or None) for p, cb in zip(self.plan, self.combos)]
+
+    def _ok(self):
+        picks = [cb.currentData() for cb in self.combos if cb.currentData()]
+        if len(picks) != len(set(picks)):
+            self.err.setText(tr("两个新文件不能替换同一家，请改一下。"))
+            return
+        self.accept()
 
 
 def describe_condition(r):
@@ -1549,15 +1614,25 @@ class MainWindow(QMainWindow):
         row.addWidget(b2)
         p1.lay.addLayout(row)
 
-        facts = QHBoxLayout()
-        facts.setSpacing(28)
-        self.fact_order = self._fact(tr("主订单"), "—")
-        self.fact_elim = self._fact(tr("扣减文件"), "—")
-        self.fact_sup = self._fact(tr("供应商报价"), "—")
-        for f in (self.fact_order, self.fact_elim, self.fact_sup):
-            facts.addLayout(f[0])
-        facts.addStretch()
-        p1.lay.addLayout(facts)
+        # 三个文件区：直接把文件拖进来（或点「选择文件…」），程序放进总文件夹对应的子文件夹；
+        # 原来的文件挪进子文件夹里的 _旧订单 / _旧文件，不删除。也照样可以自己去文件夹里放。
+        from erp_widgets import DropZone
+        zones = QHBoxLayout()
+        zones.setSpacing(12)
+        self.zone_ordine = DropZone(tr("主订单 · ORDINE"), "", multi=False)
+        self.zone_elim = DropZone(tr("扣减文件 · eliminare"), "", multi=True, removable=True)
+        self.zone_sup = DropZone(tr("供应商报价 · distribuire"), "", multi=True, removable=True)
+        for z, sub in ((self.zone_ordine, ORDINE_FOLDER), (self.zone_elim, ELIMINARE_FOLDER),
+                       (self.zone_sup, DISTRIBUTUIRE_FOLDER)):
+            z.setMinimumHeight(120)
+            z.open_folder.connect(lambda sub=sub: self._open_sub(sub))
+            zones.addWidget(z, 1)
+        self.zone_ordine.files_dropped.connect(self._drop_ordine)
+        self.zone_elim.files_dropped.connect(self._drop_eliminare)
+        self.zone_sup.files_dropped.connect(self._drop_suppliers)
+        self.zone_elim.remove_requested.connect(lambda n: self._remove_file(ELIMINARE_FOLDER, n))
+        self.zone_sup.remove_requested.connect(lambda n: self._remove_file(DISTRIBUTUIRE_FOLDER, n))
+        p1.lay.addLayout(zones)
         self.banner_folder = Banner()
         p1.lay.addWidget(self.banner_folder)
         lay.addWidget(p1)
@@ -2138,12 +2213,192 @@ class MainWindow(QMainWindow):
             save_settings(settings)
             self.refresh_folder()
 
+    # ---------- 文件拖入：ORDINE / eliminare / distribuire ----------
+    @staticmethod
+    def _file_tip(folder, name):
+        p = os.path.join(folder, name)
+        try:
+            t = datetime.fromtimestamp(os.path.getmtime(p))
+            return t, tr("{0}\n更新于 {1:%Y-%m-%d %H:%M}", name, t)
+        except OSError:
+            return None, name
+
+    def _fill_zones(self, path, info):
+        ok = bool(path) and os.path.isdir(path)
+        no_root = tr("先在上面选总文件夹；也可以直接拖文件进来，会先让你选")
+        if not ok:
+            for z in (self.zone_ordine, self.zone_elim, self.zone_sup):
+                z.set_files([], no_root)
+            return
+
+        def items(sub, names, with_date=False):
+            folder = os.path.join(path, sub)
+            out = []
+            for n in names:
+                t, tip = self._file_tip(folder, n)
+                out.append((f"{n}  ({t:%d/%m})" if with_date and t else n, tip))
+            return out
+
+        self.zone_ordine.set_files(items(ORDINE_FOLDER, [info["ordine"]] if info["ordine"] else []),
+                                   tr("拖新的主订单进来会替换现在这个（旧的挪进 ORDINE\\_旧订单）") if info["ordine"]
+                                   else tr("把主订单拖到这里"))
+        self.zone_elim.set_files(items(ELIMINARE_FOLDER, info["eliminare"] or []),
+                                 tr("把已处理 / 已下单的文件拖到这里，可以一次拖好几个"))
+        self.zone_sup.set_files(items(DISTRIBUTUIRE_FOLDER, info["suppliers"] or [], True),
+                                tr("每周拖新的报价文件进来，自动替换同一家的旧报价"))
+
+    def _zone_name(self, w, name):
+        """× 按钮发来的名字带着「(日期)」，还原成文件名"""
+        return re.sub(r"\s+\(\d\d/\d\d\)$", "", name)
+
+    def _ensure_root(self):
+        root = self.folder_edit.text().strip()
+        if root and os.path.isdir(root):
+            return root
+        QMessageBox.information(self, tr("批发商比价"), tr("先选比价用的总文件夹（ORDINE、eliminare、distribuire 的上一层），文件会放进它里面。"))
+        root = QFileDialog.getExistingDirectory(self, tr("选择总文件夹"), root or "")
+        if not root:
+            return None
+        self.folder_edit.setText(os.path.normpath(root))
+        settings["last_folder"] = self.folder_edit.text()
+        save_settings(settings)
+        return os.path.normpath(root)
+
+    def _busy_drop(self):
+        if self.running:
+            QMessageBox.information(self, tr("批发商比价"), tr("正在处理中，等处理完再放文件。"))
+            return True
+        return False
+
+    def _file_error(self, e):
+        if isinstance(e, PermissionError):
+            msg = tr("文件被别的程序打开着（例如在 WPS / Excel 里），关掉以后再试一次。\n\n{0}", e)
+        else:
+            msg = str(e)
+        QMessageBox.warning(self, tr("放入文件"), msg)
+
+    def _after_drop(self, msg):
+        self.log("[文件] " + msg)
+        self.refresh_folder()
+        self.show_toast(msg)
+
+    def _drop_ordine(self, files):
+        import file_inbox as FI
+        if self._busy_drop():
+            return
+        if len(files) > 1:
+            QMessageBox.information(self, tr("主订单"), tr("主订单一次只能放一个文件。"))
+            return
+        root = self._ensure_root()
+        if not root:
+            return
+        cur = (self.info or {}).get("ordine")
+        new = os.path.basename(files[0])
+        if cur and cur != new and QMessageBox.question(
+                self, tr("主订单"), tr("把主订单换成「{0}」？\n原来的「{1}」挪进 ORDINE\\_旧订单（不删除）。", new, cur)) != QMessageBox.Yes:
+            return
+        try:
+            r = FI.import_ordine(root, files)
+        except Exception as e:
+            self._file_error(e)
+            return
+        self._after_drop(tr("主订单已换成 {0}", os.path.basename(r["file"])))
+
+    def _drop_eliminare(self, files):
+        import file_inbox as FI
+        if self._busy_drop():
+            return
+        root = self._ensure_root()
+        if not root:
+            return
+        replace_all = False
+        cur = FI.excel_files(os.path.join(root, ELIMINARE_FOLDER))
+        if [f for f in cur if f not in {os.path.basename(x) for x in files}]:
+            box = QMessageBox(self)
+            box.setWindowTitle(tr("扣减文件"))
+            box.setText(tr("eliminare 里已经有 {0} 个文件。这 {1} 个新文件：", len(cur), len(files)))
+            b_add = box.addButton(tr("一起加进去"), QMessageBox.AcceptRole)
+            b_rep = box.addButton(tr("替换原来的"), QMessageBox.DestructiveRole)
+            box.addButton(QMessageBox.Cancel)
+            box.setInformativeText(tr("「替换原来的」会把现在那几个挪进 eliminare\\_旧文件（不删除）。"))
+            box.exec()
+            if box.clickedButton() not in (b_add, b_rep):
+                return
+            replace_all = box.clickedButton() == b_rep
+        try:
+            r = FI.import_eliminare(root, files, replace_all)
+        except Exception as e:
+            self._file_error(e)
+            return
+        self._after_drop(tr("扣减文件放好了：{0} 个", len(r["files"])) +
+                         (tr("，原来的 {0} 个挪进了 _旧文件", len(r["archived"])) if r["archived"] else ""))
+
+    def _drop_suppliers(self, files):
+        import file_inbox as FI
+        if self._busy_drop():
+            return
+        root = self._ensure_root()
+        if not root:
+            return
+        try:
+            plan = FI.plan_suppliers(root, files, [r.get("keyword") for r in settings.get("rules", [])])
+        except Exception as e:
+            self._file_error(e)
+            return
+        existing = scan_folder(root).get("suppliers") or []       # 现在的供应商报价（不含临时文件、缺失报告）
+        dlg = SupplierDropDialog(self, plan, existing)
+        if not dlg.exec():
+            return
+        try:
+            done = FI.apply_suppliers(root, dlg.result_plan())
+        except Exception as e:
+            self._file_error(e)
+            return
+        rep = [f"{old} → {new}" for new, old in done if old and old != new]
+        add = [new for new, old in done if not old]
+        parts = []
+        if rep:
+            parts.append(tr("替换 {0} 家：{1}", len(rep), tr("、").join(rep)))
+        if add:
+            parts.append(tr("新增 {0} 家：{1}", len(add), tr("、").join(add)))
+        same = [new for new, old in done if old == new]
+        if same:
+            parts.append(tr("更新 {0} 个同名文件", len(same)))
+        self._after_drop(tr("供应商报价已更新") + "：" + "；".join(parts))
+
+    def _remove_file(self, sub, name):
+        import file_inbox as FI
+        if self._busy_drop():
+            return
+        root = self.folder_edit.text().strip()
+        name = self._zone_name(None, name)
+        if not root or not os.path.exists(os.path.join(root, sub, name)):
+            self.refresh_folder()
+            return
+        if QMessageBox.question(self, tr("拿走文件"), tr("把「{0}」从 {1} 拿走？\n文件会挪进 {1}\\{2}，不会删除。",
+                                                         name, sub, FI.OLD_DIRS.get(sub, "_旧文件"))) != QMessageBox.Yes:
+            return
+        try:
+            FI.remove_file(root, sub, name)
+        except Exception as e:
+            self._file_error(e)
+            return
+        self._after_drop(tr("已拿走 {0}", name))
+
+    def _open_sub(self, sub):
+        root = self.folder_edit.text().strip()
+        p = os.path.join(root, sub) if root else ""
+        if p and os.path.isdir(p):
+            open_path(p)
+        elif root and os.path.isdir(root):
+            open_path(root)
+        else:
+            QMessageBox.information(self, APP_NAME, tr("还没有选总文件夹。"))
+
     def refresh_folder(self):
         path = self.folder_edit.text().strip()
         self.info = info = scan_folder(path)
-        self.fact_order[1].setText(info["ordine"] or "—")
-        self.fact_elim[1].setText(tr("{0} 个文件", len(info['eliminare'])) if path and os.path.isdir(path) else "—")
-        self.fact_sup[1].setText(tr("{0} 家", len(info['suppliers'])) if info["suppliers"] else "—")
+        self._fill_zones(path, info)
         if not path:
             self.banner_folder.show_msg(tr("还没有选择文件夹。点「选择文件夹…」或按 Ctrl+O。"), "info")
         elif info["errors"]:

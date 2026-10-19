@@ -209,6 +209,9 @@ def build_qss():
     #StatusText {{ color: {t['muted']}; font-size: 12px; }}
     #Drawer {{ background: {t['surface2']}; border-left: 1px solid {t['line']}; }}
     #MiniCard {{ background: {t['surface']}; border: 1px solid {t['line']}; border-radius: 9px; }}
+    #DropZone {{ background: {t['surface2']}; border: 1px dashed {t['faint']}; border-radius: 10px; }}
+    #DropZone[drag="true"] {{ background: {t['accent_soft']}; border: 1px solid {t['accent']}; }}
+    QLineEdit[drag="true"] {{ background: {t['accent_soft']}; border: 1px solid {t['accent']}; }}
     #MiniLabel {{ color: {t['muted']}; font-size: 11px; }}
     #MiniValue {{ font-family: "{NUM_FONT}"; font-size: 18px; font-weight: 600; }}
     """

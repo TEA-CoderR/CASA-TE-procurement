@@ -65,7 +65,10 @@ class OrderCheck:
         r1.addWidget(QLabel(tr("清单")))
         self.file_edit = QLineEdit()
         self.file_edit.setReadOnly(True)
-        self.file_edit.setPlaceholderText(tr("默认用 ORDINE 里的主订单，也可以选门店发来的其他文件"))
+        self.file_edit.setPlaceholderText(tr("默认用 ORDINE 里的主订单；门店发来的清单可以直接拖到这里，或点「选择文件…」"))
+        self.file_edit.setToolTip(tr("把门店发来的订货清单（Excel）拖到这里"))
+        from erp_widgets import accept_file_drops
+        accept_file_drops(self.file_edit, self._dropped, (".xlsx", ".xlsm"))
         r1.addWidget(self.file_edit, 1)
         b1 = QPushButton(tr("用主订单"))
         b1.setToolTip(tr("用总文件夹 ORDINE 里的主订单"))
@@ -226,6 +229,12 @@ class OrderCheck:
         if path:
             self.cfg["last_dir"] = os.path.dirname(path)
             self.load_file(path)
+
+    def _dropped(self, path):
+        """门店发来的清单直接拖进来（文件留在原来的地方，不复制）"""
+        self.cfg["last_dir"] = os.path.dirname(path)
+        self.load_file(path)
+        self.win.show_toast(tr("已载入清单：{0}", os.path.basename(path)))
 
     def folder_changed(self):
         """总文件夹变了：没选过文件时默认用主订单"""

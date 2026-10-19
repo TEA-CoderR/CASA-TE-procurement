@@ -7,6 +7,7 @@ CASA&TE采购系统 · 通用界面组件
   EmptyState   空状态（图标 + 标题 + 说明 + 按钮）
   ToolWindow   独立窗口的基类（订货明细、检查清单 …）
 """
+import os
 import time
 import threading
 
@@ -772,3 +773,174 @@ class CopyHelper(QObject):
             m = view.model()
             head = "\t".join(str(m.headerData(c, Qt.Horizontal, Qt.DisplayRole) or "").replace(" ✎", "") for c in cols)
             cb.setText(head + "\n" + _table_text(view, _visible_rows(view), cols))
+
+
+# =====================================================================
+# 文件拖入区域
+# =====================================================================
+def _local_files(mime, exts):
+    if not mime.hasUrls():
+        return []
+    out = []
+    for u in mime.urls():
+        p = u.toLocalFile()
+        if p and os.path.isfile(p) and (not exts or p.lower().endswith(tuple(exts))):
+            out.append(os.path.normpath(p))
+    return out
+
+
+def _set_drag(w, on):
+    w.setProperty("drag", bool(on))
+    w.style().unpolish(w)
+    w.style().polish(w)
+
+
+class _ElideLabel(QLabel):
+    """一行文字，放不下时末尾显示 …（完整的在鼠标提示里）"""
+
+    def __init__(self, text, parent=None):
+        super().__init__(parent)
+        self.full = text
+        self.setMinimumWidth(10)
+        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.setText(text)
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self.setText(self.fontMetrics().elidedText(self.full, Qt.ElideMiddle, max(10, self.width())))
+
+
+class DropZone(QFrame):
+    """
+    一块可以把文件拖进来的区域：标题 + 现在有哪些文件 + 「选择文件… / 打开文件夹」。
+    拖进来或选好文件后发 files_dropped(list)。文件列表用 set_files([(名字, 提示)], 说明) 更新，
+    每个文件后面可以有 ×（removable=True）→ 发 remove_requested(名字)。
+    """
+    files_dropped = Signal(list)
+    remove_requested = Signal(str)
+    open_folder = Signal()
+
+    def __init__(self, title, hint, exts=(".xlsx", ".xls", ".xlsm"), multi=True, removable=False, parent=None):
+        super().__init__(parent)
+        self.setObjectName("DropZone")
+        self.setAcceptDrops(True)
+        self.setProperty("noTextSelect", True)
+        self.exts, self.multi, self.removable = tuple(exts), multi, removable
+        self.title_text = title
+        v = QVBoxLayout(self)
+        v.setContentsMargins(14, 12, 14, 12)
+        v.setSpacing(6)
+        top = QHBoxLayout()
+        top.setSpacing(6)
+        self.title = QLabel(title)
+        self.title.setStyleSheet("font-weight:600;")
+        self.count = QLabel("")
+        self.count.setObjectName("Faint")
+        top.addWidget(self.title)
+        top.addWidget(self.count)
+        top.addStretch()
+        self.btn_pick = QPushButton(tr("选择文件…"))
+        self.btn_pick.setObjectName("Link")
+        self.btn_pick.setCursor(Qt.PointingHandCursor)
+        self.btn_pick.clicked.connect(self._pick)
+        self.btn_open = QPushButton(tr("打开文件夹"))
+        self.btn_open.setObjectName("Link")
+        self.btn_open.setCursor(Qt.PointingHandCursor)
+        self.btn_open.clicked.connect(lambda: self.open_folder.emit())
+        top.addWidget(self.btn_pick)
+        top.addWidget(self.btn_open)
+        v.addLayout(top)
+        self.list_box = QVBoxLayout()
+        self.list_box.setSpacing(2)
+        v.addLayout(self.list_box)
+        self.hint = QLabel(hint)
+        self.hint.setObjectName("Faint")
+        self.hint.setWordWrap(True)
+        v.addWidget(self.hint)
+        v.addStretch()
+
+    def set_files(self, files, note=""):
+        """files: [(文件名, 鼠标提示)]；note：文件列表下面的一行说明（空 = 显示拖入提示）"""
+        while self.list_box.count():
+            w = self.list_box.takeAt(0).widget()
+            if w:
+                w.deleteLater()
+        for name, tip in files[:8]:
+            row = QWidget()
+            h = QHBoxLayout(row)
+            h.setContentsMargins(0, 0, 0, 0)
+            h.setSpacing(4)
+            lab = _ElideLabel("· " + name)
+            lab.setToolTip(tip or name)
+            h.addWidget(lab, 1)
+            if self.removable:
+                x = QPushButton("×")
+                x.setObjectName("Link")
+                x.setCursor(Qt.PointingHandCursor)
+                x.setToolTip(tr("从这里拿走（挪进旧文件夹，不删除）"))
+                x.setFixedWidth(22)
+                x.clicked.connect(lambda _=False, n=name: self.remove_requested.emit(n))
+                h.addWidget(x)
+            self.list_box.addWidget(row)
+        if len(files) > 8:
+            more = QLabel(tr("… 还有 {0} 个", len(files) - 8))
+            more.setObjectName("Faint")
+            self.list_box.addWidget(more)
+        self.count.setText(tr("{0} 个", len(files)) if files else "")
+        self.hint.setText(note or tr("把文件拖到这里"))
+
+    def _pick(self):
+        from PySide6.QtWidgets import QFileDialog
+        pat = tr("Excel 文件 ({0})", " ".join("*" + e for e in self.exts))
+        if self.multi:
+            files, _ = QFileDialog.getOpenFileNames(self, self.title_text, "", pat)
+        else:
+            f, _ = QFileDialog.getOpenFileName(self, self.title_text, "", pat)
+            files = [f] if f else []
+        if files:
+            self.files_dropped.emit([os.path.normpath(f) for f in files])
+
+    def dragEnterEvent(self, e):
+        if _local_files(e.mimeData(), self.exts):
+            e.acceptProposedAction()
+            _set_drag(self, True)
+        else:
+            e.ignore()
+
+    def dragLeaveEvent(self, e):
+        _set_drag(self, False)
+
+    def dropEvent(self, e):
+        _set_drag(self, False)
+        files = _local_files(e.mimeData(), self.exts)
+        if files:
+            e.acceptProposedAction()
+            self.files_dropped.emit(files)
+
+
+def accept_file_drops(widget, callback, exts=(".xlsx", ".xls", ".xlsm")):
+    """让一个现成的控件（例如显示文件路径的输入框）也能拖文件进来：拖进来的第一个文件交给 callback(路径)"""
+    widget.setAcceptDrops(True)
+
+    def enter(e):
+        if _local_files(e.mimeData(), exts):
+            e.acceptProposedAction()
+            _set_drag(widget, True)
+        else:
+            e.ignore()
+
+    def leave(e):
+        _set_drag(widget, False)
+
+    def drop(e):
+        _set_drag(widget, False)
+        files = _local_files(e.mimeData(), exts)
+        if files:
+            e.acceptProposedAction()
+            callback(files[0])
+
+    def move(e):
+        if _local_files(e.mimeData(), exts):
+            e.acceptProposedAction()
+
+    widget.dragEnterEvent, widget.dragLeaveEvent, widget.dropEvent, widget.dragMoveEvent = enter, leave, drop, move
