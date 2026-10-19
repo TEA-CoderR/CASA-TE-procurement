@@ -2007,6 +2007,13 @@ CMP_STAGES = [(0, "备份、打开主订单"), (10, "扣减已处理数量"), (2
               (62, "选供应商、起订量凑单"), (70, "写回供应商文件"), (96, "保存主订单")]
 
 
+def _all_pages(side, sub_pages):
+    """侧边栏的页面 + 批发商比价里的标签页（不在侧边栏上的）。
+    注意：不能在 class 里直接写这个列表推导式——class 里的变量在推导式里看不到，启动就会报错闪退。"""
+    on_side = {k for k, _ in side}
+    return list(side) + [(k, t) for subs in sub_pages.values() for k, t in subs if k not in on_side]
+
+
 class MainWindow(QMainWindow):
     # 货物分配系统是主系统；采购管理是其中一个模块
     NAV_GROUPS = [
@@ -2021,8 +2028,7 @@ class MainWindow(QMainWindow):
                            ("rules", tr("起订规则")), ("search", tr("缺失查找"))]}
     SUB_PARENT = {k: parent for parent, subs in SUB_PAGES.items() for k, _ in subs}
     NAV_SIDE = [item for _, items in NAV_GROUPS for item in items]          # 侧边栏上的
-    NAV = NAV_SIDE + [(k, t) for subs in SUB_PAGES.values() for k, t in subs
-                      if k not in {x for x, _ in NAV_SIDE}]                  # 所有页面（含标签页）
+    NAV = _all_pages(NAV_SIDE, SUB_PAGES)                                    # 所有页面（含标签页）
     NAV_SECTION = {k: g for g, items in NAV_GROUPS for k, _ in items}
     SOON = {"tracking"}   # 还没做（采购订单跟踪）
 
@@ -2448,8 +2454,8 @@ class MainWindow(QMainWindow):
         subs = self.SUB_PAGES.get(parent)
         self.subtab_bar.setVisible(bool(subs))
         for b in self.subtab_btns:
-            b.setVisible(b.property("parent") == parent)
-            b.setChecked(b.property("key") == key)
+            b.setVisible(b.property("subParent") == parent)
+            b.setChecked(b.property("subKey") == key)
         if subs:
             self._last_sub[parent] = key
         if key == "home" and hasattr(self, "dashboard"):
@@ -2480,8 +2486,8 @@ class MainWindow(QMainWindow):
                 b.setObjectName("SubTab")
                 b.setCheckable(True)
                 b.setCursor(Qt.PointingHandCursor)
-                b.setProperty("key", key)
-                b.setProperty("parent", parent)
+                b.setProperty("subKey", key)
+                b.setProperty("subParent", parent)
                 b.clicked.connect(lambda _=False, k=key: self.go_page(k))
                 grp.addButton(b)
                 self.subtab_btns.append(b)
