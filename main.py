@@ -876,7 +876,10 @@ class SupplierComboDelegate(QStyledItemDelegate):
         return cb
 
     def setEditorData(self, cb, idx):
-        r = self.dlg.rows[idx.data(Qt.UserRole)]
+        i = idx.data(Qt.UserRole)
+        if i is None:                     # 这一行正在重画
+            return
+        r = self.dlg.rows[i]
         cur = self.dlg.assign.get(r["row"])
         i = cb.findData(cur)
         if i >= 0:
@@ -884,7 +887,10 @@ class SupplierComboDelegate(QStyledItemDelegate):
         cb.showPopup()
 
     def setModelData(self, cb, model, idx):
-        self.dlg.set_supplier(idx.data(Qt.UserRole), cb.currentData())
+        # 等编辑框关掉以后再改（编辑时重画这一行会让程序卡住闪退）
+        i, s = idx.data(Qt.UserRole), cb.currentData()
+        if i is not None:
+            QTimer.singleShot(0, lambda: self.dlg.set_supplier(i, s))
 
 
 class QtyDelegate(QStyledItemDelegate):
@@ -903,12 +909,18 @@ class QtyDelegate(QStyledItemDelegate):
         return sb
 
     def setEditorData(self, sb, idx):
-        r = self.dlg.rows[idx.data(Qt.UserRole)]
-        sb.setValue(self.dlg._qty(r))
+        i = idx.data(Qt.UserRole)
+        if i is None:                     # 这一行正在重画
+            return
+        sb.setValue(self.dlg._qty(self.dlg.rows[i]))
         sb.selectAll()
 
     def setModelData(self, sb, model, idx):
-        self.dlg.set_qty(idx.data(Qt.UserRole), sb.value())
+        # 等编辑框关掉以后再改（编辑时重画这一行会让程序卡住闪退）
+        sb.interpretText()
+        i, q = idx.data(Qt.UserRole), sb.value()
+        if i is not None:
+            QTimer.singleShot(0, lambda: self.dlg.set_qty(i, q))
 
 
 class ManualDialog(QDialog):
