@@ -499,6 +499,7 @@ class Bridge(QObject):
     done = Signal(object)
     missing_done = Signal(object, object, bool)
     decide = Signal(object)
+    choose = Signal(object)
     web_done = Signal(object)
     rewrite_done = Signal(object)
     db_state = Signal(bool)
@@ -911,16 +912,28 @@ class ManualDialog(QDialog):
         bar.addWidget(self.only_multi)
         bar.addWidget(self.only_changed)
         bar.addStretch()
+        self.count_lbl = QLabel("")
+        self.count_lbl.setObjectName("Faint")
+        bar.addWidget(self.count_lbl)
+        exp = QPushButton(tr("导出 Excel"))
+        exp.clicked.connect(lambda: self.ctl.export(self, "分配明细.xlsx", tr("分配明细")))
+        bar.addWidget(exp)
         lay.addLayout(bar)
 
         self.table = make_table([tr("行"), "EAN", "ARTICOLO", tr("箱数"), tr("最低价供应商"), tr("件价"),
                                  tr("当前供应商"), tr("当前件价"), tr("比最低价多花 €")],
                                 stretch_col=2, numeric_cols=(0, 3, 5, 7, 8))
         self.table.setFocusPolicy(Qt.StrongFocus)
-        self.table.setEditTriggers(QAbstractItemView.CurrentChanged | QAbstractItemView.DoubleClicked |
-                                   QAbstractItemView.SelectedClicked)
+        # 只有「当前供应商」这一列能改（而且要有不止一家报价）；其他格子只能看、复制
+        self.table.setEditTriggers(QAbstractItemView.DoubleClicked | QAbstractItemView.SelectedClicked)
+        self.table.cellClicked.connect(self._cell_clicked)
         self.table.setItemDelegateForColumn(6, SupplierComboDelegate(self))
         lay.addWidget(self.table, 1)
+        from erp_widgets import TableSortFilter
+        self.ctl = TableSortFilter(self.table, lambda: len(self.rows), self._text, self._fill_row,
+                                   hide=self._hidden, numeric=(0, 3, 8))
+        self.ctl.rendered.connect(lambda n, tot: self.count_lbl.setText(
+            tr("显示 {0} / {1} 行 · 点表头排序，右键表头筛选", n, tot)))
         self._fill_table()
 
         btns = QHBoxLayout()
@@ -975,12 +988,9 @@ class ManualDialog(QDialog):
             return 0.0
 
     def _fill_table(self):
-        t = self.table
-        t.setRowCount(len(self.rows))
-        for i, r in enumerate(self.rows):
-            self._set_row(i)
+        self.ctl.render()
 
-    def _set_row(self, i):
+    def _vals(self, i):
         r = self.rows[i]
         q = self._qty(r)
         b = self.baseline.get(r["row"])
@@ -989,22 +999,41 @@ class ManualDialog(QDialog):
         pc = r["prices"].get(c) if c else None
         extra = (pc - pb) * q if (pb is not None and pc is not None) else None
         n_offers = sum(1 for p in r["prices"].values() if p is not None)
-        vals = [r["row"], r.get("ean", ""), r.get("articolo", ""), f"{q:g}",
+        return [str(r["row"]), r.get("ean", ""), r.get("articolo", ""), f"{q:g}",
                 short(b) if b else tr("无报价"), fmt_unit(_unit(r, b), _pack(r, b)),
-                (short(c) + ("　▾" if n_offers > 1 else "")) if c else tr("无报价"),
-                fmt_unit(_unit(r, c), _pack(r, c)),
-                f"{extra:+,.2f}" if extra else ""]
-        table_set_row(self.table, i, vals, color=None)
-        self.table.item(i, 6).setData(Qt.UserRole, i)
-        flags = self.table.item(i, 6).flags()
+                short(c) if c else tr("无报价"), fmt_unit(_unit(r, c), _pack(r, c)),
+                f"{extra:+,.2f}" if extra else ""], n_offers, extra, b, c
+
+    def _text(self, i, col):
+        return self._vals(i)[0][col]
+
+    def _fill_row(self, i, k):
+        vals, n_offers, extra, b, c = self._vals(i)
+        if n_offers > 1 and c:
+            vals[6] += "　▾"
+        table_set_row(self.table, k, vals, color=None)
+        for col in range(9):                      # 先全部设成不能改
+            it = self.table.item(k, col)
+            it.setFlags(it.flags() & ~Qt.ItemIsEditable)
+        self.table.item(k, 6).setData(Qt.UserRole, i)
         if n_offers > 1:
-            self.table.item(i, 6).setFlags(flags | Qt.ItemIsEditable)
-            self.table.item(i, 6).setToolTip(tr("点击选择其他供应商"))
+            it = self.table.item(k, 6)
+            it.setFlags(it.flags() | Qt.ItemIsEditable)
+            it.setToolTip(tr("点击选择其他供应商"))
         if c != b:
             for col in range(9):
-                self.table.item(i, col).setBackground(QColor(T("accent_soft")))
+                self.table.item(k, col).setBackground(QColor(T("accent_soft")))
         if extra and extra > 0:
-            self.table.item(i, 8).setForeground(QColor(T("warn")))
+            self.table.item(k, 8).setForeground(QColor(T("warn")))
+
+    def _set_row(self, i):
+        self.ctl.update_row(i)
+
+    def _cell_clicked(self, k, col):
+        """点「当前供应商」那一格直接弹出下拉（其他列点了只是选中）"""
+        it = self.table.item(k, col)
+        if col == 6 and it is not None and it.flags() & Qt.ItemIsEditable:
+            self.table.editItem(it)
 
     def set_supplier(self, i, s):
         r = self.rows[i]
@@ -1043,19 +1072,23 @@ class ManualDialog(QDialog):
         self.total_lbl.setText(tr("采购总额 €{0:,.2f}　比只按最低价 {1:+,.2f}　改动 {2} 个商品", cost, diff, n))
         self.total_lbl.setStyleSheet(f"background:{T('surface2')}; color:{T('text')}; border:1px solid {T('line')};")
 
-    def apply_filter(self, *_):
+    def _hidden(self, i):
+        """搜索框和两个开关（表头的按列筛选另外算）"""
+        r = self.rows[i]
+        n_offers = sum(1 for p in r["prices"].values() if p is not None)
+        if self.only_multi.isChecked() and n_offers < 2:
+            return True
+        if self.only_changed.isChecked() and self.assign.get(r["row"]) == self.baseline.get(r["row"]):
+            return True
         text = self.filter.text().strip().lower()
-        for i, r in enumerate(self.rows):
-            n_offers = sum(1 for p in r["prices"].values() if p is not None)
-            hide = False
-            if self.only_multi.isChecked() and n_offers < 2:
-                hide = True
-            if self.only_changed.isChecked() and self.assign.get(r["row"]) == self.baseline.get(r["row"]):
-                hide = True
-            if text and not hide:
-                hay = f"{r.get('ean', '')} {r.get('articolo', '')} {self.assign.get(r['row'], '')}".lower()
-                hide = text not in hay
-            self.table.setRowHidden(i, hide)
+        if text:
+            hay = f"{r.get('ean', '')} {r.get('articolo', '')} {self.assign.get(r['row'], '')}".lower()
+            return text not in hay
+        return False
+
+    def apply_filter(self, *_):
+        if hasattr(self, "ctl"):
+            self.ctl.render()
 
     def _ok(self):
         from min_order_optimizer import _satisfied
@@ -1077,12 +1110,329 @@ class ManualDialog(QDialog):
 
 
 # =====================================================================
+# 缺失商品列表 / 方案对比 / 方案设置
+# =====================================================================
+MISSING_REASONS = ("没有任何报价", "只有被排除的供应商有报价", "起订量放弃了有报价的供应商")
+
+
+class MissingDialog(QDialog):
+    """没有分到供应商（买不到）的商品：按列排序、右键表头筛选、导出 Excel"""
+
+    def __init__(self, parent, items, title=None):
+        super().__init__(parent)
+        self.items = list(items or [])
+        self.setWindowTitle(title or tr("缺失商品"))
+        self.resize(1080, 680)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(22, 18, 22, 16)
+        lay.setSpacing(10)
+        t = QLabel(title or tr("缺失商品"))
+        t.setObjectName("PageTitle")
+        t.setStyleSheet("font-size:18px;")
+        lay.addWidget(t)
+        bar = QHBoxLayout()
+        self.search = QLineEdit()
+        self.search.setPlaceholderText(tr("搜索 EAN 或品名"))
+        self.search.setFixedWidth(280)
+        bar.addWidget(self.search)
+        bar.addStretch()
+        self.count = QLabel("")
+        self.count.setObjectName("Faint")
+        bar.addWidget(self.count)
+        exp = QPushButton(tr("导出 Excel"))
+        bar.addWidget(exp)
+        lay.addLayout(bar)
+        self.table = make_table([tr("行"), "EAN", "ARTICOLO", tr("数量"), tr("原因"), tr("有报价的供应商")],
+                                stretch_col=2, numeric_cols=(0, 3))
+        self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        lay.addWidget(self.table, 1)
+        from erp_widgets import TableSortFilter
+        self.ctl = TableSortFilter(self.table, lambda: len(self.items), self._text, self._fill,
+                                   hide=self._hidden, numeric=(0, 3))
+        self.ctl.rendered.connect(lambda n, tot: self.count.setText(
+            tr("显示 {0} / {1} 个 · 点表头排序，右键表头筛选", n, tot)))
+        self.search.textChanged.connect(lambda _: self.ctl.render())
+        exp.clicked.connect(lambda: self.ctl.export(self, "缺失商品.xlsx", tr("缺失商品")))
+        bb = QHBoxLayout()
+        bb.addStretch()
+        close = QPushButton(tr("关闭"))
+        close.clicked.connect(self.accept)
+        bb.addWidget(close)
+        lay.addLayout(bb)
+        self.ctl.render()
+
+    def _text(self, i, c):
+        m = self.items[i]
+        return [str(m.get("row", "")), m.get("ean", "") or "", str(m.get("articolo") or ""),
+                f"{float(m.get('qty') or 0):g}", tr(m.get("reason") or ""),
+                tr("、").join(short(x) for x in (m.get("offers") or []))][c]
+
+    def _fill(self, i, k):
+        table_set_row(self.table, k, [self._text(i, c) for c in range(6)])
+        if self.items[i].get("reason") == MISSING_REASONS[1]:
+            self.table.item(k, 4).setForeground(QColor(T("warn")))
+
+    def _hidden(self, i):
+        text = self.search.text().strip().lower()
+        m = self.items[i]
+        return bool(text) and text not in f"{m.get('ean', '')} {m.get('articolo', '')}".lower()
+
+
+def fill_scenario_table(t, results, chosen=None, recommended=None):
+    """方案对比表：每个方案一列，每个指标一行。返回 {(表格行, 列): 方案下标}（缺失商品那一行，点开看列表）"""
+    first = tr(results[0]["name"]) if results else ""
+    heads = [tr("项目")] + [tr(r["name"]) + ("  ★" if i == recommended else "") + ("  ✔" if i == chosen else "")
+                          for i, r in enumerate(results)]
+    t.setColumnCount(len(heads))
+    t.setHorizontalHeaderLabels(heads)
+    sups = []
+    for r in results:
+        for x in r.get("suppliers") or []:
+            if x["name"] not in sups:
+                sups.append(x["name"])
+    rules = []
+    for r in results:
+        for x in r.get("rules") or []:
+            if x.get("name") not in rules:
+                rules.append(x.get("name"))
+    lines = [("total", tr("采购总额 €")), ("vs", tr("和「{0}」比 €", first)), ("priced", tr("有报价的商品")),
+             ("missing", tr("缺失商品（点开看列表）")), ("changes", tr("凑单 / 换供应商的商品"))]
+    lines += [("sup", s_) for s_ in sups] + [("rule", n) for n in rules]
+    t.setRowCount(len(lines))
+    links = {}
+    for row, (kind, label) in enumerate(lines):
+        vals = [short(label) if kind == "sup" else (tr("{0} 起订", label) if kind == "rule" else label)]
+        for i, r in enumerate(results):
+            if kind == "total":
+                v = f"{r['total']:,.2f}"
+            elif kind == "vs":
+                d = r.get("vs_first", r["total"] - results[0]["total"])
+                v = "—" if i == 0 else (f"{d:+,.2f}" if abs(d) >= 0.005 else "0")
+            elif kind == "priced":
+                v = f"{r['priced']:,}"
+            elif kind == "missing":
+                v = f"{len(r['missing']):,}"
+                links[(row, i + 1)] = i
+            elif kind == "changes":
+                v = f"{r.get('changes', 0):,}"
+            elif kind == "sup":
+                x = next((y for y in r.get("suppliers") or [] if y["name"] == label), None)
+                v = tr("不含") if (x and x.get("excluded")) else \
+                    (tr("€{0:,.2f} · {1:,.0f} 箱", x["amount"], x["colli"]) if x and x["rows"] else "—")
+            else:
+                x = next((y for y in r.get("rules") or [] if y.get("name") == label), None)
+                v = tr(x["status"]) if x else tr("不含")
+            vals.append(v)
+        table_set_row(t, row, vals, bold=kind in ("total", "missing"))
+        for c in range(1, len(vals)):
+            it = t.item(row, c)
+            it.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            if kind == "missing" and results[c - 1]["missing"]:
+                it.setForeground(QColor(T("warn")))
+                it.setToolTip(tr("点开看缺了哪些商品"))
+            if kind == "vs" and c > 1:
+                d = results[c - 1].get("vs_first", 0)
+                if abs(d) >= 0.005:
+                    it.setForeground(QColor(T("ok") if d < 0 else T("err")))
+            if kind == "rule" and vals[c] in (tr("未达标"),):
+                it.setForeground(QColor(T("err")))
+        t.item(row, 0).setForeground(QColor(T("muted")))
+    for c in range(1, t.columnCount()):
+        if chosen is not None and c - 1 == chosen:
+            for row in range(t.rowCount()):
+                t.item(row, c).setBackground(QColor(T("accent_soft")))
+    hh = t.horizontalHeader()
+    hh.setSectionResizeMode(QHeaderView.ResizeToContents)
+    hh.setStretchLastSection(False)
+    hh.setSectionResizeMode(0, QHeaderView.Stretch)
+    return links
+
+
+class ScenarioDialog(QDialog):
+    """几种方案的对比，选一种写入。self.chosen = 选中的方案下标"""
+
+    def __init__(self, parent, results):
+        super().__init__(parent)
+        import scenarios as SC
+        self.results = results
+        self.rec = SC.recommend(results)
+        self.chosen = self.rec
+        self.setWindowTitle(tr("选择方案"))
+        self.resize(1100, 720)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(24, 20, 24, 18)
+        lay.setSpacing(12)
+        t = QLabel(tr("选择方案"))
+        t.setObjectName("PageTitle")
+        t.setStyleSheet("font-size:20px;")
+        lay.addWidget(t)
+        sub = QLabel(tr("同时算了 {0} 种方案（被排除的供应商这次不下单）。对比以后选一种，程序按它写入主订单和供应商文件。", len(results)))
+        sub.setObjectName("Muted")
+        sub.setWordWrap(True)
+        lay.addWidget(sub)
+        if self.rec is not None:
+            r = results[self.rec]
+            nb = Banner()
+            nb.show_msg(tr("★ 推荐「{0}」：缺的商品最少（{1} 个），其中采购总额最低（€{2:,.2f}）。最后由你决定。",
+                           tr(r["name"]), len(r["missing"]), r["total"]), "info")
+            lay.addWidget(nb)
+        pick = QHBoxLayout()
+        pick.setSpacing(16)
+        pl = QLabel(tr("选用："))
+        pl.setStyleSheet("font-weight:600;")
+        pick.addWidget(pl)
+        self.group = QButtonGroup(self)
+        for i, r in enumerate(results):
+            rb = QRadioButton(tr(r["name"]) + ("  ★" if i == self.rec else ""))
+            rb.setChecked(i == self.chosen)
+            self.group.addButton(rb, i)
+            pick.addWidget(rb)
+        pick.addStretch()
+        lay.addLayout(pick)
+        self.table = make_table([""], stretch_col=None)
+        self.table.cellClicked.connect(self._clicked)
+        lay.addWidget(self.table, 1)
+        hint = QLabel(tr("点某一列选这个方案；点「缺失商品」那一行的数字看缺了哪些商品。"))
+        hint.setObjectName("Faint")
+        lay.addWidget(hint)
+        btns = QHBoxLayout()
+        exp = QPushButton(tr("导出对比"))
+        exp.clicked.connect(self.export)
+        btns.addWidget(exp)
+        btns.addStretch()
+        cancel = QPushButton(tr("取消处理"))
+        cancel.setObjectName("Danger")
+        cancel.clicked.connect(self.reject)
+        self.ok = QPushButton()
+        self.ok.setObjectName("Primary")
+        self.ok.clicked.connect(self.accept)
+        btns.addWidget(cancel)
+        btns.addWidget(self.ok)
+        lay.addLayout(btns)
+        self.group.idClicked.connect(self._pick)
+        self._pick(self.chosen if self.chosen is not None else 0)
+
+    def _pick(self, i):
+        self.chosen = i
+        b = self.group.button(i)
+        if b and not b.isChecked():
+            b.setChecked(True)
+        self.links = fill_scenario_table(self.table, self.results, i, self.rec)
+        self.ok.setText(tr("用「{0}」写入", tr(self.results[i]["name"])))
+
+    def _clicked(self, row, col):
+        if (row, col) in self.links:
+            i = self.links[(row, col)]
+            MissingDialog(self, self.results[i]["missing"], tr("缺失商品 · {0}", tr(self.results[i]["name"]))).exec()
+        elif col >= 1:
+            self._pick(col - 1)
+
+    def export(self):
+        path, _ = QFileDialog.getSaveFileName(self, tr("导出对比"), "方案对比.xlsx", tr("Excel 文件 (*.xlsx)"))
+        if not path:
+            return
+        from openpyxl import Workbook
+        from openpyxl.styles import Font
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "方案对比"
+        t = self.table
+        ws.append([t.horizontalHeaderItem(c).text() for c in range(t.columnCount())])
+        for r in range(t.rowCount()):
+            ws.append([t.item(r, c).text() for c in range(t.columnCount())])
+        for c in ws[1]:
+            c.font = Font(bold=True)
+        for r in self.results:
+            ws2 = wb.create_sheet(("缺失-" + tr(r["name"]))[:31].replace("/", "-"))
+            ws2.append([tr("行"), "EAN", "ARTICOLO", tr("数量"), tr("原因"), tr("有报价的供应商")])
+            for m in r["missing"]:
+                ws2.append([m["row"], m.get("ean", ""), m.get("articolo", ""), m.get("qty"), tr(m["reason"]),
+                            "、".join(short(x) for x in m.get("offers") or [])])
+        try:
+            wb.save(path)
+        except Exception as e:
+            QMessageBox.critical(self, tr("导出"), tr("导出失败：{0}", e))
+
+
+class ScenarioSettingsDialog(QDialog):
+    """管理方案：每个方案一个名字 + 排除哪些供应商（文件名里的关键词，逗号分开）"""
+
+    def __init__(self, parent, defs, suppliers=()):
+        super().__init__(parent)
+        self.setWindowTitle(tr("管理方案"))
+        self.resize(640, 420)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(20, 18, 20, 16)
+        lay.setSpacing(10)
+        t = QLabel(tr("每个方案排除哪些供应商：写供应商文件名里的关键词，几个用逗号分开（不分大小写）。第一个方案是对比的基准，一般不排除任何供应商。"))
+        t.setWordWrap(True)
+        lay.addWidget(t)
+        if suppliers:
+            sl = QLabel(tr("这次的供应商文件：{0}", tr("、").join(suppliers)))
+            sl.setObjectName("Faint")
+            sl.setWordWrap(True)
+            lay.addWidget(sl)
+        self.table = QTableWidget(0, 2)
+        self.table.setHorizontalHeaderLabels([tr("方案名"), tr("排除的供应商（关键词）")])
+        self.table.verticalHeader().setVisible(False)
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        for d in defs:
+            self._add(tr(d.get("name", "")), ", ".join(d.get("exclude") or []))
+        lay.addWidget(self.table, 1)
+        row = QHBoxLayout()
+        b_add = QPushButton(tr("添加方案"))
+        b_add.clicked.connect(lambda: self._add(tr("新方案"), ""))
+        b_del = QPushButton(tr("删除选中"))
+        b_del.clicked.connect(self._delete)
+        b_reset = QPushButton(tr("恢复默认"))
+        b_reset.clicked.connect(self._reset)
+        row.addWidget(b_add)
+        row.addWidget(b_del)
+        row.addWidget(b_reset)
+        row.addStretch()
+        lay.addLayout(row)
+        bb = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        bb.accepted.connect(self.accept)
+        bb.rejected.connect(self.reject)
+        lay.addWidget(bb)
+
+    def _add(self, name, excl):
+        r = self.table.rowCount()
+        self.table.insertRow(r)
+        self.table.setItem(r, 0, QTableWidgetItem(name))
+        self.table.setItem(r, 1, QTableWidgetItem(excl))
+
+    def _delete(self):
+        for r in sorted({i.row() for i in self.table.selectedIndexes()}, reverse=True):
+            self.table.removeRow(r)
+
+    def _reset(self):
+        import scenarios as SC
+        self.table.setRowCount(0)
+        for d in SC.DEFAULT_SCENARIOS:
+            self._add(tr(d["name"]), ", ".join(d["exclude"]))
+
+    def defs(self):
+        out = []
+        for r in range(self.table.rowCount()):
+            name = (self.table.item(r, 0).text() if self.table.item(r, 0) else "").strip()
+            excl = [x.strip() for x in re.split(r"[,，;；]", self.table.item(r, 1).text() if self.table.item(r, 1) else "")
+                    if x.strip()]
+            if name:
+                out.append({"name": name, "exclude": excl})
+        return out
+
+
+# =====================================================================
 # 主窗口
 # =====================================================================
 class _UI:
     """给 store_order_page / order_check 用的界面小部件"""
     pass
 
+
+# 历史记录的列
+HIST_COLS = ["日期 · 方案", "门店", "主订单", "商品行", "没有报价", "采购总额 €", "和全部供应商比 €", "凑单多花 €", "备注"]
 
 # 比价处理的进度阶段（service.run_process 的百分比）
 CMP_STAGES = [(0, "备份、打开主订单"), (10, "扣减已处理数量"), (20, "读取供应商报价"),
@@ -1117,6 +1467,7 @@ class MainWindow(QMainWindow):
         self.bridge.missing_done.connect(self._on_missing_done)
         self.bridge.web_done.connect(self._on_web_done)
         self.bridge.decide.connect(self._on_decide)
+        self.bridge.choose.connect(self._on_choose)
         self.bridge.rewrite_done.connect(self._on_rewrite_done)
         self.bridge.db_state.connect(self._on_db_state)
 
@@ -1654,7 +2005,15 @@ class MainWindow(QMainWindow):
         self.t_review.setToolTip(tr("打开后，每次写入文件前都会先打开「手动调整供应商」窗口让你检查"))
         self.t_review.toggled.connect(lambda on: (settings.__setitem__("review_before_write", on), save_settings(settings)))
         opts.addWidget(self.t_review)
+        self.t_scen = Toggle(tr("多方案对比"), settings.get("scenarios_enabled", True))
+        self.t_scen.setToolTip(tr("同时算几种方案（全部供应商 / 不含某家 …），对比后由你选一种写入"))
+        self.t_scen.toggled.connect(lambda on: (settings.__setitem__("scenarios_enabled", on), save_settings(settings),
+                                                self.refresh_rule_line()))
+        opts.addWidget(self.t_scen)
         opts.addStretch()
+        b_scen = QPushButton(tr("管理方案"))
+        b_scen.clicked.connect(self.edit_scenarios)
+        opts.addWidget(b_scen)
         edit_rules = QPushButton(tr("管理起订规则"))
         edit_rules.clicked.connect(lambda: self.go_page("rules"))
         opts.addWidget(edit_rules)
@@ -1728,6 +2087,21 @@ class MainWindow(QMainWindow):
         for k in (self.k_rows, self.k_priced, self.k_missing, self.k_changes, self.k_cost, self.k_time):
             kpis.addWidget(k)
         lay.addLayout(kpis)
+        # 「没有报价」那张卡可以点开看缺失商品列表
+        self.k_missing.setCursor(Qt.PointingHandCursor)
+        self.k_missing.setToolTip(tr("点开看缺了哪些商品（可以排序、筛选、导出）"))
+        self.k_missing.mousePressEvent = lambda _e: self.show_missing()
+
+        self.scen_panel = Panel(tr("方案对比"))
+        sh = QLabel(tr("这次同时算的几种方案；✔ 是选用的方案。点「缺失商品」那一行的数字看缺了哪些商品。"))
+        sh.setObjectName("Faint")
+        self.scen_panel.lay.addWidget(sh)
+        self.scen_table = make_table([""], stretch_col=None)
+        self.scen_table.setMinimumHeight(200)
+        self.scen_table.cellClicked.connect(self._scen_clicked)
+        self.scen_panel.lay.addWidget(self.scen_table)
+        lay.addWidget(self.scen_panel)
+        self.scen_panel.hide()
 
         pg = Panel(tr("起订量"))
         legend = QLabel(tr("浅色条：只按最低价时的量　实色条：最终下单量　竖线：起订线"))
@@ -1754,6 +2128,8 @@ class MainWindow(QMainWindow):
         b1.clicked.connect(self.open_main_order)
         b2 = QPushButton(tr("打开供应商文件夹"))
         b2.clicked.connect(self.open_supplier_folder)
+        self.btn_missing = QPushButton(tr("缺失商品"))
+        self.btn_missing.clicked.connect(self.show_missing)
         self.btn_backup = QPushButton(tr("打开备份"))
         self.btn_backup.clicked.connect(lambda: self.last_summary and open_path(self.last_summary.get("backup_dir")))
         self.btn_backup.setEnabled(False)
@@ -1763,6 +2139,7 @@ class MainWindow(QMainWindow):
         self.btn_edit.setEnabled(False)
         acts.addWidget(b1)
         acts.addWidget(self.btn_edit)
+        acts.addWidget(self.btn_missing)
         acts.addWidget(b2)
         acts.addWidget(self.btn_backup)
         acts.addStretch()
@@ -1860,13 +2237,22 @@ class MainWindow(QMainWindow):
         lay.addLayout(top)
 
         p = Panel()
-        self.hist_table = make_table([tr("处理时间"), tr("总文件夹"), tr("主订单"), tr("商品行"), tr("没有报价"),
-                                      tr("供应商数"), tr("采购总额 €"), tr("凑单多花 €"), tr("改了供应商"), tr("备注")],
-                                     stretch_col=9, numeric_cols=(3, 4, 5, 6, 7, 8))
-        self.hist_table.setMinimumHeight(460)
-        self.hist_table.setSelectionMode(QAbstractItemView.ExtendedSelection)
-        self.hist_table.doubleClicked.connect(lambda _: self.view_history())
-        p.lay.addWidget(self.hist_table)
+        # 按「日期 · 门店」一条一条列出；有多方案对比的，下面一行一个方案，✔ 是选用的方案
+        from PySide6.QtWidgets import QTreeWidget
+        self.hist_tree = QTreeWidget()
+        self.hist_tree.setColumnCount(len(HIST_COLS))
+        self.hist_tree.setHeaderLabels([tr(c) for c in HIST_COLS])
+        self.hist_tree.setRootIsDecorated(True)
+        self.hist_tree.setUniformRowHeights(True)
+        self.hist_tree.setAllColumnsShowFocus(True)
+        self.hist_tree.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.hist_tree.setMinimumHeight(460)
+        hh = self.hist_tree.header()
+        hh.setSectionResizeMode(QHeaderView.ResizeToContents)
+        hh.setSectionResizeMode(len(HIST_COLS) - 1, QHeaderView.Stretch)
+        hh.setStretchLastSection(True)
+        self.hist_tree.itemDoubleClicked.connect(lambda *_: self.view_history())
+        p.lay.addWidget(self.hist_tree)
         self.hist_empty = QLabel(tr("还没有历史记录。完成一次订单处理后会自动出现在这里。"))
         self.hist_empty.setObjectName("Muted")
         p.lay.addWidget(self.hist_empty)
@@ -1897,7 +2283,7 @@ class MainWindow(QMainWindow):
         return w
 
     def refresh_history(self):
-        if not hasattr(self, "hist_table"):
+        if not hasattr(self, "hist_tree"):
             return
         try:
             runs = history.list_runs()
@@ -1905,29 +2291,70 @@ class MainWindow(QMainWindow):
             file_logger.warning(f"read history failed: {e}")
             runs = []
         self.hist_runs = runs
-        t = self.hist_table
-        t.setRowCount(len(runs))
-        for i, e in enumerate(runs):
+        from PySide6.QtWidgets import QTreeWidgetItem
+        tree = self.hist_tree
+        tree.clear()
+        num = (3, 4, 5, 6, 7)
+        for idx, e in enumerate(runs):
             notes = []
+            if e.get("scenario"):
+                notes.append(tr("选用：{0}", tr(e["scenario"])))
             if e.get("edits"):
                 notes.append(tr("改过 {0} 次", e["edits"]))
             if e.get("warning"):
                 notes.append(tr("有起订供应商没达标"))
-            table_set_row(t, i, [e["time"][:16], os.path.basename(e.get("folder") or "") or (e.get("folder") or ""),
-                                 e.get("main_file") or "",
-                                 f"{e.get('total_rows', 0):,}", f"{e.get('missing', 0):,}",
-                                 f"{e.get('suppliers', 0):,}", f"{e.get('final_cost', 0):,.2f}",
-                                 f"{e.get('extra_cost', 0):,.2f}" if abs(e.get("extra_cost", 0)) >= 0.005 else "",
-                                 f"{e.get('changes', 0):,}" if e.get("changes") else "",
-                                 tr("；").join(notes)])
-            t.item(i, 1).setToolTip(e.get("folder") or "")
-            if e.get("edits"):
-                t.item(i, 9).setToolTip(tr("最后修改：{0}", (e.get("edited_at") or "")[:16]))
+            try:
+                when = datetime.strptime(e["time"][:16], "%Y-%m-%d %H:%M")
+                head = f"{when:%m/%d}  {when:%H:%M}"
+            except ValueError:
+                head = e["time"][:16]
+            store = e.get("store") or ""
+            top = QTreeWidgetItem([head, store or "—", e.get("main_file") or "",
+                                   f"{e.get('total_rows', 0):,}", f"{e.get('missing', 0):,}",
+                                   f"{e.get('final_cost', 0):,.2f}", "",
+                                   f"{e.get('extra_cost', 0):,.2f}" if abs(e.get("extra_cost", 0)) >= 0.005 else "",
+                                   tr("；").join(notes)])
+            top.setData(0, Qt.UserRole, idx)
+            f = top.font(0)
+            f.setBold(True)
+            for c in (0, 1):
+                top.setFont(c, f)
+            for c in num:
+                top.setTextAlignment(c, Qt.AlignRight | Qt.AlignVCenter)
+            top.setToolTip(2, (e.get("folder") or "") + "\n" + (e.get("main_file") or ""))
             if e.get("missing"):
-                t.item(i, 4).setForeground(QColor(T("warn")))
+                top.setForeground(4, QColor(T("warn")))
             if e.get("warning"):
-                t.item(i, 9).setForeground(QColor(T("err")))
-        t.setVisible(bool(runs))
+                top.setForeground(8, QColor(T("err")))
+            if e.get("edits"):
+                top.setToolTip(8, tr("最后修改：{0}", (e.get("edited_at") or "")[:16]))
+            for sc in e.get("scenarios") or []:
+                d = sc.get("vs_first") or 0
+                ch = QTreeWidgetItem(["   " + tr("方案：{0}", tr(sc.get("name") or "")), "", "",
+                                      f"{sc.get('priced', 0):,}", f"{sc.get('missing', 0):,}", f"{sc.get('total', 0):,.2f}",
+                                      (f"{d:+,.2f}" if abs(d) >= 0.005 else ""), "",
+                                      tr("✔ 选用") if sc.get("chosen") else
+                                      (tr("排除：{0}", tr("、").join(short(x) for x in sc.get("excluded") or []))
+                                       if sc.get("excluded") else "")])
+                ch.setData(0, Qt.UserRole, idx)
+                for c in num:
+                    ch.setTextAlignment(c, Qt.AlignRight | Qt.AlignVCenter)
+                ch.setToolTip(3, tr("有报价的商品"))
+                if sc.get("chosen"):
+                    fb = ch.font(0)
+                    fb.setBold(True)
+                    for c in range(len(HIST_COLS)):
+                        ch.setFont(c, fb)
+                        ch.setForeground(c, QColor(T("accent")))
+                else:
+                    for c in range(len(HIST_COLS)):
+                        ch.setForeground(c, QColor(T("muted")))
+                    if abs(d) >= 0.005:
+                        ch.setForeground(6, QColor(T("ok") if d < 0 else T("err")))
+                top.addChild(ch)
+            tree.addTopLevelItem(top)
+            top.setExpanded(bool(e.get("scenarios")) and idx < 10)      # 最近 10 条默认展开
+        tree.setVisible(bool(runs))
         self.hist_empty.setVisible(not runs)
         keep = int(settings.get("history_keep_days", history.DEFAULT_KEEP_DAYS))
         mb = history.disk_usage() / 1024 / 1024
@@ -1937,33 +2364,47 @@ class MainWindow(QMainWindow):
         self._mark_shown_history()
 
     def _mark_shown_history(self):
-        """历史表里把结果页正在显示的那条加粗"""
+        """历史里把结果页正在显示的那条标出来（底色）"""
         hid = (self.last_summary or {}).get("history_id")
-        t = self.hist_table
-        for i, e in enumerate(getattr(self, "hist_runs", [])):
-            for c in range(t.columnCount()):
-                it = t.item(i, c)
-                if it:
-                    f = it.font()
-                    f.setBold(e["id"] == hid)
-                    it.setFont(f)
+        tree = self.hist_tree
+        runs = getattr(self, "hist_runs", [])
+        for k in range(tree.topLevelItemCount()):
+            it = tree.topLevelItem(k)
+            idx = it.data(0, Qt.UserRole)
+            on = idx is not None and idx < len(runs) and runs[idx]["id"] == hid
+            for c in range(tree.columnCount()):
+                it.setBackground(c, QColor(T("surface2")) if on else QColor(0, 0, 0, 0))
 
     def _filter_history(self, text):
         text = (text or "").strip().lower()
-        t = self.hist_table
-        for r in range(t.rowCount()):
-            hay = " ".join(t.item(r, c).text() + " " + (t.item(r, c).toolTip() or "")
-                           for c in (0, 1, 2) if t.item(r, c)).lower()
-            t.setRowHidden(r, bool(text) and text not in hay)
+        tree = self.hist_tree
+        for k in range(tree.topLevelItemCount()):
+            it = tree.topLevelItem(k)
+            hay = " ".join(it.text(c) + " " + (it.toolTip(c) or "") for c in range(tree.columnCount())).lower()
+            hay += " " + " ".join(it.child(j).text(0) for j in range(it.childCount())).lower()
+            it.setHidden(bool(text) and text not in hay)
+
+    def _picked_history(self):
+        runs = getattr(self, "hist_runs", [])
+        out, seen = [], set()
+        for it in self.hist_tree.selectedItems():
+            idx = it.data(0, Qt.UserRole)
+            if idx is not None and idx < len(runs) and idx not in seen and not (it.parent() or it).isHidden():
+                seen.add(idx)
+                out.append(runs[idx])
+        return out
 
     def _sel_history(self):
-        rows = self.hist_table.selectionModel().selectedRows() if self.hist_table.selectionModel() else []
-        r = rows[0].row() if rows else self.hist_table.currentRow()
-        runs = getattr(self, "hist_runs", [])
-        if r is None or r < 0 or r >= len(runs):
-            QMessageBox.information(self, tr("历史记录"), tr("先在表里选一条记录。"))
-            return None
-        return runs[r]
+        picked = self._picked_history()
+        if not picked:
+            cur = self.hist_tree.currentItem()
+            idx = cur.data(0, Qt.UserRole) if cur else None
+            runs = getattr(self, "hist_runs", [])
+            if idx is None or idx >= len(runs):
+                QMessageBox.information(self, tr("历史记录"), tr("先在表里选一条记录。"))
+                return None
+            return runs[idx]
+        return picked[0]
 
     def view_history(self):
         e = self._sel_history()
@@ -1984,10 +2425,7 @@ class MainWindow(QMainWindow):
             open_path(e["folder"])
 
     def delete_history(self):
-        runs = getattr(self, "hist_runs", [])
-        sel = sorted({ix.row() for ix in self.hist_table.selectionModel().selectedRows()}) \
-            if self.hist_table.selectionModel() else []
-        picked = [runs[r] for r in sel if 0 <= r < len(runs) and not self.hist_table.isRowHidden(r)]
+        picked = self._picked_history()
         if not picked:
             QMessageBox.information(self, tr("历史记录"), tr("先在表里选要删除的记录（按住 Ctrl 或 Shift 可以多选）。"))
             return
@@ -2418,7 +2856,32 @@ class MainWindow(QMainWindow):
             self.cmp_steps.set_state(2, "now" if ok else "todo", tr("{0} 家供应商", len(info.get("suppliers") or [])) if ok else "")
             self.cmp_steps.set_state(3, "todo", "")
 
+    def edit_scenarios(self):
+        import scenarios as SC
+        dlg = ScenarioSettingsDialog(self, SC.scenario_defs(settings), (self.info or {}).get("suppliers") or [])
+        if dlg.exec():
+            defs = dlg.defs()
+            if defs:
+                settings["scenarios"] = defs
+                save_settings(settings)
+                self.refresh_rule_line()
+
+    def _scenario_line(self):
+        if not settings.get("scenarios_enabled", True):
+            return ""
+        import scenarios as SC
+        defs = SC.scenario_defs(settings)
+        if len(defs) < 2:
+            return ""
+        return tr("多方案对比：{0}（处理时对比后由你选）", tr("、").join(tr(d["name"]) for d in defs))
+
     def refresh_rule_line(self):
+        self._refresh_rule_line()
+        extra = self._scenario_line()
+        if extra:
+            self.rule_line.setText(self.rule_line.text() + "\n" + extra)
+
+    def _refresh_rule_line(self):
         if not self.t_min.isChecked():
             self.rule_line.setText(tr("起订量凑单已关闭，只按最低价选供应商。"))
             return
@@ -2467,7 +2930,8 @@ class MainWindow(QMainWindow):
         msg = (tr("主订单：{0}\n扣减文件：{1} 个　供应商：{2} 家\n起订量凑单：{3}\n\n这次处理会按 eliminare 扣减主订单数量并覆盖保存主订单，然后把订购数量写进各供应商文件的 ORDINE 列。\n\n", info['ordine'], len(info['eliminare']), len(info['suppliers']), tr("开启，{0} 条规则", n_rules) if self.t_min.isChecked() else tr("关闭"))
                + (tr("处理前会自动备份到 总文件夹\\_备份。") if self.t_backup.isChecked()
                   else tr("自动备份已关闭，建议先手动备份。"))
-               + tr("\n\n同一批文件重复处理会再扣减一次。"))
+               + tr("\n\n同一批文件重复处理会再扣减一次。")
+               + (("\n\n" + self._scenario_line()) if self._scenario_line() else ""))
         box = QMessageBox(self)
         box.setWindowTitle(tr("开始处理"))
         box.setText(tr("确认开始处理？"))
@@ -2509,7 +2973,8 @@ class MainWindow(QMainWindow):
                 self.log(tr("主订单：{0}", ordine_file))
                 summary = run_process(ordine_file, elim, dist, self.log,
                                       progress=lambda p, t: self.bridge.progress.emit(int(p), t),
-                                      settings=run_settings, decide=self._decide_from_worker)
+                                      settings=run_settings, decide=self._decide_from_worker,
+                                      choose=self._choose_from_worker)
             except Exception as e:
                 file_logger.error(tr("处理失败: {0}", e), exc_info=True)
                 self.log(tr("❌ 处理失败：{0}", e))
@@ -2517,6 +2982,36 @@ class MainWindow(QMainWindow):
             self.bridge.done.emit(summary)
 
         threading.Thread(target=work, daemon=True).start()
+
+    def _choose_from_worker(self, results):
+        """在后台线程里调用：把几种方案交给界面对比，等用户选好后返回方案下标（None = 取消）"""
+        ev = threading.Event()
+        box = {}
+        self.bridge.choose.emit((results, ev, box))
+        ev.wait()
+        return box.get("idx")
+
+    def _on_choose(self, payload):
+        results, ev, box = payload
+        dlg = getattr(self, "_cmp_task", None)
+        was_visible = dlg is not None and dlg.isVisible()
+        if was_visible:
+            dlg.hide()
+        try:
+            self.stage.setText(tr("等待你选择方案…"))
+            QApplication.alert(self)
+            d = ScenarioDialog(self, results)
+            box["idx"] = d.chosen if d.exec() else None
+            if box["idx"] is None:
+                self.log(tr("⚠ 在选择方案时取消了处理"))
+        except Exception as e:
+            file_logger.error(tr("方案对比出错: {0}", e), exc_info=True)
+            QMessageBox.critical(self, APP_NAME, tr("方案对比出错：{0}\n\n改用第一个方案。", e))
+            box["idx"] = 0
+        finally:
+            if was_visible and not dlg.is_done:
+                dlg.show()
+            ev.set()
 
     def _decide_from_worker(self, plan, rows, rules):
         """在后台线程里调用：把方案交给界面，等操作员决定后返回"""
@@ -2546,6 +3041,19 @@ class MainWindow(QMainWindow):
 
     def _run_decision(self, plan, rows, rules):
         from allocation_plan import apply_decisions
+        if plan.get("fixed") is not None:
+            # 已经在方案对比里选好了方案：只打开手动调整窗口确认（写入前人工确认打开时才会到这里）
+            final, sources = dict(plan["fixed"]), dict(plan.get("fixed_sources") or {})
+            self.stage.setText(tr("等待你确认分配方案…"))
+            dlg = ManualDialog(self, rows, rules, plan["baseline"], final)
+            if not dlg.exec() or dlg.result is None:
+                self.log(tr("⚠ 操作员在手动调整窗口取消了处理"))
+                return None
+            for r in rows:
+                if dlg.result.get(r["row"]) != final.get(r["row"]):
+                    sources[r["row"]] = "手动"
+            self.stage.setText(tr("写入文件…"))
+            return {"assignment": dlg.result, "sources": sources}
         decisions, want_manual = {}, False
         flagged = [i for i in plan["rules"] if i["needs_decision"]]
         if flagged:
@@ -2790,8 +3298,32 @@ class MainWindow(QMainWindow):
         self.go_page("result")
         self.show_toast(tr("比价分配完成"))
 
+    def show_missing(self, *_):
+        s = self.last_summary or {}
+        items = s.get("missing_items")
+        if items is None:
+            QMessageBox.information(self, tr("缺失商品"), tr("这条结果是旧版本处理的，没有缺失商品明细；可以打开 distribuire 里的「缺失报告.xlsx」。"))
+            return
+        name = s.get("scenario")
+        MissingDialog(self, items, tr("缺失商品 · {0}", s.get("main_file") or "") +
+                      (f" · {tr(name)}" if name else "")).exec()
+
+    def _scen_clicked(self, row, col):
+        res = (self.last_summary or {}).get("scenarios") or []
+        i = getattr(self, "_scen_links", {}).get((row, col))
+        if i is not None and i < len(res):
+            MissingDialog(self, res[i]["missing"], tr("缺失商品 · {0}", tr(res[i]["name"]))).exec()
+
     def show_summary(self, s):
         mo = s.get("min_order", {})
+        res = s.get("scenarios") or []
+        self.scen_panel.setVisible(bool(res))
+        if res:
+            chosen = next((i for i, r in enumerate(res) if r.get("chosen")), None)
+            self._scen_links = fill_scenario_table(self.scen_table, res, chosen)
+            self.scen_table.setFixedHeight(min(520, 44 + 36 * self.scen_table.rowCount()))
+        self.btn_missing.setText(tr("缺失商品 ({0})", len(s.get("missing_items") or [])) if s.get("missing_items") is not None
+                                 else tr("缺失商品"))
         self.k_rows.set(f"{s.get('total_rows', 0):,}")
         self.k_priced.set(f"{s.get('priced_rows', 0):,}")
         self.k_missing.set(f"{s.get('missing', 0):,}", T("warn") if s.get("missing") else None)
@@ -2809,6 +3341,8 @@ class MainWindow(QMainWindow):
                            hmeta.get("time") or s["history_id"]))
         d, u = s.get("eliminare", (0, 0))
         msgs.append(tr("{0} 已处理：eliminare 删除 {1} 行、更新 {2} 行。", s.get('main_file'), d, u))
+        if s.get("scenario"):
+            msgs.append(tr("选用方案：{0}（几种方案的对比在下面「方案对比」）", tr(s["scenario"])))
         if mo.get("warning"):
             msgs.append(mo["warning"])
             kind = "err"
@@ -2886,7 +3420,7 @@ class MainWindow(QMainWindow):
         self.btn_edit.setEnabled(bool(s.get("state")) and current and not self.running)
         self.btn_edit.setToolTip(tr("已经写入以后，还可以改商品的供应商并重新写回文件") if current
                                  else tr("只能修改每个文件夹最近一次的分配"))
-        if hasattr(self, "hist_table"):
+        if hasattr(self, "hist_tree"):
             self._mark_shown_history()
 
     # ---------- 起订规则 ----------

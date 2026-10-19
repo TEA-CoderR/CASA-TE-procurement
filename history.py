@@ -66,12 +66,30 @@ def _entry(summary, hid, when, old=None):
         "warning": bool(mo.get("warning")),
         "edits": 0,
         "edited_at": None,
+        # 历史页按「日期 · 门店」分组；几种方案各一行，标出选用的
+        "store": _store_of(summary),
+        "scenario": summary.get("scenario"),
+        "scenarios": [{"name": x.get("name"), "total": round(float(x.get("total") or 0), 2),
+                       "missing": len(x.get("missing") or []), "priced": x.get("priced", 0),
+                       "vs_first": round(float(x.get("vs_first") or 0), 2), "chosen": bool(x.get("chosen")),
+                       "excluded": x.get("excluded") or []}
+                      for x in (summary.get("scenarios") or [])],
     }
     if old:
         e["time"] = old.get("time", e["time"])
         e["edits"] = old.get("edits", 0) + 1
         e["edited_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     return e
+
+
+def _store_of(summary):
+    """主订单文件名里的门店（确认订单_FOIANO_… / 订货建议_MARLIA_…），认不出返回空字符串"""
+    try:
+        from reorder_service import guess_store, STORES
+        sid = guess_store(summary.get("main_file") or "")
+        return STORES.get(sid, "") if sid else ""
+    except Exception:
+        return ""
 
 
 # ---------- 索引 ----------

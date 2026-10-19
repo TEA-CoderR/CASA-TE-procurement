@@ -944,3 +944,239 @@ def accept_file_drops(widget, callback, exts=(".xlsx", ".xls", ".xlsm")):
             e.acceptProposedAction()
 
     widget.dragEnterEvent, widget.dragLeaveEvent, widget.dropEvent, widget.dragMoveEvent = enter, leave, drop, move
+
+
+# =====================================================================
+# 表格的「属性栏」：点表头排序、右键表头按这一列筛选（像 Excel 的筛选）、导出 Excel
+# =====================================================================
+def _sort_key(text):
+    """排序用：能当数字的按数字（1,234.50 / €12 / +3.5），否则按文字（不分大小写）"""
+    s = str(text or "").strip()
+    t = s.replace("€", "").replace(",", "").replace("×", " ").split(" ")[0].strip()
+    try:
+        return (0, float(t), "")
+    except ValueError:
+        return (1, 0.0, s.lower())
+
+
+class TableSortFilter(QObject):
+    """
+    管一张 QTableWidget 的排序和按列筛选（数据行 i ↔ 表格行 k 的对应由它维护）：
+      text(i, c)  → 数据行 i 第 c 列显示的文字（筛选、导出、默认排序用）
+      fill(i, k)  → 把数据行 i 画到表格第 k 行（调用方自己设颜色、可编辑等）
+      key(i, c)   → 可选，排序用的值
+      hide(i)     → 可选，页面上其他筛选条件（搜索框、开关）要藏起来的行
+    左键点表头：排序（再点反过来）；右键点表头：这一列的筛选菜单（勾选要显示的值 / 搜索）。
+    """
+    rendered = Signal(int, int)          # (显示行数, 总行数)
+
+    def __init__(self, table, count, text, fill, key=None, hide=None, parent=None, numeric=()):
+        super().__init__(parent or table)
+        self.t, self.count, self.text, self.fill = table, count, text, fill
+        self.numeric = set(numeric)          # 导出时这几列写成数字（EAN 这类编号保持文字）
+        self.key, self.hide = key, hide
+        self.sort_col, self.sort_desc = None, False
+        self.filters = {}            # {列: 允许的文字集合}
+        self.visible, self.pos = [], {}
+        self.titles = [table.horizontalHeaderItem(c).text() if table.horizontalHeaderItem(c) else ""
+                       for c in range(table.columnCount())]
+        hh = table.horizontalHeader()
+        hh.setSectionsClickable(True)
+        hh.setSortIndicatorShown(False)
+        hh.sectionClicked.connect(self._clicked)
+        hh.setContextMenuPolicy(Qt.CustomContextMenu)
+        hh.customContextMenuRequested.connect(lambda p: self.filter_menu(hh.logicalIndexAt(p), hh.mapToGlobal(p)))
+        hh.setToolTip(tr("点表头排序；右键点表头按这一列筛选"))
+        table.setSortingEnabled(False)
+
+    # ---- 排序 / 筛选 ----
+    def _clicked(self, c):
+        if self.sort_col == c:
+            self.sort_desc = not self.sort_desc
+        else:
+            self.sort_col, self.sort_desc = c, False
+        self.render()
+
+    def set_sort(self, c, desc=False):
+        self.sort_col, self.sort_desc = c, desc
+        self.render()
+
+    def clear_filters(self):
+        self.filters = {}
+        self.render()
+
+    def _k(self, i, c):
+        if self.key:
+            v = self.key(i, c)
+            if v is not None:
+                return (0, v, "") if isinstance(v, (int, float)) else (1, 0.0, str(v).lower())
+        return _sort_key(self.text(i, c))
+
+    def render(self):
+        n = self.count()
+        order = list(range(n))
+        if self.sort_col is not None:
+            order.sort(key=lambda i: self._k(i, self.sort_col), reverse=self.sort_desc)
+        vis = [i for i in order if not (self.hide and self.hide(i)) and
+               all(self.text(i, c) in allowed for c, allowed in self.filters.items())]
+        t = self.t
+        t.setUpdatesEnabled(False)
+        t.blockSignals(True)
+        t.setRowCount(len(vis))
+        self.visible, self.pos = vis, {}
+        for k, i in enumerate(vis):
+            self.pos[i] = k
+            self.fill(i, k)
+        t.blockSignals(False)
+        t.setUpdatesEnabled(True)
+        hh = t.horizontalHeader()
+        for c, title in enumerate(self.titles):
+            it = t.horizontalHeaderItem(c)
+            if it is None:
+                continue
+            mark = ""
+            if c in self.filters:
+                mark += " ⏷"
+            if c == self.sort_col:
+                mark += " ↓" if self.sort_desc else " ↑"
+            it.setText(title + mark)
+        hh.viewport().update()
+        self.rendered.emit(len(vis), n)
+
+    def update_row(self, i):
+        """数据行 i 变了（例如换了供应商）：只重画这一行"""
+        if i in self.pos:
+            self.t.blockSignals(True)
+            self.fill(i, self.pos[i])
+            self.t.blockSignals(False)
+
+    def row_at(self, k):
+        return self.visible[k] if 0 <= k < len(self.visible) else None
+
+    def filter_menu(self, c, gpos):
+        from PySide6.QtWidgets import QMenu, QWidgetAction, QLineEdit, QListWidget, QListWidgetItem
+        if c is None or c < 0:
+            return
+        n = self.count()
+        others = {cc: a for cc, a in self.filters.items() if cc != c}
+        # 只列出在其他列筛选之后还看得到的值（和 Excel 一样）
+        vals = {}
+        for i in range(n):
+            if self.hide and self.hide(i):
+                continue
+            if all(self.text(i, cc) in a for cc, a in others.items()):
+                v = self.text(i, c)
+                vals[v] = vals.get(v, 0) + 1
+        keys = sorted(vals, key=_sort_key)
+        allowed = self.filters.get(c)
+        m = QMenu(self.t)
+        a_up = m.addAction(tr("升序排序"))
+        a_down = m.addAction(tr("降序排序"))
+        m.addSeparator()
+        box = QWidget()
+        bv = QVBoxLayout(box)
+        bv.setContentsMargins(8, 4, 8, 4)
+        bv.setSpacing(4)
+        search = QLineEdit()
+        search.setPlaceholderText(tr("搜索这一列"))
+        bv.addWidget(search)
+        lst = QListWidget()
+        lst.setMinimumWidth(260)
+        lst.setMaximumHeight(300)
+        for v in keys[:2000]:
+            li = QListWidgetItem(f"{v if v != '' else tr('（空白）')}   ({vals[v]})")
+            li.setData(Qt.UserRole, v)
+            li.setFlags(li.flags() | Qt.ItemIsUserCheckable)
+            li.setCheckState(Qt.Checked if (allowed is None or v in allowed) else Qt.Unchecked)
+            lst.addItem(li)
+        bv.addWidget(lst)
+        row = QHBoxLayout()
+        b_all, b_none, b_ok = QPushButton(tr("全选")), QPushButton(tr("全不选")), QPushButton(tr("确定"))
+        b_ok.setObjectName("Primary")
+        for b in (b_all, b_none):
+            b.setObjectName("Link")
+        row.addWidget(b_all)
+        row.addWidget(b_none)
+        row.addStretch()
+        row.addWidget(b_ok)
+        bv.addLayout(row)
+
+        def shown_items():
+            return [lst.item(k) for k in range(lst.count()) if not lst.item(k).isHidden()]
+
+        def do_search(text):
+            text = text.strip().lower()
+            for k in range(lst.count()):
+                it = lst.item(k)
+                it.setHidden(bool(text) and text not in str(it.data(Qt.UserRole)).lower())
+
+        search.textChanged.connect(do_search)
+        b_all.clicked.connect(lambda: [it.setCheckState(Qt.Checked) for it in shown_items()])
+        b_none.clicked.connect(lambda: [it.setCheckState(Qt.Unchecked) for it in shown_items()])
+
+        def apply():
+            text = search.text().strip()
+            picked = {lst.item(k).data(Qt.UserRole) for k in range(lst.count())
+                      if lst.item(k).checkState() == Qt.Checked and (not text or not lst.item(k).isHidden())}
+            if len(picked) == len(keys) and not text:
+                self.filters.pop(c, None)
+            else:
+                self.filters[c] = picked
+            m.close()
+            self.render()
+
+        b_ok.clicked.connect(apply)
+        search.returnPressed.connect(apply)
+        wa = QWidgetAction(m)
+        wa.setDefaultWidget(box)
+        m.addAction(wa)
+        m.addSeparator()
+        a_clear = m.addAction(tr("清除这一列的筛选"))
+        a_clear.setEnabled(c in self.filters)
+        a_clear_all = m.addAction(tr("清除全部筛选"))
+        a_clear_all.setEnabled(bool(self.filters))
+        search.setFocus()
+        got = m.exec(gpos)
+        if got == a_up:
+            self.set_sort(c, False)
+        elif got == a_down:
+            self.set_sort(c, True)
+        elif got == a_clear:
+            self.filters.pop(c, None)
+            self.render()
+        elif got == a_clear_all:
+            self.clear_filters()
+
+    # ---- 导出 ----
+    def export(self, parent, default_name, title=None):
+        """把现在看得到的行（按现在的顺序和筛选）导出成 Excel"""
+        from PySide6.QtWidgets import QFileDialog, QMessageBox
+        path, _ = QFileDialog.getSaveFileName(parent, title or tr("导出 Excel"), default_name, tr("Excel 文件 (*.xlsx)"))
+        if not path:
+            return None
+        from openpyxl import Workbook
+        from openpyxl.styles import Font
+        wb = Workbook()
+        ws = wb.active
+        ws.title = (title or "Sheet")[:31].replace("/", "-")
+        hh = self.t.horizontalHeader()
+        cols = [hh.logicalIndex(v) for v in range(self.t.columnCount()) if not hh.isSectionHidden(hh.logicalIndex(v))]
+        ws.append([self.titles[c] for c in cols])
+        for cell in ws[1]:
+            cell.font = Font(bold=True)
+        for i in self.visible:
+            vals = []
+            for c in cols:
+                v = self.text(i, c)
+                if c in self.numeric:
+                    k = _sort_key(v)
+                    v = k[1] if (k[0] == 0 and "×" not in str(v)) else v
+                vals.append(v)
+            ws.append(vals)
+        ws.freeze_panes = "A2"
+        try:
+            wb.save(path)
+        except Exception as e:
+            QMessageBox.critical(parent, tr("导出"), tr("导出失败：{0}", e))
+            return None
+        return path

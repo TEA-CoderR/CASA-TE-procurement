@@ -72,11 +72,12 @@ def _order_qty(r, s):
     return (r or {}).get("qty")
 
 
-def _select_suppliers(rows_data, supplier_headers, ws_main, log, settings, summary, decide=None):
+def _select_suppliers(rows_data, supplier_headers, ws_main, log, settings, summary, decide=None, choose=None):
     """
     返回 {行号: 供应商}；返回 None 表示操作员取消了处理。
     decide(plan, rows_data, rules) 由界面提供：弹窗让操作员决定、手动调整，
     返回 {"assignment": {...}, "sources": {行号: 来源}} 或 None（取消）。
+    choose(results) 由界面提供：几种方案（全部供应商 / 不含某家 …）的对比，返回选中的下标或 None（取消）。
     """
     from allocation_plan import build_plan, auto_assignment, build_report, baseline_assignment
 
@@ -99,7 +100,43 @@ def _select_suppliers(rows_data, supplier_headers, ws_main, log, settings, summa
 
     baseline = baseline_assignment(rows_data)
     sources = {}
-    if rules or (decide and settings.get("review_before_write")):
+    # ---- 几种方案对比（全部供应商 / 不含 MEGA / 不含 NEW GRIECO …），由用户选一种 ----
+    import scenarios as SC
+    defs = SC.scenario_defs(settings)
+    if choose and settings.get("scenarios_enabled", True) and len(defs) > 1:
+        log(tr("\n[方案对比] 同时计算 {0} 种方案…", len(defs)))
+        results = SC.compute_scenarios(rows_data, supplier_headers, rules, defs)
+        for sc in results:
+            log(tr("  {0}：采购总额 €{1:,.2f}，有报价 {2} 个商品，缺 {3} 个", tr(sc["name"]), sc["total"], sc["priced"],
+                   len(sc["missing"])))
+        idx = choose(results)
+        if idx is None:
+            return None
+        chosen = results[idx]
+        summary["scenarios"] = SC.compact(results, idx)
+        summary["scenario"] = chosen["name"]
+        log(tr("  ✔ 选用方案：{0}", tr(chosen["name"])))
+        excl = set(chosen["excluded"])
+        final = dict(chosen["assignment"])
+        for r in rows_data:
+            b, f = baseline.get(r["row"]), final.get(r["row"])
+            if b != f:
+                sources[r["row"]] = "方案排除" if b in excl else "自动凑单"
+        rules_eff = [ru for ru in rules if ru["target"] not in excl]
+        if decide and settings.get("review_before_write"):
+            rows_eff = SC.restrict_rows(rows_data, excl)
+            result = decide({"fixed": final, "fixed_sources": sources, "baseline": baseline_assignment(rows_eff),
+                             "rules": []}, rows_eff, rules_eff)
+            if result is None:
+                return None
+            final, sources = result["assignment"], result.get("sources", sources)
+            for r in rows_data:                       # 「方案排除」的来源说明保留
+                b, f = baseline.get(r["row"]), final.get(r["row"])
+                if b != f and b in excl and sources.get(r["row"]) != "手动":
+                    sources[r["row"]] = "方案排除"
+        assignment = final
+        rules = rules_eff
+    elif rules or (decide and settings.get("review_before_write")):
         log(tr("\n[起订量检查] {0} 个供应商有起订条件，正在计算方案...", len(rules)))
         plan = build_plan(rows_data, rules, allow_partial=bool(settings.get("allow_partial_purchase", False)))
         for info in plan["rules"]:
@@ -122,6 +159,7 @@ def _select_suppliers(rows_data, supplier_headers, ws_main, log, settings, summa
         assignment = baseline
 
     rep = build_report(rows_data, rules, baseline, assignment, sources)
+    summary.setdefault("scenario", None)
     for ru in rep["rules"]:
         log(tr("  {0}: {1:.0f} 箱 / €{2:.2f} → {3:.0f} 箱 / €{4:.2f}  【{5}】", ru['name'], ru['before_colli'], ru['before_amount'], ru['after_colli'], ru['after_amount'], tr(ru['status'])))
     if rep["changes"]:
@@ -363,7 +401,7 @@ def _backup_inputs(ordine_file, distribuire_path, log):
     return dest
 
 
-def run_process(ordine_file, eliminare_path, distribuire_path, log, progress=None, settings=None, decide=None):
+def run_process(ordine_file, eliminare_path, distribuire_path, log, progress=None, settings=None, decide=None, choose=None):
     """
     采购系统主流程：
     1. 打开 ORDINE 主文件
@@ -641,7 +679,7 @@ def run_process(ordine_file, eliminare_path, distribuire_path, log, progress=Non
 
     # 最低价分配 + 起订量凑单优化
     P(62, tr("选择供应商（最低价 + 起订量凑单）..."))
-    assignment = _select_suppliers(rows_data, supplier_headers, ws_main, log, settings, summary, decide)
+    assignment = _select_suppliers(rows_data, supplier_headers, ws_main, log, settings, summary, decide, choose)
     if assignment is None:
         log(tr("⚠ 操作员取消了处理，主订单和供应商文件都没有改动"))
         wb_main.close()
@@ -696,6 +734,12 @@ def run_process(ordine_file, eliminare_path, distribuire_path, log, progress=Non
 
     log(tr("缺失: {0}", missing_count))
     summary["missing"] = missing_count
+    try:
+        import scenarios as SC
+        excl = next((x.get("excluded") or [] for x in summary.get("scenarios") or [] if x.get("chosen")), [])
+        summary["missing_items"] = SC.missing_items(rows_data, assignment, excl)
+    except Exception as e:
+        log(tr("⚠ 缺失商品明细整理失败：{0}", e))
 
     # 生成缺失报告（Excel）
     if missing_items:
@@ -1274,6 +1318,12 @@ def rewrite_assignment(data, new_assign, new_sources, log, progress=None):
     out["changes"] = rep["changes"]
     out["priced_rows"] = sum(1 for r in rows if new_assign.get(r["row"]))
     out["missing"] = len(rows) - out["priced_rows"]
+    try:
+        import scenarios as SC
+        excl = next((x.get("excluded") or [] for x in out.get("scenarios") or [] if x.get("chosen")), [])
+        out["missing_items"] = SC.missing_items(rows, new_assign, excl)
+    except Exception as e:
+        log(tr("⚠ 缺失商品明细整理失败：{0}", e))
     out["baseline_cost"], out["final_cost"] = rep["baseline_cost"], rep["final_cost"]
     mo = out.setdefault("min_order", {})
     mo.update(rules=rep["rules"], extra_cost=rep["extra_cost"], changes=len(rep["changes"]),
