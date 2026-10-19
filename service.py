@@ -106,7 +106,7 @@ def _select_suppliers(rows_data, supplier_headers, ws_main, log, settings, summa
     baseline = baseline_assignment(rows_data)
     sources = {}
     rules_all, scen_assigns = list(rules), []
-    # ---- 几种方案对比（全部供应商 / 不含 MEGA / 不含 NEW GRIECO …），由用户选一种 ----
+    # ---- 几种方案对比（全部供应商 / 排除 MEGA / 排除 NEW GRIECO …），由用户选一种 ----
     import scenarios as SC
     defs = SC.scenario_defs(settings)
     if choose and settings.get("scenarios_enabled", True) and len(defs) > 1:
@@ -1108,6 +1108,8 @@ def load_state(root_path):
         for k in ("assignment", "baseline", "sources"):
             st[k] = {int(r): v for r, v in st[k].items()}
         st["scenario_assigns"] = [{int(r): v for r, v in a.items()} for a in st.get("scenario_assigns") or []]
+        from history import _new_names
+        _new_names(data)
         if not os.path.exists(st["ordine_file"]):
             return None
         return data

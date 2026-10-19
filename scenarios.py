@@ -1,5 +1,5 @@
 """
-批发商比价：同时算几种方案（全部供应商 / 不含 MEGA / 不含 NEW GRIECO …），给出对比，由用户选一种写入。
+批发商比价：同时算几种方案（全部供应商 / 排除 MEGA / 排除 NEW GRIECO …），给出对比，由用户选一种写入。
 
 每个方案 = 排除哪些供应商（按文件名里的关键词，和起订规则一样）。排除的供应商当作没有报价：
   · 商品按剩下的供应商最低价分配，有起订规则的照常自动凑单 / 放弃（和不问操作员时的自动方案一样）
@@ -7,7 +7,7 @@
 方案列表存在 settings.json → scenarios；scenarios_enabled 关掉就和以前一样只算一种。
 
 排除关键词同时按「文件名」和「供应商名称」找（supplier_names：MEGA 的文件叫 formattato_xxx，
-名字里没有 mega，只按文件名找会找不到，「不含 MEGA」就和「全部供应商」一模一样）。
+名字里没有 mega，只按文件名找会找不到，「排除 MEGA」就和「全部供应商」一模一样）。
 
 和第一个方案（基准）比时，把差额拆成两部分，避免「少买了商品所以总额低」被当成更便宜：
   price_diff  同样买到的商品，换了供应商造成的差价（正 = 更贵）
@@ -19,16 +19,22 @@ from allocation_plan import auto_assignment, baseline_assignment, build_report, 
 
 DEFAULT_SCENARIOS = [
     {"name": "全部供应商", "exclude": []},
-    {"name": "不含 MEGA", "exclude": ["mega"]},
-    {"name": "不含 NEW GRIECO", "exclude": ["grieco"]},
+    {"name": "排除 MEGA", "exclude": ["mega"]},
+    {"name": "排除 NEW GRIECO", "exclude": ["grieco"]},
 ]
+
+
+def display_name(name):
+    """旧名字「不含 X」统一显示成「排除 X」（2026-10-19 改名）"""
+    s = str(name or "")
+    return "排除 " + s[3:] if s.startswith("不含 ") else s
 
 
 def scenario_defs(settings):
     defs = settings.get("scenarios")
     if not isinstance(defs, list) or not defs:
         defs = [dict(d) for d in DEFAULT_SCENARIOS]
-    return defs
+    return [dict(d, name=display_name(d.get("name"))) for d in defs]
 
 
 def excluded_headers(headers, exclude, labels=None):

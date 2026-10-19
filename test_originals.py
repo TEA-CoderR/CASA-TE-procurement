@@ -60,7 +60,7 @@ def test_switch_scenario_uses_stored_plan(monkeypatch):
     rules = [{"target": "MEGA.xlsx", "name": "MEGA"}, {"target": "MELONI.xlsx", "name": "MELONI"}]
     data = {"scenario": "全部供应商",
             "scenarios": [{"name": "全部供应商", "excluded": [], "chosen": True},
-                          {"name": "不含 MEGA", "excluded": ["MEGA.xlsx"], "chosen": False}],
+                          {"name": "排除 MEGA", "excluded": ["MEGA.xlsx"], "chosen": False}],
             "state": {"rows": rows, "baseline": {2: "MEGA.xlsx", 3: "MELONI.xlsx", 4: "MELONI.xlsx"},
                       "assignment": {2: "MEGA.xlsx", 3: "MELONI.xlsx", 4: "MEGA.xlsx"},
                       "sources": {4: "手动"}, "rules": rules, "rules_all": rules,
@@ -71,7 +71,7 @@ def test_switch_scenario_uses_stored_plan(monkeypatch):
     d = seen["data"]
     assert seen["new"] == {2: "MELONI.xlsx", 3: "MELONI.xlsx"} and seen["force"]
     assert seen["sources"] == {2: "方案排除", 4: "自动凑单"}
-    assert d["scenario"] == "不含 MEGA" and [x["chosen"] for x in d["scenarios"]] == [False, True]
+    assert d["scenario"] == "排除 MEGA" and [x["chosen"] for x in d["scenarios"]] == [False, True]
     assert [r["target"] for r in d["state"]["rules"]] == ["MELONI.xlsx"]
     assert data["scenarios"][0]["chosen"]                                      # 原来的结果不被改动
     old = dict(data, state=dict(data["state"], scenario_assigns=[]))

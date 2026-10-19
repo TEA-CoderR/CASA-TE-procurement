@@ -204,9 +204,21 @@ def _write_file(summary, hid, entry):
     os.replace(tmp, _file_of(hid))
 
 
+def _new_names(d):
+    """旧记录里的方案名「不含 X」显示成「排除 X」"""
+    from scenarios import display_name
+    if d.get("scenario"):
+        d["scenario"] = display_name(d["scenario"])
+    for x in d.get("scenarios") or []:
+        if isinstance(x, dict) and x.get("name"):
+            x["name"] = display_name(x["name"])
+    return d
+
+
 def list_runs():
     with _lock:
-        return list(_read_index())
+        return [_new_names(dict(e, scenarios=[dict(x) for x in e.get("scenarios") or []]))
+                for e in _read_index()]
 
 
 def load_run(hid):
@@ -222,7 +234,7 @@ def load_run(hid):
         except (ValueError, TypeError):
             data.pop("state", None)
     data["history_id"] = hid
-    return data
+    return _new_names(data)
 
 
 def delete_run(hid):
