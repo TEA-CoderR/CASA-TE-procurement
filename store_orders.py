@@ -494,7 +494,7 @@ def demand_by_store(db, schede, stores, days_list, reorder_cycle, use_supplier_c
         groups = None if v2 else [sorted({it["db_code"] for it in s["items"] if it.get("db_code")}) for s in schede]
         df = R.compute_suggestions(db, sid, codes, days_list, reorder_cycle, None,
                                    use_supplier_cycles=use_supplier_cycles, round_to_db_pack=not v2, algo=algo,
-                                   groups=groups)
+                                   groups=groups, want_raw=True)
         d = {}
         for _, r in df.iterrows():
             code = str(int(r["CodArticolo"]))
@@ -504,7 +504,11 @@ def demand_by_store(db, schede, stores, days_list, reorder_cycle, use_supplier_c
             if R._val(r, "daily_rate") is not None:                       # 新算法的日均（加权 + 季节）
                 daily = float(R._val(r, "daily_rate") or 0)
             inv_days = R._val(r, "inventory_days")
-            d[code] = {"sugg": int(R._val(r, "suggested_order_qty", 0) or 0), "daily": daily,
+            sugg = int(R._val(r, "suggested_order_qty", 0) or 0)
+            raw = R._val(r, "raw_order_qty")
+            d[code] = {"sugg": sugg, "daily": daily,
+                       # 真正要的件数（没按箱规取整）：门店间调货用。新算法本来就不取整
+                       "need": float(raw) if (raw is not None and raw == raw) else float(sugg),
                        "inv": float(R._val(r, "store_inventory", 0) or 0),        # 计算用（负数已当 0）
                        "inv_raw": float(R._val(r, "store_inventory_raw", R._val(r, "store_inventory", 0)) or 0),
                        "sales": [R._val(r, f"sales_{i}", 0) or 0 for i in range(1, 5)],
@@ -518,6 +522,100 @@ def demand_by_store(db, schede, stores, days_list, reorder_cycle, use_supplier_c
                        "gia_all": [R._val(r, f"Negozio{i}_Giacenza", 0) or 0 for i in range(6)]}   # GIA.0（BMS）~ GIA.5
         out[sid] = d
     return out
+
+
+# =====================================================================
+# 门店之间调货（transfers.py）：要的件数远小于一箱时，从别的门店调多出来的货，少订一箱
+# =====================================================================
+def apply_transfers(calc, cfg=None, far_stores=None):
+    """
+    在系统建议的箱数上算调货：calc["base_orig"] = 调货前的建议；calc["base"] = 调货后的建议；
+    calc["transfers"] = [{from, to, path, supplier, row, code, ean, desc, pieces, value, price, pack,
+                          colli_before, colli_after}]
+    cfg 关掉（enabled False）时 base 恢复成调货前的建议。
+    """
+    import copy
+    import transfers as TR
+    cfg = TR.config(cfg)
+    if "base_orig" not in calc:
+        calc["base_orig"] = copy.deepcopy(calc["base"])
+    base = copy.deepcopy(calc["base_orig"])
+    calc["transfers"] = []
+    if not cfg.get("enabled"):
+        calc["base"] = base
+        return []
+    demand, stores = calc["demand"], calc.get("stores") or []
+    needs, info, ordering = [], {}, set()
+    for sc in calc["schede"]:
+        items = {it["row"]: it for it in sc["items"]}
+        for sid, lines in base.get(sc["path"], {}).items():
+            for row, n in lines.items():
+                it = items.get(row)
+                if not it or n <= 0:
+                    continue
+                code = it.get("db_code") or it["code"]
+                ordering.add((sid, code))
+                d = demand.get(sid, {}).get(code)
+                if not d:
+                    continue
+                nid = (sc["path"], sid, row)
+                needs.append({"id": nid, "store": sid, "key": code, "need": d.get("need", d.get("sugg", 0)),
+                              "pack": it["pack"], "colli": n, "price": it.get("price") or 0.0})
+                info[nid] = (sc, it)
+    avail = {}
+    for sid in stores:
+        for code, d in (demand.get(sid) or {}).items():
+            if (sid, code) in ordering:
+                continue                       # 自己这次也要订的，不调出
+            s = TR.surplus(d)
+            if s > 0:
+                avail[(sid, code)] = s
+    far = far_stores if far_stores is not None else DEFAULT_FILL.get("far_stores")
+    moves, new_colli = TR.plan(needs, avail, cfg, far)
+    for nid, c2 in new_colli.items():
+        path, sid, row = nid
+        lines = base.setdefault(path, {}).setdefault(sid, {})
+        if c2 > 0:
+            lines[row] = c2
+        else:
+            lines.pop(row, None)
+    out = []
+    for m in moves:
+        sc, it = info[m["need_id"]]
+        out.append(dict(m, path=sc["path"], supplier=sc["name"], row=it["row"], code=it.get("db_code") or it["code"],
+                        ean=it.get("ean", ""), desc=it.get("desc", ""), price=it.get("price") or 0.0))
+    out.sort(key=lambda x: (x["from"], x["to"], x["supplier"], x["desc"]))
+    calc["base"] = base
+    calc["transfers"] = out
+    return out
+
+
+def export_transfers(transfers, path, date_tag=""):
+    """调货单：每家调出门店一页（拣货用），第一页是汇总"""
+    from openpyxl import Workbook
+    from openpyxl.styles import Font
+    import transfers as TR
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "汇总"
+    ws.append(["调出门店", "商品数", "件数", "货值 €", "少订箱数"])
+    for sid, x in sorted(TR.by_donor(transfers).items()):
+        ws.append([STORE_SHEETS.get(sid, str(sid)), x["items"], x["pieces"], round(x["value"], 2), x["boxes_saved"]])
+    for c in ws[1]:
+        c.font = Font(bold=True)
+    for sid in sorted({t["from"] for t in transfers}):
+        w = wb.create_sheet(f"从 {STORE_SHEETS.get(sid, sid)}"[:31])
+        w.append(["调入门店", "供应商", "Cod.Art.", "EAN", "品名", "调货件数", "件价 €", "货值 €", "原来订（箱）", "现在订（箱）"])
+        for t in transfers:
+            if t["from"] != sid:
+                continue
+            w.append([STORE_SHEETS.get(t["to"], str(t["to"])), t["supplier"], t["code"], t["ean"], t["desc"],
+                      t["pieces"], round(t["price"], 2), round(t["value"], 2), t["colli_before"], t["colli_after"]])
+        for c in w[1]:
+            c.font = Font(bold=True)
+        w.column_dimensions["E"].width = 40
+    wb.save(path)
+    return path
 
 
 def colli_for(d, pack, algo=None):
@@ -1419,9 +1517,19 @@ def allocate(calc, colli, fill, out_root, log=print, date_tag=None, edited=None,
     progress(2, "running", "", "", 92.0)
     summary = os.path.join(out_root, f"配货汇总_{date_tag or datetime.now().strftime('%d%m')}.xlsx")
     export_summary(results, summary, calc["demand"], calc["base"], edited, calc.get("days"))
+    tfile = None
+    if calc.get("transfers"):
+        tfile = os.path.join(out_root, f"调货单_{date_tag or datetime.now().strftime('%d%m')}.xlsx")
+        try:
+            export_transfers(calc["transfers"], tfile)
+            log(f"调货单：{len(calc['transfers'])} 个商品 → {os.path.basename(tfile)}")
+        except Exception as e:
+            log(f"⚠ 调货单生成失败：{e}")
+            tfile = None
     progress(2, "done", "", "", 100.0)
     log(f"完成：生成 {len(written)} 个订单文件 → {out_root}")
-    return {"results": results, "written": written, "summary": summary, "out_root": out_root}
+    return {"results": results, "written": written, "summary": summary, "out_root": out_root,
+            "transfers_file": tfile}
 
 
 def reallocate_one(calc, colli, fill, result, index, mode, edited=None, log=print):

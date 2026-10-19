@@ -1,0 +1,61 @@
+"""门店之间调货：要的件数远小于一箱时，从别的门店调多出来的货，少订一箱"""
+import transfers as TR
+
+
+def _need(i, store, key, need, pack, colli, price):
+    return {"id": i, "store": store, "key": key, "need": need, "pack": pack, "colli": colli, "price": price}
+
+
+def test_surplus_keeps_one_cycle():
+    assert TR.surplus({"inv": 30, "daily": 1, "cycle": 10}) == 20
+    assert TR.surplus({"inv": 5, "daily": 1, "cycle": 10}) == 0
+    assert TR.surplus({"inv": -4, "daily": 0, "cycle": 30}) == 0           # 负库存当 0
+    assert TR.surplus({"inv": 7, "daily": 0, "cycle": 30}) == 7            # 不动销：都可以调
+
+
+def test_options_waste_and_all():
+    assert TR.options(3, 12, 1, "waste") == [(3, 0)]                       # 要 3 件、一箱 12：调 3 件，不订
+    assert TR.options(10, 12, 1, "waste") == []                            # 只多 2 件，不值得调
+    assert TR.options(14, 12, 2, "waste") == [(2, 1)]                      # 零头 2 件调，订 1 箱
+    assert TR.options(14, 12, 2, "all") == [(14, 0), (2, 1)]               # 都要：能全调就全调
+
+
+def test_plan_min_value_and_grouping():
+    needs = [_need("a", 1, "X", 3, 12, 1, 2.0), _need("b", 2, "Y", 2, 12, 1, 5.0),
+             _need("c", 2, "Z", 2, 6, 1, 25.0)]
+    # 3 号店 X、Y 都多；4 号店 Z 多（2 件 × €25 = €50）
+    avail = {(3, "X"): 10, (3, "Y"): 10, (4, "Z"): 5, (4, "X"): 3}
+    moves, new = TR.plan(needs, avail, {"min_value": 50})
+    # 4 号店：Z 2 件 €50，顺便把 X 3 件也一起拣（同一家店一次拣完）；3 号店剩下的 Y 只有 €10，不够 €50
+    assert sorted((m["from"], m["to"], m["key"], m["pieces"]) for m in moves) == [(4, 1, "X", 3), (4, 2, "Z", 2)]
+    assert new == {"a": 0, "c": 0}
+    moves, new = TR.plan(needs, avail, {"min_value": 10})
+    got = sorted((m["from"], m["key"]) for m in moves)
+    assert (3, "Y") in got and new["b"] == 0
+
+
+def test_plan_far_and_own_store():
+    needs = [_need("a", 1, "X", 3, 12, 1, 30.0), _need("b", 3, "X", 3, 12, 1, 30.0)]
+    avail = {(1, "X"): 20, (3, "X"): 2}
+    moves, _ = TR.plan(needs, avail, {"min_value": 10}, far=[1])
+    assert moves == []                    # 1 号店远：不调出也不调入；3 号店自己要，2 件也不够
+
+
+def test_plan_shared_stock_not_overused():
+    needs = [_need("a", 1, "X", 4, 12, 1, 10.0), _need("b", 2, "X", 4, 12, 1, 10.0)]
+    moves, new = TR.plan(needs, {(3, "X"): 5}, {"min_value": 10})
+    assert len(moves) == 1 and sum(m["pieces"] for m in moves) == 4          # 3 号店只有 5 件，只够一家
+
+
+def test_store_orders_apply_transfers():
+    import store_orders as S
+    sc = {"path": "p", "name": "DOPLA", "items": [{"row": 5, "code": "100", "ean": "8", "desc": "PIATTI", "pack": 12,
+                                                   "price": 6.0}], "sheets": {2: "MARLIA", 3: "S.FILIPPO"}}
+    demand = {2: {"100": {"sugg": 12, "need": 3, "inv": 0, "daily": 0.1, "cycle": 30}},
+              3: {"100": {"sugg": 0, "need": 0, "inv": 40, "daily": 0.5, "cycle": 30}}}
+    calc = {"schede": [sc], "demand": demand, "base": {"p": {2: {5: 1}}}, "stores": [2, 3]}
+    out = S.apply_transfers(calc, {"min_value": 10}, far_stores=[1])
+    assert [(t["from"], t["to"], t["pieces"], t["value"]) for t in out] == [(3, 2, 3, 18.0)]
+    assert calc["base"] == {"p": {2: {}}} and calc["base_orig"] == {"p": {2: {5: 1}}}
+    S.apply_transfers(calc, {"enabled": False})
+    assert calc["base"] == {"p": {2: {5: 1}}} and calc["transfers"] == []

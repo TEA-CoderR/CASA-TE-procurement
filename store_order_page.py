@@ -104,6 +104,76 @@ class ParamDialog(QDialog):
         lay.addWidget(bb)
 
 
+class TransferDialog(QDialog):
+    """门店间调货清单：从哪家店调到哪家店、几件、货值；可以排序、筛选、导出（导出的就是调货单）"""
+
+    def __init__(self, parent, transfers, ui):
+        super().__init__(parent)
+        import transfers as TR
+        self.ts = list(transfers)
+        self.setWindowTitle(tr("门店间调货"))
+        self.resize(1100, 640)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(22, 18, 22, 16)
+        lay.setSpacing(10)
+        t = QLabel(tr("门店间调货"))
+        t.setObjectName("PageTitle")
+        t.setStyleSheet("font-size:18px;")
+        lay.addWidget(t)
+        dn = TR.by_donor(self.ts)
+        sub = QLabel(tr("这些商品要的件数远小于一箱，从别的门店调多出来的货，就少订一箱。") + "　" + "　".join(
+            tr("从 {0}：{1} 个商品 · €{2:,.2f}", S.STORE_SHEETS.get(k, k), v["items"], v["value"])
+            for k, v in sorted(dn.items())))
+        sub.setObjectName("Muted")
+        sub.setWordWrap(True)
+        lay.addWidget(sub)
+        bar = QHBoxLayout()
+        self.count = QLabel("")
+        self.count.setObjectName("Faint")
+        exp = QPushButton(tr("导出调货单"))
+        heads = [tr("调出门店"), tr("调入门店"), tr("供应商"), "Cod.Art.", tr("品名"), tr("调货件数"), tr("货值 €"),
+                 tr("原来订（箱）"), tr("现在订（箱）")]
+        self._set_row = ui.table_set_row
+        self.table = ui.make_table(heads, stretch_col=4, numeric_cols=(5, 6, 7, 8))
+        from erp_widgets import TableSortFilter, ColumnFilterBox
+        self.ctl = TableSortFilter(self.table, lambda: len(self.ts), self._text, self._fill, numeric=(5, 6, 7, 8))
+        bar.addWidget(ColumnFilterBox(self.ctl, 0, tr("调出门店")))
+        bar.addSpacing(12)
+        bar.addWidget(ColumnFilterBox(self.ctl, 1, tr("调入门店")))
+        bar.addStretch()
+        bar.addWidget(self.count)
+        bar.addWidget(exp)
+        lay.addLayout(bar)
+        lay.addWidget(self.table, 1)
+        self.ctl.rendered.connect(lambda n, tot: self.count.setText(tr("显示 {0} / {1} 个", n, tot)))
+        exp.clicked.connect(self.export)
+        bb = QHBoxLayout()
+        bb.addStretch()
+        close = QPushButton(tr("关闭"))
+        close.clicked.connect(self.accept)
+        bb.addWidget(close)
+        lay.addLayout(bb)
+        self.ctl.render()
+
+    def _text(self, i, c):
+        x = self.ts[i]
+        return [S.STORE_SHEETS.get(x["from"], str(x["from"])), S.STORE_SHEETS.get(x["to"], str(x["to"])),
+                x["supplier"], str(x["code"]), x["desc"], f"{x['pieces']:g}", f"{x['value']:,.2f}",
+                f"{x['colli_before']}", f"{x['colli_after']}"][c]
+
+    def _fill(self, i, k):
+        self._set_row(self.table, k, [self._text(i, c) for c in range(9)])
+
+    def export(self):
+        path, _ = QFileDialog.getSaveFileName(self, tr("导出调货单"), "调货单.xlsx", tr("Excel 文件 (*.xlsx)"))
+        if not path:
+            return
+        try:
+            S.export_transfers(self.ts, path)
+        except Exception as e:
+            QMessageBox.critical(self, tr("导出"), tr("导出失败：{0}", e))
+
+
 class FillDialog(QDialog):
     """配货设置：凑单门槛、BMS 补救"""
 
@@ -168,6 +238,37 @@ class FillDialog(QDialog):
         h.setObjectName("Faint")
         h.setWordWrap(True)
         lay.addWidget(h)
+        # 门店之间调货
+        tc = page.transfer_cfg()
+        t3 = QLabel(tr("门店之间调货：要的件数远小于一箱时，从别的门店调多出来的货，少订一箱"))
+        t3.setObjectName("Section")
+        lay.addWidget(t3)
+        self.tr_on = QCheckBox(tr("启用调货"))
+        self.tr_on.setChecked(bool(tc["enabled"]))
+        lay.addWidget(self.tr_on)
+        g3 = QGridLayout()
+        g3.setSpacing(10)
+        self.tr_mode = QComboBox()
+        self.tr_mode.addItem(tr("整箱会多出一半以上时才调"), "waste")
+        self.tr_mode.addItem(tr("所有要订的商品都先看能不能调"), "all")
+        self.tr_mode.setCurrentIndex(max(0, self.tr_mode.findData(tc.get("mode"))))
+        self.tr_min = QDoubleSpinBox()
+        self.tr_min.setRange(0, 100000)
+        self.tr_min.setDecimals(0)
+        self.tr_min.setValue(float(tc["min_value"]))
+        self.tr_min.setFixedWidth(100)
+        g3.addWidget(QLabel(tr("什么时候调")), 0, 0)
+        g3.addWidget(self.tr_mode, 0, 1, 1, 2)
+        g3.addWidget(QLabel(tr("每家调出门店货值至少 €")), 1, 0)
+        g3.addWidget(self.tr_min, 1, 1)
+        hh = QLabel(tr("货值太低不值得人工拣货，不如直接订"))
+        hh.setObjectName("Faint")
+        g3.addWidget(hh, 1, 2)
+        lay.addLayout(g3)
+        h3 = QLabel(tr("调出门店留够自己一个订货周期的销量（日均 × 订货周期），多出来的才调；自己这次也要订的商品不调出；{0} 离得远，不参与调货。", far))
+        h3.setObjectName("Faint")
+        h3.setWordWrap(True)
+        lay.addWidget(h3)
         bb = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
         bb.accepted.connect(self.save)
         bb.rejected.connect(self.reject)
@@ -179,6 +280,8 @@ class FillDialog(QDialog):
                                      max_colli_gap=self.gap_colli.value(), max_stock_days=self.max_days.value(),
                                      fill_bms=self.fill_bms.isChecked(), merge_colocated=self.merge_colo.isChecked(),
                                      borrow=self.borrow.isChecked(), borrow_min_days=self.borrow_days.value())
+        self.page.cfg["transfer"] = dict(self.page.transfer_cfg(), enabled=self.tr_on.isChecked(),
+                                         mode=self.tr_mode.currentData(), min_value=self.tr_min.value())
         save_settings(self.page.settings)
         self.accept()
 
@@ -307,6 +410,59 @@ class StoreOrderPage:
 
     def fill_cfg(self):
         return dict(S.DEFAULT_FILL, **(self.cfg.get("fill") or {}))
+
+    def transfer_cfg(self):
+        import transfers as TR
+        return TR.config(self.cfg.get("transfer"))
+
+    def apply_transfers(self, keep_edits=True):
+        """按现在的调货设置重算调货；手动改过的箱数保留"""
+        if not self.calc:
+            return
+        S.apply_transfers(self.calc, self.transfer_cfg(), self.fill_cfg().get("far_stores"))
+        new = copy.deepcopy(self.calc["base"])
+        if keep_edits:
+            for path, sid, row in self.edited:
+                v = self.colli.get(path, {}).get(sid, {}).get(row, 0)
+                lines = new.setdefault(path, {}).setdefault(sid, {})
+                if v > 0:
+                    lines[row] = v
+                else:
+                    lines.pop(row, None)
+        self.colli = new
+        self.edited = {k for k in self.edited
+                       if self.colli.get(k[0], {}).get(k[1], {}).get(k[2], 0)
+                       != self.calc["base"].get(k[0], {}).get(k[1], {}).get(k[2], 0)}
+        self._refresh_transfer_panel()
+
+    def _refresh_transfer_panel(self):
+        if not hasattr(self, "tr_title"):
+            return
+        import transfers as TR
+        ts = (self.calc or {}).get("transfers") or []
+        cfg = self.transfer_cfg()
+        if not self.calc:
+            self.tr_title.setText(tr("门店间调货"))
+            self.tr_sub.setText(tr("计算后，要的件数远小于一箱的商品会先看别的门店能不能调"))
+        elif not cfg["enabled"]:
+            self.tr_title.setText(tr("门店间调货 · 已关闭"))
+            self.tr_sub.setText(tr("在「配货设置」里可以打开"))
+        elif not ts:
+            self.tr_title.setText(tr("门店间调货 · 这次没有可调的"))
+            self.tr_sub.setText(tr("没有门店多出来的货能凑够 €{0:g} 的拣货门槛", cfg["min_value"]))
+        else:
+            dn = TR.by_donor(ts)
+            saved = sum(x["boxes_saved"] for x in dn.values())
+            val = sum(x["value"] for x in dn.values())
+            self.tr_title.setText(tr("门店间调货 · {0} 个商品，少订 {1} 箱", len(ts), saved))
+            self.tr_sub.setText(tr("从 {0} 调出，货值 €{1:,.2f}；配货时会一起生成调货单", tr("、").join(
+                f"{S.STORE_SHEETS.get(k, k)}（€{v['value']:,.0f}）" for k, v in sorted(dn.items())), val))
+        self.btn_transfers.setEnabled(bool(ts))
+
+    def open_transfers(self):
+        ts = (self.calc or {}).get("transfers") or []
+        if ts:
+            TransferDialog(self.win, ts, self.ui).exec()
 
     # ---------------------------------------------------------------
     def build(self):
@@ -559,6 +715,27 @@ class StoreOrderPage:
         dh.addWidget(self.btn_detail)
         dv.addLayout(dh)
         right.addWidget(dp)
+
+        tp, tv = _panel()
+        th = QHBoxLayout()
+        th.setSpacing(14)
+        tcol = QVBoxLayout()
+        tcol.setSpacing(2)
+        self.tr_title = QLabel(tr("门店间调货"))
+        self.tr_title.setStyleSheet("font-size:14px; font-weight:600;")
+        self.tr_sub = QLabel("")
+        self.tr_sub.setObjectName("Faint")
+        self.tr_sub.setWordWrap(True)
+        tcol.addWidget(self.tr_title)
+        tcol.addWidget(self.tr_sub)
+        self.btn_transfers = QPushButton(tr("查看调货单"))
+        self.btn_transfers.setObjectName("Outline")
+        self.btn_transfers.clicked.connect(self.open_transfers)
+        th.addLayout(tcol, 1)
+        th.addWidget(self.btn_transfers)
+        tv.addLayout(th)
+        right.addWidget(tp)
+        self._refresh_transfer_panel()
         h.addLayout(right, 1)
         return w
 
@@ -927,8 +1104,11 @@ class StoreOrderPage:
 
     def edit_fill(self):
         if FillDialog(self).exec():
+            self.apply_transfers()
             self._refresh_matrix()
             self._update_state()
+            if self.detail_win is not None:
+                self.detail_win.load()
 
     # =================================================================
     # ② 计算
@@ -1005,8 +1185,15 @@ class StoreOrderPage:
         import datetime as _dt
         calc.setdefault("date", _dt.date.today())    # 周销量按计算当天往回数
         self.calc = calc
+        try:
+            S.apply_transfers(calc, self.transfer_cfg(), self.fill_cfg().get("far_stores"))
+            if calc.get("transfers"):
+                self.win.log(tr("[门店配货] 门店间调货：{0} 个商品", len(calc["transfers"])))
+        except Exception as e:
+            self.win.log(tr("[门店配货] ⚠ 调货计算失败（按原来的建议订）：{0}", e))
         self.colli = copy.deepcopy(calc["base"])
         self.edited = set()
+        self._refresh_transfer_panel()
         # 默认只勾选订得起来的供应商：有门店单独够起订量（含凑单），或合起来够 BMS 起订量
         self.alloc_on = {sc["path"] for sc in calc["schede"] if self._orderable(self._preview(sc))}
         self.result = None
@@ -1311,7 +1498,9 @@ class StoreOrderPage:
     def _fill_result(self):
         res = self.result
         tot = S.plan_totals(res["results"])
-        self.ok_title.setText(tr("配货完成，生成 {0} 个订单文件", len(res["written"])))
+        self.ok_title.setText(tr("配货完成，生成 {0} 个订单文件", len(res["written"]))
+                              + (tr(" + 调货单（{0} 个商品）", len((self.calc or {}).get("transfers") or []))
+                                 if res.get("transfers_file") else ""))
         self.ok_path.setText(os.path.normpath(res["out_root"]))
         n_direct = sum(1 for _, _, plan in res["results"] for st in plan["stores"].values()
                        if st["status"] in ("direct", "filled"))

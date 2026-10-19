@@ -217,7 +217,7 @@ def extract_products(db, store_id, day, query_days, supplier_groups=None):
 
 
 def compute_suggestions(db, store_id, product_codes, days_list=None, reorder_cycle=30, supplier_ids=None,
-                        use_supplier_cycles=True, round_to_db_pack=True, algo=None, groups=None):
+                        use_supplier_cycles=True, round_to_db_pack=True, algo=None, groups=None, want_raw=False):
     """
     原程序 Suggerimenti Ordini 的 query_reorder()：查数据 → process_reorder_data。
     返回每个商品一行的 DataFrame（suggested_order_qty = 建议件数）。
@@ -230,6 +230,8 @@ def compute_suggestions(db, store_id, product_codes, days_list=None, reorder_cyc
     groups: 原程序算法时，把商品分成几组分别算（门店配货：每个 SCHEDA 一组）。原程序一次只算一个导入的 SCHEDA，
             A/B/C 等级是和「这一批商品的 30 天平均销量」比的，所以要按供应商分开算才和原程序一样。
             数据库只查一次，查回来再按组拆开，速度不变。
+    want_raw: 原程序算法按数据库箱规取整时，另外给一列 raw_order_qty = 取整之前的件数（门店间调货要知道真正要几件）。
+              用同一份查回来的数据再跑一遍原程序（不取整），不多查数据库；原程序的建议件数不受影响。
     """
     import pandas as pd
     from fenpei.config import AppConfig
@@ -296,18 +298,32 @@ def compute_suggestions(db, store_id, product_codes, days_list=None, reorder_cyc
             df = df.merge(part["last_sale_date"], on="CodArticolo", how="left")
         return df
 
-    if groups and not use_v2:
-        frames = []
-        for g in groups:
-            keep = {int(c) for c in g if str(c).strip().isdigit()}
-            part = {k: (v[v["CodArticolo"].isin(keep)] if isinstance(v, pd.DataFrame) and "CodArticolo" in v.columns
-                        else v) for k, v in data.items()}
-            if part.get("inventory") is None or part["inventory"].empty:
-                continue
-            frames.append(run(part))
-        result_df = pd.concat(frames, ignore_index=True) if frames else run(data)
-    else:
-        result_df = run(data)
+    def process(dd):
+        if groups and not use_v2:
+            frames = []
+            for g in groups:
+                keep = {int(c) for c in g if str(c).strip().isdigit()}
+                part = {k: (v[v["CodArticolo"].isin(keep)] if isinstance(v, pd.DataFrame) and "CodArticolo" in v.columns
+                            else v) for k, v in dd.items()}
+                if part.get("inventory") is None or part["inventory"].empty:
+                    continue
+                frames.append(run(part))
+            return pd.concat(frames, ignore_index=True) if frames else run(dd)
+        return run(dd)
+
+    result_df = process(data)
+    if want_raw and round_to_db_pack and not use_v2 and data.get("inventory") is not None \
+            and "qtasmallbox" in data["inventory"].columns and len(result_df):
+        d2 = dict(data)
+        inv2 = data["inventory"].copy()
+        inv2["qtasmallbox"] = 0                     # 原程序只在 qtasmallbox > 1 时取整
+        d2["inventory"] = inv2
+        try:
+            raw = process(d2)[["CodArticolo", "suggested_order_qty"]].drop_duplicates("CodArticolo")
+            result_df = result_df.merge(raw.rename(columns={"suggested_order_qty": "raw_order_qty"}),
+                                        on="CodArticolo", how="left")
+        except Exception:
+            pass
     # 每个商品实际用的订货周期（界面显示用）
     if "IDFornitore" in result_df.columns:
         result_df["reorder_cycle_used"] = result_df["IDFornitore"].apply(
