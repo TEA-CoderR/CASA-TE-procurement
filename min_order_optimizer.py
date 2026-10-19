@@ -59,6 +59,22 @@ def _best(prices, exclude=None):
     return best_s, best_p
 
 
+def effective_limits(min_colli, min_amount, mode):
+    """
+    规则里的条件 → 计算用的 (起订箱数, 起订金额, mode)：
+      "colli"  只要达到起订箱数（金额不管）
+      "amount" 只要达到起订金额（箱数不管）
+      "all"    箱数和金额都要达到
+      "any"    旧规则：达到其中一个即可（保留兼容）
+    """
+    c, a = float(min_colli or 0), float(min_amount or 0)
+    if mode == "colli":
+        return c, 0.0, "all"
+    if mode == "amount":
+        return 0.0, a, "all"
+    return c, a, ("any" if mode == "any" else "all")
+
+
 def _satisfied(colli, amount, min_colli, min_amount, mode):
     checks = []
     if min_colli:

@@ -89,12 +89,14 @@ def _select_suppliers(rows_data, supplier_headers, ws_main, log, settings, summa
         for r in unmatched:
             log(tr("⚠ 起订规则「{0}」：本次没有文件名包含 '{1}' 的供应商文件", r.get('name') or r.get('keyword'), r.get('keyword')))
         summary["min_order"]["unmatched"] = [r.get("name") or r.get("keyword") for r in unmatched]
-        rules = [dict(target=h, name=r.get("name") or normalize(h),
-                      min_colli=float(r.get("min_colli") or 0), min_amount=float(r.get("min_amount") or 0),
-                      mode=r.get("mode", "all"), allow_drop=bool(r.get("allow_drop", True)),
-                      manual_extra=float(r.get("manual_extra") or 0),
-                      drop_extra=float(r.get("drop_extra") or 0))
-                 for r, h in matched]
+        from min_order_optimizer import effective_limits
+        rules = []
+        for r, h in matched:
+            mc, ma, md = effective_limits(r.get("min_colli"), r.get("min_amount"), r.get("mode", "all"))
+            rules.append(dict(target=h, name=r.get("name") or normalize(h), min_colli=mc, min_amount=ma,
+                              mode=md, allow_drop=bool(r.get("allow_drop", True)),
+                              manual_extra=float(r.get("manual_extra") or 0),
+                              drop_extra=float(r.get("drop_extra") or 0)))
     else:
         log(tr("起订量凑单：未启用（只按最低价选供应商）"))
 

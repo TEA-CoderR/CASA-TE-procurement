@@ -1499,4 +1499,10 @@ TRANSLATIONS = {
     '✔ 主订单还是上次处理后的样子，已恢复成原文件再算（eliminare 不会重复扣减）': ('✔ Main order was still as last processed; restored the original first (eliminare not deducted twice)', "✔ L'ordine principale era quello già elaborato: ripristinato l'originale (eliminare non detratto due volte)"),
     '⚠ 恢复原文件失败（按现在的文件算）：{0}': ('⚠ Could not restore the originals (using current files): {0}', '⚠ Ripristino originali non riuscito (uso i file attuali): {0}'),
     '  {0}：恢复成原报价文件再算': ('  {0}: restored the original price file', '  {0}: ripristinato il listino originale'),
+    '达到起订箱数': ('Reach minimum cases', 'Raggiungere i colli minimi'),
+    '达到起订金额': ('Reach minimum amount', "Raggiungere l'importo minimo"),
+    '都要达到': ('Both', 'Entrambi'),
+    '这条规则以前是「达到其中一个即可」，现在没有这个选项了，请重新选条件再保存。': ('This rule used "either one is enough", which is no longer offered; choose a condition again and save.', 'Questa regola usava «basta uno dei due», opzione non più disponibile: scegli di nuovo la condizione e salva.'),
+    '选了「达到起订箱数」，请填起订箱数。': ('"Reach minimum cases" is selected; please fill in the minimum cases.', '«Raggiungere i colli minimi» selezionato: inserisci i colli minimi.'),
+    '选了「达到起订金额」，请填起订金额。': ('"Reach minimum amount" is selected; please fill in the minimum amount.', "«Raggiungere l'importo minimo» selezionato: inserisci l'importo minimo."),
 }

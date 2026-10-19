@@ -41,7 +41,7 @@ MIN_ORDER_SUPPLIER_KEYWORD = "mega"
 MIN_ORDER_COLLI = 200
 # 起订金额（欧元，= PREZZO NETTO × COLLI 合计），0 表示不限制
 MIN_ORDER_AMOUNT = 700
-# "all" = 箱数和金额都要达到；"any" = 达到其中一个即可
+# 起订规则的条件：「colli」= 达到起订箱数；「amount」= 达到起订金额；「all」= 都要达到（旧的「any」= 达到其中一个，仍兼容）
 MIN_ORDER_MODE = "all"
 # 凑单比"不在该供应商下单"更贵时，是否允许改为不在该供应商下单
 MIN_ORDER_ALLOW_DROP = True

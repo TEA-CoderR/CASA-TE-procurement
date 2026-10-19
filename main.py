@@ -452,14 +452,16 @@ class SupplierDropDialog(QDialog):
 
 
 def describe_condition(r):
+    from min_order_optimizer import effective_limits
+    c, a, mode = effective_limits(r.get("min_colli"), r.get("min_amount"), r.get("mode", "all"))
     items = []
-    if float(r.get("min_colli") or 0):
-        items.append(tr("{0:g} 箱", float(r['min_colli'])))
-    if float(r.get("min_amount") or 0):
-        items.append(f"€{float(r['min_amount']):g}")
+    if c:
+        items.append(tr("{0:g} 箱", c))
+    if a:
+        items.append(f"€{a:g}")
     if not items:
         return tr("无条件")
-    return (tr(" 且 ") if r.get("mode", "all") == "all" else tr(" 或 ")).join(items)
+    return (tr(" 且 ") if mode == "all" else tr(" 或 ")).join(items)
 
 
 def open_path(path):
@@ -565,16 +567,32 @@ class RuleDialog(QDialog):
         g.addWidget(hint(tr("填 0 就是不限。金额 = 净价 × 箱数。")), 5, 1)
         lay.addLayout(g)
 
+        # 条件：达到起订箱数 / 达到起订金额 / 都要达到
         mode_box = QHBoxLayout()
-        self.m_all = QRadioButton(tr("箱数和金额都要达到"))
-        self.m_any = QRadioButton(tr("达到其中一个即可"))
-        (self.m_all if rule.get("mode", "all") == "all" else self.m_any).setChecked(True)
+        self.m_colli = QRadioButton(tr("达到起订箱数"))
+        self.m_amount = QRadioButton(tr("达到起订金额"))
+        self.m_all = QRadioButton(tr("都要达到"))
+        self.mode_group = QButtonGroup(self)
+        for b in (self.m_colli, self.m_amount, self.m_all):
+            self.mode_group.addButton(b)
+        old_mode = rule.get("mode", "all")
+        {"colli": self.m_colli, "amount": self.m_amount, "all": self.m_all}.get(old_mode, self.m_all).setChecked(True)
         mode_box.addWidget(QLabel(tr("条件")))
         mode_box.addSpacing(30)
+        mode_box.addWidget(self.m_colli)
+        mode_box.addWidget(self.m_amount)
         mode_box.addWidget(self.m_all)
-        mode_box.addWidget(self.m_any)
         mode_box.addStretch()
         lay.addLayout(mode_box)
+        if old_mode == "any":
+            lay.addWidget(hint(tr("这条规则以前是「达到其中一个即可」，现在没有这个选项了，请重新选条件再保存。")))
+
+        def _mode_changed(*_):
+            # 只看箱数时金额不起作用（灰掉），只看金额时箱数不起作用
+            self.colli.setEnabled(not self.m_amount.isChecked())
+            self.amount.setEnabled(not self.m_colli.isChecked())
+        self.mode_group.buttonToggled.connect(_mode_changed)
+        _mode_changed()
 
         def money_box(v):
             b = QDoubleSpinBox()
@@ -618,6 +636,13 @@ class RuleDialog(QDialog):
             QMessageBox.warning(self, tr("起订规则"), tr("请填写文件名关键字。"))
             return
         colli, amount = self.colli.value(), self.amount.value()
+        mode = "colli" if self.m_colli.isChecked() else ("amount" if self.m_amount.isChecked() else "all")
+        if mode == "colli" and colli == 0:
+            QMessageBox.warning(self, tr("起订规则"), tr("选了「达到起订箱数」，请填起订箱数。"))
+            return
+        if mode == "amount" and amount == 0:
+            QMessageBox.warning(self, tr("起订规则"), tr("选了「达到起订金额」，请填起订金额。"))
+            return
         if colli == 0 and amount == 0:
             if QMessageBox.question(self, tr("起订规则"), tr("箱数和金额都是 0，这条规则不会起作用。仍然保存？")) != QMessageBox.Yes:
                 return
@@ -627,7 +652,7 @@ class RuleDialog(QDialog):
             return
         self.result_rule = {"enabled": self.enabled.isChecked(), "name": self.name.text().strip() or kw,
                             "keyword": kw, "min_colli": colli, "min_amount": amount,
-                            "mode": "all" if self.m_all.isChecked() else "any",
+                            "mode": mode,
                             "allow_drop": True, "manual_extra": self.manual_extra.value(),
                             "drop_extra": self.drop_extra.value()}
         self.accept()

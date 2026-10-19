@@ -281,3 +281,19 @@ def test_min_amount_counts_pieces_per_box():
     # 把第 2 行也给 M：10 箱 × 12 件 × 2.0 = 240€，合计 327€（若按一箱 2€ 算，永远凑不够）
     assert a[3] == "M" and a[2] == "M"
     assert not rep["warning"]
+
+
+def test_rule_condition_three_options():
+    """起订规则条件：只看箱数 / 只看金额 / 都要达到（旧的「其中一个」仍兼容）"""
+    from min_order_optimizer import effective_limits, _satisfied
+    assert effective_limits(200, 700, "colli") == (200, 0, "all")
+    assert effective_limits(200, 700, "amount") == (0, 700, "all")
+    assert effective_limits(200, 700, "all") == (200, 700, "all")
+    assert effective_limits(200, 700, "any") == (200, 700, "any")
+    assert effective_limits(None, "", None) == (0, 0, "all")
+    c, a, m = effective_limits(200, 700, "colli")
+    assert _satisfied(210, 100, c, a, m)                 # 箱数够，金额不够 → 只看箱数：达标
+    c, a, m = effective_limits(200, 700, "amount")
+    assert not _satisfied(210, 100, c, a, m) and _satisfied(10, 800, c, a, m)
+    c, a, m = effective_limits(200, 700, "all")
+    assert not _satisfied(210, 100, c, a, m) and _satisfied(210, 800, c, a, m)
