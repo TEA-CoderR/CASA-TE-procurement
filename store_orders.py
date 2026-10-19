@@ -31,6 +31,8 @@ DEFAULT_FILL = {
     "merge_colocated": True,  # ① 和 BMS 同一个仓库的门店整单并进 BMS（不多跑一趟）
     "borrow": True,           # ② 从同城直接送店的门店借「不紧急」的货给 BMS（到货后由 BMS 分回去）
     "borrow_min_days": 7,     # 借货条件：这家店现有库存至少还够卖几天
+    "borrow_urgent": True,    # ③ 不紧急的借完还不够：紧急的也借（只借这家店超过自己起订量的部分）
+    "merge_direct": True,     # ④ 还不够：把够起订量的门店整单并进 BMS，让其他门店也订得起来
     "far_stores": [1],        # 离得远的门店：不借它的货
     "colocated_store": 3,     # 和 BMS 仓库在一起的门店
 }
@@ -766,9 +768,11 @@ def _bms_state(scheda, res, members, lent, items):
     return lines, dem_rows, per_store
 
 
-def _borrow(scheda, res, members, lent, fill, items):
+def _borrow(scheda, res, members, lent, fill, items, relaxed=False):
     """
     从同城、直接送店的门店一箱一箱借不紧急的货给 BMS，直到 BMS 够起订量；借完那家店自己还要够起订量。
+    relaxed=True：紧急的、库存天数少的也可以借（还是先借最不紧急的），只要借完那家店仍够起订量
+                  —— 就是把这家店超过起订量的部分挪给 BMS。
     返回 True = 借够了
     """
     mc, ma = scheda["moq_colli"], scheda["moq_amount"]
@@ -792,10 +796,10 @@ def _borrow(scheda, res, members, lent, fill, items):
                     continue
                 it = items[row]
                 d = res["stores"][sid]["dem_rows"].get(row)
-                if _URGENT in ((d or {}).get("decision") or ""):
+                if not relaxed and _URGENT in ((d or {}).get("decision") or ""):
                     continue
                 days = _stock_days(d)
-                if days < min_days:
+                if not relaxed and days < min_days:
                     continue
                 box = it["pack"] * it["price"]
                 if not _satisfied(dc - 1, da - box, mc, ma):
@@ -832,9 +836,11 @@ def plan_supplier(scheda, demand, fill=None, stores=None, colli=None, mode="auto
     一个供应商的配货方案。
     返回 {"stores": {门店号: {status, colli, amount, lines, added, lent}}, "bms": {...} 或 None}
       status: "direct" 直接送店 / "filled" 凑单后直接送店 / "bms" 并入 BMS /
-              "merged" 和 BMS 同仓、整单并进 BMS / "none" 不用订
+              "merged" 和 BMS 同仓、整单并进 BMS / "pulled" 自己够起订量，但整单并进 BMS 让其他店也订得起来 /
+              "none" 不用订
       lent: 借给 BMS 的货 [(行号, 箱数, 金额)]（这家店仍直接送店，这部分由 BMS 订、到货后分回来）
-    BMS 不够起订量时依次尝试：① 同仓门店整单并入 ② 从同城门店借不紧急的货 ③ 凑单；
+    BMS 不够起订量时依次尝试：① 同仓门店整单并入 ② 从同城门店借不紧急的货 ③ 紧急的也借（只借超过借出门店起订量的部分）
+    ④ 把够起订量的门店整单并进 BMS（货值最小、并进去就够的那家）；每一步都会试 BMS 凑单；
     试完能订得起来才采用，否则维持「BMS 仍不够起订量」（这张 BMS 单不下）。
     mode（配货结果页手动选）：
       "auto"        系统建议（上面的规则）
@@ -925,6 +931,28 @@ def plan_supplier(scheda, demand, fill=None, stores=None, colli=None, mode="auto
             got = _borrow(scheda, res, trial_members, trial_lent, fill, items)
             s2 = evaluate(trial_members, trial_lent) if (got or trial_lent) else None
             ok = bool(s2) and s2[0] != "short"
+            # ③ 还不够：紧急的也借，只借这些店超过自己起订量的部分
+            if not ok and fill.get("borrow_urgent", True):
+                got = _borrow(scheda, res, trial_members, trial_lent, fill, items, relaxed=True)
+                s2 = evaluate(trial_members, trial_lent) if (got or trial_lent) else None
+                ok = bool(s2) and s2[0] != "short"
+        # ④ 还不够：把够起订量的门店整单并进 BMS（挑并进去就够、货值最小的那家；一家不够再两家…）
+        pulled = []
+        if not ok and fill.get("merge_direct", True):
+            far = set(fill.get("far_stores") or [])
+            cands = [sid for sid, st_ in res["stores"].items()
+                     if st_["status"] in ("direct", "filled") and sid not in far and sid not in trial_members]
+            from itertools import combinations
+            base_amt = {sid: _totals(res["stores"][sid]["base_lines"], items)[1] for sid in cands}
+            for k in range(1, len(cands) + 1):
+                for combo in sorted(combinations(cands, k), key=lambda cs: sum(base_amt[x] for x in cs)):
+                    s3 = evaluate(trial_members + list(combo), {})
+                    if s3[0] != "short":
+                        pulled = list(combo)
+                        trial_members, trial_lent, s2, ok = trial_members + pulled, {}, s3, True
+                        break
+                if pulled:
+                    break
         if ok:
             if colo in trial_members and colo not in members:
                 how.append("merged")
@@ -932,6 +960,13 @@ def plan_supplier(scheda, demand, fill=None, stores=None, colli=None, mode="auto
                 st["status"] = "merged"
                 st["lines"], st["added"] = dict(st["base_lines"]), []
                 st["colli"], st["amount"] = _totals(st["lines"], items)
+            for sid in pulled:
+                st = res["stores"][sid]
+                st["status"] = "pulled"
+                st["lines"], st["added"] = dict(st["base_lines"]), []
+                st["colli"], st["amount"] = _totals(st["lines"], items)
+            if pulled:
+                how.append("pulled")
             if trial_lent:
                 how.append("borrow")
             members, lent = trial_members, trial_lent
@@ -1264,7 +1299,8 @@ def write_plans(results, out_root, date_tag=None, on_file=None, calc=None):
 
 
 STATUS_TEXT = {"direct": "直接送店", "filled": "凑单后送店", "bms": "并入 BMS", "none": "不用订",
-               "short": "BMS 仍不够起订量", "merged": "并入 BMS（同一仓库）", "dropped": "不订（手动）"}
+               "short": "BMS 仍不够起订量", "merged": "并入 BMS（同一仓库）", "dropped": "不订（手动）",
+               "pulled": "并入 BMS（帮其他店凑起订量）"}
 # 去向是 BMS 的那一行：由 BMS 订货，到货后仓库分给各门店
 BMS_STATUS_TEXT = {"direct": "BMS 分货", "filled": "凑单后 BMS 分货", "short": "BMS 不够起订量 · 不订",
                    "forced": "手动并入 BMS（未达起订量）"}
@@ -1336,6 +1372,8 @@ def bms_note(b):
     parts = ["合并：" + "、".join(STORE_SHEETS[s] for s in b["stores"])]
     if "merged" in b.get("how", []):
         parts.append("同仓门店整单并入")
+    if "pulled" in b.get("how", []):
+        parts.append("够起订量的门店整单并入，让其他店也订得起来")
     if "manual" in b.get("how", []):
         parts.append("手动选择全部并入 BMS")
     if b.get("lenders"):
@@ -1423,6 +1461,8 @@ def export_summary(results, path, demand=None, base=None, edited=None, days_list
                         note.append("借给 BMS")
                     if st["status"] == "merged" and dest == BMS:
                         note.append("同仓并入")
+                    if st["status"] == "pulled" and dest == BMS:
+                        note.append("并入帮其他店凑起订量")
                     ws2.append([day, sc["name"], STORE_SHEETS[sid], dest, it.get("db_code") or it["code"], it["ean"],
                                 it["desc"], it["pack"], it["price"], x.get("inv_raw", x["inv"]) if x else None,
                                 *((x["sales"] if x else [None] * 4)), _fmt_days(x["inv_days"]) if x else None,

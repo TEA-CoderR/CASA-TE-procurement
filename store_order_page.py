@@ -234,6 +234,12 @@ class FillDialog(QDialog):
         r.addWidget(self.borrow_days)
         r.addStretch()
         lay.addLayout(r)
+        self.borrow_urgent = QCheckBox(tr("③ 还不够：紧急的货也借（只借借出门店超过自己起订量的部分）"))
+        self.borrow_urgent.setChecked(bool(fc.get("borrow_urgent", True)))
+        self.merge_direct = QCheckBox(tr("④ 还不够：把够起订量的门店整单并进 BMS（挑并进去就够、货值最小的那家），让其他门店也订得起来"))
+        self.merge_direct.setChecked(bool(fc.get("merge_direct", True)))
+        lay.addWidget(self.borrow_urgent)
+        lay.addWidget(self.merge_direct)
         h = QLabel(tr("借货不会让借出的门店低于起订量，紧急补货的商品不借，借出去的货由 BMS 订、到货后分回原门店。"))
         h.setObjectName("Faint")
         h.setWordWrap(True)
@@ -279,7 +285,9 @@ class FillDialog(QDialog):
         self.page.cfg["fill"] = dict(self.page.fill_cfg(), max_amount_gap=self.gap_amount.value(),
                                      max_colli_gap=self.gap_colli.value(), max_stock_days=self.max_days.value(),
                                      fill_bms=self.fill_bms.isChecked(), merge_colocated=self.merge_colo.isChecked(),
-                                     borrow=self.borrow.isChecked(), borrow_min_days=self.borrow_days.value())
+                                     borrow=self.borrow.isChecked(), borrow_min_days=self.borrow_days.value(),
+                                     borrow_urgent=self.borrow_urgent.isChecked(),
+                                     merge_direct=self.merge_direct.isChecked())
         self.page.cfg["transfer"] = dict(self.page.transfer_cfg(), enabled=self.tr_on.isChecked(),
                                          mode=self.tr_mode.currentData(), min_value=self.tr_min.value())
         save_settings(self.page.settings)
@@ -1279,7 +1287,7 @@ class StoreOrderPage:
             return "ok"
         if st["status"] == "filled":
             return "fill"
-        if st["status"] in ("bms", "merged"):
+        if st["status"] in ("bms", "merged", "pulled"):
             return "bms_ok" if S.bms_ordered(plan.get("bms")) else "short"
         return "short"
 
@@ -1519,7 +1527,7 @@ class StoreOrderPage:
                 warns.append(tr("{0} 的 BMS 不够起订量，这次不订", sc["name"]))
             elif b and b["status"] == "forced":
                 warns.append(tr("{0} 手动并入 BMS，未达起订量", sc["name"]))
-            elif b and (b.get("lenders") or "merged" in b.get("how", [])):
+            elif b and (b.get("lenders") or "merged" in b.get("how", []) or "pulled" in b.get("how", [])):
                 warns.append(tr("{0} 借货 / 并单后才够起订量", sc["name"]))
         self.r_warn.setText(str(len(warns)))
         self.r_warn.setStyleSheet(f"color:{T('warn')};" if warns else f"color:{T('ok')};")
@@ -1565,6 +1573,8 @@ class StoreOrderPage:
                     notes.append(self._gap_note(sc, st))
                 if st["status"] == "merged":
                     notes.append(tr("和 BMS 同一个仓库，整单并进 BMS"))
+                if st["status"] == "pulled":
+                    notes.append(tr("自己够起订量，但整单并进 BMS，让其他门店也订得起来"))
                 rows.append((tr(day), sc["name"], moq, name, st, st["status"], "；".join(x for x in notes if x)))
                 self._res_index.append(k_res)
                 self.row_files.append(files.get((sc["path"], name)))
@@ -1586,7 +1596,7 @@ class StoreOrderPage:
                 self.row_files.append(files.get((sc["path"], S.BMS)))
         t = self.rtable
         t.setRowCount(len(rows))
-        kind = {"direct": "ok", "filled": "accent", "bms": "gray", "short": "err", "merged": "gray", "dropped": "gray",
+        kind = {"direct": "ok", "filled": "accent", "bms": "gray", "short": "err", "merged": "gray", "pulled": "gray", "dropped": "gray",
                 "forced": "warn"}
         for i, (day, sup, moq, dest, st, status, note) in enumerate(rows):
             self.ui.table_set_row(t, i, [day, sup, moq, dest, f"{st['colli']:g}", f"€{st['amount']:,.2f}", "", note],
@@ -1693,7 +1703,7 @@ class StoreOrderPage:
                                (" · " + self._gap_note(sc, st) if k else ""), k))
             if st["status"] == "dropped":
                 arrow = tr("── 这次不订 ──✕")
-            elif st["status"] in ("bms", "merged"):
+            elif st["status"] in ("bms", "merged", "pulled"):
                 arrow = tr("── 整单并入 BMS ──▶")
             elif st["lent"]:
                 arrow = tr("── 直送，借 {0:g} 箱给 BMS ┄▶", sum(n for _, n, _ in st["lent"]))
@@ -1726,8 +1736,11 @@ class StoreOrderPage:
         if b:
             if "merged" in b.get("how", []):
                 expl.append(tr("BMS 还不够 → 和 BMS 同仓的门店整单并入（不多跑一趟）。"))
+            if "pulled" in b.get("how", []):
+                expl.append(tr("借货还不够 → 把够起订量的 {0} 整单并进 BMS，让其他门店也订得起来。", tr("、").join(
+                    S.STORE_SHEETS[s_] for s_, st_ in plan["stores"].items() if st_["status"] == "pulled")))
             if b.get("lenders"):
-                expl.append(tr("再向同城门店借不紧急的货：{0}（借完这些店仍够起订量）。",
+                expl.append(tr("再向同城门店借货：{0}（借完这些店仍够起订量）。",
                                tr("、").join(f"{S.STORE_SHEETS[s]} " + tr("{0:g} 箱", sum(r.values())) for s, r in b["lenders"].items())))
             if b["added"]:
                 expl.append(tr("最后凑单 {0:g} 箱。", sum(n for _, n, _ in b["added"])))

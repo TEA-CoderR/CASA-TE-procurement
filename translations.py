@@ -1649,4 +1649,12 @@ TRANSLATIONS = {
     '没有门店多出来的货能凑够 €{0:g} 的拣货门槛': ('No store has enough surplus to reach the €{0:g} picking minimum', 'Nessun negozio ha eccedenze sufficienti per la soglia di prelievo di €{0:g}'),
     '门店间调货 · {0} 个商品，少订 {1} 箱': ('Transfers between stores · {0} items, {1} cases fewer', 'Trasferimenti tra negozi · {0} articoli, {1} colli in meno'),
     '从 {0} 调出，货值 €{1:,.2f}；配货时会一起生成调货单': ('From {0}, value €{1:,.2f}; the transfer list is created with the orders', 'Da {0}, valore €{1:,.2f}; la lista trasferimenti viene creata con gli ordini'),
+    '③ 还不够：紧急的货也借（只借借出门店超过自己起订量的部分）': ('③ Still short: borrow urgent goods too (only what the lending store has above its own minimum)', '③ Ancora insufficiente: prestare anche merce urgente (solo la parte oltre il minimo del negozio che presta)'),
+    '④ 还不够：把够起订量的门店整单并进 BMS（挑并进去就够、货值最小的那家），让其他门店也订得起来': ('④ Still short: move a whole store order that meets the minimum into BMS (the smallest one that is enough), so the other stores can order too', "④ Ancora insufficiente: spostare in BMS l'intero ordine di un negozio che raggiunge il minimo (il più piccolo sufficiente), così anche gli altri negozi possono ordinare"),
+    '借货还不够 → 把够起订量的 {0} 整单并进 BMS，让其他门店也订得起来。': ('Borrowing was not enough → the whole order of {0} (which met the minimum) goes into BMS so the other stores can order too.', "Il prestito non bastava → l'intero ordine di {0} (che raggiungeva il minimo) va in BMS, così anche gli altri negozi possono ordinare."),
+    '再向同城门店借货：{0}（借完这些店仍够起订量）。': ('Then borrow from stores in the same city: {0} (they still meet the minimum afterwards).', 'Poi prestito dai negozi della stessa città: {0} (restano sopra il minimo).'),
+    '自己够起订量，但整单并进 BMS，让其他门店也订得起来': ('Meets the minimum itself, but the whole order goes into BMS so the other stores can order too', "Raggiunge il minimo da solo, ma l'intero ordine va in BMS così anche gli altri negozi possono ordinare"),
+    '并入 BMS（帮其他店凑起订量）': ('Into BMS (helping other stores reach the minimum)', 'In BMS (per far raggiungere il minimo agli altri negozi)'),
+    '够起订量的门店整单并入，让其他店也订得起来': ('A store meeting the minimum was moved in whole so the others can order', 'Un negozio sopra il minimo spostato per intero così gli altri possono ordinare'),
+    '并入帮其他店凑起订量': ('Moved in to help other stores', 'Spostato per aiutare gli altri negozi'),
 }

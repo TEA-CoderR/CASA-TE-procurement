@@ -125,8 +125,8 @@ class PlanTest(unittest.TestCase):
         self.assertEqual(p["stores"][2]["status"], "direct")
         self.assertEqual(p["stores"][1]["lines"], {6: 12})              # 1 号店不动
         self.assertEqual(b["per_store"][2], {7: 4})
-        # 关掉借货 → 还是不够
-        p = S.plan_supplier(sc, dem, dict(fill, borrow=False), [1, 2, 4, 5])
+        # 关掉借货（也不整单并入）→ 还是不够
+        p = S.plan_supplier(sc, dem, dict(fill, borrow=False, merge_direct=False), [1, 2, 4, 5])
         self.assertEqual(p["bms"]["status"], "short")
         self.assertEqual(p["stores"][2]["lines"], {6: 8, 7: 7})
 
@@ -155,13 +155,45 @@ class PlanTest(unittest.TestCase):
     def test_no_rescue_when_it_cannot_reach_moq(self):
         sc, dem = self._rescue_setup()
         dem[2]["7"]["inv"] = 0                                          # 2 号店的货也急 → 不能借
-        p = S.plan_supplier(sc, dem, dict(FILL, max_colli_gap=0), [1, 2, 4, 5])
+        p = S.plan_supplier(sc, dem, dict(FILL, max_colli_gap=0, borrow_urgent=False, merge_direct=False),
+                            [1, 2, 4, 5])
         self.assertEqual(p["bms"]["status"], "short")
         self.assertEqual(p["bms"]["lenders"], {})
         self.assertEqual(p["stores"][2]["lines"], {6: 8, 7: 7})
         t = S.plan_totals([("周一", sc, p)])
         self.assertAlmostEqual(t["total"], 12 + 15)         # BMS 不够起订量 → 不下单，不算金额
 
+
+    def test_borrow_urgent_part_above_lender_moq(self):
+        """不紧急的借不到：把 2 号店超过起订量的部分（紧急的也行）借给 BMS，2 号店仍够起订量"""
+        sc, dem = self._rescue_setup()
+        dem[2]["7"]["inv"] = 0
+        p = S.plan_supplier(sc, dem, dict(FILL, max_colli_gap=0), [1, 2, 4, 5])
+        b = p["bms"]
+        self.assertEqual(b["status"], "direct")
+        self.assertEqual(b["colli"], 10)
+        self.assertEqual(sum(sum(r.values()) for r in b["lenders"].values()), 4)
+        self.assertEqual(p["stores"][2]["status"], "direct")
+        self.assertGreaterEqual(p["stores"][2]["colli"], 10)            # 借完 2 号店还够起订量
+        self.assertNotIn("pulled", b["how"])
+
+    def test_merge_whole_store_when_borrowing_is_not_enough(self):
+        """2 号店只超出 1 箱，借了也不够 → 把 2 号店整单并进 BMS，3、4 号店也订得起来"""
+        sc, dem = self._rescue_setup()
+        dem[2] = {"6": {"daily": 1.0, "inv": 0, "sugg": 11, "decision": "🔴"}}   # 11 箱，只多 1 箱
+        p = S.plan_supplier(sc, dem, dict(FILL, max_colli_gap=0), [1, 2, 4, 5])
+        b = p["bms"]
+        self.assertEqual(b["status"], "direct")
+        self.assertEqual(sorted(b["stores"]), [2, 4, 5])
+        self.assertEqual(p["stores"][2]["status"], "pulled")
+        self.assertEqual(b["lenders"], {})
+        self.assertIn("pulled", b["how"])
+        self.assertEqual(p["stores"][1]["status"], "direct")            # 远店不动
+        self.assertEqual(S.status_text("MARLIA", "pulled"), "并入 BMS（帮其他店凑起订量）")
+        # 关掉 ④ → 还是不够
+        p = S.plan_supplier(sc, dem, dict(FILL, max_colli_gap=0, merge_direct=False), [1, 2, 4, 5])
+        self.assertEqual(p["bms"]["status"], "short")
+        self.assertEqual(p["stores"][2]["status"], "direct")
     def test_mode_direct_only(self):
         sc, dem = self._rescue_setup()
         dem[2]["7"]["inv"] = 0
