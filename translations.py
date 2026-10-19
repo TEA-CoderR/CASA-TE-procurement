@@ -1608,4 +1608,13 @@ TRANSLATIONS = {
     '复制': ('Copy', 'Copia'),
     '  箱数\t{0:,.0f} → {1:,.0f} / {2:,.0f}': ('  Cases\t{0:,.0f} → {1:,.0f} / {2:,.0f}', '  Colli\t{0:,.0f} → {1:,.0f} / {2:,.0f}'),
     '  金额\t€{0:,.2f} → €{1:,.2f} / €{2:,.2f}': ('  Amount\t€{0:,.2f} → €{1:,.2f} / €{2:,.2f}', '  Importo\t€{0:,.2f} → €{1:,.2f} / €{2:,.2f}'),
+    '点「当前供应商」那一格可以改成别的报价；点「{0}」那一格可以改数量（改成 0 = 这个商品不订）。上面的起订情况和采购总额会实时更新。确认后才会写入主订单和供应商文件。': ('Click "Current supplier" to pick another price; click "{0}" to change the quantity (0 = do not order this item). Minimum orders and the total update live. Files are written only after you confirm.', 'Clicca «Fornitore attuale» per scegliere un altro prezzo; clicca «{0}» per cambiare la quantità (0 = non ordinare). Minimi e totale si aggiornano subito. I file vengono scritti solo dopo la conferma.'),
+    '{0} 个商品换供应商': ('change the supplier of {0} items', 'cambiare fornitore a {0} articoli'),
+    '{0} 个商品改数量': ('change the quantity of {0} items', 'cambiare la quantità di {0} articoli'),
+    '要把 {0}，并重新写入主订单和供应商文件。写入前会自动备份。继续？': ('This will {0} and rewrite the main order and supplier files (backed up first). Continue?', 'Verrà {0} e riscritti ordine principale e file fornitori (con backup). Continuare?'),
+    '件数': ('Pieces', 'Pezzi'),
+    '改过：原来是 {0:g}。点击修改': ('Changed: was {0:g}. Click to edit', 'Modificato: era {0:g}. Clicca per modificare'),
+    '点击修改数量': ('Click to change the quantity', 'Clicca per cambiare la quantità'),
+    '\u3000改了数量 {0} 个': ('\u3000{0} quantities changed', '\u3000{0} quantità modificate'),
+    '[修改分配] 有 {0} 个商品改了数量': ('[Edit allocation] {0} items have a new quantity', '[Modifica assegnazione] {0} articoli con nuova quantità'),
 }

@@ -84,3 +84,17 @@ def test_state_keeps_scenario_assigns_through_history():
     s = history._int_keys_to_str(st)
     assert s["scenario_assigns"] == [{"2": "A"}, {"3": "B"}]
     assert history._str_keys_to_int(s)["scenario_assigns"] == [{2: "A"}, {3: "B"}]
+
+
+def test_set_row_qty_cases_and_pieces():
+    """修改分配改数量：普通主订单改箱数；按件数订货改件数，各家箱数重新取整"""
+    import service
+    r = service._price_row(5, 3, {"A": 1.0, "B": 1.2}, {"A": 6, "B": 6})
+    r2 = service.set_row_qty(r, 10)
+    assert r2["qty"] == 10 and r2["qty_orig"] == 3 and r["qty"] == 3          # 原来的行不变
+    assert "qty_orig" not in service.set_row_qty(r2, 3)                        # 改回原数 = 没改
+    p = service._price_row_pieces(6, 10, {"A": 1.0, "B": 0.9}, {"A": 6, "B": 12})
+    assert p["colli"] == {"A": 2, "B": 1}
+    p2 = service.set_row_qty(p, 25)
+    assert p2["colli"] == {"A": 5, "B": 3} and p2["qty"] == 25 and p2["qty_orig"] == 10
+    assert service._order_qty(p2, "B") == 3

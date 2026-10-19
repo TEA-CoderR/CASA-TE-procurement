@@ -887,6 +887,30 @@ class SupplierComboDelegate(QStyledItemDelegate):
         self.dlg.set_supplier(idx.data(Qt.UserRole), cb.currentData())
 
 
+class QtyDelegate(QStyledItemDelegate):
+    """修改分配表格里「箱数」列：点击后输入新数量"""
+
+    def __init__(self, dlg):
+        super().__init__(dlg.table)
+        self.dlg = dlg
+
+    def createEditor(self, parent, opt, idx):
+        sb = QDoubleSpinBox(parent)
+        sb.setDecimals(2)
+        sb.setRange(0, 999999)
+        sb.setButtonSymbols(QAbstractSpinBox.NoButtons)
+        sb.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        return sb
+
+    def setEditorData(self, sb, idx):
+        r = self.dlg.rows[idx.data(Qt.UserRole)]
+        sb.setValue(self.dlg._qty(r))
+        sb.selectAll()
+
+    def setModelData(self, sb, model, idx):
+        self.dlg.set_qty(idx.data(Qt.UserRole), sb.value())
+
+
 class ManualDialog(QDialog):
     """手动调整每个商品的供应商。确认后返回 self.result（{行号: 供应商}）"""
 
@@ -895,7 +919,9 @@ class ManualDialog(QDialog):
         self.edit_mode = edit_mode
         self.setWindowTitle(tr("修改分配") if edit_mode else tr("手动调整供应商"))
         self.resize(1180, 760)
-        self.rows = rows
+        self.rows = [dict(r) for r in rows]      # 改数量时换成新的行，不动原来的
+        self.qty_changed = {}                     # {行号: 新数量}（只在修改分配里能改）
+        self.pieces_mode = any(r.get("pieces") is not None for r in rows)
         self.rules = rules
         self.baseline = dict(baseline)
         self.proposed = dict(proposed)
@@ -910,7 +936,9 @@ class ManualDialog(QDialog):
         t.setObjectName("PageTitle")
         t.setStyleSheet("font-size:20px;")
         lay.addWidget(t)
-        s = QLabel(tr("点「当前供应商」那一格可以改成别的报价。上面的起订情况和采购总额会实时更新。确认后才会写入主订单和供应商文件。"))
+        s = QLabel(tr("点「当前供应商」那一格可以改成别的报价；点「{0}」那一格可以改数量（改成 0 = 这个商品不订）。上面的起订情况和采购总额会实时更新。确认后才会写入主订单和供应商文件。",
+                      tr("件数") if self.pieces_mode else tr("箱数")) if edit_mode else
+                   tr("点「当前供应商」那一格可以改成别的报价。上面的起订情况和采购总额会实时更新。确认后才会写入主订单和供应商文件。"))
         s.setObjectName("Muted")
         s.setWordWrap(True)
         lay.addWidget(s)
@@ -958,7 +986,8 @@ class ManualDialog(QDialog):
         bar.addWidget(exp)
         lay.addLayout(bar)
 
-        self.table = make_table([tr("行"), "EAN", "ARTICOLO", tr("箱数"), tr("最低价供应商"), tr("件价"),
+        self.table = make_table([tr("行"), "EAN", "ARTICOLO", tr("件数") if self.pieces_mode else tr("箱数"),
+                                 tr("最低价供应商"), tr("件价"),
                                  tr("当前供应商"), tr("当前件价"), tr("比最低价多花 €")],
                                 stretch_col=2, numeric_cols=(0, 3, 5, 7, 8))
         self.table.setFocusPolicy(Qt.StrongFocus)
@@ -966,6 +995,8 @@ class ManualDialog(QDialog):
         self.table.setEditTriggers(QAbstractItemView.DoubleClicked | QAbstractItemView.SelectedClicked)
         self.table.cellClicked.connect(self._cell_clicked)
         self.table.setItemDelegateForColumn(6, SupplierComboDelegate(self))
+        if edit_mode:
+            self.table.setItemDelegateForColumn(3, QtyDelegate(self))
         lay.addWidget(self.table, 1)
         from erp_widgets import TableSortFilter
         self.ctl = TableSortFilter(self.table, lambda: len(self.rows), self._text, self._fill_row,
@@ -1066,6 +1097,20 @@ class ManualDialog(QDialog):
             it = self.table.item(k, col)
             it.setFlags(it.flags() & ~Qt.ItemIsEditable)
         self.table.item(k, 6).setData(Qt.UserRole, i)
+        self.table.item(k, 3).setData(Qt.UserRole, i)
+        r = self.rows[i]
+        if self.edit_mode:
+            it = self.table.item(k, 3)
+            it.setFlags(it.flags() | Qt.ItemIsEditable)
+            if "qty_orig" in r:
+                it.setText(f"{self._qty(r):g}  ✎")
+                it.setForeground(QColor(T("accent")))
+                f = it.font()
+                f.setBold(True)
+                it.setFont(f)
+                it.setToolTip(tr("改过：原来是 {0:g}。点击修改", float(r["qty_orig"] or 0)))
+            else:
+                it.setToolTip(tr("点击修改数量"))
         if n_offers > 1:
             it = self.table.item(k, 6)
             it.setFlags(it.flags() | Qt.ItemIsEditable)
@@ -1082,8 +1127,22 @@ class ManualDialog(QDialog):
     def _cell_clicked(self, k, col):
         """点「当前供应商」那一格直接弹出下拉（其他列点了只是选中）"""
         it = self.table.item(k, col)
-        if col == 6 and it is not None and it.flags() & Qt.ItemIsEditable:
+        if col in (3, 6) and it is not None and it.flags() & Qt.ItemIsEditable:
             self.table.editItem(it)
+
+    def set_qty(self, i, q):
+        """改一个商品的数量（修改分配）"""
+        from service import set_row_qty
+        r = self.rows[i]
+        if abs(q - self._qty(r)) < 1e-9:
+            return
+        self.rows[i] = set_row_qty(r, q)
+        if "qty_orig" in self.rows[i]:
+            self.qty_changed[r["row"]] = q
+        else:
+            self.qty_changed.pop(r["row"], None)
+        self._set_row(i)
+        self.refresh_status()
 
     def set_supplier(self, i, s):
         r = self.rows[i]
@@ -1119,7 +1178,8 @@ class ManualDialog(QDialog):
         cost = self._money(self.assign)
         diff = self._cost(self.assign) - self.base_cost
         n = sum(1 for r in self.rows if self.assign.get(r["row"]) != self.baseline.get(r["row"]))
-        self.total_lbl.setText(tr("采购总额 €{0:,.2f}　比只按最低价 {1:+,.2f}　改动 {2} 个商品", cost, diff, n))
+        self.total_lbl.setText(tr("采购总额 €{0:,.2f}　比只按最低价 {1:+,.2f}　改动 {2} 个商品", cost, diff, n)
+                               + (tr("　改了数量 {0} 个", len(self.qty_changed)) if self.qty_changed else ""))
         self.total_lbl.setStyleSheet(f"background:{T('surface2')}; color:{T('text')}; border:1px solid {T('line')};")
 
     def _hidden(self, i):
@@ -1128,7 +1188,8 @@ class ManualDialog(QDialog):
         n_offers = sum(1 for p in r["prices"].values() if p is not None)
         if self.only_multi.isChecked() and n_offers < 2:
             return True
-        if self.only_changed.isChecked() and self.assign.get(r["row"]) == self.baseline.get(r["row"]):
+        if self.only_changed.isChecked() and self.assign.get(r["row"]) == self.baseline.get(r["row"]) \
+                and r["row"] not in self.qty_changed:
             return True
         text = self.filter.text().strip().lower()
         if text:
@@ -3720,13 +3781,19 @@ class MainWindow(QMainWindow):
         if not dlg.exec() or dlg.result is None:
             return
         new = dlg.result
+        qty = dict(dlg.qty_changed)
         changed = [r["row"] for r in st["rows"] if new.get(r["row"]) != cur.get(r["row"])]
-        if not changed:
+        if not changed and not qty:
             self.show_toast(tr("没有改动"))
             return
+        parts = []
+        if changed:
+            parts.append(tr("{0} 个商品换供应商", len(changed)))
+        if qty:
+            parts.append(tr("{0} 个商品改数量", len(qty)))
         if QMessageBox.question(self, tr("修改分配"),
-                                tr("要把 {0} 个商品换供应商，并重新写入主订单和供应商文件。写入前会自动备份。继续？",
-                                   len(changed))) != QMessageBox.Yes:
+                                tr("要把 {0}，并重新写入主订单和供应商文件。写入前会自动备份。继续？",
+                                   tr("、").join(parts))) != QMessageBox.Yes:
             return
         sources = dict(st["sources"])
         for r in st["rows"]:
@@ -3749,7 +3816,7 @@ class MainWindow(QMainWindow):
             from service import rewrite_assignment
             try:
                 out, n = rewrite_assignment(data, new, sources, self.log,
-                                            progress=lambda p, t: self.bridge.progress.emit(int(p), t))
+                                            progress=lambda p, t: self.bridge.progress.emit(int(p), t), qty=qty)
                 self.bridge.rewrite_done.emit((out, n, None))
             except Exception as e:
                 file_logger.error(f"rewrite failed: {e}", exc_info=True)

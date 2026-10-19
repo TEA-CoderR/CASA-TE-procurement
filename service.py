@@ -64,6 +64,29 @@ def _price_row_pieces(row, pieces, unit, packs, ean="", articolo=""):
             "prices": dict(per), "amt": dict(per), "colli": colli}
 
 
+def set_row_qty(r, q):
+    """
+    修改分配里改了一个商品的数量 → 新的这一行（不改原来的）。
+      普通主订单：q 是箱数（COLLI）
+      按件数订货（PEZZI）：q 是件数，各家箱数重新按 件数 ÷ 每箱件数 向上取整
+    qty_orig 记住处理时的原数量（界面上标出改过的）。
+    """
+    q = max(0.0, float(q or 0))
+    orig = r.get("qty_orig", r.get("qty"))
+    if r.get("pieces") is not None:
+        r2 = _price_row_pieces(r["row"], q, r.get("unit") or {}, r.get("packs") or {}, r.get("ean", ""),
+                               r.get("articolo", ""))
+        for k, v in r.items():
+            r2.setdefault(k, v)
+    else:
+        r2 = dict(r, qty=q)
+    if q != orig:
+        r2["qty_orig"] = orig
+    else:
+        r2.pop("qty_orig", None)
+    return r2
+
+
 def _order_qty(r, s):
     """写进供应商 s 订单的箱数：按件数订货时用这家的箱数，否则就是主订单的 COLLI"""
     c = (r or {}).get("colli")
@@ -1296,7 +1319,7 @@ def switch_scenario(data, idx, log, progress=None):
     return rewrite_assignment(d2, new, sources, log, progress, force=True)
 
 
-def rewrite_assignment(data, new_assign, new_sources, log, progress=None, force=False):
+def rewrite_assignment(data, new_assign, new_sources, log, progress=None, force=False, qty=None):
     """
     data: 上次处理的 summary（含 state）
     new_assign: {行号: 供应商}，new_sources: {行号: 来源}
@@ -1319,13 +1342,21 @@ def rewrite_assignment(data, new_assign, new_sources, log, progress=None, force=
     rows, rules, baseline = st["rows"], st["rules"], st["baseline"]
     old = st["assignment"]
     ordine_file, dist = st["ordine_file"], st["distribuire_path"]
-    changed = [r for r in rows if old.get(r["row"]) != new_assign.get(r["row"])]
+    # 改了数量的商品（qty = {行号: 新数量}）
+    old_q = {r["row"]: r.get("qty") for r in rows}
+    if qty:
+        rows = [set_row_qty(r, qty[r["row"]]) if r["row"] in qty else r for r in rows]
+    q_changed = {r["row"] for r in rows if r.get("qty") != old_q.get(r["row"])}
+    changed = [r for r in rows if old.get(r["row"]) != new_assign.get(r["row"]) or r["row"] in q_changed]
     out = _copy.deepcopy(data)
     if not changed and not force:
         return out, 0
 
     log("\n" + "=" * 50)
-    log(tr("[修改分配] 有 {0} 个商品换了供应商，重新写入文件", len(changed)))
+    n_sup = sum(1 for r in changed if old.get(r["row"]) != new_assign.get(r["row"]))
+    log(tr("[修改分配] 有 {0} 个商品换了供应商，重新写入文件", n_sup))
+    if q_changed:
+        log(tr("[修改分配] 有 {0} 个商品改了数量", len(q_changed)))
     P(5, tr("备份原始文件..."))
     try:
         out["backup_dir"] = _backup_inputs(ordine_file, dist, log)
@@ -1339,10 +1370,21 @@ def rewrite_assignment(data, new_assign, new_sources, log, progress=None, force=
         wb = load_workbook(io.BytesIO(f.read()))
     ws = wb.active
     col_colli_m, _ = find_col(ws, COL_COLLI)
+    col_pezzi_m, _ = find_col(ws, "PEZZI")
     for r in changed:
         ws.cell(r["row"], SUPPLIER_RESULT_COL).value = new_assign.get(r["row"])
         if r.get("colli") and col_colli_m and new_assign.get(r["row"]):
             ws.cell(r["row"], col_colli_m).value = _order_qty(r, new_assign.get(r["row"]))
+        if r["row"] in q_changed:
+            v = r.get("qty") or 0
+            v = int(v) if float(v).is_integer() else v
+            if r.get("pieces") is not None:
+                if col_pezzi_m:
+                    ws.cell(r["row"], col_pezzi_m).value = v
+                if col_colli_m and not new_assign.get(r["row"]):
+                    ws.cell(r["row"], col_colli_m).value = 0
+            elif col_colli_m:
+                ws.cell(r["row"], col_colli_m).value = v
     last = max([r["row"] for r in rows] + [2])
     for i in range(1, last + 1):
         ws.cell(i, MIN_ORDER_NOTE_COL).value = None
@@ -1370,7 +1412,11 @@ def rewrite_assignment(data, new_assign, new_sources, log, progress=None, force=
     for r in rows:
         s_ = new_assign.get(r["row"])
         if s_ and r.get("ean"):
-            want[(s_, r["ean"])] = _order_qty(r, s_)
+            v = _order_qty(r, s_)
+            if r["row"] in q_changed and not float(v or 0) > 0:
+                want.pop((s_, r["ean"]), None)          # 数量改成 0：从供应商订单里清掉
+                continue
+            want[(s_, r["ean"])] = v
     written_delta = defaultdict(int)
     files = sorted(affected)
     for n, file in enumerate(files):
@@ -1433,7 +1479,7 @@ def rewrite_assignment(data, new_assign, new_sources, log, progress=None, force=
     mo.update(rules=rep["rules"], extra_cost=rep["extra_cost"], changes=len(rep["changes"]),
               warning=None if all(r["status"] != "未达标" for r in rep["rules"])
               else tr("有起订供应商没有达标，请检查"))
-    out["state"] = dict(st, assignment=dict(new_assign), sources=dict(new_sources))
+    out["state"] = dict(st, assignment=dict(new_assign), sources=dict(new_sources), rows=rows)
     try:
         out["state"]["written"] = _written_fingerprints(ordine_file, dist)
     except Exception as e:
