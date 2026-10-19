@@ -105,11 +105,12 @@ def build_qss():
 
     /* ---------- 顶栏 ---------- */
     #TopBar {{ background: {t['surface']}; border-bottom: 1px solid {t['line']}; }}
-    #SubTabs {{ background: {t['surface']}; border-bottom: 1px solid {t['line']}; }}
-    QPushButton#SubTab {{ background: transparent; border: none; border-bottom: 2px solid transparent;
-        border-radius: 0; color: {t['muted']}; padding: 11px 14px 9px 14px; font-size: 13px; }}
-    QPushButton#SubTab:hover {{ color: {t['text']}; }}
-    QPushButton#SubTab:checked {{ color: {t['accent']}; border-bottom: 2px solid {t['accent']}; font-weight: 600; }}
+    #SubTabs {{ background: {t['bg']}; }}
+    #SegBox {{ background: {t['surface']}; border: 1px solid {t['line']}; border-radius: 9px; }}
+    QPushButton#SegBtn {{ background: transparent; border: none; border-radius: 6px; color: {t['muted']};
+        padding: 6px 16px; font-size: 13px; }}
+    QPushButton#SegBtn:hover {{ background: {t['surface2']}; color: {t['text']}; }}
+    QPushButton#SegBtn:checked {{ background: {t['accent_soft']}; color: {t['accent']}; font-weight: 600; }}
     #Crumb {{ color: {t['muted']}; }}
     #CrumbCur {{ font-weight: 600; }}
     QLineEdit#Search {{ background: {t['surface2']}; border: 1px solid {t['line']}; border-radius: 8px; padding: 6px 10px 6px 30px; }}

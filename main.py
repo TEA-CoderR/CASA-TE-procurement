@@ -2111,6 +2111,9 @@ class MainWindow(QMainWindow):
                 self.legacy_pages.append(lp)
                 pg, scroll = lp.build(), True
             self.pages.append(pg)
+            if key in self.SUB_PARENT:
+                for lb in pg.findChildren(QLabel, "PageTitle")[:1]:
+                    lb.hide()
             self.stack.addWidget(self._scroll(pg) if scroll else pg)
 
         self.toast = QLabel(self)
@@ -2472,18 +2475,25 @@ class MainWindow(QMainWindow):
     def _build_subtabs(self):
         """批发商比价里的标签：比价处理 / 比价结果 / 历史记录 / 起订规则 / 缺失查找"""
         self._last_sub = {}
+        # 样式：和页面同一个底色，左上角一组分段按钮（不再是单独一条白色标签栏）
         bar = QFrame()
         bar.setObjectName("SubTabs")
-        h = QHBoxLayout(bar)
-        h.setContentsMargins(24, 0, 20, 0)
-        h.setSpacing(4)
+        outer = QHBoxLayout(bar)
+        outer.setContentsMargins(24, 16, 24, 0)
+        seg = QFrame()
+        seg.setObjectName("SegBox")
+        h = QHBoxLayout(seg)
+        h.setContentsMargins(3, 3, 3, 3)
+        h.setSpacing(2)
+        outer.addWidget(seg)
+        outer.addStretch()
         grp = QButtonGroup(self)
         grp.setExclusive(True)
         self.subtab_btns = []
         for parent, subs in self.SUB_PAGES.items():
             for key, text in subs:
                 b = QPushButton(text)
-                b.setObjectName("SubTab")
+                b.setObjectName("SegBtn")
                 b.setCheckable(True)
                 b.setCursor(Qt.PointingHandCursor)
                 b.setProperty("subKey", key)
@@ -2492,7 +2502,6 @@ class MainWindow(QMainWindow):
                 grp.addButton(b)
                 self.subtab_btns.append(b)
                 h.addWidget(b)
-        h.addStretch()
         self.subtab_bar = bar
         bar.hide()
         return bar
