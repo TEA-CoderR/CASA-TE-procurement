@@ -127,6 +127,11 @@ def git_precheck():
     if not in_git():
         print("（这个文件夹不是 git 仓库，跳过提交检查）")
         return
+    # 这台电脑没设过 git 的名字 / 邮箱时，提交会失败（而且是打包完才失败），所以先问
+    if not _git("config", "user.email", check=False) or not _git("config", "user.name", check=False):
+        print("这台电脑还没设置 git 提交用的名字和邮箱（只设在这个文件夹，记录是谁发布的）。")
+        _git("config", "user.name", ask("名字", "TEA-CoderR"))
+        _git("config", "user.email", ask("邮箱"))
     _git("fetch", "-q", "origin", check=False)
     dirty = _git("status", "--porcelain", "--untracked-files=no")
     if dirty:
