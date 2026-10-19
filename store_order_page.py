@@ -12,7 +12,7 @@ import copy
 import threading
 from datetime import datetime
 
-from PySide6.QtCore import Qt, QObject, Signal
+from PySide6.QtCore import Qt, QObject, Signal, QTimer
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (QWidget, QLabel, QPushButton, QLineEdit, QComboBox, QHBoxLayout, QVBoxLayout,
                                QGridLayout, QFileDialog, QMessageBox, QSpinBox, QDoubleSpinBox, QTableWidgetItem,
@@ -1228,6 +1228,8 @@ class StoreOrderPage:
             msg += tr("；{0} 个商品在数据库里找不到", len(calc["missing"]))
         self.detail_title.setText(tr("订货明细 · {0} 行要订", n_lines))
         self._show_view(0)
+        # 订货明细窗口在后台先分批载入（不显示），第一次点开就不用等
+        QTimer.singleShot(500, self._prewarm_detail)
         self.win.show_toast(msg)
         if hasattr(self.win, "dashboard"):
             self.win.dashboard.refresh()
@@ -1235,6 +1237,13 @@ class StoreOrderPage:
     # =================================================================
     # ③ 明细（独立窗口）
     # =================================================================
+    def _prewarm_detail(self):
+        if not self.calc or self.detail_win is not None:
+            return
+        from store_detail_window import DetailWindow
+        self.detail_win = DetailWindow(self)
+        self.detail_win.load()
+
     def open_detail(self, path=ALL, sid=ALL):
         if not self.calc:
             return

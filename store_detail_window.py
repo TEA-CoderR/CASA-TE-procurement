@@ -8,14 +8,14 @@ import os
 from datetime import datetime
 
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QColor, QFontMetrics
+from PySide6.QtGui import QColor, QFontMetrics, QFont
 from PySide6.QtWidgets import (QSizePolicy, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QPushButton, QComboBox,
                                QLineEdit, QFrame, QTableWidgetItem, QAbstractItemView, QHeaderView, QButtonGroup,
-                               QScrollArea, QFileDialog, QMessageBox, QMenu, QDialog, QCheckBox)
+                               QScrollArea, QFileDialog, QMessageBox, QMenu, QDialog, QCheckBox, QProgressBar)
 
 from i18n import tr
 from settings import save_settings
-from theme import T, num_font
+from theme import T, num_font, NUM_FONT
 from erp_widgets import ToolWindow, Sparkline
 import store_orders as S
 from reorder_page import short_decision
@@ -487,6 +487,9 @@ class DetailWindow(ToolWindow):
         self._filling = False
         self._shown = 0
         self.cur_di = None
+        self._loading = False         # 正在分批填表（填完前不筛选、不排序）
+        self._load_token = 0
+        self._pending_filter = None
 
         root = QWidget()
         root.setObjectName("Dialog")
@@ -552,6 +555,21 @@ class DetailWindow(ToolWindow):
         exp.clicked.connect(self.export)
         tb.addWidget(exp)
         v.addWidget(bar)
+        # 载入进度：上万行分批填，窗口不卡；填完自动隐藏
+        lb = QFrame()
+        lh = QHBoxLayout(lb)
+        lh.setContentsMargins(16, 6, 16, 6)
+        lh.setSpacing(10)
+        self.load_lbl = QLabel(tr("正在载入订货明细…"))
+        self.load_lbl.setObjectName("Faint")
+        self.load_bar = QProgressBar()
+        self.load_bar.setTextVisible(False)
+        self.load_bar.setFixedHeight(6)
+        lh.addWidget(self.load_lbl)
+        lh.addWidget(self.load_bar, 1)
+        self.load_box = lb
+        lb.hide()
+        v.addWidget(lb)
 
         # ---- 表格 + 详情栏 ----
         mid = QHBoxLayout()
@@ -842,6 +860,10 @@ class DetailWindow(ToolWindow):
 
     # ---------- 填表 ----------
     def load(self):
+        """
+        填订货明细表。上万行（17 家供应商 × 5 家门店）一次填完要好几秒、窗口会卡住，
+        所以分批填：每批 CHUNK 行，批与批之间让界面喘口气，上面显示进度条；填完再筛选、排序。
+        """
         calc = self.page.calc
         stores = calc["stores"]
         d = calc["days"]
@@ -864,70 +886,112 @@ class DetailWindow(ToolWindow):
                     if sid in sc["sheets"]:
                         self.detail.append((sc, it, sid))
         t = self.table
+        self._load_token += 1
+        self._loading = True
         self._filling = True
-        t.setUpdatesEnabled(False)
         t.setSortingEnabled(False)
+        t.setRowCount(0)
         t.setRowCount(len(self.detail))
-        for i, (sc, it, sid) in enumerate(self.detail):
-            x = calc["demand"].get(sid, {}).get(it.get("db_code") or it["code"])
-            sug_c = calc["base"][sc["path"]].get(sid, {}).get(it["row"], 0)
-            inv_days = x["inv_days"] if x else None
-            if isinstance(inv_days, float) and math.isinf(inv_days):
-                inv_days = "∞"
-            elif isinstance(inv_days, (int, float)):
-                inv_days = f"{inv_days:,.1f}"
-            self.ui.table_set_row(t, i, _perm([
-                sc["name"], S.STORE_SHEETS[sid], short_decision(x["decision"]) if x else tr("数据库没有"),
-                it.get("db_code") or it["code"], it["ean"], it["desc"],
-                f"{x.get('inv_raw', x['inv']):g}" if x else "", *([f"{v:g}" for v in x["sales"]] if x else [""] * 4),
-                inv_days or "", f"{it['pack']:g}", f"{it['price']:.3f}".rstrip("0").rstrip("."),
-                f"{x['sugg']:,}" if x else "", f"{sug_c:g}" if sug_c else "", "", "",
-                (x["tier"] or "") if x else "",
-                f"{x['cycle']:g}" if x and isinstance(x.get("cycle"), (int, float)) else "",
-                f"{x['daily']:.2f}" if x and x.get("daily") else "",
-                f"{x['target']:.0f}" if x and isinstance(x.get("target"), (int, float)) else ""] +
-                self._extra_texts(x, sug_c, d) + [""]))
-            keys = _perm(self._sort_keys(i, x, sug_c) + self._extra_keys(x, sug_c, d) + [0.0])
-            for c in range(t.columnCount()):
-                src = t.item(i, c)
-                item = _SortItem(src.text())
-                item.setTextAlignment(src.textAlignment())
-                item.setFont(src.font())
-                item.setForeground(src.foreground())
-                item.setData(KEY_ROLE, keys[c])
-                if c == EDIT_COL:
-                    item.setFlags(item.flags() | Qt.ItemIsEditable)
-                    item.setToolTip(tr("双击修改箱数，0 = 不订"))
-                else:
-                    item.setFlags(item.flags() & ~Qt.ItemIsEditable)
-                t.setItem(i, c, item)
-            if x:
-                dec = x["decision"] or ""
-                col = T("err") if "🔴" in dec else T("warn") if "🟡" in dec else T("accent") if "🟠" in dec \
-                    else T("ok") if "🟢" in dec else T("muted")
-                t.item(i, DEC_COL).setForeground(QColor(col))
-                t.item(i, DEC_COL).setToolTip(dec)
-                inv_raw = x.get("inv_raw", x["inv"])
-                if inv_raw < 0:
-                    t.item(i, _col(6)).setForeground(QColor(T("err")))
-            else:
-                t.item(i, DEC_COL).setForeground(QColor(T("err")))
-            tier = (x["tier"] or "") if x else ""
-            if tier:
-                tc = t.item(i, _col(18))
-                tc.setForeground(QColor(T("ok") if tier == "A" else T("accent") if tier == "B" else T("muted")))
-                f = tc.font()
-                f.setBold(True)
-                tc.setFont(f)
-            t.item(i, 0).setData(DI_ROLE, i)
         self.pos = list(range(len(self.detail)))
-        for i in range(len(self.detail)):
+        self._num_cols = set(t._numeric)
+        self._num_font = QFont(NUM_FONT, 10)
+        self.load_bar.setRange(0, max(1, len(self.detail)))
+        self.load_bar.setValue(0)
+        self.load_box.setVisible(len(self.detail) > self.CHUNK)
+        self._load_chunk(0, self._load_token)
+
+    CHUNK = 300               # 每批行数：小一点，后台预先载入时主窗口也不卡
+
+    def _load_chunk(self, start, token):
+        if token != self._load_token:
+            return                                  # 又重新载入了，这一批作废
+        t = self.table
+        end = min(len(self.detail), start + self.CHUNK)
+        t.setUpdatesEnabled(False)
+        for i in range(start, end):
+            self._fill_row(i)
             self._show_qty(i)
+        t.setUpdatesEnabled(True)
+        self.load_bar.setValue(end)
+        self.load_lbl.setText(tr("正在载入订货明细… {0:,} / {1:,} 行", end, len(self.detail)))
+        if end < len(self.detail):
+            QTimer.singleShot(0, lambda: self._load_chunk(end, token))
+            return
+        self._finish_load()
+
+    def _finish_load(self):
+        self._loading = False
+        self.load_box.hide()
+        t = self.table
+        t.setUpdatesEnabled(False)
         if self.sort_col != 0 or self.sort_order != Qt.AscendingOrder:
             self._apply_sort()
         t.setUpdatesEnabled(True)
         self._filling = False
-        self._filter()
+        if self._pending_filter is not None:
+            path, sid = self._pending_filter
+            self._pending_filter = None
+            self.set_filter(path, sid)
+        else:
+            self._filter()
+
+    def _fill_row(self, i):
+        """直接建好每一格（以前先建一遍再复制一遍，慢一倍）"""
+        calc = self.page.calc
+        d = calc["days"]
+        t = self.table
+        sc, it, sid = self.detail[i]
+        x = calc["demand"].get(sid, {}).get(it.get("db_code") or it["code"])
+        sug_c = calc["base"][sc["path"]].get(sid, {}).get(it["row"], 0)
+        inv_days = x["inv_days"] if x else None
+        if isinstance(inv_days, float) and math.isinf(inv_days):
+            inv_days = "∞"
+        elif isinstance(inv_days, (int, float)):
+            inv_days = f"{inv_days:,.1f}"
+        vals = _perm([
+            sc["name"], S.STORE_SHEETS[sid], short_decision(x["decision"]) if x else tr("数据库没有"),
+            it.get("db_code") or it["code"], it["ean"], it["desc"],
+            f"{x.get('inv_raw', x['inv']):g}" if x else "", *([f"{v:g}" for v in x["sales"]] if x else [""] * 4),
+            inv_days or "", f"{it['pack']:g}", f"{it['price']:.3f}".rstrip("0").rstrip("."),
+            f"{x['sugg']:,}" if x else "", f"{sug_c:g}" if sug_c else "", "", "",
+            (x["tier"] or "") if x else "",
+            f"{x['cycle']:g}" if x and isinstance(x.get("cycle"), (int, float)) else "",
+            f"{x['daily']:.2f}" if x and x.get("daily") else "",
+            f"{x['target']:.0f}" if x and isinstance(x.get("target"), (int, float)) else ""] +
+            self._extra_texts(x, sug_c, d) + [""])
+        keys = _perm(self._sort_keys(i, x, sug_c) + self._extra_keys(x, sug_c, d) + [0.0])
+        num_cols, nf = self._num_cols, self._num_font
+        ro = Qt.ItemIsSelectable | Qt.ItemIsEnabled
+        for c in range(len(vals)):
+            item = _SortItem("" if vals[c] is None else str(vals[c]))
+            if c in num_cols:
+                item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                item.setFont(nf)
+            item.setData(KEY_ROLE, keys[c])
+            if c == EDIT_COL:
+                item.setFlags(ro | Qt.ItemIsEditable)
+                item.setToolTip(tr("双击修改箱数，0 = 不订"))
+            else:
+                item.setFlags(ro)
+            t.setItem(i, c, item)
+        if x:
+            dec = x["decision"] or ""
+            col = T("err") if "🔴" in dec else T("warn") if "🟡" in dec else T("accent") if "🟠" in dec \
+                else T("ok") if "🟢" in dec else T("muted")
+            t.item(i, DEC_COL).setForeground(QColor(col))
+            t.item(i, DEC_COL).setToolTip(dec)
+            if x.get("inv_raw", x["inv"]) < 0:
+                t.item(i, _col(6)).setForeground(QColor(T("err")))
+        else:
+            t.item(i, DEC_COL).setForeground(QColor(T("err")))
+        tier = (x["tier"] or "") if x else ""
+        if tier:
+            tc = t.item(i, _col(18))
+            tc.setForeground(QColor(T("ok") if tier == "A" else T("accent") if tier == "B" else T("muted")))
+            f = tc.font()
+            f.setBold(True)
+            tc.setFont(f)
+        t.item(i, 0).setData(DI_ROLE, i)
 
     @staticmethod
     def _extra_vals(x, sug_c, days):
@@ -961,7 +1025,7 @@ class DetailWindow(ToolWindow):
                 float(x["target"]) if x and isinstance(x.get("target"), (int, float)) else None]
 
     def _sort_by(self, col):
-        if not self.detail:
+        if not self.detail or self._loading:
             return
         if col == self.sort_col:
             self.sort_order = Qt.DescendingOrder if self.sort_order == Qt.AscendingOrder else Qt.AscendingOrder
@@ -1066,14 +1130,17 @@ class DetailWindow(ToolWindow):
 
     def refresh_rows(self):
         """主窗口那边改了数（比如恢复建议值）→ 刷新显示"""
-        if not self.detail:
-            return
+        if not self.detail or self._loading:
+            return                                # 还在填表：填到的时候会用最新的箱数
         for i in range(len(self.detail)):
             self._show_qty(i)
         self._filter()
 
     def reset_shown(self):
         if not self.page.calc:
+            return
+        if self._loading:
+            self.flash(tr("还在载入，稍等一下"))
             return
         n = 0
         for i, (sc, it, sid) in enumerate(self.detail):
@@ -1089,6 +1156,9 @@ class DetailWindow(ToolWindow):
         self.flash(tr("已恢复 {0} 行", n))
 
     def set_filter(self, path=ALL, sid=ALL):
+        if self._loading:
+            self._pending_filter = (path, sid)     # 填完表再筛选
+            return
         self.f_sup.setCurrentIndex(max(0, self.f_sup.findData(path)))
         for b in self.store_group.buttons():
             if b.property("sid") == sid:
@@ -1096,7 +1166,7 @@ class DetailWindow(ToolWindow):
         self._filter()
 
     def _filter(self, *_):
-        if not self.detail:
+        if not self.detail or self._loading:
             return
         sup = self.f_sup.currentData()
         btn = self.store_group.checkedButton()
@@ -1140,6 +1210,9 @@ class DetailWindow(ToolWindow):
 
     def export(self):
         if not self.detail:
+            return
+        if self._loading:
+            self.flash(tr("还在载入，稍等一下"))
             return
         from openpyxl import Workbook
         from openpyxl.styles import Font

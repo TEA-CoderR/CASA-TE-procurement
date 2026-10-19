@@ -1702,4 +1702,7 @@ TRANSLATIONS = {
     '调入后够卖（天）': ('Receiver lasts after (days)', 'Ricevente dura dopo (giorni)'),
     '调出门店把这些货调走以后，剩下的库存还能卖几天': ("How many days the giving store's remaining stock lasts after the transfer", 'Quanti giorni dura la scorta rimasta al negozio cedente dopo il trasferimento'),
     '调入门店收到调货（加上这次还订的箱数）以后能卖几天': ("How many days the receiving store's stock lasts after the transfer (plus cases still ordered)", 'Quanti giorni dura la scorta del negozio ricevente dopo il trasferimento (più i colli ancora ordinati)'),
+    '正在载入订货明细…': ('Loading order details…', 'Caricamento dettaglio ordini…'),
+    '正在载入订货明细… {0:,} / {1:,} 行': ('Loading order details… {0:,} / {1:,} rows', 'Caricamento dettaglio ordini… {0:,} / {1:,} righe'),
+    '还在载入，稍等一下': ('Still loading, one moment', 'Caricamento in corso, un attimo'),
 }
