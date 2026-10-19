@@ -1728,4 +1728,5 @@ TRANSLATIONS = {
     '✔ 调货单：{0}': ('✔ Transfer list: {0}', '✔ Lista trasferimenti: {0}'),
     '⚠ 调货计算失败（按原来的件数订）：{0}': ('⚠ Transfer calculation failed (ordering the original pieces): {0}', '⚠ Calcolo trasferimenti non riuscito (si ordinano i pezzi originali): {0}'),
     '⚠ 调货单生成失败：{0}': ('⚠ Could not create the transfer list: {0}', '⚠ Impossibile creare la lista trasferimenti: {0}'),
+    '点表头排序（再点一次反过来）': ('Click a column header to sort (click again to reverse)', 'Clicca l\'intestazione per ordinare (clicca di nuovo per invertire)'),
 }

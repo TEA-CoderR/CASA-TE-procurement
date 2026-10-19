@@ -22,7 +22,8 @@ from PySide6.QtWidgets import (QWidget, QLabel, QPushButton, QLineEdit, QComboBo
 from i18n import tr
 from settings import save_settings
 from theme import T, icon, num_font, open_path
-from erp_widgets import (StepBar, TaskDialog, DotsDelegate, DOTS_ROLE, EmptyState, kpi_card, chip, set_chip)
+from erp_widgets import (StepBar, TaskDialog, DotsDelegate, DOTS_ROLE, EmptyState, kpi_card, chip, set_chip,
+                         RowSorter, SORT_ROLE)
 import reorder_service as R
 import store_orders as S
 from reorder_page import algo_widgets
@@ -610,7 +611,8 @@ class StoreOrderPage:
         self.ftable.setItemDelegateForColumn(3, DotsDelegate(self.ftable))
         self.ftable.verticalHeader().setDefaultSectionSize(40)
         self.ftable.itemChanged.connect(self._item_changed)
-        self.ftable.cellClicked.connect(lambda r, c: c == 2 and 0 <= r < len(self.files) and self.edit_moq(self.files[r][1]))
+        self.ftable.cellClicked.connect(lambda r, c: c == 2 and self._fpath(r) and self.edit_moq(self._fpath(r)))
+        self.f_sorter = RowSorter(self.ftable, skip=(0,), on_sorted=self._filter_sup)
         self.ftable.horizontalHeaderItem(2).setToolTip(tr("点起订量那一格可以修改（读错了自己改，会保存）"))
         self.ftable.setMinimumHeight(420)
         lv.addWidget(self.ftable, 1)
@@ -704,6 +706,7 @@ class StoreOrderPage:
         mh_.setStretchLastSection(True)
         self.mtable.cellClicked.connect(self._matrix_clicked)
         self.mtable.itemChanged.connect(self._alloc_toggled)
+        self.m_sorter = RowSorter(self.mtable, pin_last=True, skip=(0,))     # 合计行永远在最后
         self.mtable.setToolTip(tr("左边勾选要配货的供应商；点格子打开订货明细并筛选到这家供应商 / 门店"))
         self.matrix_stack.addWidget(self.mtable)
         self.matrix_stack.setMinimumHeight(300)
@@ -890,6 +893,8 @@ class StoreOrderPage:
         self.rtable.setMinimumHeight(360)
         self.rtable.verticalHeader().setDefaultSectionSize(36)
         self.rtable.cellDoubleClicked.connect(self._open_row)
+        self._rrows = []
+        self.r_sorter = RowSorter(self.rtable, refill=self._results_refill)
         tv.addWidget(self.rtable)
         row.addWidget(tp, 3)
         fp, fv = _panel(tr("生成的文件"))
@@ -1001,6 +1006,15 @@ class StoreOrderPage:
     def _out_root(self):
         return S.output_root(self.folder.text().strip())
 
+    def _fpath(self, row):
+        """左边列表第 row 行的 SCHEDA 路径（表格可以排序，不能用 self.files[row]）"""
+        it = self.ftable.item(row, 1)
+        return it.data(Qt.UserRole) if it is not None else None
+
+    def _frows(self):
+        """[(表格行, SCHEDA 路径)]"""
+        return [(i, self._fpath(i)) for i in range(self.ftable.rowCount()) if self._fpath(i)]
+
     def _n_checked(self):
         t = self.ftable
         return sum(1 for i in range(t.rowCount()) if t.item(i, 0) and t.item(i, 0).checkState() == Qt.Checked)
@@ -1035,6 +1049,7 @@ class StoreOrderPage:
         self.left_panel.setMinimumWidth(412 if day == ALL else 360)
         self.left_panel.setMaximumWidth(452 if day == ALL else 400)
         self._update_dots()
+        self.f_sorter.apply()
         if not os.path.isdir(root):
             self.list_msg.setText(tr("文件夹不存在"))
         elif not self.files:
@@ -1064,7 +1079,7 @@ class StoreOrderPage:
             return
         t = self.ftable
         t.blockSignals(True)
-        for i, (_, p) in enumerate(self.files):
+        for i, p in self._frows():
             if p in self.moq:
                 t.item(i, 2).setText(S.moq_label(self.moq_of(p), short=True))
                 self._moq_tip(i, p)
@@ -1076,7 +1091,7 @@ class StoreOrderPage:
         """各店色块：计算后按起订量检查着色"""
         t = self.ftable
         by_path = {sc["path"]: sc for sc in (self.calc or {}).get("schede", [])}
-        for i, (_, p) in enumerate(self.files):
+        for i, p in self._frows():
             sc = by_path.get(p)
             colors = []
             for sid in S.STORE_SHEETS:
@@ -1091,6 +1106,9 @@ class StoreOrderPage:
             it = t.item(i, 3)
             if it:
                 it.setData(DOTS_ROLE, colors)
+                # 排序：够起订量的门店越少越靠前（升序先看问题多的）
+                it.setData(SORT_ROLE, sum(1 for c in colors if c == T("ok")) * 10 +
+                           sum(1 for c in colors if c == T("near")) if sc else 999)
         t.viewport().update()
 
     def _filter_sup(self, *_):
@@ -1142,8 +1160,8 @@ class StoreOrderPage:
     def start_compute(self):
         if self.running:
             return
-        chosen = [self.files[i] for i in range(self.ftable.rowCount())
-                  if self.ftable.item(i, 0).checkState() == Qt.Checked]
+        on = {p for i, p in self._frows() if self.ftable.item(i, 0) and self.ftable.item(i, 0).checkState() == Qt.Checked}
+        chosen = [f for f in self.files if f[1] in on]
         stores = [s for s, cb in self.store_cb.items() if cb.isChecked()]
         if not chosen:
             QMessageBox.information(self.win, tr("门店配货"), tr("先勾选要订的供应商。"))
@@ -1334,12 +1352,13 @@ class StoreOrderPage:
             plan = self._preview(sc)
             self._plans[sc["path"]] = plan
             vals = ["", f"{sc['name']}（{tr(sc['day'])}）", S.moq_label(S.sc_moq(sc), short=True)]
-            states = []
+            states, amts = [], []
             rc = ra = 0.0
             for sid in S.STORE_SHEETS:
                 if sid not in self.calc["stores"] or sid not in sc["sheets"]:
                     vals.append("")
                     states.append(None)
+                    amts.append(None)
                     continue
                 c, a, _st = self._cell_state(sc, self.colli.get(sc["path"], {}).get(sid, {}))
                 st = self._plan_state(plan, sid) if c else "none"
@@ -1353,6 +1372,7 @@ class StoreOrderPage:
                     n_ok += st in ("ok", "fill", "bms_ok")
                 vals.append(tr("{0:g} 箱 · €{1:,.0f}", c, a) if c else "—")
                 states.append(st)
+                amts.append(a if c else None)
             b = plan.get("bms")
             if b:
                 vals.append(tr("{0:g} 箱 · €{1:,.0f}", b["colli"], b["amount"]))
@@ -1361,6 +1381,9 @@ class StoreOrderPage:
             vals.append(tr("{0:g} 箱 · €{1:,.0f}", rc, ra) if rc else "—")
             orderable = any(x in ("ok", "fill", "bms_ok") for x in states)
             self.ui.table_set_row(t, r, vals)
+            for k, a_ in enumerate(amts + [b["amount"] if b else None, ra if rc else None]):
+                if a_ is not None:
+                    t.item(r, 3 + k).setData(SORT_ROLE, float(a_))      # 排序按金额
             t.item(r, 2).setToolTip(tr("起订量：{0}", S.moq_label(S.sc_moq(sc), mark=False)) + "\n" + tr("点一下修改起订量"))
             chk = QTableWidgetItem()
             chk.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled)
@@ -1411,6 +1434,7 @@ class StoreOrderPage:
         self.ui.table_set_row(t, len(schede), foot, bold=True)
         for c in range(t.columnCount()):
             t.item(len(schede), c).setBackground(QColor(T("surface2")))
+        self.m_sorter.apply()
         t.blockSignals(False)
         n_on = sum(1 for sc in schede if sc["path"] in self.alloc_on)
         self.m_sel.setText(tr("配货 {0} / {1} 家", n_on, len(schede)))
@@ -1426,10 +1450,11 @@ class StoreOrderPage:
             self.win.dashboard.refresh()
 
     def _matrix_clicked(self, row, col):
-        if not self.calc or row > len(self.calc["schede"]):
+        t = self.mtable
+        if not self.calc or not 0 <= row < t.rowCount() or col == 0:
             return
-        path = ALL if row == len(self.calc["schede"]) else self.calc["schede"][row]["path"]
-        if col == 0:
+        path = ALL if row == t.rowCount() - 1 else (t.item(row, 0).data(Qt.UserRole) if t.item(row, 0) else None)
+        if not path:
             return
         if col == 2 and path != ALL:
             self.edit_moq(path)
@@ -1614,30 +1639,9 @@ class StoreOrderPage:
                 rows.append((tr(day), sc["name"], moq, S.BMS, b, b["status"], note))
                 self._res_index.append(k_res)
                 self.row_files.append(files.get((sc["path"], S.BMS)))
-        t = self.rtable
-        t.setRowCount(len(rows))
-        kind = {"direct": "ok", "filled": "accent", "bms": "gray", "short": "err", "merged": "gray", "pulled": "gray", "dropped": "gray",
-                "forced": "warn"}
-        for i, (day, sup, moq, dest, st, status, note) in enumerate(rows):
-            self.ui.table_set_row(t, i, [day, sup, moq, dest, f"{st['colli']:g}", f"€{st['amount']:,.2f}", "", note],
-                                  bold=dest == S.BMS)
-            t.item(i, 2).setForeground(QColor(T("muted")))
-            t.item(i, 2).setToolTip(S.moq_label(S.sc_moq(self.result["results"][self._res_index[i]][1]), mark=False))
-            if status in ("short", "dropped"):
-                for c in (4, 5):
-                    t.item(i, c).setForeground(QColor(T("faint")))
-            k = kind.get(status, "ok")
-            if dest == S.BMS and status in ("direct", "filled"):
-                k = "accent"
-            cw = QWidget()
-            ch = QHBoxLayout(cw)
-            ch.setContentsMargins(8, 0, 8, 0)
-            ch.addWidget(chip(tr(S.status_text(dest, status)), k))
-            ch.addStretch()
-            t.setCellWidget(i, 6, cw)
-            t.item(i, 7).setToolTip(note)
-        t.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeToContents)
-        t.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        self._rrows = list(zip(rows, self._res_index, self.row_files))
+        self._draw_results()
+        self.r_sorter.apply()
 
         # 文件
         while self.file_list.count():
@@ -1882,7 +1886,7 @@ class StoreOrderPage:
                 QMessageBox.warning(self.win, tr("起订量"), tr("已保存到程序设置，但写 suppliers_config.json 失败：{0}", e))
         self.win.log("[门店配货] " + msg + "：" + S.moq_text(S.apply_override(file_m, ov)))
         # 列表、起订量检查马上按新的起订量刷新（不用重新计算）
-        for i, (_, p) in enumerate(self.files):
+        for i, p in self._frows():
             if S.supplier_short_name(p) == name and self.ftable.item(i, 2):
                 self.ftable.blockSignals(True)
                 self.ftable.item(i, 2).setText(S.moq_label(self.moq_of(p), short=True))
@@ -1905,6 +1909,42 @@ class StoreOrderPage:
         if sc["moq_amount"] and st["amount"] < sc["moq_amount"]:
             parts.append(tr("差 €{0:,.2f}", sc["moq_amount"] - st["amount"]))
         return "，".join(parts)
+
+    def _results_refill(self, order):
+        self._rrows = [self._rrows[i] for i in order]
+        self._draw_results()
+
+    def _draw_results(self):
+        """配货结果表：self._rrows = [(行内容, 第几个供应商结果, 文件)]，按这个顺序画"""
+        rows = [r[0] for r in self._rrows]
+        self._res_index = [r[1] for r in self._rrows]
+        self.row_files = [r[2] for r in self._rrows]
+        t = self.rtable
+        t.setRowCount(len(rows))
+        kind = {"direct": "ok", "filled": "accent", "bms": "gray", "short": "err", "merged": "gray", "pulled": "gray", "dropped": "gray",
+                "forced": "warn"}
+        for i, (day, sup, moq, dest, st, status, note) in enumerate(rows):
+            label = tr(S.status_text(dest, status))
+            self.ui.table_set_row(t, i, [day, sup, moq, dest, f"{st['colli']:g}", f"€{st['amount']:,.2f}", label, note],
+                                  bold=dest == S.BMS)
+            t.item(i, 6).setForeground(QColor(0, 0, 0, 0))        # 文字由上面的小标签显示（排序、复制用）
+            t.item(i, 2).setForeground(QColor(T("muted")))
+            t.item(i, 2).setToolTip(S.moq_label(S.sc_moq(self.result["results"][self._res_index[i]][1]), mark=False))
+            if status in ("short", "dropped"):
+                for c in (4, 5):
+                    t.item(i, c).setForeground(QColor(T("faint")))
+            k = kind.get(status, "ok")
+            if dest == S.BMS and status in ("direct", "filled"):
+                k = "accent"
+            cw = QWidget()
+            ch = QHBoxLayout(cw)
+            ch.setContentsMargins(8, 0, 8, 0)
+            ch.addWidget(chip(label, k))
+            ch.addStretch()
+            t.setCellWidget(i, 6, cw)
+            t.item(i, 7).setToolTip(note)
+        t.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeToContents)
+        t.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
 
     def _open_row(self, row, _col):
         if 0 <= row < len(getattr(self, "row_files", [])):

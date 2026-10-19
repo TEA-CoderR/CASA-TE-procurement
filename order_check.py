@@ -10,7 +10,7 @@ import math
 import threading
 from datetime import datetime
 
-from PySide6.QtCore import Qt, QObject, Signal
+from PySide6.QtCore import Qt, QObject, Signal, QTimer
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (QWidget, QLabel, QPushButton, QLineEdit, QComboBox, QHBoxLayout, QVBoxLayout,
                                QFileDialog, QMessageBox, QSpinBox, QAbstractItemView, QHeaderView)
@@ -159,7 +159,7 @@ class OrderCheck:
         tb.addWidget(b_f)
         bl.addLayout(tb)
         self.table = ui.make_table(_perm([tr("判断"), tr("商品编号"), tr("条码"), tr("名称"), tr("本店库存"),
-                                          "30", "60", "90", "180", tr("库存天数"), tr("箱规"), tr("清单数量"),
+                                          "30", "60", "90", "180", tr("库存够卖（天）"), tr("箱规"), tr("清单数量"),
                                           tr("清单件数"), tr("建议件数"), tr("确定件数"), tr("确定箱数"), tr("等级"), tr("周期"), tr("日均"),
                                           tr("目标库存")]),
                                    numeric_cols=[_col(k) for k in list(range(4, 16)) + [17, 18, 19]])
@@ -174,7 +174,19 @@ class OrderCheck:
             self.table.setColumnWidth(c, wd)
         self.table.horizontalHeaderItem(EDIT_COL).setToolTip(tr("双击修改，0 = 不订"))
         self.table.itemChanged.connect(self._edited)
+        # 点表头排序、右键表头按列筛选；上面「判断」「等级」两个下拉框快速筛选
+        from erp_widgets import TableSortFilter, ColumnFilterBox
+        self.ctl = TableSortFilter(self.table, lambda: len(self.rows), self._text, self._fill_row,
+                                   hide=self._hidden, numeric=tuple(_col(k) for k in list(range(4, 16)) + [17, 18, 19]))
+        self.ctl.rendered.connect(lambda n, tot: self.count_lbl.setText(
+            tr("显示 {0} / {1} 个 · 点表头排序，右键表头筛选", n, tot)))
+        tb.insertWidget(1, ColumnFilterBox(self.ctl, _col(0), tr("判断")))
+        tb.insertWidget(2, ColumnFilterBox(self.ctl, _col(16), tr("等级")))
+        tb.insertSpacing(1, 12)
         bl.addWidget(self.table)
+        self.count_lbl = QLabel("")
+        self.count_lbl.setObjectName("Faint")
+        bl.addWidget(self.count_lbl)
         acts = QHBoxLayout()
         self.sum_msg = QLabel("")
         self.sum_msg.setObjectName("Faint")
@@ -369,9 +381,12 @@ class OrderCheck:
         self.rows, self.meta = rows, meta
         d = meta["days"]
         for i in range(4):
-            self.table.horizontalHeaderItem(_col(5 + i)).setText(tr("{0}天", d[i]))
-            self.table.horizontalHeaderItem(_col(5 + i)).setToolTip(tr("最近 {0} 天销量", d[i]))
-        self.table.horizontalHeaderItem(_col(11)).setText(tr("清单箱数") if meta["unit"] == "colli" else tr("清单件数"))
+            self.ctl.set_title(_col(5 + i), tr("{0}天", d[i]), tr("最近 {0} 天销量", d[i]))
+        # 清单按箱：「清单箱数」+ 折合的「清单件数」；清单本来就是件数：只留一列「清单件数」
+        pieces = meta["unit"] != "colli"
+        self.ctl.set_title(_col(11), tr("清单件数") if pieces else tr("清单箱数"))
+        self.table.setColumnHidden(_col(12), pieces)
+        self.ctl.filters = {}
         self._fill()
         self.summary_row.show()
         self.window.setWindowTitle(tr("检查门店订货清单 — {0} · {1} 个商品", store_label(meta["store"]), len(rows)))
@@ -379,47 +394,62 @@ class OrderCheck:
         self.msg.setText(tr("✔ 门店 {0}：{1} 个商品，检查完成。核对「确定件数」后点「确认，生成主订单」。",
                             store_label(meta["store"]), len(rows)))
 
+    def _vals(self, i):
+        """数据行 i 每一列显示的文字（按屏幕上的列顺序）"""
+        x = self.rows[i]
+        inv_days = x["inv_days"]
+        if isinstance(inv_days, float) and math.isinf(inv_days):
+            inv_days = "∞"
+        elif isinstance(inv_days, (int, float)):
+            inv_days = f"{inv_days:,.1f}"
+        sales = [f"{v:g}" if isinstance(v, (int, float)) else "" for v in x["sales"]]
+        pack = x["pack"] or 0
+        return _perm([tr(x["verdict"]), x["code"], x["ean"], x["name"],
+                      f"{x['store_inv']:g}" if isinstance(x["store_inv"], (int, float)) else "",
+                      *sales, inv_days or "", f"{x['pack']:g}" if x["pack"] else "",
+                      f"{x['file_qty']:g}", f"{x['file_pcs']:g}",
+                      f"{x['suggested']:,}" if x["in_db"] else "", f"{x['final']:,}",
+                      f"{math.ceil(x['final'] / pack):,}" if pack > 0 and x["final"] > 0 else "",
+                      x.get("tier") or "",
+                      f"{x['cycle']:g}" if isinstance(x.get("cycle"), (int, float)) else "",
+                      f"{x['daily']:.2f}" if x.get("daily") else "",
+                      f"{x['target']:.0f}" if isinstance(x.get("target"), (int, float)) else ""])
+
+    def _text(self, i, c):
+        return self._vals(i)[c]
+
+    def _hidden(self, i):
+        x = self.rows[i]
+        text = self.flt.text().strip().lower()
+        return (self.only.isChecked() and x["verdict"] == "不变" and x["final"] == x["suggested"]) or \
+               (bool(text) and text not in f"{x['code']} {x['ean']} {x['name']}".lower())
+
     def _fill(self):
+        self.ctl.render()
+        self._summary()
+
+    def _fill_row(self, i, k):
         T = self.ui.T
         t = self.table
-        self._filling = True
-        t.setUpdatesEnabled(False)
-        t.setRowCount(len(self.rows))
-        for i, x in enumerate(self.rows):
-            inv_days = x["inv_days"]
-            if isinstance(inv_days, float) and math.isinf(inv_days):
-                inv_days = "∞"
-            elif isinstance(inv_days, (int, float)):
-                inv_days = f"{inv_days:,.1f}"
-            sales = [f"{v:g}" if isinstance(v, (int, float)) else "" for v in x["sales"]]
-            self.ui.table_set_row(t, i, _perm([tr(x["verdict"]), x["code"], x["ean"], x["name"],
-                                         f"{x['store_inv']:g}" if isinstance(x["store_inv"], (int, float)) else "",
-                                         *sales, inv_days or "", f"{x['pack']:g}" if x["pack"] else "",
-                                         f"{x['file_qty']:g}", f"{x['file_pcs']:g}",
-                                         f"{x['suggested']:,}" if x["in_db"] else "", "", "", x.get("tier") or "",
-                                         f"{x['cycle']:g}" if isinstance(x.get("cycle"), (int, float)) else "",
-                                         f"{x['daily']:.2f}" if x.get("daily") else "",
-                                         f"{x['target']:.0f}" if isinstance(x.get("target"), (int, float)) else ""]))
-            for c in range(t.columnCount()):
-                it = t.item(i, c)
-                if c == EDIT_COL:
-                    it.setFlags(it.flags() | Qt.ItemIsEditable)
-                else:
-                    it.setFlags(it.flags() & ~Qt.ItemIsEditable)
-            t.item(i, 0).setForeground(QColor(T(VERDICT_COLOR.get(x["verdict"], "text"))))
-            tip = short_decision(x["decision"]) if x["in_db"] else tr("数据库里找不到这个商品，箱规未知；确定件数默认 = 清单数量，请核对")
-            t.item(i, 0).setToolTip(tip)
-            self._show(i)
-        t.setUpdatesEnabled(True)
-        self._filling = False
-        self._filter()
+        x = self.rows[i]
+        self.ui.table_set_row(t, k, self._vals(i))
+        for c in range(t.columnCount()):
+            it = t.item(k, c)
+            if c == EDIT_COL:
+                it.setFlags(it.flags() | Qt.ItemIsEditable)
+            else:
+                it.setFlags(it.flags() & ~Qt.ItemIsEditable)
+        t.item(k, 0).setForeground(QColor(T(VERDICT_COLOR.get(x["verdict"], "text"))))
+        tip = short_decision(x["decision"]) if x["in_db"] else tr("数据库里找不到这个商品，箱规未知；确定件数默认 = 清单数量，请核对")
+        t.item(k, 0).setToolTip(tip)
+        t.item(k, 0).setData(Qt.UserRole, i)
+        t.item(k, _col(3)).setToolTip(f"{x['name']}\nEAN {x['ean'] or '—'}")
+        self._style_edit(i, k)
 
-    def _show(self, i):
+    def _style_edit(self, i, k):
         x = self.rows[i]
         T = self.ui.T
-        was = self._filling
-        self._filling = True
-        c = self.table.item(i, EDIT_COL)
+        c = self.table.item(k, EDIT_COL)
         c.setText(f"{x['final']:,}")
         f = c.font()
         f.setBold(x["final"] > 0)
@@ -428,25 +458,37 @@ class OrderCheck:
         c.setForeground(QColor(T("warn") if changed else T("accent") if x["final"] > 0 else T("faint")))
         c.setBackground(QColor(T("warn_soft")) if changed else QColor(0, 0, 0, 0))
         pack = x["pack"] or 0
-        self.table.item(i, BOX_COL).setText(
+        self.table.item(k, BOX_COL).setText(
             f"{math.ceil(x['final'] / pack):,}" if pack > 0 and x["final"] > 0 else "")
+
+    def _show(self, i):
+        k = self.ctl.pos.get(i)
+        if k is None:
+            return
+        was = self._filling
+        self._filling = True
+        self.table.blockSignals(True)
+        self._style_edit(i, k)
+        self.table.blockSignals(False)
         self._filling = was
 
     def _edited(self, item):
         if self._filling or item.column() != EDIT_COL:
             return
-        i = item.row()
+        i = self.ctl.row_at(item.row())
+        if i is None:
+            return
         try:
             n = float(item.text().strip().replace(",", "") or 0)
             if n < 0 or n != int(n):
                 raise ValueError
         except ValueError:
             self.win.show_toast(tr("件数要填 0 或正整数"))
-            self._show(i)
-            return
-        self.rows[i]["final"] = int(n)
-        self._show(i)
-        self._summary()
+            n = None
+        if n is not None:
+            self.rows[i]["final"] = int(n)
+        # 等编辑框关掉再更新这一行（编辑中途改格子会让程序卡住）
+        QTimer.singleShot(0, lambda: (self._show(i), self._summary()))
 
     def _set_all(self, which):
         for x in self.rows:
@@ -454,19 +496,12 @@ class OrderCheck:
                 x["final"] = x["suggested"] if x["in_db"] else int(math.ceil(x["file_pcs"]))
             else:
                 x["final"] = int(math.ceil(x["file_pcs"]))
-        self._filling = True
-        for i in range(len(self.rows)):
-            self._show(i)
-        self._filling = False
+        self.ctl.render()
         self._summary()
 
     def _filter(self, *_):
-        text = self.flt.text().strip().lower()
-        only = self.only.isChecked()
-        for i, x in enumerate(self.rows):
-            hide = (only and x["verdict"] == "不变" and x["final"] == x["suggested"]) or \
-                   (bool(text) and text not in f"{x['code']} {x['ean']} {x['name']}".lower())
-            self.table.setRowHidden(i, hide)
+        if hasattr(self, "ctl"):
+            self.ctl.render()
         self._summary()
 
     def _summary(self):

@@ -2815,6 +2815,8 @@ class MainWindow(QMainWindow):
         self.sum_table.horizontalHeader().setStretchLastSection(True)
         self.sum_table.setItemDelegateForColumn(9, StatusDelegate(self.sum_table))
         self.sum_table.setMinimumHeight(240)
+        from erp_widgets import RowSorter
+        self.sum_sorter = RowSorter(self.sum_table, pin_last=True)          # 合计行永远在最后
         pt.lay.addWidget(self.sum_table)
         acts = QHBoxLayout()
         b1 = QPushButton(tr("打开主订单"))
@@ -2864,6 +2866,7 @@ class MainWindow(QMainWindow):
                                      tr("多花 €"), tr("原因")], stretch_col=2, numeric_cols=(0, 3, 5, 7, 8))
         self.chg_table.setItemDelegateForColumn(9, StatusDelegate(self.chg_table))
         self.chg_table.setMinimumHeight(320)
+        self.chg_sorter = RowSorter(self.chg_table)
         pc.lay.addWidget(self.chg_table)
         self.chg_empty = QLabel(tr("这次没有改动，所有商品都按最低价选的供应商。"))
         self.chg_empty.setObjectName("Muted")
@@ -2893,12 +2896,13 @@ class MainWindow(QMainWindow):
             wb = Workbook()
             ws = wb.active
             ws.title = tr("改动明细")
-            ws.append([t.horizontalHeaderItem(c).text() for c in range(t.columnCount())])
+            from erp_widgets import header_text
+            ws.append([header_text(t, c) for c in range(t.columnCount())])
             for r in range(t.rowCount()):
                 ws.append([tr(t.item(r, c).text()) if t.item(r, c) else "" for c in range(t.columnCount())])
             ws2 = wb.create_sheet(tr("各供应商"))
             st = self.sum_table
-            ws2.append([st.horizontalHeaderItem(c).text() for c in range(st.columnCount())])
+            ws2.append([header_text(st, c) for c in range(st.columnCount())])
             for r in range(st.rowCount()):
                 ws2.append([tr(st.item(r, c).text()) if st.item(r, c) else "" for c in range(st.columnCount())])
             for sh in (ws, ws2):
@@ -3221,6 +3225,8 @@ class MainWindow(QMainWindow):
                                       tr("搜索时间"), tr("可能的替代品")], stretch_col=7, numeric_cols=(2, 3, 4))
         self.miss_table.setMinimumHeight(460)
         self.miss_table.setWordWrap(True)
+        from erp_widgets import RowSorter
+        self.miss_sorter = RowSorter(self.miss_table)
         p.lay.addWidget(self.miss_table)
         lay.addWidget(p, 1)
         return w
@@ -3254,6 +3260,8 @@ class MainWindow(QMainWindow):
         self.rules_table.setItemDelegateForColumn(6, StatusDelegate(self.rules_table))
         self.rules_table.setMinimumHeight(300)
         self.rules_table.doubleClicked.connect(lambda _: self.edit_rule())
+        from erp_widgets import RowSorter
+        self.rules_sorter = RowSorter(self.rules_table)
         p.lay.addWidget(self.rules_table)
         acts = QHBoxLayout()
         for text, fn, name in [(tr("编辑"), self.edit_rule, None), (tr("启用 / 停用"), self.toggle_rule, None),
@@ -4220,6 +4228,7 @@ class MainWindow(QMainWindow):
         table_set_row(t, len(sups), [tr("合计"), f"{tot[0]:,}", f"{tot[1]:,.0f}", f"{tot[2]:,.0f}", "",
                                      f"{tot[3]:,.2f}", f"{tot[4]:,.2f}", sign(tot[4] - tot[3], "{:,.2f}"),
                                      "", ""], bold=True)
+        self.sum_sorter.apply()
 
         chs = s.get("changes") or []
         ct = self.chg_table
@@ -4242,6 +4251,7 @@ class MainWindow(QMainWindow):
         self.chg_title.setText(tr("改了供应商的商品（{0}）", len(chs)))
         ct.setVisible(bool(chs))
         self.chg_empty.setVisible(not chs)
+        self.chg_sorter.apply()
         self._filter_changes(self.chg_filter.text())
         self.btn_backup.setEnabled(bool(s.get("backup_dir")))
         self.btn_edit.setEnabled(bool(s.get("state")) and current and not self.running)
@@ -4275,6 +4285,8 @@ class MainWindow(QMainWindow):
                                  f"€{float(r.get('drop_extra') or 0):,.2f}" if float(r.get("drop_extra") or 0) else tr("不用"),
                                  f, st],
                           color=T("faint") if not r.get("enabled", True) else None)
+            t.item(i, 0).setData(Qt.UserRole, i)          # 排序后也能找到是第几条规则
+        self.rules_sorter.apply()
         if not rules:
             self.banner_rules.show_msg(tr("还没有起订规则。点「新增供应商规则」，填上供应商的起订箱数或金额。"), "info")
         else:
@@ -4285,7 +4297,9 @@ class MainWindow(QMainWindow):
         if not rows:
             QMessageBox.information(self, tr("起订量"), tr("先在表格里选一条规则。"))
             return None
-        return rows[0].row()
+        it = self.rules_table.item(rows[0].row(), 0)
+        i = it.data(Qt.UserRole) if it is not None else None
+        return i if isinstance(i, int) and 0 <= i < len(settings["rules"]) else None
 
     def _save_rules(self, msg):
         if save_settings(settings):
@@ -4386,6 +4400,7 @@ class MainWindow(QMainWindow):
             msg += tr("，网络找到 {0} 个", web_found)
         self.miss_status.setText(msg + "。")
         self.log(tr("✔ 缺失查找完成：{0}", msg))
+        self.miss_sorter.apply()
         self._filter_missing(self.miss_filter.text())
         self.go_page("search")
 
@@ -4441,7 +4456,8 @@ class MainWindow(QMainWindow):
             wb = Workbook()
             ws = wb.active
             ws.title = tr("缺失查找结果")
-            ws.append([t.horizontalHeaderItem(c).text() for c in range(t.columnCount())])
+            from erp_widgets import header_text
+            ws.append([header_text(t, c) for c in range(t.columnCount())])
             for r in range(t.rowCount()):
                 ws.append([tr(t.item(r, c).text()) if t.item(r, c) else "" for c in range(t.columnCount())])
             for col in ws.columns:

@@ -5,12 +5,13 @@ import os
 from datetime import datetime
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QPushButton, QFrame,
                                QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView)
 
 from i18n import tr
 from theme import T, num_font
-from erp_widgets import StepBar, kpi_card, chip, set_chip
+from erp_widgets import StepBar, kpi_card, chip, set_chip, RowSorter, SORT_ROLE
 import store_orders as S
 import history
 
@@ -102,6 +103,8 @@ class DashboardPage:
         hh.setSectionResizeMode(QHeaderView.ResizeToContents)
         hh.setSectionResizeMode(0, QHeaderView.Stretch)
         self.sup_table.setMinimumHeight(300)
+        self._sup_rows = []
+        self.sup_sorter = RowSorter(self.sup_table, refill=self._sup_refill)
         lv.addWidget(self.sup_table)
         row.addWidget(left, 3)
 
@@ -274,29 +277,20 @@ class DashboardPage:
                 st.set_state(4, "todo", tr("每店一个文件 + BMS"))
 
         # 今日供应商
-        t = self.sup_table
-        t.setRowCount(len(files))
-        for i, (_, p) in enumerate(files):
-            name = S.supplier_short_name(p)
-            cells = [name, S.moq_label(so.moq_of(p), short=True) if hasattr(so, "moq_of") else "…", "", ""]
-            for c, v in enumerate(cells):
-                it = QTableWidgetItem(v)
-                if c == 0:
-                    f = it.font()
-                    f.setBold(True)
-                    it.setFont(f)
-                if c == 3:
-                    it.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-                    it.setFont(num_font(10))
-                t.setItem(i, c, it)
+        rows = []
+        for _, p in files:
             if p in res_by:
-                text, kind, amt = tr("已生成订单"), "ok", f"€{res_by[p]:,.2f}"
+                state = (tr("已生成订单"), "ok", f"€{res_by[p]:,.2f}", 0)
             elif p in calc_paths:
-                text, kind, amt = tr("已计算"), "accent", ""
+                state = (tr("已计算"), "accent", "", 1)
             else:
-                text, kind, amt = tr("待计算"), "gray", ""
-            t.setCellWidget(i, 2, self._chip_cell(text, kind))
-            t.item(i, 3).setText(amt)
+                state = (tr("待计算"), "gray", "", 2)
+            rows.append((S.supplier_short_name(p),
+                         S.moq_label(so.moq_of(p), short=True) if hasattr(so, "moq_of") else "…") + state
+                        + (res_by.get(p),))
+        self._sup_rows = rows
+        self._draw_sup()
+        self.sup_sorter.apply()
         self.sup_title.setText(tr("今日供应商（{0}）", tr(day)) if day else tr("今日供应商"))
 
         # 最近记录
@@ -324,6 +318,31 @@ class DashboardPage:
             h.addWidget(b, 1)
             h.addWidget(c)
             self.recent.addWidget(fr)
+
+    def _sup_refill(self, order):
+        self._sup_rows = [self._sup_rows[i] for i in order]
+        self._draw_sup()
+
+    def _draw_sup(self):
+        t = self.sup_table
+        t.setRowCount(len(self._sup_rows))
+        for i, (name, moq, text, kind, amt, rank, value) in enumerate(self._sup_rows):
+            for c, v in enumerate((name, moq, text, amt)):
+                it = QTableWidgetItem(v)
+                if c == 0:
+                    f = it.font()
+                    f.setBold(True)
+                    it.setFont(f)
+                if c == 2:
+                    it.setData(SORT_ROLE, rank)          # 状态列按进度排（已生成 → 已计算 → 待计算）
+                    it.setForeground(QColor(0, 0, 0, 0))   # 文字由上面的小标签显示（复制时用）
+                if c == 3:
+                    it.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                    it.setFont(num_font(10))
+                    if value is not None:
+                        it.setData(SORT_ROLE, float(value))
+                t.setItem(i, c, it)
+            t.setCellWidget(i, 2, self._chip_cell(text, kind))
 
     def _chip_cell(self, text, kind):
         w = QWidget()
