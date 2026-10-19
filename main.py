@@ -181,6 +181,19 @@ class MinOrderGauge(QWidget):
         self.setFixedHeight(max(60, sum(self._block_h(r) for r in self.rules)))
         self.update()
 
+    def copy_text(self):
+        """右键「复制」：每个起订供应商的状态和数量（画出来的文字没法用鼠标选）"""
+        out = []
+        for ru in self.rules:
+            out.append(f"{ru.get('name')}\t{tr(ru.get('status', ''))}")
+            if ru.get("min_colli"):
+                out.append(tr("  箱数\t{0:,.0f} → {1:,.0f} / {2:,.0f}", ru.get("before_colli") or 0,
+                              ru.get("after_colli") or 0, ru["min_colli"]))
+            if ru.get("min_amount"):
+                out.append(tr("  金额\t€{0:,.2f} → €{1:,.2f} / €{2:,.2f}", ru.get("before_amount") or 0,
+                              ru.get("after_amount") or 0, ru["min_amount"]))
+        return "\n".join(out)
+
     @staticmethod
     def _block_h(ru):
         n = (1 if ru.get("min_colli") else 0) + (1 if ru.get("min_amount") else 0)

@@ -400,6 +400,17 @@ class Sparkline(QWidget):
         self.update()
 
     # ---- 周 → 日期 ----
+    def copy_text(self):
+        """右键「复制」：每周的日期和销量"""
+        out = []
+        for i, v in enumerate(self.values):
+            try:
+                a, b = self.week_range(i)
+                out.append(f"{a:%d/%m}-{b:%d/%m}\t{v:g}")
+            except Exception:
+                out.append(f"{i + 1}\t{v}")
+        return "\n".join(out)
+
     def week_range(self, i):
         import datetime as _dt
         end = self.end_date or _dt.date.today()
@@ -647,16 +658,33 @@ def set_chip(lbl, text, kind="accent"):
 # =====================================================================
 # 全程序可复制：文字标签可以用鼠标选中复制；表格 Ctrl+C / 右键复制
 # =====================================================================
+def _row_index(view, r):
+    """行号（int，表格）或第 0 列的 QModelIndex（树形列表的子行）→ 第 0 列的 QModelIndex"""
+    if isinstance(r, int):
+        return view.model().index(r, 0)
+    return r.sibling(r.row(), 0)
+
+
+def _row_path(idx):
+    """树里的位置（父行号…, 行号），用来按屏幕顺序排序"""
+    out = []
+    while idx.isValid():
+        out.insert(0, idx.row())
+        idx = idx.parent()
+    return tuple(out)
+
+
 def _table_text(view, rows, cols):
-    """rows / cols：模型里的行号、列号（cols 按屏幕上看到的顺序）→ 制表符分隔的文字（贴到 Excel 正好分列）"""
+    """rows：行号或 QModelIndex（树形列表的子行也行）；cols：按屏幕顺序的列号 → 制表符分隔的文字（贴到 Excel 正好分列）"""
     m = view.model()
     out = []
     for r in rows:
+        ri = _row_index(view, r)
         vals = []
         for c in cols:
-            v = m.index(r, c).data(Qt.DisplayRole)
-            if (v is None or v == "") and hasattr(view, "cellWidget"):
-                w = view.cellWidget(r, c)        # 状态列这种放了小标签控件的格子
+            v = m.index(ri.row(), c, ri.parent()).data(Qt.DisplayRole)
+            if (v is None or v == "") and hasattr(view, "cellWidget") and not ri.parent().isValid():
+                w = view.cellWidget(ri.row(), c)        # 状态列这种放了小标签控件的格子
                 if w is not None:
                     v = " ".join(x.text() for x in w.findChildren(QLabel) + w.findChildren(QPushButton) if x.text())
             vals.append("" if v is None else str(v).replace("\t", " ").replace("\n", " "))
@@ -664,8 +692,16 @@ def _table_text(view, rows, cols):
     return "\n".join(out)
 
 
+def _header_of(view):
+    if hasattr(view, "horizontalHeader"):
+        return view.horizontalHeader()
+    if hasattr(view, "header"):
+        return view.header()          # QTreeView / QTreeWidget
+    return None
+
+
 def _visible_cols(view):
-    hh = view.horizontalHeader() if hasattr(view, "horizontalHeader") else None
+    hh = _header_of(view)
     n = view.model().columnCount()
     if hh is None:
         return list(range(n))
@@ -674,7 +710,44 @@ def _visible_cols(view):
 
 
 def _visible_rows(view):
-    return [r for r in range(view.model().rowCount()) if not (hasattr(view, "isRowHidden") and view.isRowHidden(r))]
+    """看得到的行：表格是行号；树形列表是每一行（含展开的子行）的 QModelIndex"""
+    m = view.model()
+    if hasattr(view, "isExpanded"):
+        out = []
+
+        def walk(parent):
+            for r in range(m.rowCount(parent)):
+                if hasattr(view, "isRowHidden") and view.isRowHidden(r, parent):
+                    continue
+                idx = m.index(r, 0, parent)
+                out.append(idx)
+                if m.rowCount(idx) and view.isExpanded(idx):
+                    walk(idx)
+        walk(view.rootIndex())
+        return out
+    return [r for r in range(m.rowCount()) if not (hasattr(view, "isRowHidden") and view.isRowHidden(r))]
+
+
+def _selected_rows(view, sel):
+    """选中的格子 → 行（表格：行号；树：QModelIndex），按屏幕顺序"""
+    if hasattr(view, "isExpanded"):
+        seen, rows = set(), []
+        for i in sel:
+            ri = i.sibling(i.row(), 0)
+            key = _row_path(ri)
+            if key not in seen:
+                seen.add(key)
+                rows.append(ri)
+        return sorted(rows, key=_row_path)
+    rows = sorted({i.row() for i in sel})
+    vis = set(_visible_rows(view))
+    return [r for r in rows if r in vis] or rows
+
+
+def _header_text(view, cols):
+    m = view.model()
+    return "\t".join(str(m.headerData(c, Qt.Horizontal, Qt.DisplayRole) or "").replace(" ✎", "")
+                     .replace(" ⏷", "").replace(" ↑", "").replace(" ↓", "") for c in cols)
 
 
 def copy_view_selection(view, whole_rows=False):
@@ -684,8 +757,7 @@ def copy_view_selection(view, whole_rows=False):
         sel = [view.currentIndex()]
     if not sel:
         return False
-    rows = sorted({i.row() for i in sel})
-    rows = [r for r in rows if r in set(_visible_rows(view))] or rows
+    rows = _selected_rows(view, sel)
     vis = _visible_cols(view)
     picked = {i.column() for i in sel}
     cols = vis if whole_rows or picked >= set(vis) else [c for c in vis if c in picked]
@@ -693,10 +765,46 @@ def copy_view_selection(view, whole_rows=False):
     return True
 
 
+def _plain(text):
+    """标签里的文字（去掉 HTML）"""
+    t = str(text or "")
+    if "<" in t and ">" in t:
+        from PySide6.QtGui import QTextDocument
+        d = QTextDocument()
+        d.setHtml(t)
+        t = d.toPlainText()
+    return t.strip()
+
+
+def _copy_menu(gpos, items):
+    """items = [(菜单文字, 要复制的文字)]"""
+    from PySide6.QtWidgets import QMenu, QApplication
+    items = [(a, b) for a, b in items if b]
+    if not items:
+        return False
+    menu = QMenu()
+    acts = {}
+    for label, text in items:
+        acts[menu.addAction(label)] = text
+    got = menu.exec(gpos)
+    if got in acts:
+        QApplication.clipboard().setText(acts[got])
+    return True
+
+
+def _short(t, n=24):
+    t = " ".join(str(t).split())
+    return t if len(t) <= n else t[: n - 1] + "…"
+
+
 class CopyHelper(QObject):
-    """装在 QApplication 上：
-      · 所有文字标签（QLabel）可以用鼠标选中、右键复制（按钮里的、表格格子里的、可点的卡片里的除外，免得点不动）
-      · 所有表格：Ctrl+C 复制选中的行 / 格子；右键菜单「复制这一格 / 这一行 / 选中的行 / 整个表格」
+    """装在 QApplication 上，让程序里看得到的文字都能复制：
+      · 文字标签（QLabel）：可以用鼠标选中复制。按钮里的、可点的卡片里的标签选不了（免得点不动），
+        但右键都有「复制」
+      · 按钮、开关：右键「复制文字」
+      · 表格、树形列表（历史记录）：Ctrl+C 复制选中的；右键「复制这一格 / 这一行 / 选中的行 / 整个表格」
+      · 表头：右键「复制列名」（自己有右键菜单的表头在它的菜单里）
+      · 自己画出来的控件（起订量进度条等）：右键「复制」，控件提供 copy_text() 方法
     不想让某个控件里的文字可选：给它或它的上级设属性 noTextSelect=True。"""
 
     def eventFilter(self, obj, ev):
@@ -714,7 +822,65 @@ class CopyHelper(QObject):
             if view is not None and view.contextMenuPolicy() == Qt.DefaultContextMenu:
                 self._table_menu(view, ev)
                 return True
+            if self._other_menu(obj, ev):
+                return True
         return False
+
+    def _other_menu(self, obj, ev):
+        from PySide6.QtWidgets import QAbstractButton, QHeaderView, QLineEdit, QTextEdit, QPlainTextEdit
+        if not isinstance(obj, QWidget) or obj.contextMenuPolicy() not in (Qt.DefaultContextMenu,):
+            return False
+        if isinstance(obj, (QLineEdit, QTextEdit, QPlainTextEdit)):
+            return False                                  # 自带复制菜单
+        gpos = ev.globalPos()
+        if isinstance(obj, QHeaderView):
+            view = obj.parent()
+            if view is None or not hasattr(view, "model") or view.model() is None:
+                return False
+            c = obj.logicalIndexAt(ev.pos())
+            cols = _visible_cols(view) if obj.orientation() == Qt.Horizontal else []
+            items = []
+            if c >= 0 and obj.orientation() == Qt.Horizontal:
+                items.append((tr("复制列名「{0}」", _short(_header_text(view, [c]))), _header_text(view, [c])))
+            if cols:
+                items.append((tr("复制全部列名"), _header_text(view, cols)))
+            return _copy_menu(gpos, items)
+        if isinstance(obj, QLabel):
+            full = getattr(obj, "full", None)             # 放不下被截短（…）的文字：复制完整的
+            if isinstance(full, str) and full.strip() and full != obj.text():
+                return _copy_menu(gpos, [(tr("复制「{0}」", _short(full)), full.strip())])
+            if obj.textInteractionFlags() & Qt.TextSelectableByMouse:
+                return False                              # Qt 自带「复制 / 全选」
+            txt = _plain(obj.text())
+            return _copy_menu(gpos, [(tr("复制「{0}」", _short(txt)), txt)] + self._block_items(obj, txt))
+        if isinstance(obj, QAbstractButton):
+            txt = _plain(obj.text())
+            return _copy_menu(gpos, [(tr("复制「{0}」", _short(txt)), txt)] + self._block_items(obj, txt))
+        w = obj
+        while w is not None:                              # 自己画出来的控件
+            f = getattr(w, "copy_text", None)
+            if callable(f):
+                try:
+                    txt = f()
+                except Exception:
+                    txt = ""
+                return _copy_menu(gpos, [(tr("复制"), txt)])
+            if w.isWindow():
+                break
+            w = w.parentWidget()
+        return False
+
+    @staticmethod
+    def _block_items(obj, own):
+        """标签在一块卡片里（例如 KPI、方案卡片）：再给一个「复制这一块」"""
+        p = obj.parentWidget()
+        if p is None or p.isWindow():
+            return []
+        texts = [_plain(x.text()) for x in p.findChildren(QLabel) if x.isVisible() and _plain(x.text())]
+        if len(texts) < 2:
+            return []
+        all_txt = "\n".join(texts)
+        return [(tr("复制这一块的文字"), all_txt)] if all_txt != own else []
 
     @staticmethod
     def _make_selectable(lab):
@@ -730,7 +896,7 @@ class CopyHelper(QObject):
             if w.property("noTextSelect") or isinstance(w, (QAbstractButton, QAbstractItemView)):
                 return
             if w is not lab and w.testAttribute(Qt.WA_SetCursor) and w.cursor().shape() == Qt.PointingHandCursor:
-                return                  # 整块可以点的卡片（例如侧边栏的数据库状态）
+                return                  # 整块可以点的卡片（例如侧边栏的数据库状态）：右键复制
             if w.isWindow():
                 break
             w = w.parentWidget()
@@ -749,7 +915,8 @@ class CopyHelper(QObject):
     def _table_menu(self, view, ev):
         from PySide6.QtWidgets import QMenu, QApplication
         idx = view.indexAt(ev.pos())
-        rows_sel = sorted({i.row() for i in (view.selectionModel().selectedIndexes() if view.selectionModel() else [])})
+        sel = view.selectionModel().selectedIndexes() if view.selectionModel() else []
+        rows_sel = _selected_rows(view, sel) if sel else []
         menu = QMenu(view)
         a_cell = menu.addAction(tr("复制这一格"))
         a_row = menu.addAction(tr("复制这一行"))
@@ -763,16 +930,15 @@ class CopyHelper(QObject):
             return
         cols = _visible_cols(view)
         cb = QApplication.clipboard()
+        row_of_idx = idx if hasattr(view, "isExpanded") else idx.row()
         if got == a_cell:
-            cb.setText(_table_text(view, [idx.row()], [idx.column()]))
+            cb.setText(_table_text(view, [row_of_idx], [idx.column()]))
         elif got == a_row:
-            cb.setText(_table_text(view, [idx.row()], cols))
+            cb.setText(_table_text(view, [row_of_idx], cols))
         elif a_sel is not None and got == a_sel:
             cb.setText(_table_text(view, rows_sel, cols))
         elif got == a_all:
-            m = view.model()
-            head = "\t".join(str(m.headerData(c, Qt.Horizontal, Qt.DisplayRole) or "").replace(" ✎", "") for c in cols)
-            cb.setText(head + "\n" + _table_text(view, _visible_rows(view), cols))
+            cb.setText(_header_text(view, cols) + "\n" + _table_text(view, _visible_rows(view), cols))
 
 
 # =====================================================================
@@ -1155,6 +1321,9 @@ class TableSortFilter(QObject):
         a_clear.setEnabled(c in self.filters)
         a_clear_all = m.addAction(tr("清除全部筛选"))
         a_clear_all.setEnabled(bool(self.filters))
+        m.addSeparator()
+        a_copy_col = m.addAction(tr("复制这一列（显示的行）"))
+        a_copy_name = m.addAction(tr("复制列名"))
         search.setFocus()
         got = m.exec(gpos)
         if got == a_up:
@@ -1166,6 +1335,12 @@ class TableSortFilter(QObject):
             self.render()
         elif got == a_clear_all:
             self.clear_filters()
+        elif got == a_copy_col:
+            from PySide6.QtWidgets import QApplication
+            QApplication.clipboard().setText("\n".join(self.text(i, c) for i in self.visible))
+        elif got == a_copy_name:
+            from PySide6.QtWidgets import QApplication
+            QApplication.clipboard().setText(self.titles[c] if c < len(self.titles) else "")
 
     # ---- 导出 ----
     def export(self, parent, default_name, title=None):
