@@ -1218,69 +1218,177 @@ class MissingDialog(QDialog):
         return bool(text) and text not in f"{m.get('ean', '')} {m.get('articolo', '')}".lower()
 
 
+def _money_txt(v, sign=False):
+    if v is None:
+        return "—"
+    if abs(v) < 0.005:
+        return "0"
+    return f"{v:+,.2f}" if sign else f"{v:,.2f}"
+
+
+def _sup_label(x):
+    return x.get("label") or short(x.get("name"))
+
+
+def _rule_cond(x):
+    items = []
+    if x.get("min_colli"):
+        items.append(tr("{0:g} 箱", float(x["min_colli"])))
+    if x.get("min_amount"):
+        items.append(f"€{float(x['min_amount']):g}")
+    return (tr(" 且 ") if x.get("mode", "all") == "all" else tr(" 或 ")).join(items) if items else tr("无条件")
+
+
 def fill_scenario_table(t, results, chosen=None, recommended=None):
-    """方案对比表：每个方案一列，每个指标一行。返回 {(表格行, 列): 方案下标}（缺失商品那一行，点开看列表）"""
+    """
+    方案对比表：每个方案一列，按「汇总 / 各供应商 / 起订量」分段。
+    和第一个方案（基准）比的差额拆成「同样商品的价差」和「少买 / 多买的商品」，
+    避免少买了商品、总额变低，看起来像更便宜。
+    返回 {(表格行, 列): 方案下标}（缺失商品那一行，点开看列表）
+    """
     first = tr(results[0]["name"]) if results else ""
-    heads = [tr("项目")] + [tr(r["name"]) + ("  ★" if i == recommended else "") + ("  ✔" if i == chosen else "")
-                          for i, r in enumerate(results)]
+    n = len(results)
+    heads = [tr("项目")]
+    for i, r in enumerate(results):
+        h = tr(r["name"])
+        if i == recommended:
+            h += "  ★"
+        if i == chosen:
+            h += "  ✔"
+        if r.get("unmatched") or (r.get("same_as") is not None):
+            h += "  ⚠"
+        heads.append(h)
+    t.clearSpans()
     t.setColumnCount(len(heads))
     t.setHorizontalHeaderLabels(heads)
-    sups = []
+    has_new = all("price_diff" in r for r in results)
+
+    sups, sup_label = [], {}
     for r in results:
         for x in r.get("suppliers") or []:
             if x["name"] not in sups:
                 sups.append(x["name"])
+                sup_label[x["name"]] = _sup_label(x)
     rules = []
     for r in results:
         for x in r.get("rules") or []:
-            if x.get("name") not in rules:
-                rules.append(x.get("name"))
-    lines = [("total", tr("采购总额 €")), ("vs", tr("和「{0}」比 €", first)), ("priced", tr("有报价的商品")),
-             ("missing", tr("缺失商品（点开看列表）")), ("changes", tr("凑单 / 换供应商的商品"))]
-    lines += [("sup", s_) for s_ in sups] + [("rule", n) for n in rules]
+            if x.get("name") not in [y.get("name") for y in rules]:
+                rules.append(x)
+
+    # (种类, 左边文字, 每个方案的值, 说明)
+    lines = [("sec", tr("汇总"))]
+    lines.append(("total", tr("采购总额 €"), [_money_txt(r["total"]) for r in results],
+                  tr("这个方案所有买到的商品：箱数 × 每箱件数 × 件价")))
+    lines.append(("vs", tr("和「{0}」比 €", first),
+                  ["—" if i == 0 else _money_txt(r.get("vs_first", r["total"] - results[0]["total"]), True)
+                   for i, r in enumerate(results)],
+                  tr("= 同样商品的价差 − 少买的商品 + 多买到的商品")))
+    if has_new:
+        lines.append(("price", tr("　├ 同样商品的价差 €"),
+                      ["—" if i == 0 else _money_txt(r["price_diff"], True) for i, r in enumerate(results)],
+                      tr("两个方案都买得到的商品，换了供应商以后贵了（+）还是便宜了（−）。这才是真正的价格差。")))
+        lines.append(("lost", tr("　├ 少买的商品（基准里买得到）"),
+                      ["—" if i == 0 else (tr("−€{0:,.2f} · {1} 个", r["lost_value"], r["lost_rows"])
+                                           if r["lost_rows"] else "0") for i, r in enumerate(results)],
+                      tr("排除供应商以后买不到的商品，在基准方案里要花的钱。总额变低往往是因为少买了货，不是更便宜。")))
+        if any(r.get("gained_rows") for r in results):
+            lines.append(("gained", tr("　└ 多买到的商品"),
+                          ["—" if i == 0 else (tr("+€{0:,.2f} · {1} 个", r["gained_value"], r["gained_rows"])
+                                               if r["gained_rows"] else "0") for i, r in enumerate(results)], ""))
+        lines.append(("colli", tr("采购箱数"), [f"{r.get('colli', 0):,.0f}" for r in results], ""))
+    lines.append(("priced", tr("买得到的商品"),
+                  [(f"{r['priced']:,} / {r['need']:,}" if r.get("need") else f"{r['priced']:,}") for r in results],
+                  tr("分到供应商的商品 / 要订的商品")))
+    lines.append(("missing", tr("缺失商品（点开看列表）"), [f"{len(r['missing']):,}" for r in results],
+                  tr("点数字看缺了哪些商品")))
+    if has_new:
+        lines.append(("mqty", tr("缺失的需求箱数"), [f"{r.get('missing_qty', 0):,.0f}" for r in results], ""))
+        lines.append(("switched", tr("和「{0}」比换了供应商的商品", first),
+                      ["—" if i == 0 else f"{r.get('switched', 0):,}" for i, r in enumerate(results)], ""))
+    lines.append(("changes", tr("凑单 / 不按最低价的商品"), [f"{r.get('changes', 0):,}" for r in results],
+                  tr("为了起订量，没有分给最低价供应商的商品")))
+    lines.append(("extra", tr("凑单多花 €"), [_money_txt(r.get("extra_cost", 0)) for r in results],
+                  tr("因为起订量凑单，比全部按最低价多花的钱")))
+    if has_new:
+        lines.append(("nsup", tr("下单供应商家数"), [f"{r.get('n_suppliers', 0)}" for r in results], ""))
+
+    lines.append(("sec", tr("各供应商：金额 · 箱数 · 商品数 · 占比")))
+    for sname in sups:
+        vals = []
+        for r in results:
+            x = next((y for y in r.get("suppliers") or [] if y["name"] == sname), None)
+            if x and x.get("excluded"):
+                vals.append(tr("不含"))
+            elif x and x["rows"]:
+                share = x["amount"] / r["total"] * 100 if r["total"] else 0
+                vals.append(tr("€{0:,.2f} · {1:,.0f} 箱 · {2} 个 · {3:.0f}%", x["amount"], x["colli"], x["rows"], share))
+            else:
+                vals.append("—")
+        lines.append(("sup", sup_label.get(sname) or short(sname), vals, short(sname)))
+    if rules:
+        lines.append(("sec", tr("起订量")))
+        for ru in rules:
+            vals = []
+            for r in results:
+                x = next((y for y in r.get("rules") or [] if y.get("name") == ru.get("name")), None)
+                if not x:
+                    vals.append(tr("不含"))
+                    continue
+                v = tr(x["status"])
+                if x.get("after_colli") is not None:
+                    v += tr(" · {0:,.0f} 箱 / €{1:,.0f}", x["after_colli"], x.get("after_amount") or 0)
+                vals.append(v)
+            lines.append(("rule", tr("{0} 起订（{1}）", ru.get("name"), _rule_cond(ru)), vals, ""))
+
     t.setRowCount(len(lines))
     links = {}
-    for row, (kind, label) in enumerate(lines):
-        vals = [short(label) if kind == "sup" else (tr("{0} 起订", label) if kind == "rule" else label)]
-        for i, r in enumerate(results):
-            if kind == "total":
-                v = f"{r['total']:,.2f}"
-            elif kind == "vs":
-                d = r.get("vs_first", r["total"] - results[0]["total"])
-                v = "—" if i == 0 else (f"{d:+,.2f}" if abs(d) >= 0.005 else "0")
-            elif kind == "priced":
-                v = f"{r['priced']:,}"
-            elif kind == "missing":
-                v = f"{len(r['missing']):,}"
-                links[(row, i + 1)] = i
-            elif kind == "changes":
-                v = f"{r.get('changes', 0):,}"
-            elif kind == "sup":
-                x = next((y for y in r.get("suppliers") or [] if y["name"] == label), None)
-                v = tr("不含") if (x and x.get("excluded")) else \
-                    (tr("€{0:,.2f} · {1:,.0f} 箱", x["amount"], x["colli"]) if x and x["rows"] else "—")
-            else:
-                x = next((y for y in r.get("rules") or [] if y.get("name") == label), None)
-                v = tr(x["status"]) if x else tr("不含")
-            vals.append(v)
-        table_set_row(t, row, vals, bold=kind in ("total", "missing"))
-        for c in range(1, len(vals)):
+    sec_font = None
+    for row, ln in enumerate(lines):
+        kind = ln[0]
+        if kind == "sec":
+            it = QTableWidgetItem(ln[1])
+            f = it.font()
+            f.setBold(True)
+            it.setFont(f)
+            it.setForeground(QColor(T("muted")))
+            for c in range(n + 1):
+                cell = it if c == 0 else QTableWidgetItem("")
+                cell.setBackground(QColor(T("surface2")))
+                cell.setFlags(cell.flags() & ~Qt.ItemIsSelectable)
+                t.setItem(row, c, cell)
+            t.setSpan(row, 0, 1, n + 1)
+            continue
+        _, label, vals, tip = ln
+        table_set_row(t, row, [label] + list(vals), bold=kind in ("total", "missing", "vs"))
+        t.item(row, 0).setForeground(QColor(T("muted") if kind not in ("total", "vs") else T("text")))
+        if tip:
+            t.item(row, 0).setToolTip(tip)
+        for c in range(1, n + 1):
             it = t.item(row, c)
             it.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-            if kind == "missing" and results[c - 1]["missing"]:
-                it.setForeground(QColor(T("warn")))
+            r = results[c - 1]
+            if kind == "missing":
+                links[(row, c)] = c - 1
                 it.setToolTip(tr("点开看缺了哪些商品"))
-            if kind == "vs" and c > 1:
-                d = results[c - 1].get("vs_first", 0)
+                if r["missing"]:
+                    it.setForeground(QColor(T("warn")))
+            elif kind in ("vs", "price") and c > 1:
+                d = r.get("vs_first", 0) if kind == "vs" else r.get("price_diff", 0)
                 if abs(d) >= 0.005:
                     it.setForeground(QColor(T("ok") if d < 0 else T("err")))
-            if kind == "rule" and vals[c] in (tr("未达标"),):
+            elif kind == "lost" and c > 1 and r.get("lost_rows"):
+                it.setForeground(QColor(T("warn")))
+            elif kind == "extra" and (r.get("extra_cost") or 0) > 0.005:
+                it.setForeground(QColor(T("warn")))
+            elif kind == "rule" and it.text().startswith(tr("未达标")):
                 it.setForeground(QColor(T("err")))
-        t.item(row, 0).setForeground(QColor(T("muted")))
-    for c in range(1, t.columnCount()):
+            elif kind in ("sup", "rule") and it.text() == tr("不含"):
+                it.setForeground(QColor(T("faint")))
+    for c in range(1, n + 1):
         if chosen is not None and c - 1 == chosen:
             for row in range(t.rowCount()):
-                t.item(row, c).setBackground(QColor(T("accent_soft")))
+                if lines[row][0] != "sec":
+                    t.item(row, c).setBackground(QColor(T("accent_soft")))
     hh = t.horizontalHeader()
     hh.setSectionResizeMode(QHeaderView.ResizeToContents)
     hh.setStretchLastSection(False)
@@ -1288,8 +1396,175 @@ def fill_scenario_table(t, results, chosen=None, recommended=None):
     return links
 
 
+def scenario_warnings(results):
+    """方案对比的提醒：排除的供应商没找到、两个方案完全一样"""
+    out = []
+    for i, r in enumerate(results):
+        if r.get("unmatched"):
+            out.append(tr("「{0}」没有找到要排除的供应商「{1}」——文件名和供应商名称里都没有这几个字，所以这个方案什么都没排除。点「供应商名称」给文件起名（比如把 formattato_… 叫 MEGA CASH），再重新对比。",
+                          tr(r["name"]), "、".join(r["unmatched"])))
+        elif r.get("same_as") is not None:
+            out.append(tr("「{0}」和「{1}」的分配完全一样（被排除的供应商本来就没分到货）。",
+                          tr(r["name"]), tr(results[r["same_as"]]["name"])))
+    return out
+
+
+def scenario_advice(results, rec):
+    """推荐说明：为什么推荐这个方案"""
+    if rec is None:
+        return ""
+    r = results[rec]
+    txt = tr("★ 推荐「{0}」：缺的商品最少（{1} 个），其中采购总额最低（€{2:,.2f}）。", tr(r["name"]), len(r["missing"]), r["total"])
+    cheaper = [x for i, x in enumerate(results) if i != rec and x["total"] < r["total"] - 0.005]
+    for x in cheaper:
+        if "lost_value" in x:
+            txt += tr("「{0}」总额低 €{1:,.2f}，但少买了 {2} 个商品（价值 €{3:,.2f}），同样商品的价差 {4}。",
+                      tr(x["name"]), r["total"] - x["total"], x["lost_rows"], x["lost_value"],
+                      _money_txt(x["price_diff"] - (r.get("price_diff") or 0), True))
+    return txt + tr("最后由你决定。")
+
+
+class ScenarioDiffDialog(QDialog):
+    """各方案供应商不一样的商品：每个方案的供应商和金额，可以排序、按列筛选、导出"""
+
+    def __init__(self, parent, results, diff, title=None):
+        super().__init__(parent)
+        self.results, self.diff = results, list(diff or [])
+        self.setWindowTitle(title or tr("各方案的差异商品"))
+        self.resize(1200, 700)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(22, 18, 22, 16)
+        lay.setSpacing(10)
+        t = QLabel(title or tr("各方案的差异商品"))
+        t.setObjectName("PageTitle")
+        t.setStyleSheet("font-size:18px;")
+        lay.addWidget(t)
+        sub = QLabel(tr("只列出在不同方案里分给了不同供应商（或者买不到）的商品。空白 = 这个方案里买不到。"))
+        sub.setObjectName("Muted")
+        sub.setWordWrap(True)
+        lay.addWidget(sub)
+        bar = QHBoxLayout()
+        self.search = QLineEdit()
+        self.search.setPlaceholderText(tr("搜索 EAN 或品名"))
+        self.search.setFixedWidth(260)
+        bar.addWidget(self.search)
+        self.count = QLabel("")
+        self.count.setObjectName("Faint")
+        exp = QPushButton(tr("导出 Excel"))
+        heads = [tr("行"), "EAN", "ARTICOLO", tr("箱数")]
+        numeric = [0, 3]
+        for r in results:
+            heads += [tr("{0} · 供应商", tr(r["name"])), tr("{0} · 金额 €", tr(r["name"]))]
+            numeric.append(len(heads) - 1)
+        self.table = make_table(heads, stretch_col=2, numeric_cols=tuple(numeric))
+        self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        from erp_widgets import TableSortFilter, ColumnFilterBox
+        self.ctl = TableSortFilter(self.table, lambda: len(self.diff), self._text, self._fill,
+                                   hide=self._hidden, numeric=tuple(numeric))
+        for k, r in enumerate(results[:3]):
+            bar.addSpacing(10)
+            bar.addWidget(ColumnFilterBox(self.ctl, 4 + 2 * k, tr(r["name"])))
+        bar.addStretch()
+        bar.addWidget(self.count)
+        bar.addWidget(exp)
+        lay.addLayout(bar)
+        lay.addWidget(self.table, 1)
+        self.ctl.rendered.connect(lambda n, tot: self.count.setText(
+            tr("显示 {0} / {1} 个 · 点表头排序，右键表头筛选", n, tot)))
+        self.search.textChanged.connect(lambda _: self.ctl.render())
+        exp.clicked.connect(lambda: self.ctl.export(self, "方案差异商品.xlsx", tr("差异商品")))
+        bb = QHBoxLayout()
+        bb.addStretch()
+        close = QPushButton(tr("关闭"))
+        close.clicked.connect(self.accept)
+        bb.addWidget(close)
+        lay.addLayout(bb)
+        self.ctl.render()
+
+    def _text(self, i, c):
+        m = self.diff[i]
+        if c < 4:
+            return [str(m.get("row", "")), m.get("ean", "") or "", str(m.get("articolo") or ""),
+                    f"{float(m.get('qty') or 0):g}"][c]
+        k, j = divmod(c - 4, 2)
+        if j == 0:
+            return m["sups"][k] if k < len(m["sups"]) else ""
+        a = m["amounts"][k] if k < len(m["amounts"]) else None
+        return "" if a is None else f"{a:,.2f}"
+
+    def _fill(self, i, k):
+        vals = [self._text(i, c) for c in range(self.table.columnCount())]
+        table_set_row(self.table, k, vals)
+        m = self.diff[i]
+        amts = [a for a in m["amounts"] if a is not None]
+        lo = min(amts) if amts else None
+        for kk, a in enumerate(m["amounts"]):
+            c = 5 + 2 * kk
+            if a is None:
+                self.table.item(k, c - 1).setText(tr("（买不到）"))
+                self.table.item(k, c - 1).setForeground(QColor(T("warn")))
+            elif lo is not None and len(amts) > 1 and abs(a - lo) < 0.005:
+                self.table.item(k, c).setForeground(QColor(T("ok")))
+
+    def _hidden(self, i):
+        q = self.search.text().strip().lower()
+        if not q:
+            return False
+        m = self.diff[i]
+        return q not in str(m.get("ean", "")).lower() and q not in str(m.get("articolo", "")).lower()
+
+
+class SupplierNamesDialog(QDialog):
+    """给供应商报价文件起名字（MEGA 的文件叫 formattato_…，起名 MEGA CASH 以后方案和起订规则都能认出来）"""
+
+    def __init__(self, parent, headers):
+        super().__init__(parent)
+        import supplier_names as SN
+        self.headers = [h for h in headers if h]
+        self.setWindowTitle(tr("供应商名称"))
+        self.resize(720, 420)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(20, 18, 20, 16)
+        lay.setSpacing(10)
+        t = QLabel(tr("供应商文件名每周会变，有的文件名里也看不出是哪家（比如 formattato_059603）。在这里给每个文件起个名字："
+                      "「管理方案」里排除的关键词、起订规则都会同时按文件名和这个名字找。拖入新文件替换旧文件时，名字会自动带到新文件上。"))
+        t.setWordWrap(True)
+        lay.addWidget(t)
+        self.table = QTableWidget(len(self.headers), 2)
+        self.table.setHorizontalHeaderLabels([tr("供应商文件"), tr("供应商名称")])
+        self.table.verticalHeader().setVisible(False)
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        for i, h in enumerate(self.headers):
+            a = QTableWidgetItem(h)
+            a.setFlags(a.flags() & ~Qt.ItemIsEditable)
+            self.table.setItem(i, 0, a)
+            b = QTableWidgetItem(SN.label_of(h, settings))
+            if SN.guessed(h, settings):
+                b.setToolTip(tr("程序猜的名字，可以改"))
+                b.setForeground(QColor(T("muted")))
+            self.table.setItem(i, 1, b)
+        lay.addWidget(self.table, 1)
+        bb = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        bb.accepted.connect(self._save)
+        bb.rejected.connect(self.reject)
+        lay.addWidget(bb)
+
+    def _save(self):
+        import supplier_names as SN
+        names = settings.setdefault("supplier_names", {})
+        for i, h in enumerate(self.headers):
+            v = (self.table.item(i, 1).text() if self.table.item(i, 1) else "").strip()
+            if v and v != SN.stem(h):
+                names[h] = v
+            else:
+                names.pop(h, None)
+        save_settings(settings)
+        self.accept()
+
+
 class ScenarioDialog(QDialog):
-    """几种方案的对比，选一种写入。self.chosen = 选中的方案下标"""
+    """几种方案的对比，选一种写入。self.chosen = 选中的方案下标；"again" = 改了供应商名称，要重新对比"""
 
     def __init__(self, parent, results):
         super().__init__(parent)
@@ -1298,23 +1573,26 @@ class ScenarioDialog(QDialog):
         self.rec = SC.recommend(results)
         self.chosen = self.rec
         self.setWindowTitle(tr("选择方案"))
-        self.resize(1100, 720)
+        self.resize(1240, 800)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(24, 20, 24, 18)
-        lay.setSpacing(12)
+        lay.setSpacing(10)
         t = QLabel(tr("选择方案"))
         t.setObjectName("PageTitle")
         t.setStyleSheet("font-size:20px;")
         lay.addWidget(t)
-        sub = QLabel(tr("同时算了 {0} 种方案（被排除的供应商这次不下单）。对比以后选一种，程序按它写入主订单和供应商文件。", len(results)))
+        sub = QLabel(tr("同时算了 {0} 种方案（被排除的供应商这次不下单）。和第一个方案比的差额拆成「同样商品的价差」和「少买的商品」：总额低不一定是更便宜，可能是少买了货。", len(results)))
         sub.setObjectName("Muted")
         sub.setWordWrap(True)
         lay.addWidget(sub)
-        if self.rec is not None:
-            r = results[self.rec]
+        for w in scenario_warnings(results):
+            wb = Banner()
+            wb.show_msg("⚠ " + w, "warn")
+            lay.addWidget(wb)
+        adv = scenario_advice(results, self.rec)
+        if adv:
             nb = Banner()
-            nb.show_msg(tr("★ 推荐「{0}」：缺的商品最少（{1} 个），其中采购总额最低（€{2:,.2f}）。最后由你决定。",
-                           tr(r["name"]), len(r["missing"]), r["total"]), "info")
+            nb.show_msg(adv, "info")
             lay.addWidget(nb)
         pick = QHBoxLayout()
         pick.setSpacing(16)
@@ -1328,11 +1606,21 @@ class ScenarioDialog(QDialog):
             self.group.addButton(rb, i)
             pick.addWidget(rb)
         pick.addStretch()
+        diff = (results[0].get("diff") if results else None) or []
+        self.b_diff = QPushButton(tr("差异商品（{0}）", len(diff)))
+        self.b_diff.setToolTip(tr("在不同方案里分给了不同供应商的商品，逐个对比"))
+        self.b_diff.setEnabled(bool(diff))
+        self.b_diff.clicked.connect(lambda: ScenarioDiffDialog(self, results, diff).exec())
+        pick.addWidget(self.b_diff)
+        b_names = QPushButton(tr("供应商名称"))
+        b_names.setToolTip(tr("给供应商文件起名字（比如 formattato_… 叫 MEGA CASH），保存后重新对比"))
+        b_names.clicked.connect(self._names)
+        pick.addWidget(b_names)
         lay.addLayout(pick)
         self.table = make_table([""], stretch_col=None)
         self.table.cellClicked.connect(self._clicked)
         lay.addWidget(self.table, 1)
-        hint = QLabel(tr("点某一列选这个方案；点「缺失商品」那一行的数字看缺了哪些商品。"))
+        hint = QLabel(tr("点某一列选这个方案；点「缺失商品」那一行的数字看缺了哪些商品；鼠标停在左边的项目上看说明。"))
         hint.setObjectName("Faint")
         lay.addWidget(hint)
         btns = QHBoxLayout()
@@ -1351,6 +1639,16 @@ class ScenarioDialog(QDialog):
         lay.addLayout(btns)
         self.group.idClicked.connect(self._pick)
         self._pick(self.chosen if self.chosen is not None else 0)
+
+    def _names(self):
+        heads = []
+        for r in self.results:
+            for x in r.get("suppliers") or []:
+                if x["name"] not in heads:
+                    heads.append(x["name"])
+        if SupplierNamesDialog(self, heads).exec():
+            self.chosen = "again"
+            self.done(QDialog.Accepted)
 
     def _pick(self, i):
         self.chosen = i
@@ -1379,9 +1677,21 @@ class ScenarioDialog(QDialog):
         t = self.table
         ws.append([t.horizontalHeaderItem(c).text() for c in range(t.columnCount())])
         for r in range(t.rowCount()):
-            ws.append([t.item(r, c).text() for c in range(t.columnCount())])
+            ws.append([(t.item(r, c).text() if t.item(r, c) else "") for c in range(t.columnCount())])
         for c in ws[1]:
             c.font = Font(bold=True)
+        diff = (self.results[0].get("diff") if self.results else None) or []
+        if diff:
+            ws3 = wb.create_sheet("差异商品")
+            head = [tr("行"), "EAN", "ARTICOLO", tr("箱数")]
+            for r in self.results:
+                head += [tr("{0} · 供应商", tr(r["name"])), tr("{0} · 金额 €", tr(r["name"]))]
+            ws3.append(head)
+            for m in diff:
+                line = [m["row"], m.get("ean", ""), m.get("articolo", ""), m.get("qty")]
+                for s_, a in zip(m["sups"], m["amounts"]):
+                    line += [s_ or tr("（买不到）"), None if a is None else round(a, 2)]
+                ws3.append(line)
         for r in self.results:
             ws2 = wb.create_sheet(("缺失-" + tr(r["name"]))[:31].replace("/", "-"))
             ws2.append([tr("行"), "EAN", "ARTICOLO", tr("数量"), tr("原因"), tr("有报价的供应商")])
@@ -1404,11 +1714,14 @@ class ScenarioSettingsDialog(QDialog):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(20, 18, 20, 16)
         lay.setSpacing(10)
-        t = QLabel(tr("每个方案排除哪些供应商：写供应商文件名里的关键词，几个用逗号分开（不分大小写）。第一个方案是对比的基准，一般不排除任何供应商。"))
+        t = QLabel(tr("每个方案排除哪些供应商：写供应商名称或文件名里的关键词，几个用逗号分开（不分大小写）。第一个方案是对比的基准，一般不排除任何供应商。"))
         t.setWordWrap(True)
         lay.addWidget(t)
         if suppliers:
-            sl = QLabel(tr("这次的供应商文件：{0}", tr("、").join(suppliers)))
+            import supplier_names as SN
+            sl = QLabel(tr("这次的供应商：{0}", tr("、").join(
+                f"{SN.label_of(h, settings)}（{short(h)}）" if SN.label_of(h, settings) != short(h) else short(h)
+                for h in suppliers)))
             sl.setObjectName("Faint")
             sl.setWordWrap(True)
             lay.addWidget(sl)
@@ -2054,6 +2367,10 @@ class MainWindow(QMainWindow):
         b_scen = QPushButton(tr("管理方案"))
         b_scen.clicked.connect(self.edit_scenarios)
         opts.addWidget(b_scen)
+        b_names = QPushButton(tr("供应商名称"))
+        b_names.setToolTip(tr("给供应商文件起名字（比如 formattato_… 叫 MEGA CASH），方案排除和起订规则都按名字认"))
+        b_names.clicked.connect(self.edit_supplier_names)
+        opts.addWidget(b_names)
         edit_rules = QPushButton(tr("管理起订规则"))
         edit_rules.clicked.connect(lambda: self.go_page("rules"))
         opts.addWidget(edit_rules)
@@ -2833,11 +3150,15 @@ class MainWindow(QMainWindow):
         dlg = SupplierDropDialog(self, plan, existing)
         if not dlg.exec():
             return
+        import supplier_names as SN
+        old_labels = SN.labels(existing, settings)
         try:
             done = FI.apply_suppliers(root, dlg.result_plan())
         except Exception as e:
             self._file_error(e)
             return
+        if SN.carry_over(settings, done, old_labels):     # 旧文件的供应商名称带到新文件上
+            save_settings(settings)
         rep = [f"{old} → {new}" for new, old in done if old and old != new]
         add = [new for new, old in done if not old]
         parts = []
@@ -2912,6 +3233,17 @@ class MainWindow(QMainWindow):
                 save_settings(settings)
                 self.refresh_rule_line()
 
+    def edit_supplier_names(self):
+        heads = (self.info or {}).get("suppliers") or []
+        if not heads:
+            QMessageBox.information(self, tr("供应商名称"), tr("distribuire 里还没有供应商文件。先选总文件夹或拖入供应商报价。"))
+            return
+        if SupplierNamesDialog(self, heads).exec():
+            self.refresh_rule_line()
+            if hasattr(self, "rules_table"):
+                self.refresh_rules_table()
+            self.show_toast(tr("供应商名称已保存"))
+
     def _scenario_line(self):
         if not settings.get("scenarios_enabled", True):
             return ""
@@ -2935,7 +3267,9 @@ class MainWindow(QMainWindow):
         if not enabled:
             self.rule_line.setText(tr("还没有启用的起订规则。到「起订量」页添加。"))
             return
-        matched, _ = match_rules(enabled, self.info.get("suppliers") or [])
+        import supplier_names as SN
+        matched, _ = match_rules(enabled, self.info.get("suppliers") or [],
+                                 SN.labels(self.info.get("suppliers") or [], settings))
         hit = {id(r) for r, _ in matched}
         parts = []
         for r in enabled:
@@ -3371,6 +3705,14 @@ class MainWindow(QMainWindow):
             lb = QLabel(tr("对选的方案不满意？不用重算，直接改用："))
         lb.setObjectName("Faint")
         self.scen_switch_lay.addWidget(lb)
+        st = s.get("state") or {}
+        if can_switch_scenario(s):
+            import scenarios as SC
+            diff = SC.diff_items(st.get("rows") or [], st["scenario_assigns"], st.get("labels") or {})
+            bd = QPushButton(tr("差异商品（{0}）", len(diff)))
+            bd.setEnabled(bool(diff))
+            bd.clicked.connect(lambda: ScenarioDiffDialog(self, res, diff).exec())
+            self.scen_switch_lay.addWidget(bd)
         if can_switch_scenario(s) and self._is_current(s):
             for i, r in enumerate(res):
                 if r.get("chosen"):
@@ -3545,7 +3887,8 @@ class MainWindow(QMainWindow):
             return
         rules = settings["rules"]
         sups = self.info.get("suppliers") or []
-        matched, _ = match_rules([r for r in rules if r.get("enabled", True)], sups)
+        import supplier_names as SN
+        matched, _ = match_rules([r for r in rules if r.get("enabled", True)], sups, SN.labels(sups, settings))
         hit = {id(r): h for r, h in matched}
         t = self.rules_table
         t.setRowCount(len(rules))

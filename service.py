@@ -84,8 +84,11 @@ def _select_suppliers(rows_data, supplier_headers, ws_main, log, settings, summa
     summary["min_order"] = {"enabled": False, "rules": [], "unmatched": [], "extra_cost": 0.0,
                             "changes": 0, "warning": None}
     rules = []
+    import supplier_names as SN
+    labels = SN.labels(supplier_headers, settings)
+    summary["supplier_labels"] = dict(labels)
     if settings.get("min_order_enabled", True):
-        matched, unmatched = match_rules(settings.get("rules", []), supplier_headers)
+        matched, unmatched = match_rules(settings.get("rules", []), supplier_headers, labels)
         for r in unmatched:
             log(tr("⚠ 起订规则「{0}」：本次没有文件名包含 '{1}' 的供应商文件", r.get('name') or r.get('keyword'), r.get('keyword')))
         summary["min_order"]["unmatched"] = [r.get("name") or r.get("keyword") for r in unmatched]
@@ -107,12 +110,24 @@ def _select_suppliers(rows_data, supplier_headers, ws_main, log, settings, summa
     import scenarios as SC
     defs = SC.scenario_defs(settings)
     if choose and settings.get("scenarios_enabled", True) and len(defs) > 1:
-        log(tr("\n[方案对比] 同时计算 {0} 种方案…", len(defs)))
-        results = SC.compute_scenarios(rows_data, supplier_headers, rules, defs)
-        for sc in results:
-            log(tr("  {0}：采购总额 €{1:,.2f}，有报价 {2} 个商品，缺 {3} 个", tr(sc["name"]), sc["total"], sc["priced"],
-                   len(sc["missing"])))
-        idx = choose(results)
+        while True:
+            log(tr("\n[方案对比] 同时计算 {0} 种方案…", len(defs)))
+            results = SC.compute_scenarios(rows_data, supplier_headers, rules, defs, labels)
+            for sc in results:
+                log(tr("  {0}：采购总额 €{1:,.2f}，有报价 {2} 个商品，缺 {3} 个", tr(sc["name"]), sc["total"],
+                       sc["priced"], len(sc["missing"])))
+                if sc.get("unmatched"):
+                    log(tr("  ⚠ {0}：没有找到要排除的供应商「{1}」", tr(sc["name"]), "、".join(sc["unmatched"])))
+            idx = choose(results)
+            if idx != "again":
+                break
+            # 对比窗口里改了供应商名称 / 方案：按新的设置重新算（不用重新读文件）
+            fresh = load_settings()
+            settings = dict(settings, supplier_names=fresh.get("supplier_names") or {},
+                            scenarios=fresh.get("scenarios") or settings.get("scenarios"))
+            labels = SN.labels(supplier_headers, settings)
+            summary["supplier_labels"] = dict(labels)
+            defs = SC.scenario_defs(settings)
         if idx is None:
             return None
         scen_assigns = [dict(x["assignment"]) for x in results]
@@ -1017,6 +1032,7 @@ def run_process(ordine_file, eliminare_path, distribuire_path, log, progress=Non
         "assignment": assignment, "sources": ps.get("sources", {}),
         # 换方案用：每个方案的分配和完整的起订规则
         "scenario_assigns": ps.get("scenario_assigns") or [], "rules_all": ps.get("rules_all") or [],
+        "labels": summary.get("supplier_labels") or {},
         # 写完以后的文件指纹：下次处理时认出「还是程序写的」→ 恢复原文件再算
         "written": _written_fingerprints(ordine_file, distribuire_path),
     }

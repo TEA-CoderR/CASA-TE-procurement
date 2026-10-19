@@ -93,3 +93,50 @@ def test_service_uses_chosen_plan():
     assert service._select_suppliers(ROWS, H, ws, lambda *x: None, st, {}, choose=lambda r: None) is None   # 取消
     b = service._select_suppliers(ROWS, H, ws, lambda *x: None, dict(st, scenarios_enabled=False), {}, choose=choose)
     assert b[2] == MEGA                                                        # 关掉多方案：和以前一样
+
+
+def test_exclude_by_supplier_name_when_filename_has_no_keyword():
+    """MEGA 的文件叫 formattato_059603(2).xlsx：按名称（起订规则 / 自己起的名字）也能排除，不会和「全部」一模一样"""
+    import supplier_names as SN
+    F = "formattato_059603(2).xlsx"
+    rows = [dict(r, unit={(F if h == MEGA else h): v for h, v in r["unit"].items()},
+                 packs={(F if h == MEGA else h): v for h, v in r["packs"].items()},
+                 prices={(F if h == MEGA else h): v for h, v in r["prices"].items()},
+                 amt={(F if h == MEGA else h): v for h, v in r["amt"].items()}) for r in ROWS]
+    heads = [F, GRIECO, MELONI]
+    st = {"rules": [{"keyword": "formattato_059603(2)", "name": "MEGA CASH"}]}
+    labels = SN.labels(heads, st)
+    assert labels[F] == "MEGA CASH" and labels[GRIECO] == "NEW GRIECO"
+    plain = SC.compute_scenarios(rows, heads, [], SC.DEFAULT_SCENARIOS)
+    assert plain[1]["unmatched"] == ["mega"] and plain[1]["same_as"] == 0      # 以前的问题：找不到 → 一模一样
+    res = SC.compute_scenarios(rows, heads, [], SC.DEFAULT_SCENARIOS, labels)
+    assert res[1]["excluded"] == [F] and res[1]["unmatched"] == [] and res[1]["same_as"] is None
+    assert res[1]["suppliers"][0]["label"] == "MEGA CASH"
+
+
+def test_difference_is_split_into_price_and_lost_items():
+    res = SC.compute_scenarios(ROWS, H, [], SC.DEFAULT_SCENARIOS)
+    for s in res:
+        assert round(s["vs_first"], 6) == round(s["price_diff"] - s["lost_value"] + s["gained_value"], 6)
+    nomega = res[1]
+    # 不含 MEGA：2 号 MEGA→GRIECO（贵 2×6×0.2），4 号买不到（基准 3×6×0.5）
+    assert round(nomega["price_diff"], 2) == round(2 * 6 * 0.2, 2)
+    assert nomega["lost_rows"] == 1 and round(nomega["lost_value"], 2) == 9.0
+    assert nomega["switched"] == 1 and nomega["colli"] == 2 + 1 + 1 + 0 and nomega["need"] == 5
+    d = {m["row"]: m for m in res[0]["diff"]}
+    assert set(d) == {2, 3, 4, 5}                          # 6 号谁都没有、7 号不订 → 不算差异
+    assert d[4]["sups"] == [MEGA, "", MEGA] and d[4]["amounts"][1] is None
+
+
+def test_supplier_names_carry_over_and_rule_matching():
+    import supplier_names as SN
+    from settings import match_rules
+    st = {"rules": [{"keyword": "formattato_059603(2)", "name": "MEGA CASH", "enabled": True}], "supplier_names": {}}
+    old = ["formattato_059603(2).xlsx", "Listino_01.xlsx"]
+    lb = SN.labels(old, st)
+    assert SN.carry_over(st, [("formattato_061020.xlsx", "formattato_059603(2).xlsx")], lb)
+    assert st["supplier_names"] == {"formattato_061020.xlsx": "MEGA CASH"}
+    new = ["formattato_061020.xlsx", "Listino_01.xlsx"]
+    assert match_rules(st["rules"], new)[0] == []                     # 只按文件名：下周就找不到了
+    m, _ = match_rules(st["rules"], new, SN.labels(new, st))
+    assert [h for _, h in m] == ["formattato_061020.xlsx"]

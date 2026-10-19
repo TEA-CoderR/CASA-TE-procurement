@@ -83,9 +83,11 @@ def save_settings(data):
         return False
 
 
-def match_rules(rules, supplier_headers):
+def match_rules(rules, supplier_headers, labels=None):
     """
     把启用的规则对应到本次的供应商文件（列头）。
+    labels：可选 {列头: 供应商名称}（supplier_names.labels）。文件名每周会变，
+            所以关键词在文件名里找不到时，再看名称（关键词在名称里，或名称和规则的供应商名称一样）。
     返回 (matched, unmatched)：
       matched = [(rule, 列头)]，unmatched = [rule]
     一个文件只对应第一条匹配的规则。
@@ -95,12 +97,20 @@ def match_rules(rules, supplier_headers):
         if not r.get("enabled", True) or not str(r.get("keyword", "")).strip():
             continue
         kw = str(r["keyword"]).strip().lower()
+        rname = str(r.get("name") or "").strip().lower()
         hit = None
         for h in supplier_headers:
             name = str(h or "").lower()
             if h and h not in used and kw in name and ".calc" not in name:
                 hit = h
                 break
+        if not hit and labels:
+            for h in supplier_headers:
+                name = str(h or "").lower()
+                lb = str(labels.get(h) or "").strip().lower()
+                if h and h not in used and ".calc" not in name and lb and (kw in lb or (rname and rname == lb)):
+                    hit = h
+                    break
         if hit:
             used.add(hit)
             matched.append((r, hit))
