@@ -1685,4 +1685,9 @@ TRANSLATIONS = {
     '双击填要加几箱': ('Double-click to enter cases to add', 'Doppio clic per i colli da aggiungere'),
     '还差 <b>{0}</b>': ('Still missing <b>{0}</b>', 'Mancano ancora <b>{0}</b>'),
     ' 和 ': (' and ', ' e '),
+    '已按销量推荐加 {0} 个商品、{1:g} 箱，表里标蓝的就是，可以再改。': ('Added {0} items, {1:g} cases by sales; they are shown in blue in the table and can still be changed.', 'Aggiunti {0} articoli, {1:g} colli per vendite; sono in blu nella tabella e si possono ancora cambiare.'),
+    '已经够起订量了，不用再加。': ('The minimum is already reached; nothing to add.', 'Il minimo è già raggiunto; non serve aggiungere.'),
+    '这家店在这个供应商卖得动的商品不够凑起订量，可以自己在表里加，或者让它并到 BMS。': ('Not enough selling items from this supplier at this store to reach the minimum; add items yourself or let it go into BMS.', 'Articoli venduti insufficienti per raggiungere il minimo; aggiungili tu oppure lascia che vada in BMS.'),
+    '在「加完最多够卖 {0:g} 天」的限制内凑不齐：这家店这些商品库存都还很足。不管天数的话，推荐加 {1} 个商品、{2:g} 箱，加完最久要 <b>{3:.0f} 天</b>才卖得完。': ('Cannot reach it within the "at most {0:g} days of stock" limit: the store still has plenty of these items. Ignoring that limit, the suggestion is {1} items, {2:g} cases; the slowest would take <b>{3:.0f} days</b> to sell.', 'Non si raggiunge entro il limite di «al massimo {0:g} giorni di scorta»: il negozio ne ha ancora molti. Ignorando il limite, si suggeriscono {1} articoli, {2:g} colli; il più lento richiederebbe <b>{3:.0f} giorni</b> per vendersi.'),
+    '仍然按销量推荐': ('Suggest by sales anyway', 'Suggerisci comunque per vendite'),
 }

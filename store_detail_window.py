@@ -161,6 +161,22 @@ class AddItemsDialog(QDialog):
         self.state.setTextFormat(Qt.RichText)
         self.state.setWordWrap(True)
         lay.addWidget(self.state)
+        # 提示消息就显示在这个窗口里（不用主窗口底部的提示，会被这个窗口挡住）
+        nb = QHBoxLayout()
+        nb.setSpacing(10)
+        self.note = QLabel("")
+        self.note.setWordWrap(True)
+        self.note.setTextFormat(Qt.RichText)
+        self.note_btn = QPushButton("")
+        self.note_btn.setObjectName("Outline")
+        self.note_btn.clicked.connect(self._note_action)
+        self._note_cb = None
+        nb.addWidget(self.note, 1)
+        nb.addWidget(self.note_btn)
+        self.note_box = QFrame()
+        self.note_box.setLayout(nb)
+        self.note_box.hide()
+        lay.addWidget(self.note_box)
         self.table = self.page.ui.make_table(self.COLS, stretch_col=0, numeric_cols=tuple(range(3, 12)))
         self.table.setEditTriggers(QAbstractItemView.DoubleClicked | QAbstractItemView.SelectedClicked |
                                    QAbstractItemView.EditKeyPressed | QAbstractItemView.AnyKeyPressed)
@@ -290,7 +306,7 @@ class AddItemsDialog(QDialog):
                 raise ValueError
             n = int(n)
         except ValueError:
-            self.page.win.show_toast(tr("箱数要填 0 或正整数"))
+            self.msg(tr("箱数要填 0 或正整数"), "err")
             n = None
         # 等编辑框关掉以后再重画这一行（编辑中途换掉格子会让程序卡住）
         QTimer.singleShot(0, lambda: self._set_add(row, n))
@@ -357,6 +373,30 @@ class AddItemsDialog(QDialog):
         self.ok.setText(tr("加入订单（{0} 箱）", total) if total else tr("加入订单"))
         self.ok.setEnabled(bool(total))
 
+    def msg(self, text, kind="info", action=None, callback=None):
+        """在窗口里显示一条提示；action / callback：提示旁边的按钮"""
+        self.note.setText(text)
+        self.note_box.setStyleSheet(f"QFrame {{ background:{T(kind + '_soft')}; border-radius:8px; }}"
+                                    f"QLabel {{ color:{T(kind)}; background:transparent; padding:6px 10px; }}")
+        self._note_cb = callback
+        self.note_btn.setVisible(bool(action))
+        if action:
+            self.note_btn.setText(action)
+        self.note_box.show()
+
+    def _note_action(self):
+        cb, self._note_cb = self._note_cb, None
+        self.note_btn.hide()
+        if cb:
+            cb()
+
+    def _apply_suggestion(self, sc, sid, got):
+        for row, n in got.items():
+            key = (sc["path"], sid, row)
+            self.adds[key] = self.adds.get(key, 0) + n
+        self.load()
+        self.msg(tr("已按销量推荐加 {0} 个商品、{1:g} 箱，表里标蓝的就是，可以再改。", len(got), sum(got.values())), "ok")
+
     # ---- 按钮 ----
     def suggest(self):
         sc, sid = self._sc(), self.c_store.currentData()
@@ -366,19 +406,24 @@ class AddItemsDialog(QDialog):
         for (p, s_, row), n in self.adds.items():
             if p == sc["path"] and s_ == sid:
                 cur[row] = cur.get(row, 0) + n
-        got = S.suggest_fill(sc, sid, self.page.calc["demand"], cur,
-                             float(self.page.fill_cfg().get("max_stock_days") or 60))
-        if got is None:
-            self.page.win.show_toast(tr("在库存天数限制内凑不齐，可以自己在表里加"))
+        limit = float(self.page.fill_cfg().get("max_stock_days") or 60)
+        got = S.suggest_fill(sc, sid, self.page.calc["demand"], cur, limit)
+        if got == {}:
+            self.msg(tr("已经够起订量了，不用再加。"), "ok")
             return
-        if not got:
-            self.page.win.show_toast(tr("已经够起订量了"))
+        if got:
+            self._apply_suggestion(sc, sid, got)
             return
-        for row, n in got.items():
-            key = (sc["path"], sid, row)
-            self.adds[key] = self.adds.get(key, 0) + n
-        self.load()
-        self.page.win.show_toast(tr("推荐加 {0} 个商品、{1:g} 箱", len(got), sum(got.values())))
+        # 天数限制内凑不齐：不管天数再推荐一次（还是先加加完最快卖完的），告诉用户要压多久
+        loose = S.suggest_fill(sc, sid, self.page.calc["demand"], cur, float("inf"))
+        if not loose:
+            self.msg(tr("这家店在这个供应商卖得动的商品不够凑起订量，可以自己在表里加，或者让它并到 BMS。"), "warn")
+            return
+        cands = {c["row"]: c for c in self.cands}
+        worst = max((S.days_after(cands[r], n) for r, n in loose.items() if r in cands), default=0)
+        self.msg(tr("在「加完最多够卖 {0:g} 天」的限制内凑不齐：这家店这些商品库存都还很足。不管天数的话，推荐加 {1} 个商品、{2:g} 箱，加完最久要 <b>{3:.0f} 天</b>才卖得完。",
+                    limit, len(loose), sum(loose.values()), worst), "warn",
+                 tr("仍然按销量推荐"), lambda: self._apply_suggestion(sc, sid, loose))
 
     def clear(self):
         sc, sid = self._sc(), self.c_store.currentData()
@@ -935,7 +980,7 @@ class DetailWindow(ToolWindow):
                 raise ValueError
             n = int(n)
         except ValueError:
-            self.page.win.show_toast(tr("箱数要填 0 或正整数"))
+            self.flash(tr("箱数要填 0 或正整数"))
             self._show_qty(i)
             return
         self.page.set_qty(sc, sid, it["row"], n)
@@ -943,6 +988,18 @@ class DetailWindow(ToolWindow):
         self._update_status()
         if self.cur_di == i:
             self._select_row(self.pos[i])
+
+    def flash(self, text):
+        """提示显示在这个窗口的状态栏（主窗口底部的提示会被这个窗口挡住）"""
+        self.status_r.setText(text)
+        self.status_r.setStyleSheet(f"color:{T('accent')}; font-weight:600;")
+        if not hasattr(self, "_flash_timer"):
+            self._flash_timer = QTimer(self)
+            self._flash_timer.setSingleShot(True)
+            self._flash_timer.timeout.connect(lambda: (
+                self.status_r.setText(tr("双击「订货箱数」修改 · Enter 确认 · Esc 取消")),
+                self.status_r.setStyleSheet("")))
+        self._flash_timer.start(6000)
 
     def add_items(self):
         if not self.page.calc:
@@ -958,7 +1015,7 @@ class DetailWindow(ToolWindow):
         if dlg.exec():
             self.refresh_rows()
             n = sum(dlg.adds.values())
-            self.page.win.show_toast(tr("已加入 {0} 箱（标成手动改过，可以「恢复建议值」）", n))
+            self.flash(tr("已加入 {0} 箱（标成手动改过，可以「恢复建议值」）", n))
 
     def refresh_rows(self):
         """主窗口那边改了数（比如恢复建议值）→ 刷新显示"""
@@ -982,7 +1039,7 @@ class DetailWindow(ToolWindow):
             n += 1
         self.page.lines_changed()
         self._update_status()
-        self.page.win.show_toast(tr("已恢复 {0} 行", n))
+        self.flash(tr("已恢复 {0} 行", n))
 
     def set_filter(self, path=ALL, sid=ALL):
         self.f_sup.setCurrentIndex(max(0, self.f_sup.findData(path)))
@@ -1058,6 +1115,6 @@ class DetailWindow(ToolWindow):
         ws.freeze_panes = "A2"
         try:
             wb.save(path)
-            self.page.win.show_toast(tr("已导出"))
+            self.flash(tr("已导出"))
         except Exception as e:
             QMessageBox.critical(self, tr("导出"), tr("导出失败：{0}", e))
