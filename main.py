@@ -2070,8 +2070,8 @@ class MainWindow(QMainWindow):
         rv = QVBoxLayout(right)
         rv.setContentsMargins(0, 0, 0, 0)
         rv.setSpacing(0)
+        self._last_sub = {}
         rv.addWidget(self._build_topbar())
-        rv.addWidget(self._build_subtabs())
         self.stack = QStackedWidget()
         self.stack.setObjectName("Content")
         rv.addWidget(self.stack, 1)
@@ -2111,9 +2111,6 @@ class MainWindow(QMainWindow):
                 self.legacy_pages.append(lp)
                 pg, scroll = lp.build(), True
             self.pages.append(pg)
-            if key in self.SUB_PARENT:
-                for lb in pg.findChildren(QLabel, "PageTitle")[:1]:
-                    lb.hide()
             self.stack.addWidget(self._scroll(pg) if scroll else pg)
 
         self.toast = QLabel(self)
@@ -2201,6 +2198,9 @@ class MainWindow(QMainWindow):
         nv.setContentsMargins(10, 0, 10, 0)
         nv.setSpacing(2)
         self.nav_group = QButtonGroup(self)
+        self.nav_group.setExclusive(True)
+        self.nav_sub_btns = {}     # 二级菜单按钮 {页面: 按钮}
+        self.nav_tree = {}         # 有二级菜单的父菜单 {页面: (按钮, 箭头, 子菜单)}
         self.nav_btns = []
         self.nav_badges = {}
         idx = 0
@@ -2238,6 +2238,34 @@ class MainWindow(QMainWindow):
                     self.nav_badges[key] = badge
                 nv.addWidget(b)
                 idx += 1
+                if key in self.SUB_PAGES:
+                    # 二级菜单：父菜单只负责展开 / 进入，自己不参与「选中」；右边一个小箭头
+                    self.nav_group.removeButton(b)
+                    b.setCheckable(False)
+                    arrow = QLabel("›")
+                    arrow.setObjectName("NavArrow")
+                    bl.addWidget(arrow, 0, Qt.AlignVCenter)
+                    box = QFrame()
+                    box.setObjectName("NavSubBox")
+                    sv = QVBoxLayout(box)
+                    sv.setContentsMargins(0, 2, 0, 4)
+                    sv.setSpacing(1)
+                    for sk, st in self.SUB_PAGES[key]:
+                        c = QPushButton(st.replace("&", "&&"))
+                        c.setObjectName("NavSub")
+                        c.setCheckable(True)
+                        c.setCursor(Qt.PointingHandCursor)
+                        c.clicked.connect(lambda _=False, k=sk: self.go_page(k))
+                        self.nav_group.addButton(c)
+                        self.nav_sub_btns[sk] = c
+                        sv.addWidget(c)
+                    wrap = QWidget()
+                    wl = QHBoxLayout(wrap)
+                    wl.setContentsMargins(22, 0, 0, 0)       # 缩进，左边一条细竖线（NavSubBox 的左边框）
+                    wl.addWidget(box)
+                    wrap.hide()
+                    nv.addWidget(wrap)
+                    self.nav_tree[key] = (b, arrow, wrap)
             nv.addSpacing(6)
         nv.addStretch()
         sa = QScrollArea()
@@ -2448,69 +2476,47 @@ class MainWindow(QMainWindow):
         key, text = self.NAV[i]
         parent = self.SUB_PARENT.get(key, key)
         side = [k for k, _ in self.NAV_SIDE]
-        if parent in side:
-            self.nav_group.button(side.index(parent)).setChecked(True)
+        if key in self.nav_sub_btns:
+            self.nav_sub_btns[key].setChecked(True)
+        elif parent in side:
+            self.nav_btns[side.index(parent)][0].setChecked(True)
         ptext = dict(self.NAV_SIDE).get(parent, text)
         self.crumb_sec.setText(self.NAV_SECTION.get(parent, ""))
-        self.crumb_cur.setText(ptext if key == parent else f"{ptext}  /  {text}")
-        # 顶部标签：只在批发商比价里显示
-        subs = self.SUB_PAGES.get(parent)
-        self.subtab_bar.setVisible(bool(subs))
-        for b in self.subtab_btns:
-            b.setVisible(b.property("subParent") == parent)
-            b.setChecked(b.property("subKey") == key)
-        if subs:
+        self.crumb_cur.setText(ptext if key == parent and key not in self.SUB_PAGES else
+                               f"{ptext}  /  {text}")
+        # 二级菜单：在这一块里就展开，换到别的模块就收起（同一时间只展开一组）
+        for pk, (pb, arrow, wrap) in self.nav_tree.items():
+            on = pk == parent
+            wrap.setVisible(on)
+            arrow.setText("⌄" if on else "›")
+            pb.setProperty("open", on)
+            pb.style().unpolish(pb)
+            pb.style().polish(pb)
+            pb.setIcon(icon(pk, "#FFFFFF" if on else T("side_text")))
+        if parent in self.SUB_PAGES:
             self._last_sub[parent] = key
         if key == "home" and hasattr(self, "dashboard"):
             self.dashboard.refresh()
 
     def _side_clicked(self, key):
-        """侧边栏：回到这一块上次看的标签页；已经在这一块里再点一次 → 回到第一页（比价处理）"""
+        """侧边栏一级菜单。有二级菜单的（批发商比价）：不在这一块里 → 展开并回到上次看的那一页；
+        已经在这一块里 → 只是收起 / 展开子菜单，不换页面"""
         cur = self.NAV[self.stack.currentIndex()][0] if self.stack.count() else None
-        if self.SUB_PARENT.get(cur, cur) == key:
-            self.go_page(key)
-        else:
-            self.go_page(self._last_sub.get(key, key))
-
-    def _build_subtabs(self):
-        """批发商比价里的标签：比价处理 / 比价结果 / 历史记录 / 起订规则 / 缺失查找"""
-        self._last_sub = {}
-        # 样式：和页面同一个底色，左上角一组分段按钮（不再是单独一条白色标签栏）
-        bar = QFrame()
-        bar.setObjectName("SubTabs")
-        outer = QHBoxLayout(bar)
-        outer.setContentsMargins(24, 16, 24, 0)
-        seg = QFrame()
-        seg.setObjectName("SegBox")
-        h = QHBoxLayout(seg)
-        h.setContentsMargins(3, 3, 3, 3)
-        h.setSpacing(2)
-        outer.addWidget(seg)
-        outer.addStretch()
-        grp = QButtonGroup(self)
-        grp.setExclusive(True)
-        self.subtab_btns = []
-        for parent, subs in self.SUB_PAGES.items():
-            for key, text in subs:
-                b = QPushButton(text)
-                b.setObjectName("SegBtn")
-                b.setCheckable(True)
-                b.setCursor(Qt.PointingHandCursor)
-                b.setProperty("subKey", key)
-                b.setProperty("subParent", parent)
-                b.clicked.connect(lambda _=False, k=key: self.go_page(k))
-                grp.addButton(b)
-                self.subtab_btns.append(b)
-                h.addWidget(b)
-        self.subtab_bar = bar
-        bar.hide()
-        return bar
+        if key in self.nav_tree and self.SUB_PARENT.get(cur, cur) == key:
+            pb, arrow, wrap = self.nav_tree[key]
+            show = wrap.isHidden()
+            wrap.setVisible(show)
+            arrow.setText("⌄" if show else "›")
+            return
+        self.go_page(self._last_sub.get(key, key))
 
     def apply_theme(self):
         theme.set_theme(settings.get("theme", "light"))
         QApplication.instance().setStyleSheet(build_qss())
         for b, ic in self.nav_btns:
             b.setIcon(icon(ic, "#FFFFFF" if b.isChecked() else T("side_text")))
+        for pk, (pb, _arrow, _wrap) in self.nav_tree.items():
+            pb.setIcon(icon(pk, "#FFFFFF" if pb.property("open") else T("side_text")))
         dark = settings.get("theme") == "dark"
         self.theme_btn.setIcon(icon("sun" if dark else "moon", T("muted"), 16))
         self.theme_btn.setToolTip(tr("浅色模式") if dark else tr("深色模式"))

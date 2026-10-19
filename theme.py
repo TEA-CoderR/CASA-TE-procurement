@@ -98,6 +98,13 @@ def build_qss():
                        border-left: 3px solid {t['side_bar']}; padding-left: 7px; }}
     #NavBadge {{ background: #2E6BEA; color: #FFFFFF; border-radius: 8px; font-size: 11px; padding: 0 6px;
                  font-family: "{NUM_FONT}"; }}
+    #NavBtn[open="true"] {{ color: #FFFFFF; font-weight: 600; }}
+    #NavArrow {{ color: {t['side_muted']}; font-size: 14px; background: transparent; }}
+    #NavSubBox {{ background: transparent; border: none; border-left: 1px solid {t['side_active']}; }}
+    #NavSub {{ background: transparent; color: {t['side_text']}; border: none; border-radius: 6px;
+               text-align: left; padding: 0 12px; min-height: 30px; max-height: 30px; font-size: 12px; margin-left: 6px; }}
+    #NavSub:hover {{ background: {t['side_active']}; color: #FFFFFF; }}
+    #NavSub:checked {{ background: {t['side_active']}; color: #FFFFFF; font-weight: 600; }}
     #NavSoon {{ background: rgba(255,255,255,0.08); color: {t['side_muted']}; border-radius: 8px; font-size: 10px; padding: 0 6px; }}
     #DbBox {{ background: rgba(255,255,255,0.05); border-radius: 9px; }}
     #DbTitle {{ color: #E6EBF3; font-size: 12px; }}
@@ -105,12 +112,6 @@ def build_qss():
 
     /* ---------- 顶栏 ---------- */
     #TopBar {{ background: {t['surface']}; border-bottom: 1px solid {t['line']}; }}
-    #SubTabs {{ background: {t['bg']}; }}
-    #SegBox {{ background: {t['surface']}; border: 1px solid {t['line']}; border-radius: 9px; }}
-    QPushButton#SegBtn {{ background: transparent; border: none; border-radius: 6px; color: {t['muted']};
-        padding: 6px 16px; font-size: 13px; }}
-    QPushButton#SegBtn:hover {{ background: {t['surface2']}; color: {t['text']}; }}
-    QPushButton#SegBtn:checked {{ background: {t['accent_soft']}; color: {t['accent']}; font-weight: 600; }}
     #Crumb {{ color: {t['muted']}; }}
     #CrumbCur {{ font-weight: 600; }}
     QLineEdit#Search {{ background: {t['surface2']}; border: 1px solid {t['line']}; border-radius: 8px; padding: 6px 10px 6px 30px; }}
