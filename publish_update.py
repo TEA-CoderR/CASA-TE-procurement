@@ -258,7 +258,16 @@ def main():
 
 
 if __name__ == "__main__":
+    # 出错的原因要在「按回车关闭」之前打印出来，不然窗口里什么都看不到
     try:
         main()
-    finally:
-        input("\n按回车关闭…")
+    except SystemExit as e:
+        if e.code not in (None, 0):
+            print(f"\n✗ 没有发布：{e.code}")
+    except KeyboardInterrupt:
+        print("\n已取消。")
+    except Exception:
+        import traceback
+        traceback.print_exc()
+        print("\n✗ 发布出错，没有完成。把上面的内容截图发给开发的人。")
+    input("\n按回车关闭…")
