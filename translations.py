@@ -1617,4 +1617,5 @@ TRANSLATIONS = {
     '点击修改数量': ('Click to change the quantity', 'Clicca per cambiare la quantità'),
     '\u3000改了数量 {0} 个': ('\u3000{0} quantities changed', '\u3000{0} quantità modificate'),
     '[修改分配] 有 {0} 个商品改了数量': ('[Edit allocation] {0} items have a new quantity', '[Modifica assegnazione] {0} articoli con nuova quantità'),
+    '比价处理': ('Process', 'Elaborazione'),
 }

@@ -2011,13 +2011,18 @@ class MainWindow(QMainWindow):
     # 货物分配系统是主系统；采购管理是其中一个模块
     NAV_GROUPS = [
         (tr("概览"), [("home", tr("工作台"))]),
-        (tr("采购管理"), [("store_orders", tr("门店配货")), ("order", tr("批发商比价")), ("result", tr("比价结果")),
-                        ("tracking", tr("采购订单跟踪")), ("history", tr("历史记录")), ("rules", tr("起订规则")),
-                        ("search", tr("缺失查找"))]),
+        (tr("采购管理"), [("store_orders", tr("门店配货")), ("order", tr("批发商比价")),
+                        ("tracking", tr("采购订单跟踪"))]),
         (tr("分货管理"), [("distribution", tr("分货数据处理")), ("import", tr("导入 / 导出"))]),
         (tr("系统"), [("settings", tr("系统设置")), ("log", tr("运行日志"))]),
     ]
-    NAV = [item for _, items in NAV_GROUPS for item in items]
+    # 批发商比价里面的几页：侧边栏只放「批发商比价」，进去以后顶部一排标签切换
+    SUB_PAGES = {"order": [("order", tr("比价处理")), ("result", tr("比价结果")), ("history", tr("历史记录")),
+                           ("rules", tr("起订规则")), ("search", tr("缺失查找"))]}
+    SUB_PARENT = {k: parent for parent, subs in SUB_PAGES.items() for k, _ in subs}
+    NAV_SIDE = [item for _, items in NAV_GROUPS for item in items]          # 侧边栏上的
+    NAV = NAV_SIDE + [(k, t) for subs in SUB_PAGES.values() for k, t in subs
+                      if k not in {x for x, _ in NAV_SIDE}]                  # 所有页面（含标签页）
     NAV_SECTION = {k: g for g, items in NAV_GROUPS for k, _ in items}
     SOON = {"tracking"}   # 还没做（采购订单跟踪）
 
@@ -2060,6 +2065,7 @@ class MainWindow(QMainWindow):
         rv.setContentsMargins(0, 0, 0, 0)
         rv.setSpacing(0)
         rv.addWidget(self._build_topbar())
+        rv.addWidget(self._build_subtabs())
         self.stack = QStackedWidget()
         self.stack.setObjectName("Content")
         rv.addWidget(self.stack, 1)
@@ -2199,7 +2205,7 @@ class MainWindow(QMainWindow):
                 b.setCheckable(True)
                 b.setCursor(Qt.PointingHandCursor)
                 b.setIconSize(QSize(17, 17))
-                b.clicked.connect(lambda _=False, i=idx: self.go(i))
+                b.clicked.connect(lambda _=False, k=key: self._side_clicked(k))
                 self.nav_group.addButton(b, idx)
                 self.nav_btns.append((b, key))
                 b.toggled.connect(lambda on, b=b, k=key: b.setIcon(icon(k, "#FFFFFF" if on else T("side_text"))))
@@ -2428,13 +2434,62 @@ class MainWindow(QMainWindow):
         self.go([k for k, _ in self.NAV].index(key))
 
     def go(self, i):
+        """i = 页面在 NAV 里的位置（侧边栏的页面在前，批发商比价里的标签页在后）"""
         self.stack.setCurrentIndex(i)
-        self.nav_group.button(i).setChecked(True)
         key, text = self.NAV[i]
-        self.crumb_sec.setText(self.NAV_SECTION.get(key, ""))
-        self.crumb_cur.setText(text)
+        parent = self.SUB_PARENT.get(key, key)
+        side = [k for k, _ in self.NAV_SIDE]
+        if parent in side:
+            self.nav_group.button(side.index(parent)).setChecked(True)
+        ptext = dict(self.NAV_SIDE).get(parent, text)
+        self.crumb_sec.setText(self.NAV_SECTION.get(parent, ""))
+        self.crumb_cur.setText(ptext if key == parent else f"{ptext}  /  {text}")
+        # 顶部标签：只在批发商比价里显示
+        subs = self.SUB_PAGES.get(parent)
+        self.subtab_bar.setVisible(bool(subs))
+        for b in self.subtab_btns:
+            b.setVisible(b.property("parent") == parent)
+            b.setChecked(b.property("key") == key)
+        if subs:
+            self._last_sub[parent] = key
         if key == "home" and hasattr(self, "dashboard"):
             self.dashboard.refresh()
+
+    def _side_clicked(self, key):
+        """侧边栏：回到这一块上次看的标签页；已经在这一块里再点一次 → 回到第一页（比价处理）"""
+        cur = self.NAV[self.stack.currentIndex()][0] if self.stack.count() else None
+        if self.SUB_PARENT.get(cur, cur) == key:
+            self.go_page(key)
+        else:
+            self.go_page(self._last_sub.get(key, key))
+
+    def _build_subtabs(self):
+        """批发商比价里的标签：比价处理 / 比价结果 / 历史记录 / 起订规则 / 缺失查找"""
+        self._last_sub = {}
+        bar = QFrame()
+        bar.setObjectName("SubTabs")
+        h = QHBoxLayout(bar)
+        h.setContentsMargins(24, 0, 20, 0)
+        h.setSpacing(4)
+        grp = QButtonGroup(self)
+        grp.setExclusive(True)
+        self.subtab_btns = []
+        for parent, subs in self.SUB_PAGES.items():
+            for key, text in subs:
+                b = QPushButton(text)
+                b.setObjectName("SubTab")
+                b.setCheckable(True)
+                b.setCursor(Qt.PointingHandCursor)
+                b.setProperty("key", key)
+                b.setProperty("parent", parent)
+                b.clicked.connect(lambda _=False, k=key: self.go_page(k))
+                grp.addButton(b)
+                self.subtab_btns.append(b)
+                h.addWidget(b)
+        h.addStretch()
+        self.subtab_bar = bar
+        bar.hide()
+        return bar
 
     def apply_theme(self):
         theme.set_theme(settings.get("theme", "light"))
