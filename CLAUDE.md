@@ -12,3 +12,8 @@
 - 保持文件原来的换行符（.py 是 LF）；Python 写文件用 `newline=""` 或二进制方式。
 - 绝对不要提交密码、令牌、`settings.json`、`publish_config.json`、`update_config.json`、真实业务 Excel。数据库只读，程序不写库。
 - 发布新版本用 `publish_update.bat`（会检查 git、改版本号、打包、提交、推送、建 Release），不要手动改 `theme.APP_VERSION` 后单独发布。
+- 表格里可以直接编辑的格子（QStyledItemDelegate）：`setModelData` 里不要马上重画这一行（`table_set_row` 会换掉正在编辑的格子 → Qt 回头读新格子拿不到行号 → 程序卡住闪退）。先取出值，用 `QTimer.singleShot(0, ...)` 等编辑框关掉再更新；`setEditorData` 拿到的行号是 None 时直接 return。参考 `main.py` 的 `QtyDelegate` / `SupplierComboDelegate`。
+- 用户和同事**共用同一个文件夹**（`procurement_system ok 2.5`）开发。请直接在这个文件夹里改代码、`git commit`、`git push`，不要只推到云端分支却把文件另外写进文件夹（之前这样做过，文件夹和 git 记录对不上，发布前得先同步）。
+
+## 最近改动（给接手的 AI 的纸条，新的写在最上面）
+- 2026-10-19（515ac81）：修复「修改分配」窗口改箱数 / 换供应商后程序卡住闪退（原因见上面表格编辑那一条）。只改了 `main.py` 里两个 delegate，业务逻辑没动；103 个测试通过。写回主订单和供应商文件那一步还等用户用真实文件确认。
