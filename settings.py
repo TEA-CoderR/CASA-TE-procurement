@@ -39,6 +39,60 @@ DEFAULT_SETTINGS = {
 }
 
 
+# ---------------------------------------------------------------------
+# 公司统一的默认设置（2026-10-20 按采购主管现在用的这套定下来）：
+# 新装的、或者更新到这个版本的电脑，第一次打开时都改成这套（只改一次，之后自己改的会保留）。
+# 只管业务规则；文件夹、数据库、语言、表格列宽这些个人的东西不动。
+# 以后要再统一推一次：改下面的值，把 COMPANY_DEFAULTS_VER 加 1。
+# ---------------------------------------------------------------------
+COMPANY_DEFAULTS_VER = 1
+COMPANY_DEFAULTS = {
+    "auto_backup": True,
+    "min_order_enabled": True,
+    "review_before_write": False,
+    "allow_partial_purchase": False,
+    "history_keep_days": 180,
+    # 订货算法：原程序算法
+    "algo": {"engine": "v1", "review_days": 7, "lead_days": 5, "service": 0.95, "abc_service": True,
+             "max_stock_days": 14, "season": True, "pack_threshold": 0.3, "min_shelf": 1},
+    # 门店配货：订货周期、凑单 / 借货、门店间调货
+    "store_orders": {
+        "cycle": 30, "days": [30, 60, 90, 180], "use_supplier_cycles": True,
+        "fill": {"max_amount_gap": 30.0, "max_colli_gap": 3, "max_stock_days": 60, "fill_bms": True,
+                 "merge_colocated": True, "borrow": True, "borrow_min_days": 15, "borrow_urgent": True,
+                 "merge_direct": True, "far_stores": [1], "colocated_store": 3},
+        "transfer": {"enabled": True, "mode": "waste", "waste_ratio": 0.5, "item_min_value": 10.0, "min_value": 0.0},
+    },
+    # 检查门店订货清单：订货周期、销量周期、不按配置文件周期；表格默认藏起来的列（名称也藏，右边详情栏里有）
+    "reorder": {"cycle": 30, "days": [30, 60, 90, 180], "use_supplier_cycles": False,
+                "check_cols_hidden": [1, 3, 5, 6, 7, 8, 12, 13, 19, 21, 23], "check_cols_hidden_ver": 4},
+    # 起订规则：关键词用供应商名字里固定的词（文件名每周变，这样下周也认得出）
+    "rules": [
+        {"enabled": True, "name": "MEGA CASH", "keyword": "mega", "min_colli": 200.0, "min_amount": 700.0,
+         "mode": "colli", "allow_drop": True, "manual_extra": 0.0, "drop_extra": 0.0},
+        {"enabled": True, "name": "NEW GRIECO", "keyword": "grieco", "min_colli": 0.0, "min_amount": 700.0,
+         "mode": "amount", "allow_drop": True, "manual_extra": 0.0, "drop_extra": 0.0},
+        {"enabled": True, "name": "PETRILLO", "keyword": "petrillo", "min_colli": 0.0, "min_amount": 700.0,
+         "mode": "all", "allow_drop": True, "manual_extra": 0.0, "drop_extra": 0.0},
+        {"enabled": True, "name": "MELONI", "keyword": "meloni", "min_colli": 0.0, "min_amount": 500.0,
+         "mode": "all", "allow_drop": True, "manual_extra": 0.0, "drop_extra": 0.0},
+    ],
+}
+
+
+def apply_company_defaults(data):
+    """把公司统一的默认设置套到 data 上（字典一层一层合并：store_orders 里的文件夹、列宽等个人设置保留）。返回 data"""
+    def merge(dst, src):
+        for k, v in src.items():
+            if isinstance(v, dict) and isinstance(dst.get(k), dict):
+                merge(dst[k], v)
+            else:
+                dst[k] = copy.deepcopy(v)
+    merge(data, COMPANY_DEFAULTS)
+    data["company_defaults_ver"] = COMPANY_DEFAULTS_VER
+    return data
+
+
 def app_dir():
     """程序所在目录（打包后为 exe 所在目录）"""
     if getattr(sys, "frozen", False):
@@ -58,6 +112,9 @@ def load_settings():
             data.update(saved)
     except (OSError, ValueError):
         pass
+    new_defaults = (data.get("company_defaults_ver") or 0) < COMPANY_DEFAULTS_VER
+    if new_defaults:                      # 新装 / 刚更新到新的统一设置：套用一次
+        apply_company_defaults(data)
     # 补齐规则字段
     rules = []
     for r in data.get("rules") or []:
@@ -71,6 +128,8 @@ def load_settings():
         base.update(r)
         rules.append(base)
     data["rules"] = rules
+    if new_defaults:
+        save_settings(data)
     return data
 
 

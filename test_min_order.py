@@ -247,7 +247,8 @@ def test_above_drop_line_asks_to_drop():
 def test_old_max_extra_setting_migrates_to_drop_line(tmp_path, monkeypatch):
     import json, settings as S
     f = tmp_path / "settings.json"
-    f.write_text(json.dumps({"rules": [{"name": "MEGA", "keyword": "mega", "max_extra": 25}]}), encoding="utf-8")
+    f.write_text(json.dumps({"rules": [{"name": "MEGA", "keyword": "mega", "max_extra": 25}],
+                             "company_defaults_ver": S.COMPANY_DEFAULTS_VER}), encoding="utf-8")
     monkeypatch.setattr(S, "SETTINGS_PATH", str(f))
     r = S.load_settings()["rules"][0]
     assert r["drop_extra"] == 25 and r["manual_extra"] == 0 and "max_extra" not in r

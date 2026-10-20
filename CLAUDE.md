@@ -16,6 +16,7 @@
 - 用户和同事**共用同一个文件夹**（`procurement_system ok 2.5`）开发。请直接在这个文件夹里改代码、`git commit`、`git push`，不要只推到云端分支却把文件另外写进文件夹（之前这样做过，文件夹和 git 记录对不上，发布前得先同步）。
 
 ## 最近改动（给接手的 AI 的纸条，新的写在最上面）
+- 2026-10-20：公司统一默认设置写在 `settings.COMPANY_DEFAULTS`：每台电脑新装 / 更新后第一次打开时套用一次（`company_defaults_ver`），只改业务规则，不动个人设置。要再推一次新的统一设置：改值并把 `COMPANY_DEFAULTS_VER` 加 1。
 - 2026-10-20：批发商比价改成「工作文件夹 + 一个开始按钮」：固定根目录（settings `wholesale_root`）下自动建 `1 门店清单 / 2 供应商报价 / 3 扣减文件\门店 / 4 比价结果\日期\门店`（`workspace.py`）。三个拖放区放文件；「开始」= 检查全部清单 → 检查窗口点「确认，开始比价」→ `MainWindow.run_batch` 一家一家自动比价（方案按推荐选，不弹确认）。开关、起订规则、检查参数收进「设置」窗口（`open_cmp_settings` 借用 `cmp_opts_box` / `order_check.params_box`，关掉还回去）。`folder_edit` 隐藏，只表示当前门店的比价文件夹。**还没在 Windows 上实际打开过，接手先打开一次。**
 - 2026-10-19：侧边栏「采购管理」只留门店配货 / 批发商比价 / 采购订单跟踪，比价结果、历史记录、起订规则、缺失查找变成批发商比价顶部的标签页（`MainWindow.SUB_PAGES`）。第一版启动就闪退：在 class 里写的列表推导式用到了别的 class 变量（Python 里看不到，NameError），已改成模块级函数 `_all_pages`。**改 `MainWindow` 的 class 变量后，一定要在 Windows 上实际打开一次程序。**
 - 2026-10-19：发布 v3.0.2（第一次带补丁包的自动更新）。发布脚本改了：出错先显示原因；git 没设名字 / 邮箱时一开始就问。这个文件夹的 git 提交人已设为 TEA-CoderR。

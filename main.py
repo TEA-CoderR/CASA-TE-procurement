@@ -3014,10 +3014,20 @@ class MainWindow(QMainWindow):
         self.crumb_sec.setObjectName("Crumb")
         sep = QLabel("/")
         sep.setObjectName("Crumb")
+        # 批发商比价的标签页（比价结果、历史记录…）：「批发商比价」可以点，回到比价主页面
+        self.crumb_parent = QPushButton("")
+        self.crumb_parent.setObjectName("CrumbLink")
+        self.crumb_parent.setCursor(Qt.PointingHandCursor)
+        self.crumb_parent.setToolTip(tr("回到这一块的主页面"))
+        self.crumb_parent.clicked.connect(self._crumb_back)
+        self.crumb_sep2 = QLabel("/")
+        self.crumb_sep2.setObjectName("Crumb")
         self.crumb_cur = QLabel("")
         self.crumb_cur.setObjectName("CrumbCur")
         h.addWidget(self.crumb_sec)
         h.addWidget(sep)
+        h.addWidget(self.crumb_parent)
+        h.addWidget(self.crumb_sep2)
         h.addWidget(self.crumb_cur)
         h.addStretch()
         self.search = QLineEdit()
@@ -3167,6 +3177,10 @@ class MainWindow(QMainWindow):
 
         threading.Thread(target=work, daemon=True).start()
 
+    def _crumb_back(self):
+        if getattr(self, "_crumb_home", None):
+            self.go_page(self._crumb_home)
+
     def go_page(self, key):
         self.go([k for k, _ in self.NAV].index(key))
 
@@ -3182,8 +3196,12 @@ class MainWindow(QMainWindow):
             self.nav_btns[side.index(parent)][0].setChecked(True)
         ptext = dict(self.NAV_SIDE).get(parent, text)
         self.crumb_sec.setText(self.NAV_SECTION.get(parent, ""))
-        self.crumb_cur.setText(ptext if key == parent and key not in self.SUB_PAGES else
-                               f"{ptext}  /  {text}")
+        sub = parent in self.SUB_PAGES
+        self._crumb_home = self.SUB_PAGES[parent][0][0] if sub else None
+        self.crumb_parent.setText(ptext)
+        self.crumb_parent.setVisible(sub)
+        self.crumb_sep2.setVisible(sub)
+        self.crumb_cur.setText(text if sub else ptext)
         # 二级菜单：在这一块里就展开，换到别的模块就收起（同一时间只展开一组）
         for pk, (pb, arrow, wrap) in self.nav_tree.items():
             on = pk == parent

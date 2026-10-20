@@ -2095,4 +2095,5 @@ TRANSLATIONS = {
     '[文件] {0}：扣减文件 {1} 个': ('[Files] {0}: {1} deduction files', '[File] {0}: {1} file di detrazione'),
     '{0}：扣减文件没复制过去：{1}': ('{0}: deduction files not copied: {1}', '{0}: file di detrazione non copiati: {1}'),
     '主订单不是检查门店清单生成的，不能比价。请把门店清单放进「门店清单」，点「开始」。': ('The main order was not created by the store-list check and cannot be compared. Put the store lists in "Store lists" and click "Start".', "L'ordine principale non è stato creato dal controllo liste e non si può confrontare. Metti le liste in «Liste negozi» e clicca «Avvia»."),
+    '回到这一块的主页面': ("Back to this section's main page", 'Torna alla pagina principale di questa sezione'),
 }
