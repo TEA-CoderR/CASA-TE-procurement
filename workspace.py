@@ -1,0 +1,190 @@
+"""
+批发商比价的工作文件夹：一个固定的根目录，程序自动建好、文件放哪一看就懂（不依赖界面，可以单独测试）。
+
+  根目录\\
+    1 门店清单\\                门店发来的订货清单（文件名里带门店名；认不出的放进来时加上门店名）
+        _已处理\\2026-10-20\\    确认生成主订单后挪到这里
+    2 供应商报价\\              几家门店共用的批发商报价，每周替换（旧的进 _旧文件）
+    3 扣减文件\\FOIANO\\ …       每家门店自己的扣减文件（eliminare）
+        FOIANO\\_已用\\2026-10-20\\  确认后挪到这里（下次不会重复扣减）
+    4 比价结果\\2026-10-20\\      每次确认自动建：
+        调货单_全部门店_….xlsx
+        MARLIA\\ORDINE  eliminare  distribuire   ← 这家店这次的主订单、扣减文件、报价副本（比价写在这里）
+
+以前的根目录\\distribuire（共用报价）第一次打开时改名成「2 供应商报价」；以前的「批发商比价\\日期」结果保留不动。
+"""
+import os
+import re
+import shutil
+from datetime import datetime
+
+LISTS = "1 门店清单"
+PRICES = "2 供应商报价"
+ELIM = "3 扣减文件"
+RESULTS = "4 比价结果"
+DONE = "_已处理"
+USED = "_已用"
+OLD = "_旧文件"
+STORES = {1: "FOIANO", 2: "MARLIA", 3: "S.FILIPPO", 4: "S.MARCO", 5: "S.CONCORDIO"}
+EXCEL = (".xlsx", ".xls", ".xlsm")
+
+
+def default_root(home=None):
+    """第一次用时的根目录：我的文档\\批发商比价"""
+    home = home or os.path.expanduser("~")
+    docs = os.path.join(home, "Documents")
+    return os.path.join(docs if os.path.isdir(docs) else home, "批发商比价")
+
+
+def lists_dir(root):
+    return os.path.join(root, LISTS)
+
+
+def price_dir(root):
+    return os.path.join(root, PRICES)
+
+
+def elim_dir(root, sid):
+    return os.path.join(root, ELIM, STORES.get(int(sid), str(sid)))
+
+
+def ensure(root):
+    """建好所有文件夹；以前的 根目录\\distribuire 改名成「2 供应商报价」。返回新建 / 改名的说明列表"""
+    notes = []
+    os.makedirs(root, exist_ok=True)
+    old = os.path.join(root, "distribuire")
+    if os.path.isdir(old) and not os.path.exists(price_dir(root)):
+        try:
+            os.rename(old, price_dir(root))
+            notes.append(f"distribuire → {PRICES}")
+        except OSError as e:                      # 文件开着等：先建新的空文件夹，旧的留着
+            notes.append(f"distribuire 没能改名（{e}）")
+    for d in [lists_dir(root), price_dir(root), os.path.join(root, RESULTS)] + [elim_dir(root, s) for s in STORES]:
+        if not os.path.isdir(d):
+            os.makedirs(d)
+            notes.append(os.path.relpath(d, root))
+    return notes
+
+
+def _excel(folder):
+    if not os.path.isdir(folder):
+        return []
+    return sorted(f for f in os.listdir(folder) if os.path.isfile(os.path.join(folder, f))
+                  and f.lower().endswith(EXCEL) and not f.startswith(("~", "$")))
+
+
+def guess_store(name):
+    """文件名里有门店名 → 门店编号，否则 None（S.MARCO / S MARCO / SMARCO 都认）"""
+    low = re.sub(r"[\s._\-]", "", os.path.basename(name or "").upper())
+    for sid, n in STORES.items():
+        if re.sub(r"[\s._\-]", "", n) in low:
+            return sid
+    return None
+
+
+def is_price_name(name):
+    low = name.lower()
+    return ".calc." not in low and not low.endswith(".xls.xlsx") and "缺失报告" not in name and "missing" not in low
+
+
+def scan(root):
+    """
+    现在放了什么：{"lists": [(门店编号或 None, 文件名)], "prices": [文件名], "elim": {门店编号: [文件名]},
+                   "elim_loose": [直接放在「3 扣减文件」下面、不知道是哪家店的]}
+    """
+    out = {"lists": [], "prices": [], "elim": {}, "elim_loose": []}
+    if not root or not os.path.isdir(root):
+        return out
+    out["lists"] = [(guess_store(f), f) for f in _excel(lists_dir(root))]
+    out["prices"] = [f for f in _excel(price_dir(root)) if is_price_name(f)]
+    for sid in STORES:
+        fs = _excel(elim_dir(root, sid))
+        if fs:
+            out["elim"][sid] = fs
+    out["elim_loose"] = _excel(os.path.join(root, ELIM))
+    return out
+
+
+def archive(path, old_dir):
+    """挪进 old_dir（重名时加时间），返回新路径"""
+    os.makedirs(old_dir, exist_ok=True)
+    name = os.path.basename(path)
+    dst = os.path.join(old_dir, name)
+    if os.path.exists(dst):
+        base, ext = os.path.splitext(name)
+        dst = os.path.join(old_dir, f"{base}_{datetime.now():%Y%m%d_%H%M%S}{ext}")
+    shutil.move(path, dst)
+    return dst
+
+
+def place_list(root, src, sid):
+    """
+    门店清单放进「1 门店清单」：文件名里没有门店名的，前面加上（以后一看就知道是哪家）；
+    同一家店原来的清单挪进 _旧文件（一家店只留一份）。返回 (新路径, 挪走的旧文件列表)
+    """
+    folder = lists_dir(root)
+    os.makedirs(folder, exist_ok=True)
+    name = os.path.basename(src)
+    if guess_store(name) != sid:
+        name = f"{STORES[int(sid)]} - {name}"
+    dst = os.path.join(folder, name)
+    moved = []
+    for f in _excel(folder):
+        p = os.path.join(folder, f)
+        if guess_store(f) == sid and os.path.abspath(p) != os.path.abspath(src):
+            moved.append(archive(p, os.path.join(folder, OLD)))
+    if os.path.abspath(src) != os.path.abspath(dst):
+        shutil.copy2(src, dst)
+    return dst, moved
+
+
+def place_elim(root, src, sid):
+    """扣减文件放进「3 扣减文件\\门店」：同名的旧文件挪进 _旧文件。返回新路径"""
+    folder = elim_dir(root, sid)
+    os.makedirs(folder, exist_ok=True)
+    dst = os.path.join(folder, os.path.basename(src))
+    if os.path.abspath(src) == os.path.abspath(dst):
+        return dst
+    if os.path.exists(dst):
+        archive(dst, os.path.join(folder, OLD))
+    shutil.copy2(src, dst)
+    return dst
+
+
+def store_list_files(root):
+    """{门店编号: 清单路径}（文件名认不出门店的不在里面）"""
+    out = {}
+    for sid, f in scan(root)["lists"]:
+        if sid:
+            out[sid] = os.path.join(lists_dir(root), f)
+    return out
+
+
+def copy_elim(root, sid, store_folder):
+    """这家店的扣减文件复制进它这次的比价文件夹（eliminare）。返回复制了几个"""
+    dst = os.path.join(store_folder, "eliminare")
+    os.makedirs(dst, exist_ok=True)
+    n = 0
+    for f in _excel(elim_dir(root, sid)):
+        shutil.copy2(os.path.join(elim_dir(root, sid), f), os.path.join(dst, f))
+        n += 1
+    return n
+
+
+def archive_used(root, sids, list_paths=(), day=None):
+    """
+    确认生成主订单以后：用过的门店清单挪进「1 门店清单\\_已处理\\日期」，这几家店的扣减文件挪进
+    「3 扣减文件\\门店\\_已用\\日期」（下次不会再扣一遍）。返回挪了几个文件
+    """
+    tag = f"{(day or datetime.now()):%Y-%m-%d}"
+    n = 0
+    for p in list_paths:
+        if p and os.path.isfile(p) and os.path.dirname(os.path.abspath(p)) == os.path.abspath(lists_dir(root)):
+            archive(p, os.path.join(lists_dir(root), DONE, tag))
+            n += 1
+    for sid in sids:
+        folder = elim_dir(root, sid)
+        for f in _excel(folder):
+            archive(os.path.join(folder, f), os.path.join(folder, USED, tag))
+            n += 1
+    return n

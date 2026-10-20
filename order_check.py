@@ -140,6 +140,11 @@ class OrderCheck:
         r0.addWidget(self.btn_open_order)
         p.lay.addLayout(r0)
 
+        # 检查用的参数（订货周期、销量周期、算法、数据库）：批发商比价页的「设置」窗口里改
+        self.params_box = QWidget()
+        pv = QVBoxLayout(self.params_box)
+        pv.setContentsMargins(0, 0, 0, 0)
+        pv.setSpacing(8)
         r2 = QHBoxLayout()
         r2.setSpacing(10)
         r2.addWidget(QLabel(tr("订货周期")))
@@ -162,7 +167,7 @@ class OrderCheck:
             r2.addWidget(sb)
             self.days.append(sb)
         r2.addStretch()
-        p.lay.addLayout(r2)
+        pv.addLayout(r2)
         r3 = QHBoxLayout()
         r3.setSpacing(10)
         r3.addWidget(QLabel(tr("算法")))
@@ -176,7 +181,9 @@ class OrderCheck:
         self.btn_run.setObjectName("Primary")
         self.btn_run.clicked.connect(self.start)
         r3.addWidget(self.btn_run)
-        p.lay.addLayout(r3)
+        self.btn_run.hide()                  # 页面上的「开始」按钮代替它
+        pv.addLayout(r3)
+        p.lay.addWidget(self.params_box)
         self.msg = QLabel("")
         self.msg.setObjectName("Muted")
         self.msg.setWordWrap(True)
@@ -295,9 +302,9 @@ class OrderCheck:
         self.btn_export = QPushButton(tr("导出 Excel"))
         self.btn_export.clicked.connect(self.export)
         acts.addWidget(self.btn_export)
-        self.btn_confirm = QPushButton(tr("确认，生成主订单"))
+        self.btn_confirm = QPushButton(tr("确认，开始比价"))
         self.btn_confirm.setObjectName("Primary")
-        self.btn_confirm.setToolTip(tr("按「确定件数」生成新的主订单，原来的挪进 ORDINE\\_旧订单"))
+        self.btn_confirm.setToolTip(tr("按「确定件数」给每家门店生成主订单，然后自动一家一家比价"))
         self.btn_confirm.clicked.connect(self.confirm)
         acts.addWidget(self.btn_confirm)
         bl.addLayout(acts)
@@ -314,7 +321,7 @@ class OrderCheck:
         ob.setObjectName("Outline")
         ob.clicked.connect(self.window.bring_up)
         sr.addWidget(ob)
-        cb = QPushButton(tr("确认，生成主订单"))
+        cb = QPushButton(tr("确认，开始比价"))
         cb.setObjectName("Primary")
         cb.clicked.connect(self.confirm)
         sr.addWidget(cb)
@@ -368,6 +375,19 @@ class OrderCheck:
         self._refresh_lists()
         self.msg.setText("\n".join(notes))
         return n
+
+    def run_lists(self, items):
+        """工作文件夹里的门店清单 [(门店编号, 路径)] 放进来，直接开始检查"""
+        self.lists = []
+        self.add_files([p for _, p in items])
+        by_path = {os.path.normcase(os.path.abspath(p)): sid for sid, p in items}
+        for x in self.lists:
+            x["store"] = by_path.get(os.path.normcase(os.path.abspath(x["path"])), x["store"])
+        self._refresh_lists()
+        if not self.lists:
+            return False
+        self.start()
+        return True
 
     def clear_lists(self):
         self.lists = []
@@ -583,7 +603,7 @@ class OrderCheck:
         self.window.setWindowTitle(tr("检查门店订货清单 — {0} · {1} 个商品",
                                       "、".join(store_label(k) for k in meta["stores"]), len(rows)))
         self.window.bring_up()
-        self.msg.setText(tr("✔ 门店 {0}：{1} 个商品，检查完成。核对「确定件数」后点「确认，生成主订单」。",
+        self.msg.setText(tr("✔ 门店 {0}：{1} 个商品，检查完成。在检查窗口核对「确定件数」后点「确认，开始比价」。",
                             "、".join(store_label(k) for k in meta["stores"]), len(rows)))
 
     def _vals(self, i):
@@ -1039,9 +1059,9 @@ class OrderCheck:
 
     def _price_dir(self):
         """共用的供应商报价文件夹：比价根目录（或现在的总文件夹）下面的 distribuire"""
-        from config import DISTRIBUTUIRE_FOLDER
-        root = self.win._price_root() if hasattr(self.win, "_price_root") else self.batch_root()
-        return os.path.join(root, DISTRIBUTUIRE_FOLDER) if root else ""
+        import workspace as W
+        root = self.win.ws_root() if hasattr(self.win, "ws_root") else self.batch_root()
+        return W.price_dir(root) if root else ""
 
     def _apply_quotes(self, rows, price_dir, log):
         """读 price_dir 里的报价，检查清单的行改用最便宜那家的每箱件数和件价：(改了几行, 读了几份报价)"""
@@ -1103,18 +1123,18 @@ class OrderCheck:
     def confirm(self):
         if not self.rows:
             return
+        import workspace as W
         moves, new_final = self.transfer_plan()
-        dlg = BatchConfirmDialog(self, moves)
-        if not dlg.exec():
+        # 文件夹不用选：工作文件夹\4 比价结果\今天\门店（没有要订的门店不建）
+        root_dir = self.win.ws_root() if hasattr(self.win, "ws_root") else self.batch_root()
+        if not root_dir:
+            QMessageBox.warning(self.win, tr("确认，开始比价"), tr("还没有工作文件夹。"))
             return
-        folders = dlg.folders()
-        root_dir = dlg.root()
-        self.settings["wholesale_root"] = root_dir
+        folders = {sid: R.batch_store_folder(root_dir, sid) for sid in self.meta["stores"] if self._to_order(sid)}
         made, problems = [], []
         tag = datetime.now().strftime("%Y%m%d_%H%M")
         day_dir = R.batch_folder(root_dir)
         os.makedirs(day_dir, exist_ok=True)
-        os.makedirs(os.path.join(root_dir, "distribuire"), exist_ok=True)     # 几家门店共用的供应商报价
         all_tf = None
         if moves:                                  # 整批的调货单放在这一天的文件夹里（每家店的也放一份在它自己的文件夹）
             try:
@@ -1127,7 +1147,13 @@ class OrderCheck:
                 continue
             root = R.make_store_folder(folders[sid])
             if hasattr(self.win, "sync_prices"):
-                self.win.sync_prices(root)             # 共用的供应商报价（根目录\\distribuire）复制一份过来
+                self.win.sync_prices(root)             # 共用的供应商报价（工作文件夹\\2 供应商报价）复制一份过来
+            try:
+                n_el = W.copy_elim(root_dir, sid, root)  # 这家店的扣减文件复制进它的 eliminare
+                if n_el:
+                    self.win.log(tr("[文件] {0}：扣减文件 {1} 个", R.STORES.get(sid), n_el))
+            except Exception as e:
+                problems.append(tr("{0}：扣减文件没复制过去：{1}", R.STORES.get(sid), e))
             rows = [dict(x, final=new_final.get((sid, str(x.get("code"))), x["final"]))
                     for x in self.rows if x.get("store") == sid]
             mine = [m for m in moves if sid in (m["from"], m["to"])]
@@ -1154,35 +1180,37 @@ class OrderCheck:
                                 "、".join(f"{x['code']} {x['name'][:20]}" for x in skipped[:10])))
             made.append((sid, root, written, len(skipped)))
         if not made:
-            QMessageBox.critical(self.win, tr("确认，生成主订单"), "\n".join(problems))
+            if problems:
+                QMessageBox.critical(self.win, tr("确认，开始比价"), "\n".join(problems))
+            else:
+                QMessageBox.information(self.win, tr("确认，开始比价"), tr("这几家门店这次都不用订货，不用比价。"))
             return
         if moves:
             self.win.log(tr("✔ 门店间调货：{0} 个商品，少订 {1} 箱", len(moves),
                             sum(m["colli_before"] - m["colli_after"] for m in moves)))
             if all_tf:
                 self.win.log(tr("✔ 调货单（全部门店）：{0}", all_tf))
-        # 这一批是哪几家门店（批发商比价页上可以一家一家切换过去比价）
+        # 这一批是哪几家门店（批发商比价页上能一家一家看结果）
         self.settings["wholesale_batch"] = {"time": datetime.now().isoformat(timespec="minutes"),
                                             "stores": {str(sid): root for sid, root, _, _ in made}}
-        first = made[0][1]
-        self.win.folder_edit.setText(os.path.normpath(first))
-        self.settings["last_folder"] = self.win.folder_edit.text()
         save_settings(self.settings)
-        self.win.refresh_folder()
-        if hasattr(self.win, "cmp_steps"):
-            self.win.cmp_steps.set_state(1, "done", tr("已生成主订单"))
+        # 用过的门店清单、扣减文件挪进 _已处理 / _已用（下次不会再用一遍）
+        try:
+            W.archive_used(root_dir, [sid for sid, _, _, _ in made], [x["path"] for x in self.lists])
+        except Exception as e:
+            problems.append(tr("用过的清单 / 扣减文件没挪走：{0}", e))
         msg = tr("已生成 {0} 家门店的主订单（{1}）", len(made), "、".join(
             f"{R.STORES.get(sid)} {n}" for sid, _, n, _ in made))
         if moves:
             msg += "；" + tr("门店间调货 {0} 个商品，少订 {1} 箱，调货单在 {2}", len(moves),
                             sum(m["colli_before"] - m["colli_after"] for m in moves), day_dir)
-        if len(made) > 1:
-            msg += "。" + tr("现在显示 {0}，比完价在上面切换到下一家", R.STORES.get(made[0][0]))
-        msg += "。" + tr("供应商报价用 {0}（所有门店共用，每家店自动复制一份写自己的订单）", os.path.join(root_dir, "distribuire"))
         if problems:
             msg += "\n⚠ " + "；".join(problems)
-        self.win.banner_folder.show_msg(msg, "warn" if problems else "ok")
-        # 主订单生成了，检查窗口就用不着了：直接关掉，回到批发商比价，下一步点「开始处理」
+        self.win.log(msg)
+        self.lists = []
+        self._refresh_lists()
+        self.summary_row.hide()
+        # 检查窗口关掉，回到批发商比价，自动一家一家比价
         self.window.close()
         if self.win.isMinimized():
             self.win.showNormal()
@@ -1190,140 +1218,4 @@ class OrderCheck:
         self.win.activateWindow()
         if hasattr(self.win, "go_page"):
             self.win.go_page("order")
-        if hasattr(self.win, "btn_run"):
-            self.win.btn_run.setFocus()
-        self.win.show_toast(tr("主订单已生成，点「开始处理」做供应商比价"))
-
-
-class BatchConfirmDialog(QDialog):
-    """确认生成主订单：每家门店先调货少订多少、文件夹自动建在 根目录\\批发商比价\\日期\\门店；调货明细可以打开看"""
-
-    def __init__(self, oc, moves):
-        super().__init__(oc.win)
-        import transfers as TR
-        self.oc, self.moves = oc, moves
-        T = oc.ui.T
-        self.setWindowTitle(tr("确认，生成主订单"))
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(22, 18, 22, 16)
-        lay.setSpacing(12)
-        t = QLabel(tr("每家门店按确定件数生成自己的主订单（各自比价、各自下单）"))
-        t.setObjectName("Section")
-        lay.addWidget(t)
-        g = QGridLayout()
-        g.setHorizontalSpacing(10)
-        g.setVerticalSpacing(8)
-        # 文件夹自动建：根目录\批发商比价\日期\门店（只要选一次根目录）
-        rr = QHBoxLayout()
-        rr.addWidget(QLabel(tr("比价根目录")))
-        self.root_ed = QLineEdit(oc.batch_root())
-        self.root_ed.setMinimumWidth(380)
-        self.root_ed.setPlaceholderText(tr("选一个放比价文件的文件夹，例如 D:\\CasaTe"))
-        self.root_ed.textChanged.connect(lambda _: self._paths())
-        rr.addWidget(self.root_ed, 1)
-        b = QPushButton(tr("选择…"))
-        b.clicked.connect(self._pick)
-        rr.addWidget(b)
-        lay.addLayout(rr)
-        for c, h in enumerate((tr("门店"), tr("要订"), tr("调货少订"), tr("自动建的文件夹"))):
-            lb = QLabel(h)
-            lb.setObjectName("Faint")
-            g.addWidget(lb, 0, c)
-        self.path_lbls = {}
-        saved = {}
-        for m in moves:
-            saved[m["to"]] = saved.get(m["to"], 0) + (m["colli_before"] - m["colli_after"])
-        for r, sid in enumerate(oc.meta["stores"], 1):
-            n = oc._to_order(sid)
-            g.addWidget(QLabel(store_label(sid)), r, 0)
-            g.addWidget(QLabel(tr("{0} 个商品", n)), r, 1)
-            g.addWidget(QLabel(tr("{0} 箱", saved[sid]) if saved.get(sid) else "—"), r, 2)
-            pl = QLabel("")
-            pl.setTextInteractionFlags(Qt.TextSelectableByMouse)
-            g.addWidget(pl, r, 3)
-            self.path_lbls[sid] = (pl, n)
-        g.setColumnStretch(3, 1)
-        lay.addLayout(g)
-        self._paths()
-        if moves:
-            dn = TR.by_donor(moves)
-            txt = tr("门店间调货（先用别的门店多出来的货，再订剩下的）：{0} 个商品，少订 {1} 箱。", len(moves),
-                     sum(m["colli_before"] - m["colli_after"] for m in moves)) + "　" + "　".join(
-                tr("从 {0}：{1} 个商品 · €{2:,.2f}", R.STORES.get(k, k), v["items"], v["value"]) for k, v in sorted(dn.items()))
-            row = QHBoxLayout()
-            lb = QLabel(txt)
-            lb.setWordWrap(True)
-            lb.setStyleSheet(f"color:{T('ok')};")
-            row.addWidget(lb, 1)
-            bv = QPushButton(tr("查看调货明细"))
-            bv.clicked.connect(self._show_moves)
-            row.addWidget(bv)
-            lay.addLayout(row)
-        else:
-            lb = QLabel(tr("门店间调货：这次没有可调的商品（其他门店没有多出来的货，或者商品调货货值不到门槛）。")
-                        if oc.meta.get("snap") else tr("门店间调货：没有查到其他门店的库存，这次不调货。"))
-            lb.setObjectName("Faint")
-            lb.setWordWrap(True)
-            lay.addWidget(lb)
-        unknown = sum(1 for x in oc.rows if not x["in_db"] and x["final"] > 0)
-        if unknown:
-            w = QLabel(tr("⚠ 其中 {0} 个商品数据库里没有，件数按清单数量，请确认无误。", unknown))
-            w.setStyleSheet(f"color:{T('warn')};")
-            lay.addWidget(w)
-        h = QLabel(tr("每家门店一个文件夹，里面自动建 ORDINE（主订单）、eliminare（扣减文件）、distribuire（从根目录的共用报价复制一份，写这家店的订单）；整批的调货单放在日期文件夹里。同一天再确认一次会用同一个文件夹，原来的主订单挪进 ORDINE\\_旧订单。"))
-        h.setObjectName("Faint")
-        h.setWordWrap(True)
-        lay.addWidget(h)
-        self.err = QLabel("")
-        self.err.setStyleSheet(f"color:{T('err')};")
-        lay.addWidget(self.err)
-        bb = QHBoxLayout()
-        bb.addStretch()
-        cancel = QPushButton(tr("取消"))
-        cancel.clicked.connect(self.reject)
-        ok = QPushButton(tr("生成主订单"))
-        ok.setObjectName("Primary")
-        ok.clicked.connect(self._ok)
-        bb.addWidget(cancel)
-        bb.addWidget(ok)
-        lay.addLayout(bb)
-
-    def _pick(self):
-        d = QFileDialog.getExistingDirectory(self, tr("选择比价根目录"), self.root_ed.text() or "")
-        if d:
-            self.root_ed.setText(os.path.normpath(d))
-
-    def root(self):
-        return self.root_ed.text().strip()
-
-    def _paths(self):
-        """每家门店会建在哪里（根目录改了跟着变）"""
-        root = self.root()
-        for sid, (pl, n) in self.path_lbls.items():
-            if not n:
-                pl.setText(tr("没有要订的，不生成"))
-                pl.setStyleSheet(f"color:{self.oc.ui.T('faint')};")
-            elif root:
-                pl.setText(R.batch_store_folder(root, sid))
-                pl.setStyleSheet("")
-            else:
-                pl.setText("—")
-
-    def _show_moves(self):
-        from store_order_page import TransferDialog
-        TransferDialog(self, self.moves, self.oc.ui).exec()
-
-    def folders(self):
-        """{门店: 自动建的文件夹}（没有要订的门店不在里面）"""
-        root = self.root()
-        return {sid: R.batch_store_folder(root, sid) for sid, (_, n) in self.path_lbls.items() if n}
-
-    def _ok(self):
-        root = self.root()
-        if not root or not os.path.isdir(root):
-            self.err.setText(tr("先选比价根目录（已经存在的文件夹，例如 D:\\CasaTe）。"))
-            return
-        if not self.folders():
-            self.err.setText(tr("所有门店都没有要订的商品。"))
-            return
-        self.accept()
+        self.win.run_batch([root for _, root, _, _ in made], msg, bool(problems))

@@ -79,14 +79,15 @@ def guess_store(filename):
     return None
 
 
-BATCH_DIR = "批发商比价"
+BATCH_DIR = "4 比价结果"          # workspace.RESULTS
+OLD_BATCH_DIRS = ("批发商比价",)  # 以前的结果文件夹名（还认得，不再新建）
 
 
 def batch_folder(root, day=None):
     """
     这一批（检查清单确认时生成主订单）的文件夹，结构固定、一看就懂：
-      根目录\\批发商比价\\2026-10-20\\            ← 这一天的一批（这里放整批的调货单）
-      根目录\\批发商比价\\2026-10-20\\MARLIA\\     ← 每家门店一个，里面 ORDINE / eliminare / distribuire
+      根目录\\4 比价结果\\2026-10-20\\            ← 这一天的一批（这里放整批的调货单）
+      根目录\\4 比价结果\\2026-10-20\\MARLIA\\     ← 每家门店一个，里面 ORDINE / eliminare / distribuire
     同一天再确认一次就用同一个文件夹（主订单替换，原来的挪进 ORDINE\\_旧订单）
     """
     day = day or datetime.now()
@@ -98,12 +99,12 @@ def batch_store_folder(root, store_id, day=None):
 
 
 def batch_root_of(path):
-    """path 是 根目录\\批发商比价\\日期\\门店（或日期）时返回根目录，否则 None"""
+    """path 是 根目录\\4 比价结果\\日期\\门店（或日期；以前的「批发商比价」也认）时返回根目录，否则 None"""
     if not path:
         return None
     parts = os.path.normpath(path).split(os.sep)
     for k in (3, 2):
-        if len(parts) > k and parts[-k] == BATCH_DIR and re.fullmatch(r"\d{4}-\d{2}-\d{2}", parts[-k + 1] or ""):
+        if len(parts) > k and parts[-k] in (BATCH_DIR,) + OLD_BATCH_DIRS and re.fullmatch(r"\d{4}-\d{2}-\d{2}", parts[-k + 1] or ""):
             return os.sep.join(parts[:-k]) or os.sep
     return None
 

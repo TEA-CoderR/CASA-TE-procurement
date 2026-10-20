@@ -580,7 +580,7 @@ def run_process(ordine_file, eliminare_path, distribuire_path, log, progress=Non
     # 主订单只能由「检查门店订货清单」生成（带门店库存快照）；旧系统的文件不再处理，一个文件都不动
     import reorder_service as RS
     if not RS.load_snapshot(ordine_file):
-        summary["error"] = tr("主订单不是「② 检查门店订货清单」生成的，不能比价。请先检查门店清单、生成主订单。")
+        summary["error"] = tr("主订单不是检查门店清单生成的，不能比价。请把门店清单放进「门店清单」，点「开始」。")
         log(tr("❌ {0}", summary["error"]))
         return summary
 

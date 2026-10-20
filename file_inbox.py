@@ -128,14 +128,14 @@ def match_supplier(new_name, existing, keywords=()):
     return scored[0][1]
 
 
-def plan_suppliers(root, files, keywords=()):
+def plan_suppliers(root, files, keywords=(), folder=None):
     """
     先算好每个新文件要替换哪个旧文件（不动文件），给界面确认：
     返回 [{"src": 新文件, "replace": 旧文件名或 None, "auto": 是否自动认出}]
     同一个旧文件不会被两个新文件替换。
     """
     _check_sources(files)
-    existing = [e for e in excel_files(os.path.join(root, "distribuire"))
+    existing = [e for e in excel_files(folder or os.path.join(root, "distribuire"))
                 if ".calc." not in e.lower() and "缺失报告" not in e and "missing" not in e.lower()]
     used, out = set(), []
     for src in files:
@@ -150,11 +150,13 @@ def plan_suppliers(root, files, keywords=()):
     return out
 
 
-def apply_suppliers(root, plan):
-    """按 plan_suppliers（界面上可能改过 replace）放文件。返回 [(新文件名, 替换掉的旧文件名或 None)]"""
-    folder = os.path.join(root, "distribuire")
+def apply_suppliers(root, plan, folder=None):
+    """按 plan_suppliers（界面上可能改过 replace）放文件。返回 [(新文件名, 替换掉的旧文件名或 None)]
+    folder：报价放在哪（默认 root\\distribuire；工作文件夹是「2 供应商报价」）"""
+    folder = folder or os.path.join(root, "distribuire")
     os.makedirs(folder, exist_ok=True)
     old_dir = os.path.join(folder, OLD_DIRS["distribuire"])
+    os.makedirs(folder, exist_ok=True)
     done = []
     for p in plan:
         rep = p.get("replace")

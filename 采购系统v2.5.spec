@@ -13,7 +13,7 @@ a = Analysis(
         'PySide6.QtSvg',
         'perf_monitor', 'shadow_test', 'excel_pool', 'supplier_cache',
         'ai_matcher', 'learning_router', 'optimized_search',
-        'min_order_optimizer', 'allocation_plan', 'file_inbox', 'scenarios', 'originals', 'supplier_names', 'transfers', 'price_check', 'settings', 'i18n', 'translations', 'history', 'supplier_layout',
+        'min_order_optimizer', 'allocation_plan', 'file_inbox', 'scenarios', 'originals', 'supplier_names', 'transfers', 'price_check', 'workspace', 'settings', 'i18n', 'translations', 'history', 'supplier_layout',
         'reorder_service', 'reorder_page', 'store_orders', 'store_order_page', 'order_check', 'forecast', 'theme', 'erp_widgets', 'dashboard_page', 'settings_page', 'legacy_pages', 'store_detail_window', 'distribution_service', 'distribution_page', 'import_page', 'app_update', 'update_ui', 'secure_store', 'fenpei', 'fenpei.config', 'fenpei.database', 'fenpei.models',
         'pandas', 'sqlalchemy', 'sqlalchemy.dialects.mysql', 'sqlalchemy.dialects.mysql.mysqldb', 'MySQLdb', 'pymysql',
         'numpy', 'scipy.optimize', 'scipy.sparse',

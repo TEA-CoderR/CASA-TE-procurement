@@ -166,18 +166,19 @@ def test_snapshot_keeps_planned_transfers(tmp_path):
 
 
 def test_batch_folders(tmp_path):
-    """检查清单确认时自动建：根目录\\批发商比价\\日期\\门店\\{ORDINE, eliminare, distribuire}"""
+    """检查清单确认时自动建：根目录\\4 比价结果\\日期\\门店\\{ORDINE, eliminare, distribuire}"""
     import os
     from datetime import datetime
     import reorder_service as RS
     root = str(tmp_path / "CasaTe")
     day = datetime(2026, 10, 20)
     f = RS.batch_store_folder(root, 2, day)
-    assert f == os.path.join(root, "批发商比价", "2026-10-20", "MARLIA")
+    assert f == os.path.join(root, "4 比价结果", "2026-10-20", "MARLIA")
     RS.make_store_folder(f)
     assert sorted(os.listdir(f)) == ["ORDINE", "distribuire", "eliminare"]
     assert RS.batch_root_of(f) == root and RS.batch_root_of(RS.batch_folder(root, day)) == root
     assert RS.batch_root_of(root) is None and RS.batch_root_of("") is None
+    assert RS.batch_root_of(os.path.join(root, "批发商比价", "2026-10-01", "MARLIA")) == root     # 以前的结果也认
 
 
 def test_transfer_status_planned():
