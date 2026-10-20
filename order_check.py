@@ -909,7 +909,7 @@ class BatchConfirmDialog(QDialog):
             row.addWidget(bv)
             lay.addLayout(row)
         else:
-            lb = QLabel(tr("门店间调货：这次没有可调的商品（其他门店没有多出来的货，或者一家调出的货值不到门槛）。")
+            lb = QLabel(tr("门店间调货：这次没有可调的商品（其他门店没有多出来的货，或者商品调货货值不到门槛）。")
                         if oc.meta.get("snap") else tr("门店间调货：没有查到其他门店的库存，这次不调货。"))
             lb.setObjectName("Faint")
             lb.setWordWrap(True)

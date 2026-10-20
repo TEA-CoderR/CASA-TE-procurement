@@ -11,18 +11,27 @@
       "waste" 整箱会多出很多时（默认）：订整箱多出的件数 ≥ 一箱的 waste_ratio（默认一半），
               就调零头（要的件数 − 少订一箱后还能到的件数），少订一箱
       "all"   所有要订的商品：别的门店多出来的够多少就调多少，能少订几箱就少订几箱
-  · 一家门店调出去的货，总货值（件数 × 件价）≥ min_value（默认 €50）才调，货值太低不值得人工拣货
+  · 每个商品要调的货值（调货件数 × 件价）≥ item_min_value（默认 €10）才调：拣货的人工是按商品算的，
+    一个 €0.10 的纸杯调 5 个才 €0.50，不值得；调 100 个 €10 就值得
+  · 可选：一家门店调出去的货合计 ≥ min_value 才调（默认 0 = 不限；以前的版本只有这一条，默认 €50）
   · 离得远的门店（far_stores）不调出、也不往那里调
 算法：同一家调出门店的货尽量凑在一起（人工一次拣完）——每轮算每家门店能调出的总货值，
      先定货值最高的那家；它够门槛就把这些商品定给它，再算下一家，直到没有门店够门槛。
 """
 import math
 
-DEFAULT = {"enabled": True, "mode": "waste", "waste_ratio": 0.5, "min_value": 50.0}
+DEFAULT = {"enabled": True, "mode": "waste", "waste_ratio": 0.5, "item_min_value": 10.0, "min_value": 0.0}
 
 
 def config(cfg=None):
-    return dict(DEFAULT, **(cfg or {}))
+    """
+    调货设置。旧设置（只有「每家调出门店合计 min_value」、没有 item_min_value）：
+    改成按单个商品的货值算，旧的合计门槛不再用（规则变了，不沿用以前的 €50）
+    """
+    cfg = dict(cfg or {})
+    if "item_min_value" not in cfg:
+        cfg.pop("min_value", None)
+    return dict(DEFAULT, **cfg)
 
 
 def surplus(d):
@@ -70,6 +79,7 @@ def plan(needs, avail, cfg=None, far=()):
     cfg = config(cfg)
     far = set(far or ())
     min_value = float(cfg.get("min_value") or 0)
+    item_min = float(cfg.get("item_min_value") or 0)
     left = {k: int(v) for k, v in (avail or {}).items() if v and v > 0}
     todo = {}
     for n in needs:
@@ -92,8 +102,8 @@ def plan(needs, avail, cfg=None, far=()):
                 continue
             k = (s, n["key"])
             have = stock.get(k, left.get(k, 0))
-            for t, c2 in opts:                      # 少订得最多、而且库存够的那个
-                if t <= have:
+            for t, c2 in opts:                      # 少订得最多、库存够、而且这个商品调的货值够门槛的那个
+                if t <= have and t * float(n.get("price") or 0) >= item_min - 1e-9:
                     picks.append((n, t, c2))
                     stock[k] = have - t
                     value += t * float(n.get("price") or 0)

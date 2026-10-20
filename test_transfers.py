@@ -25,11 +25,11 @@ def test_plan_min_value_and_grouping():
              _need("c", 2, "Z", 2, 6, 1, 25.0)]
     # 3 号店 X、Y 都多；4 号店 Z 多（2 件 × €25 = €50）
     avail = {(3, "X"): 10, (3, "Y"): 10, (4, "Z"): 5, (4, "X"): 3}
-    moves, new = TR.plan(needs, avail, {"min_value": 50})
+    moves, new = TR.plan(needs, avail, {"min_value": 50, "item_min_value": 0})
     # 4 号店：Z 2 件 €50，顺便把 X 3 件也一起拣（同一家店一次拣完）；3 号店剩下的 Y 只有 €10，不够 €50
     assert sorted((m["from"], m["to"], m["key"], m["pieces"]) for m in moves) == [(4, 1, "X", 3), (4, 2, "Z", 2)]
     assert new == {"a": 0, "c": 0}
-    moves, new = TR.plan(needs, avail, {"min_value": 10})
+    moves, new = TR.plan(needs, avail, {"min_value": 10, "item_min_value": 0})
     got = sorted((m["from"], m["key"]) for m in moves)
     assert (3, "Y") in got and new["b"] == 0
 
@@ -37,13 +37,13 @@ def test_plan_min_value_and_grouping():
 def test_plan_far_and_own_store():
     needs = [_need("a", 1, "X", 3, 12, 1, 30.0), _need("b", 3, "X", 3, 12, 1, 30.0)]
     avail = {(1, "X"): 20, (3, "X"): 2}
-    moves, _ = TR.plan(needs, avail, {"min_value": 10}, far=[1])
+    moves, _ = TR.plan(needs, avail, {"min_value": 10, "item_min_value": 0}, far=[1])
     assert moves == []                    # 1 号店远：不调出也不调入；3 号店自己要，2 件也不够
 
 
 def test_plan_shared_stock_not_overused():
     needs = [_need("a", 1, "X", 4, 12, 1, 10.0), _need("b", 2, "X", 4, 12, 1, 10.0)]
-    moves, new = TR.plan(needs, {(3, "X"): 5}, {"min_value": 10})
+    moves, new = TR.plan(needs, {(3, "X"): 5}, {"min_value": 10, "item_min_value": 0})
     assert len(moves) == 1 and sum(m["pieces"] for m in moves) == 4          # 3 号店只有 5 件，只够一家
 
 
@@ -54,7 +54,7 @@ def test_store_orders_apply_transfers():
     demand = {2: {"100": {"sugg": 12, "need": 3, "inv": 0, "daily": 0.1, "cycle": 30}},
               3: {"100": {"sugg": 0, "need": 0, "inv": 40, "daily": 0.5, "cycle": 30}}}
     calc = {"schede": [sc], "demand": demand, "base": {"p": {2: {5: 1}}}, "stores": [2, 3]}
-    out = S.apply_transfers(calc, {"min_value": 10}, far_stores=[1])
+    out = S.apply_transfers(calc, {"item_min_value": 10}, far_stores=[1])
     assert [(t["from"], t["to"], t["pieces"], t["value"]) for t in out] == [(3, 2, 3, 18.0)]
     assert calc["base"] == {"p": {2: {}}} and calc["base_orig"] == {"p": {2: {5: 1}}}
     S.apply_transfers(calc, {"enabled": False})
@@ -77,7 +77,7 @@ def test_snapshot_roundtrip_and_wholesale(tmp_path):
     assert RS.load_snapshot(str(root / "ORDINE" / "别的.xlsx")) is None
     rows = [service._price_row_pieces(2, 3, {"MEGA": 1.0, "MELONI": 1.2}, {"MEGA": 12, "MELONI": 12}, "800001", "A")]
     assert service.attach_stock(rows, got) == 1 and rows[0]["daily"] == 0.1
-    ts = service.wholesale_transfers(rows, ["MEGA", "MELONI"], got, {"store_orders": {"transfer": {"min_value": 1}}})
+    ts = service.wholesale_transfers(rows, ["MEGA", "MELONI"], got, {"store_orders": {"transfer": {"item_min_value": 1}}})
     assert [(t["from"], t["pieces"], t["colli_before"], t["colli_after"]) for t in ts] == [(4, 3, 1, 0)]
     assert rows[0]["qty"] == 0 and rows[0]["qty_orig"] == 3                  # 主订单件数减掉调货的
     assert ts[0]["supplier"] == "MEGA" and abs(ts[0]["value"] - 3.0) < 1e-9
@@ -140,7 +140,7 @@ def test_batch_transfers_across_store_lists():
             3: {"100": {"inv": 0, "daily": 0, "cycle": 30}, "200": {"inv": 100, "daily": 1, "cycle": 30}},
             4: {"100": {"inv": 40, "daily": 0.5, "cycle": 30}, "200": {"inv": 90, "daily": 1, "cycle": 30}},
             1: {"100": {"inv": 0, "daily": 0.1, "cycle": 30}}}
-    moves, new = RS.plan_batch_transfers(rows, snap, {"min_value": 1}, far=[1])
+    moves, new = RS.plan_batch_transfers(rows, snap, {"item_min_value": 1}, far=[1])
     by = {(m["to"], m["code"]): m for m in moves}
     # MARLIA 要 3 个 PIATTI（一箱 12）：从 S.MARCO 调 3 件，不用订
     assert by[(2, "100")]["from"] == 4 and by[(2, "100")]["pieces"] == 3 and new[(2, "100")] == 0
@@ -185,3 +185,16 @@ def test_transfer_status_planned():
     snap = {"store": 2, "planned_transfers": [{"from": 4, "to": 2}, {"from": 2, "to": 3}]}
     code, text = service.transfer_status(snap, {})
     assert code == "planned" and "1" in text
+
+
+def test_item_min_value():
+    """按单个商品的调货货值：纸杯 5 个 €0.50 不调，100 个 €10 才调；旧设置（只有合计 €50）改成按单品"""
+    needs = [_need("cups", 2, "CUP", 5, 200, 1, 0.10), _need("big", 2, "BIG", 100, 1000, 1, 0.10),
+             _need("x", 2, "X", 3, 12, 1, 4.0)]
+    avail = {(3, "CUP"): 500, (3, "BIG"): 500, (3, "X"): 10}
+    moves, new = TR.plan(needs, avail, {"item_min_value": 10})
+    assert sorted(m["key"] for m in moves) == ["BIG", "X"] and "cups" not in new
+    assert TR.config({"min_value": 50}) == dict(TR.DEFAULT, min_value=0.0)          # 旧设置
+    assert TR.config({"min_value": 50, "item_min_value": 5})["min_value"] == 50      # 新设置两个都可以设
+    moves, _ = TR.plan(needs, avail, {"item_min_value": 10, "min_value": 30})
+    assert moves == []                    # 3 号店合计 €22 不够 €30

@@ -270,6 +270,11 @@ class FillDialog(QDialog):
         self.tr_mode.addItem(tr("整箱会多出一半以上时才调"), "waste")
         self.tr_mode.addItem(tr("所有要订的商品都先看能不能调"), "all")
         self.tr_mode.setCurrentIndex(max(0, self.tr_mode.findData(tc.get("mode"))))
+        self.tr_item = QDoubleSpinBox()
+        self.tr_item.setRange(0, 100000)
+        self.tr_item.setDecimals(2)
+        self.tr_item.setValue(float(tc["item_min_value"]))
+        self.tr_item.setFixedWidth(100)
         self.tr_min = QDoubleSpinBox()
         self.tr_min.setRange(0, 100000)
         self.tr_min.setDecimals(0)
@@ -277,11 +282,17 @@ class FillDialog(QDialog):
         self.tr_min.setFixedWidth(100)
         g3.addWidget(QLabel(tr("什么时候调")), 0, 0)
         g3.addWidget(self.tr_mode, 0, 1, 1, 2)
-        g3.addWidget(QLabel(tr("每家调出门店货值至少 €")), 1, 0)
-        g3.addWidget(self.tr_min, 1, 1)
-        hh = QLabel(tr("货值太低不值得人工拣货，不如直接订"))
+        g3.addWidget(QLabel(tr("每个商品调货货值至少 €")), 1, 0)
+        g3.addWidget(self.tr_item, 1, 1)
+        hh = QLabel(tr("调货件数 × 件价。拣货人工按商品算：纸杯调 5 个才 €0.50 不值得，调 100 个 €10 就值得"))
         hh.setObjectName("Faint")
+        hh.setWordWrap(True)
         g3.addWidget(hh, 1, 2)
+        g3.addWidget(QLabel(tr("每家调出门店合计至少 €")), 2, 0)
+        g3.addWidget(self.tr_min, 2, 1)
+        h0 = QLabel(tr("0 = 不限（一般不用设）"))
+        h0.setObjectName("Faint")
+        g3.addWidget(h0, 2, 2)
         lay.addLayout(g3)
         h3 = QLabel(tr("调出门店留够自己一个订货周期的销量（日均 × 订货周期），多出来的才调；自己这次也要订的商品不调出；{0} 离得远，不参与调货。", far))
         h3.setObjectName("Faint")
@@ -301,7 +312,8 @@ class FillDialog(QDialog):
                                      borrow_urgent=self.borrow_urgent.isChecked(),
                                      merge_direct=self.merge_direct.isChecked())
         self.page.cfg["transfer"] = dict(self.page.transfer_cfg(), enabled=self.tr_on.isChecked(),
-                                         mode=self.tr_mode.currentData(), min_value=self.tr_min.value())
+                                         mode=self.tr_mode.currentData(), item_min_value=self.tr_item.value(),
+                                         min_value=self.tr_min.value())
         save_settings(self.page.settings)
         self.accept()
 
@@ -469,7 +481,7 @@ class StoreOrderPage:
             self.tr_sub.setText(tr("在「配货设置」里可以打开"))
         elif not ts:
             self.tr_title.setText(tr("门店间调货 · 这次没有可调的"))
-            self.tr_sub.setText(tr("没有门店多出来的货能凑够 €{0:g} 的拣货门槛", cfg["min_value"]))
+            self.tr_sub.setText(tr("没有商品的调货货值够 €{0:g}（门店多出来的货不够，或者商品太便宜）", cfg["item_min_value"]))
         else:
             dn = TR.by_donor(ts)
             saved = sum(x["boxes_saved"] for x in dn.values())
