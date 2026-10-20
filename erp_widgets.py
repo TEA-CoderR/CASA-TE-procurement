@@ -1084,8 +1084,11 @@ class DropZone(QFrame):
             self.files_dropped.emit(files)
 
 
-def accept_file_drops(widget, callback, exts=(".xlsx", ".xls", ".xlsm")):
-    """让一个现成的控件（例如显示文件路径的输入框）也能拖文件进来：拖进来的第一个文件交给 callback(路径)"""
+def accept_file_drops(widget, callback, exts=(".xlsx", ".xls", ".xlsm"), multi=False):
+    """
+    让一个现成的控件（例如显示文件路径的输入框）也能拖文件进来：拖进来的第一个文件交给 callback(路径)；
+    multi=True 时一次拖好几个，callback([路径, …])
+    """
     widget.setAcceptDrops(True)
 
     def enter(e):
@@ -1103,7 +1106,7 @@ def accept_file_drops(widget, callback, exts=(".xlsx", ".xls", ".xlsm")):
         files = _local_files(e.mimeData(), exts)
         if files:
             e.acceptProposedAction()
-            callback(files[0])
+            callback(files if multi else files[0])
 
     def move(e):
         if _local_files(e.mimeData(), exts):

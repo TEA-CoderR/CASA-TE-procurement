@@ -121,6 +121,14 @@ def transfer_status(snapshot, settings):
     cfg = TR.config(so.get("transfer"))
     if not snapshot:
         return "no_snapshot", tr("门店间调货：主订单没有门店库存数据，不算调货")
+    if snapshot.get("planned_transfers") is not None:
+        own = snapshot.get("store")
+        pt = snapshot["planned_transfers"]
+        n_in = sum(1 for t in pt if t.get("to") == own)
+        n_out = sum(1 for t in pt if t.get("from") == own)
+        if not n_in and not n_out:
+            return "planned", tr("门店间调货：检查清单时已经和其他门店一起算过，这家店这次没有调货")
+        return "planned", tr("门店间调货：检查清单时已经算好（调进 {0} 个商品、调出 {1} 个），主订单是减掉调货以后的数量", n_in, n_out)
     if not cfg.get("enabled"):
         return "off", tr("门店间调货：已关闭（点「门店间调货…」打开）")
     own = snapshot.get("store")
@@ -849,21 +857,32 @@ def run_process(ordine_file, eliminare_path, distribuire_path, log, progress=Non
     if snapshot:
         n_stock = attach_stock(rows_data, snapshot)
         log(tr("门店库存快照：{0} 个商品有库存和日均（来自「检查门店清单」）", n_stock))
-        try:
-            import supplier_names as SN
-            summary["transfers"] = wholesale_transfers(rows_data, supplier_headers, snapshot, settings,
-                                                       SN.labels(supplier_headers, settings))
-        except Exception as e:
-            log(tr("⚠ 调货计算失败（按原来的件数订）：{0}", e))
+        if snapshot.get("planned_transfers") is not None:
+            # 检查清单时已经和其他门店一起算好调货，主订单件数已经减掉了：这里只拿来显示（这家店调进来的）
+            own = snapshot.get("store")
+            summary["transfers"] = [t for t in snapshot["planned_transfers"] if t.get("to") == own]
+            summary["transfers_out"] = [t for t in snapshot["planned_transfers"] if t.get("from") == own]
+            if snapshot.get("transfers_file") and os.path.exists(snapshot["transfers_file"]):
+                summary["transfers_file"] = snapshot["transfers_file"]
+            if summary["transfers_out"]:
+                log(tr("门店间调货：这家店要调出 {0} 个商品给其他门店（见调货单）", len(summary["transfers_out"])))
+        else:
+            try:
+                import supplier_names as SN
+                summary["transfers"] = wholesale_transfers(rows_data, supplier_headers, snapshot, settings,
+                                                           SN.labels(supplier_headers, settings))
+            except Exception as e:
+                log(tr("⚠ 调货计算失败（按原来的件数订）：{0}", e))
         if summary["transfers"]:
             log(tr("门店间调货：{0} 个商品，少订 {1} 箱", len(summary["transfers"]),
                    sum(t["colli_before"] - t["colli_after"] for t in summary["transfers"])))
         else:
             code, text = transfer_status(snapshot, settings)
-            summary["transfer_note"] = text if code != "on" else \
+            summary["transfer_note"] = text if code not in ("on",) else \
                 tr("门店间调货：这次没有可调的商品（其他门店没有多出来的货，或者一家调出的货值不到门槛）")
             log(summary["transfer_note"])
-    transfer_rows = {t["row"]: t for t in summary["transfers"]}
+    # 比价时才算的调货（旧主订单）要改主订单的件数；检查清单时算好的已经改过了（没有 row）
+    transfer_rows = {t["row"]: t for t in summary["transfers"] if "row" in t}
     assignment = _select_suppliers(rows_data, supplier_headers, ws_main, log, settings, summary, decide, choose)
     if assignment is None:
         log(tr("⚠ 操作员取消了处理，主订单和供应商文件都没有改动"))
@@ -1197,8 +1216,10 @@ def run_process(ordine_file, eliminare_path, distribuire_path, log, progress=Non
         # 写完以后的文件指纹：下次处理时认出「还是程序写的」→ 恢复原文件再算
         "written": _written_fingerprints(ordine_file, distribuire_path),
     }
-    summary["transfers_file"] = None
-    if summary.get("transfers"):
+    planned = bool(snapshot) and snapshot.get("planned_transfers") is not None
+    if not planned:
+        summary["transfers_file"] = None
+    if summary.get("transfers") and not planned:
         try:
             import store_orders as SO
             store_name = RS.STORES.get((snapshot or {}).get("store"), "")

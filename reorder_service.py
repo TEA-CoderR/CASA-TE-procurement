@@ -79,6 +79,28 @@ def guess_store(filename):
     return None
 
 
+def guess_store_folder(base_folder, store_id):
+    """
+    批发商比价每家门店一个总文件夹（例如 …\\2026-10\\FOIANO\\ORDINE1）：
+    把 base_folder 路径里的门店名换成 store_id 的门店名，那个文件夹存在就返回它，否则 None
+    """
+    if not base_folder:
+        return None
+    target = STORES.get(store_id)
+    if not target:
+        return None
+    parts = os.path.normpath(base_folder).split(os.sep)
+    norm = lambda t: re.sub(r"[\s._\-]", "", str(t).upper())
+    names = {norm(n): n for k, n in STORES.items() if k}
+    for i in range(len(parts) - 1, -1, -1):
+        if norm(parts[i]) in names:
+            cand = os.sep.join(parts[:i] + [target] + parts[i + 1:])
+            if norm(parts[i]) == norm(target):
+                return base_folder if os.path.isdir(base_folder) else None
+            return cand if os.path.isdir(cand) else None
+    return None
+
+
 # =====================================================================
 # 订货清单解析
 # =====================================================================
@@ -690,10 +712,12 @@ def snapshot_path(main_order_path):
     return os.path.join(root, "_备份", "门店库存", os.path.basename(main_order_path) + ".json")
 
 
-def save_snapshot(main_order_path, store_id, snap, rows=None):
+def save_snapshot(main_order_path, store_id, snap, rows=None, transfers=None, transfers_file=None):
     """
     存快照：按条码（主订单按条码找商品）→ {"code", "stores": {门店号: {inv, daily, cycle}}}
     rows：检查清单的行（补上快照里没有条码的商品的条码）
+    transfers：检查清单时（几家门店一起）已经定好的门店间调货（这家店调进 / 调出的）；
+               存了就说明主订单的件数已经减掉了调货，比价时不再重算调货（None = 旧做法，比价时再算）
     """
     import json
     ean_of = {}
@@ -711,8 +735,12 @@ def save_snapshot(main_order_path, store_id, snap, rows=None):
     path = snapshot_path(main_order_path)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
-        json.dump({"store": store_id, "made": datetime.now().isoformat(timespec="seconds"),
-                   "main_order": os.path.basename(main_order_path), "by_ean": by_ean}, f, ensure_ascii=False)
+        data = {"store": store_id, "made": datetime.now().isoformat(timespec="seconds"),
+                "main_order": os.path.basename(main_order_path), "by_ean": by_ean}
+        if transfers is not None:
+            data["planned_transfers"] = transfers
+            data["transfers_file"] = transfers_file
+        json.dump(data, f, ensure_ascii=False)
     return path
 
 
@@ -754,6 +782,59 @@ def stock_for_eans(db, store_id, eans, days_list=None, reorder_cycle=30, algo=No
         if d:
             out[e] = {"code": code, "name": names.get(code, ""), "inv": d["inv"], "daily": d["daily"], "cycle": d["cycle"]}
     return out
+
+
+def plan_batch_transfers(store_rows, snap, cfg=None, far=()):
+    """
+    几家门店的清单一起检查以后，先算门店间调货、再订剩下的（和门店配货同一个规则，见 transfers.py）：
+      store_rows: {门店号: 检查清单的行}（用 final 确定件数、pack 数据库箱规、price 进价、code、ean、name）
+      snap:       {门店号: {商品编号: {inv, daily, cycle}}}：五家店这批商品的库存和日均
+    调出门店留够自己一个订货周期；这次自己也要订这个商品的门店不调出；离得远的门店（far）不调出也不调进。
+    返回 (moves, new_final)：moves 是调货单的行；new_final {(门店, 商品编号): 调货以后还要订的件数}
+    """
+    import transfers as TR
+    import store_orders as SO
+    cfg = TR.config(cfg)
+    if not cfg.get("enabled"):
+        return [], {}
+    ordering = {(sid, str(x["code"])) for sid, rows in store_rows.items() for x in rows
+                if x.get("code") and int(x.get("final") or 0) > 0}
+    needs, info = [], {}
+    for sid, rows in store_rows.items():
+        for x in rows:
+            final = int(x.get("final") or 0)
+            pack = float(x.get("pack") or 0)
+            if not x.get("in_db", True) or not x.get("code") or final <= 0 or pack <= 0:
+                continue
+            k = len(needs)
+            needs.append({"id": k, "store": sid, "key": str(x["code"]), "need": final, "pack": pack,
+                          "colli": int(math.ceil(final / pack)), "price": float(x.get("price") or 0)})
+            info[k] = (sid, x)
+    avail = {}
+    for sid, d in (snap or {}).items():
+        for code, v in d.items():
+            if (sid, str(code)) in ordering:
+                continue
+            sp = TR.surplus(v)
+            if sp > 0:
+                avail[(sid, str(code))] = sp
+    moves, _ = TR.plan(needs, avail, cfg, far)
+    new_final, out = {}, []
+    for m in moves:
+        sid, x = info[m["need_id"]]
+        code = str(x["code"])
+        left = max(0, int(x["final"]) - int(m["pieces"]))
+        new_final[(sid, code)] = left
+        d_from = (snap.get(m["from"]) or {}).get(code)
+        d_to = (snap.get(sid) or {}).get(code)
+        out.append({"from": m["from"], "to": sid, "code": code, "ean": x.get("ean") or "", "desc": x.get("name") or "",
+                    "supplier": "", "pieces": int(m["pieces"]), "value": float(m["value"]),
+                    "price": float(x.get("price") or 0), "colli_before": m["colli_before"], "colli_after": m["colli_after"],
+                    "need": int(x["final"]), "pack": m["pack"],
+                    "from_days": SO.cover_days(d_from, -m["pieces"]) if d_from else None,
+                    "to_days": SO.cover_days(d_to, left + m["pieces"]) if d_to else None})
+    out.sort(key=lambda t: (t["from"], t["to"], t["desc"]))
+    return out, new_final
 
 
 def checked_main_orders(ordine_folder):

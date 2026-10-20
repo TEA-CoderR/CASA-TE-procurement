@@ -1,9 +1,12 @@
 """
 批发商比价的 ②：检查门店订货清单（比价用的主订单只能从这里生成）
 
+一次可以放一家或几家门店的清单（和门店配货一样，几家一起才好调货）：
 门店发来的订货清单 → 按这家门店的销量、数据库库存和订货周期算建议量
 → 逐条对比清单数量：增加 / 减少 / 不订 / 不变 → 可以手动改「确定件数」
-→ 确认后生成新的主订单（PEZZI = 确定件数），原文件挪进 ORDINE\\_旧订单，再点「开始处理」做供应商比价分配。
+→ 确认时先算门店间调货（别的门店多出来的货先用掉），每家门店剩下要订的写成它自己的主订单
+  （每家店一个总文件夹，PEZZI = 确定件数 − 调货），原文件挪进 ORDINE\\_旧订单；调货单写进相关门店的文件夹；
+→ 再一家一家点「开始处理」做供应商比价分配（每家店各自下单、各自达到起订量）。
 """
 import os
 import math
@@ -13,7 +16,8 @@ from datetime import datetime
 from PySide6.QtCore import Qt, QObject, Signal, QTimer
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (QWidget, QLabel, QPushButton, QLineEdit, QComboBox, QHBoxLayout, QVBoxLayout,
-                               QFileDialog, QMessageBox, QSpinBox, QAbstractItemView, QHeaderView)
+                               QFileDialog, QMessageBox, QSpinBox, QAbstractItemView, QHeaderView, QDialog,
+                               QGridLayout, QFrame)
 
 from i18n import tr
 from settings import save_settings
@@ -21,10 +25,10 @@ import reorder_service as R
 from reorder_page import short_decision, store_label, algo_widgets
 
 # 表格列（逻辑顺序）→ 显示顺序：要核对、要改的列放前面
-# 从左到右按核对的顺序：判断 等级 名称 | 现在：本店库存 库存够卖 | 门店清单：箱数 件数 清单订后够卖 | 建议件数 |
+# 从左到右按核对的顺序：门店 判断 等级 名称 | 现在：本店库存 库存够卖 | 门店清单：箱数 件数 清单订后够卖 | 建议件数 |
 # 确定：件数 箱数 确定订后够卖 | 日均 目标库存 | 各周期销量 | 周期 箱规 编号 条码（列可以拖动换位置，会记住）
-_ORDER = [0, 16, 3, 4, 9, 11, 12, 21, 13, 14, 15, 20, 18, 19, 5, 6, 7, 8, 17, 10, 1, 2]
-_LAYOUT_VER = 1           # 改了默认顺序就加 1
+_ORDER = [22, 0, 16, 3, 4, 9, 11, 12, 21, 13, 14, 15, 20, 18, 19, 5, 6, 7, 8, 17, 10, 1, 2]
+_LAYOUT_VER = 2           # 改了默认顺序就加 1
 
 
 def _col(k):
@@ -67,8 +71,7 @@ class OrderCheck:
         self.win, self.settings, self.ui = win, settings, ui
         self.cfg = settings.setdefault("reorder", {})
         self.rows = []
-        self.file_info = None
-        self.file_path = ""
+        self.lists = []           # 放进来的清单：[{"path", "info", "store", "unit"}]，一家门店一份
         self.running = False
         self._filling = False
         self.sig = _Sig()
@@ -77,7 +80,7 @@ class OrderCheck:
     def build(self):
         ui = self.ui
         p = ui.Panel(tr("② 检查门店订货清单"))
-        intro = QLabel(tr("比价用的主订单只从这里生成：把门店发来的订货清单拖进来，按销量和数据库库存检查数量（增加 / 减少 / 不订），同时查其他门店的库存；确认后生成主订单，再点下面的「开始处理」做供应商比价（会算门店间调货和够卖天数）。"))
+        intro = QLabel(tr("比价用的主订单只从这里生成：把一家或几家门店的订货清单一起拖进来，按销量和数据库库存检查数量（增加 / 减少 / 不订），同时查五家门店的库存。确认时先用别的门店多出来的货（门店间调货），每家店剩下要订的各自生成主订单；再一家一家点下面的「开始处理」做供应商比价。"))
         intro.setObjectName("Faint")
         intro.setWordWrap(True)
         p.lay.addWidget(intro)
@@ -86,15 +89,29 @@ class OrderCheck:
         r1.addWidget(QLabel(tr("清单")))
         self.file_edit = QLineEdit()
         self.file_edit.setReadOnly(True)
-        self.file_edit.setPlaceholderText(tr("把门店发来的订货清单拖到这里，或点「选择文件…」"))
-        self.file_edit.setToolTip(tr("把门店发来的订货清单（Excel）拖到这里"))
+        self.file_edit.setPlaceholderText(tr("把一家或几家门店的订货清单拖到这里（可以一次拖好几个），或点「选择文件…」"))
+        self.file_edit.setToolTip(tr("几家门店的清单一起检查，才能先在门店之间调货、再订剩下的（和门店配货一样）"))
         from erp_widgets import accept_file_drops
-        accept_file_drops(self.file_edit, self._dropped, (".xlsx", ".xlsm"))
+        accept_file_drops(self.file_edit, self._dropped, (".xlsx", ".xlsm"), multi=True)
         r1.addWidget(self.file_edit, 1)
         b2 = QPushButton(tr("选择文件…"))
         b2.clicked.connect(self.choose_file)
         r1.addWidget(b2)
+        b_clr = QPushButton(tr("清空"))
+        b_clr.clicked.connect(self.clear_lists)
+        r1.addWidget(b_clr)
         p.lay.addLayout(r1)
+        # 放进来的清单：每份一行，门店按文件名认，认不出来的自己选
+        self.list_table = ui.make_table([tr("门店"), tr("清单文件"), tr("商品数"), tr("数量单位"), ""], stretch_col=1,
+                                        numeric_cols=(2,))
+        self.list_table.verticalHeader().setDefaultSectionSize(36)
+        self.list_table.setColumnWidth(0, 170)
+        self.list_table.setColumnWidth(2, 70)
+        self.list_table.setColumnWidth(3, 90)
+        self.list_table.setColumnWidth(4, 70)
+        self.list_table.setMaximumHeight(36 * 5 + 34)
+        self.list_table.hide()
+        p.lay.addWidget(self.list_table)
         # 现在的主订单（上一次在这里确认生成的）
         r0 = QHBoxLayout()
         self.order_lbl = QLabel("")
@@ -108,18 +125,6 @@ class OrderCheck:
 
         r2 = QHBoxLayout()
         r2.setSpacing(10)
-        r2.addWidget(QLabel(tr("门店")))
-        self.store = QComboBox()
-        for sid in R.STORES:
-            if sid:
-                self.store.addItem(store_label(sid), sid)
-        self.store.setCurrentIndex(max(0, self.store.findData(int(self.cfg.get("store", 1) or 1))))
-        r2.addWidget(self.store)
-        r2.addWidget(QLabel(tr("清单数量单位")))
-        self.unit = QComboBox()
-        self.unit.addItem(tr("箱"), "colli")
-        self.unit.addItem(tr("件"), "pcs")
-        r2.addWidget(self.unit)
         r2.addWidget(QLabel(tr("订货周期")))
         self.cycle = QComboBox()
         for d in R.REORDER_CYCLE_OPTIONS:
@@ -188,7 +193,7 @@ class OrderCheck:
         self.table = ui.make_table(_perm([tr("判断"), tr("商品编号"), tr("条码"), tr("名称"), tr("本店库存"),
                                           "30", "60", "90", "180", tr("库存够卖（天）"), tr("箱规"), tr("清单数量"),
                                           tr("清单件数"), tr("建议件数"), tr("确定件数"), tr("确定箱数"), tr("等级"), tr("周期"), tr("日均"),
-                                          tr("目标库存"), tr("确定订后够卖（天）"), tr("清单订后够卖（天）")]),
+                                          tr("目标库存"), tr("确定订后够卖（天）"), tr("清单订后够卖（天）"), tr("门店")]),
                                    numeric_cols=[_col(k) for k in list(range(4, 16)) + [17, 18, 19, 20, 21]])
         self.table.setMinimumHeight(380)
         self.table.setEditTriggers(QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed |
@@ -197,7 +202,7 @@ class OrderCheck:
         hh = self.table.horizontalHeader()
         hh.setSectionResizeMode(QHeaderView.Interactive)
         hh.setStretchLastSection(False)
-        for c, wd in enumerate(_perm((70, 80, 120, 300, 70, 52, 52, 52, 52, 96, 52, 70, 70, 70, 76, 70, 50, 50, 60, 70, 120, 120))):
+        for c, wd in enumerate(_perm((70, 80, 120, 300, 70, 52, 52, 52, 52, 96, 52, 70, 70, 70, 76, 70, 50, 50, 60, 70, 120, 120, 96))):
             self.table.setColumnWidth(c, wd)
         self.table.horizontalHeaderItem(EDIT_COL).setToolTip(tr("双击修改，0 = 不订"))
         self.table.horizontalHeaderItem(_col(9)).setToolTip(
@@ -219,8 +224,9 @@ class OrderCheck:
                                             _LAYOUT_VER)
         self.ctl.rendered.connect(lambda n, tot: self.count_lbl.setText(
             tr("显示 {0} / {1} 个 · 点表头排序，右键表头筛选，拖动表头换列的位置", n, tot)))
-        tb.insertWidget(1, ColumnFilterBox(self.ctl, _col(0), tr("判断")))
-        tb.insertWidget(2, ColumnFilterBox(self.ctl, _col(16), tr("等级")))
+        tb.insertWidget(1, ColumnFilterBox(self.ctl, _col(22), tr("门店")))
+        tb.insertWidget(2, ColumnFilterBox(self.ctl, _col(0), tr("判断")))
+        tb.insertWidget(3, ColumnFilterBox(self.ctl, _col(16), tr("等级")))
         tb.insertSpacing(1, 12)
         bl.addWidget(self.table)
         self.count_lbl = QLabel("")
@@ -268,19 +274,100 @@ class OrderCheck:
         p.lay.addWidget(self.summary_row)
         return p
 
-    # ---------- 选文件 ----------
+    # ---------- 选文件（一家或几家门店） ----------
     def choose_file(self):
-        start = os.path.dirname(self.file_edit.text()) if self.file_edit.text() else (self.cfg.get("last_dir") or "")
-        path, _ = QFileDialog.getOpenFileName(self.win, tr("选择订货清单"), start, tr("Excel 文件 (*.xlsx *.xlsm)"))
-        if path:
-            self.cfg["last_dir"] = os.path.dirname(path)
-            self.load_file(path)
+        paths, _ = QFileDialog.getOpenFileNames(self.win, tr("选择订货清单（可以选好几个）"), self.cfg.get("last_dir") or "",
+                                                tr("Excel 文件 (*.xlsx *.xlsm)"))
+        if paths:
+            self.cfg["last_dir"] = os.path.dirname(paths[0])
+            self.add_files(paths)
 
-    def _dropped(self, path):
+    def _dropped(self, paths):
         """门店发来的清单直接拖进来（文件留在原来的地方，不复制）"""
-        self.cfg["last_dir"] = os.path.dirname(path)
-        self.load_file(path)
-        self.win.show_toast(tr("已载入清单：{0}", os.path.basename(path)))
+        paths = paths if isinstance(paths, (list, tuple)) else [paths]
+        self.cfg["last_dir"] = os.path.dirname(paths[0])
+        n = self.add_files(paths)
+        if n:
+            self.win.show_toast(tr("已载入 {0} 份清单", n))
+
+    def add_files(self, paths):
+        """读清单、按文件名认门店；同一家门店再放一份就替换原来那份。返回放进来几份"""
+        notes, n = [], 0
+        for path in paths:
+            name = os.path.basename(path)
+            if any(os.path.normcase(os.path.abspath(x["path"])) == os.path.normcase(os.path.abspath(path)) for x in self.lists):
+                continue
+            try:
+                info = R.parse_order_file(path)
+            except Exception as e:
+                notes.append(tr("✘ {0} 读不出来：{1}", name, e))
+                continue
+            f = info["fields"]
+            unit = R.qty_unit(f["qty"]) if "qty" in f else "colli"
+            sid = R.guess_store(path)
+            if sid:
+                self.lists = [x for x in self.lists if x["store"] != sid]
+            self.lists.append({"path": path, "info": info, "store": sid, "unit": unit})
+            n += 1
+            names = {"code": tr("商品编号"), "ean": tr("条码"), "name": tr("名称"), "qty": tr("数量")}
+            line = tr("{0}：{1} 个商品，识别到 {2}", name, len(info["rows"]),
+                      "　".join(f"{names[k]}=「{v}」" for k, v in f.items() if k in names))
+            if not sid:
+                line += "　" + tr("文件名里看不出是哪家门店，请在上面选")
+            for w in info["warnings"]:
+                line += "\n⚠ " + w
+            notes.append(line)
+        self._refresh_lists()
+        self.msg.setText("\n".join(notes))
+        return n
+
+    def clear_lists(self):
+        self.lists = []
+        self._refresh_lists()
+        self.msg.setText("")
+
+    def _refresh_lists(self):
+        t = self.list_table
+        t.setRowCount(len(self.lists))
+        stores = [k for k in R.STORES if k]
+        for i, x in enumerate(self.lists):
+            self.ui.table_set_row(t, i, ["", os.path.basename(x["path"]), str(len(x["info"]["rows"])), "", ""])
+            t.item(i, 1).setToolTip(x["path"])
+            cb = QComboBox()
+            cb.addItem(tr("选择门店…"), None)
+            for k in stores:
+                cb.addItem(store_label(k), k)
+            cb.setCurrentIndex(max(0, cb.findData(x["store"])))
+            cb.currentIndexChanged.connect(lambda _, i=i, cb=cb: self._set_store(i, cb.currentData()))
+            t.setCellWidget(i, 0, cb)
+            ub = QComboBox()
+            ub.addItem(tr("箱"), "colli")
+            ub.addItem(tr("件"), "pcs")
+            ub.setCurrentIndex(max(0, ub.findData(x["unit"])))
+            ub.currentIndexChanged.connect(lambda _, x=x, ub=ub: x.__setitem__("unit", ub.currentData()))
+            t.setCellWidget(i, 3, ub)
+            rb = QPushButton(tr("移除"))
+            rb.setObjectName("Link")
+            rb.clicked.connect(lambda _=False, i=i: self._remove(i))
+            t.setCellWidget(i, 4, rb)
+        t.setVisible(bool(self.lists))
+        names = [R.STORES.get(x["store"]) or "?" for x in self.lists]
+        self.file_edit.setText(tr("{0} 份清单：{1}", len(self.lists), "、".join(names)) if self.lists else "")
+
+    def _set_store(self, i, sid):
+        if 0 <= i < len(self.lists):
+            if sid and any(k != i and x["store"] == sid for k, x in enumerate(self.lists)):
+                QMessageBox.information(self.win, tr("检查门店订货清单"),
+                                        tr("{0} 已经有一份清单了。同一家门店只能放一份，请先移除另一份。", R.STORES.get(sid)))
+                self._refresh_lists()
+                return
+            self.lists[i]["store"] = sid
+            self._refresh_lists()
+
+    def _remove(self, i):
+        if 0 <= i < len(self.lists):
+            self.lists.pop(i)
+            self._refresh_lists()
 
     def folder_changed(self):
         """总文件夹变了：显示现在的主订单是哪家门店、什么时候生成的"""
@@ -306,33 +393,6 @@ class OrderCheck:
             self.order_lbl.setStyleSheet(f"color:{T('warn') if info.get('ordine_old') else T('muted')};")
         self.btn_open_order.setVisible(bool(name))
 
-    def load_file(self, path, quiet=False):
-        self.file_edit.setText(os.path.normpath(path))
-        self.file_path = path
-        try:
-            info = R.parse_order_file(path)
-        except Exception as e:
-            self.file_info = None
-            self.msg.setText(tr("✘ 读不出来：{0}", e))
-            return
-        self.file_info = info
-        f = info["fields"]
-        names = {"code": tr("商品编号"), "ean": tr("条码"), "name": tr("名称"), "qty": tr("数量")}
-        parts = [f"{names[k]}=「{v}」" for k, v in f.items() if k in names]
-        msg = tr("{0} 个商品。识别到：{1}", len(info["rows"]), "　".join(parts))
-        if "qty" in f:
-            u = R.qty_unit(f["qty"])
-            self.unit.setCurrentIndex(self.unit.findData(u))
-        sid = R.guess_store(path)
-        if sid:
-            self.store.setCurrentIndex(self.store.findData(sid))
-            msg += "　" + tr("门店已按文件名设为 {0}", store_label(sid))
-        else:
-            msg += "　" + tr("请确认门店")
-        for w in info["warnings"]:
-            msg += "\n⚠ " + w
-        self.msg.setText(msg)
-
     def db_settings(self):
         from reorder_page import DbDialog
         DbDialog(self.win, self.settings).exec()
@@ -341,25 +401,30 @@ class OrderCheck:
     def start(self):
         if self.running:
             return
-        if not self.file_info:
+        if not self.lists:
             QMessageBox.information(self.win, tr("检查门店订货清单"), tr("先把门店发来的订货清单拖进来，或点「选择文件…」。"))
             return
-        store, cycle = self.store.currentData(), self.cycle.currentData()
+        if any(not x["store"] for x in self.lists):
+            QMessageBox.information(self.win, tr("检查门店订货清单"), tr("有清单还没选是哪家门店，请在清单列表里选。"))
+            return
+        cycle = self.cycle.currentData()
         use_cfg = self.use_cfg.isChecked()
         algo = self.current_algo()
         days = [sb.value() for sb in self.days]
-        unit = self.unit.currentData()
-        self.cfg.update(store=store, cycle=cycle, days=days, use_supplier_cycles=use_cfg)
+        self.cfg.update(cycle=cycle, days=days, use_supplier_cycles=use_cfg)
         save_settings(self.settings)
-        file_rows = [dict(x) for x in self.file_info["rows"]]
+        lists = [{"store": x["store"], "unit": x["unit"], "path": x["path"],
+                  "rows": [dict(r) for r in x["info"]["rows"]]} for x in self.lists]
         dbs = self.settings.get("db") or None
         log = self.win.log
         self.running = True
         self.btn_run.setEnabled(False)
         self.msg.setText(tr("正在连接数据库并计算，商品多时要几十秒…"))
+        names = "、".join(R.STORES.get(x["store"], "") for x in lists)
         from erp_widgets import TaskDialog
-        dlg = TaskDialog(self.win, tr("正在检查订货清单"), tr("{0} · {1} 个商品", store_label(store), len(file_rows)),
-                         [tr("读取清单、对上商品编号"), tr("查询门店销量与库存"), tr("查询其他门店库存（调货用）"),
+        dlg = TaskDialog(self.win, tr("正在检查订货清单"),
+                         tr("{0} · {1} 个商品", names, sum(len(x["rows"]) for x in lists)),
+                         [tr("读取清单、对上商品编号"), tr("查询门店销量与库存"), tr("查询五家门店库存（调货用）"),
                           tr("对比清单数量")], cancellable=False)
         dlg.went_background.connect(lambda: self.win.show_toast(tr("清单在后台检查，完成后会提醒")))
         dlg.show()
@@ -369,31 +434,41 @@ class OrderCheck:
                 dlg.post_step(0, "running", "", "")
                 dlg.post_progress(5)
                 db = R.make_db(dbs)
-                need = [x["ean"] for x in file_rows if not x["code"] and x["ean"]]
+                need = [r["ean"] for x in lists for r in x["rows"] if not r["code"] and r["ean"]]
                 if need:
                     m = R.codes_from_eans(db, need)
-                    for x in file_rows:
-                        if not x["code"] and x["ean"] in m:
-                            x["code"] = m[x["ean"]]
-                codes = [x["code"] for x in file_rows if x["code"]]
-                log(tr("[检查清单] 门店 {0}，{1} 个商品", store, len(codes)))
-                dlg.post_step(0, "done", f"{len(codes)} / {len(file_rows)}", "")
+                    for x in lists:
+                        for r in x["rows"]:
+                            if not r["code"] and r["ean"] in m:
+                                r["code"] = m[r["ean"]]
+                union = []
+                for x in lists:
+                    x["codes"] = [r["code"] for r in x["rows"] if r["code"]]
+                    union += [c for c in x["codes"] if c not in union]
+                dlg.post_step(0, "done", f"{len(union)}", "")
                 dlg.post_step(1, "running", "", "")
-                dlg.post_progress(20)
-                result, df, snap = [], None, None
-                if codes:
-                    df = R.compute_suggestions(db, store, codes, days, cycle, None, use_supplier_cycles=use_cfg,
-                                               algo=algo)
-                    result = R.to_rows(df, file_rows, days)
-                dlg.post_step(1, "done", "", "")
-                # 其他门店同一批商品的库存和日均：批发商比价时算门店间调货、够卖天数（查不到不影响检查）
+                for k, x in enumerate(lists):
+                    sid = x["store"]
+                    log(tr("[检查清单] 门店 {0}，{1} 个商品", R.STORES.get(sid, sid), len(x["codes"])))
+                    dlg.post_step(1, "running", f"{k + 1} / {len(lists)}", R.STORES.get(sid, ""))
+                    dlg.post_progress(15 + 40 * k / max(1, len(lists)))
+                    x["df"], x["result"] = None, []
+                    if x["codes"]:
+                        x["df"] = R.compute_suggestions(db, sid, x["codes"], days, cycle, None, use_supplier_cycles=use_cfg,
+                                                        algo=algo)
+                        x["result"] = R.to_rows(x["df"], x["rows"], days)
+                dlg.post_step(1, "done", f"{len(lists)} / {len(lists)}", "")
+                # 五家门店这批商品（所有清单合起来）的库存和日均：先算门店间调货，比价时算够卖天数（查不到不影响检查）
                 dlg.post_step(2, "running", "", "")
                 dlg.post_progress(55)
-                if codes:
+                snap = None
+                if union:
                     try:
                         others = [k for k in R.STORES if k != 0]
+                        one = lists[0] if len(lists) == 1 else None          # 只有一份清单：它自己那家不用再查
                         snap = R.stock_snapshot(
-                            db, codes, days, cycle, others, use_cfg, algo, own=store, own_df=df,
+                            db, union, days, cycle, others, use_cfg, algo, own=one["store"] if one else None,
+                            own_df=one["df"] if one else None,
                             on_store=lambda k, sid: (dlg.post_step(2, "running", f"{k + 1} / {len(others)}", R.STORES.get(sid, "")),
                                                      dlg.post_progress(55 + 30 * k / max(1, len(others)))))
                         dlg.post_step(2, "done", f"{len(others)} / {len(others)}", "")
@@ -405,9 +480,16 @@ class OrderCheck:
                 db.engine.dispose()
                 dlg.post_step(3, "running", "", "")
                 dlg.post_progress(90)
-                rows = R.check_rows(file_rows, result, unit)
+                rows = []
+                for x in lists:
+                    for r in R.check_rows(x["rows"], x["result"], x["unit"]):
+                        r["store"] = x["store"]
+                        rows.append(r)
                 dlg.post_finished(True, tr("完成：{0} 个商品", len(rows)))
-                self.sig.done.emit((rows, None, dict(store=store, days=days, cycle=cycle, unit=unit, snap=snap)))
+                self.sig.done.emit((rows, None, dict(stores=[x["store"] for x in lists], days=days, cycle=cycle,
+                                                     units={x["store"]: x["unit"] for x in lists},
+                                                     files={x["store"]: x["path"] for x in lists}, snap=snap,
+                                                     store=lists[0]["store"])))
             except Exception as e:
                 import traceback
                 log(tr("❌ 检查清单失败：{0}", e))
@@ -429,17 +511,20 @@ class OrderCheck:
         d = meta["days"]
         for i in range(4):
             self.ctl.set_title(_col(5 + i), tr("{0}天", d[i]), tr("最近 {0} 天销量", d[i]))
-        # 清单按箱：「清单箱数」+ 折合的「清单件数」；清单本来就是件数：只留一列「清单件数」
-        pieces = meta["unit"] != "colli"
-        self.ctl.set_title(_col(11), tr("清单件数") if pieces else tr("清单箱数"))
+        # 清单按箱：「清单箱数」+ 折合的「清单件数」；清单本来就是件数：只留一列「清单件数」；几份清单单位不一样：「清单数量」
+        units = set(meta["units"].values())
+        pieces = units == {"pcs"}
+        self.ctl.set_title(_col(11), tr("清单件数") if pieces else (tr("清单箱数") if units == {"colli"} else tr("清单数量")))
         self.table.setColumnHidden(_col(12), pieces)
+        self.table.setColumnHidden(_col(22), len(meta["stores"]) < 2)          # 只有一家门店：不显示门店列
         self.ctl.filters = {}
         self._fill()
         self.summary_row.show()
-        self.window.setWindowTitle(tr("检查门店订货清单 — {0} · {1} 个商品", store_label(meta["store"]), len(rows)))
+        self.window.setWindowTitle(tr("检查门店订货清单 — {0} · {1} 个商品",
+                                      "、".join(store_label(k) for k in meta["stores"]), len(rows)))
         self.window.bring_up()
         self.msg.setText(tr("✔ 门店 {0}：{1} 个商品，检查完成。核对「确定件数」后点「确认，生成主订单」。",
-                            store_label(meta["store"]), len(rows)))
+                            "、".join(store_label(k) for k in meta["stores"]), len(rows)))
 
     def _vals(self, i):
         """数据行 i 每一列显示的文字（按屏幕上的列顺序）"""
@@ -458,7 +543,8 @@ class OrderCheck:
                       f"{daily:.2f}" if daily else "",
                       f"{x['target']:.0f}" if isinstance(x.get("target"), (int, float)) else "",
                       _days(_cover(x, x["final"])) if x["final"] > 0 else "",
-                      _days(_cover(x, x["file_pcs"])) if (x.get("file_pcs") or 0) > 0 else ""])
+                      _days(_cover(x, x["file_pcs"])) if (x.get("file_pcs") or 0) > 0 else "",
+                      R.STORES.get(x.get("store"), "")])
 
     def _text(self, i, c):
         return self._vals(i)[c]
@@ -601,7 +687,8 @@ class OrderCheck:
             return
         from openpyxl import Workbook
         from openpyxl.styles import Font
-        name = f"清单检查_{R.STORES.get(self.meta['store'])}_{datetime.now():%Y%m%d_%H%M}.xlsx"
+        tag = "_".join(str(R.STORES.get(k, k)) for k in self.meta["stores"])
+        name = f"清单检查_{tag}_{datetime.now():%Y%m%d_%H%M}.xlsx"
         path, _ = QFileDialog.getSaveFileName(self.win, tr("导出 Excel"), os.path.join(self.cfg.get("last_dir") or "", name),
                                               tr("Excel 文件 (*.xlsx)"))
         if not path:
@@ -610,7 +697,7 @@ class OrderCheck:
         wb = Workbook()
         ws = wb.active
         ws.title = "清单检查"
-        ws.append(["判断", "商品编号", "条码", "名称", "本店库存", *[f"{x}天销量" for x in d], "库存够卖（天）", "箱规",
+        ws.append(["门店", "判断", "商品编号", "条码", "名称", "本店库存", *[f"{x}天销量" for x in d], "库存够卖（天）", "箱规",
                    "清单数量", "清单件数", "清单订后够卖（天）", "建议件数", "确定件数", "确定订后够卖（天）", "系统说明"])
         for c in ws[1]:
             c.font = Font(bold=True)
@@ -618,12 +705,13 @@ class OrderCheck:
             return None if v is None else ("∞" if math.isinf(v) else round(v))
 
         for x in self.rows:
-            ws.append([x["verdict"], x["code"], x["ean"], x["name"], x["store_inv"], *x["sales"], num(_cover(x)),
+            ws.append([R.STORES.get(x.get("store"), ""), x["verdict"], x["code"], x["ean"], x["name"], x["store_inv"],
+                       *x["sales"], num(_cover(x)),
                        x["pack"] or None, x["file_qty"], x["file_pcs"],
                        num(_cover(x, x["file_pcs"])) if (x.get("file_pcs") or 0) > 0 else None,
                        x["suggested"] if x["in_db"] else None, x["final"],
                        num(_cover(x, x["final"])) if x["final"] > 0 else None, x["decision"]])
-            ws.cell(ws.max_row, 3).number_format = "@"
+            ws.cell(ws.max_row, 4).number_format = "@"
         ws.freeze_panes = "A2"
         try:
             wb.save(path)
@@ -631,49 +719,102 @@ class OrderCheck:
         except Exception as e:
             QMessageBox.critical(self.win, tr("导出"), tr("导出失败：{0}", e))
 
+    def _store_folder(self, sid):
+        """
+        这家门店的比价总文件夹：按现在的总文件夹换门店名找（…\\FOIANO\\ORDINE1 → …\\MARLIA\\ORDINE1）
+        → 只有这一家时用现在的总文件夹 → 上次用过的
+        """
+        cur = self.win.folder_edit.text().strip()
+        g = R.guess_store_folder(cur, sid)
+        if g:
+            return g
+        owner = next((k for k in R.STORES if k and R.guess_store_folder(cur, k) == cur), None) if cur else None
+        if cur and os.path.isdir(cur) and len(self.meta["stores"]) == 1 and owner in (None, sid):
+            return cur                    # 只有一家门店、现在的总文件夹不是别家店的：就用它
+        known = (self.settings.get("wholesale_folders") or {}).get(str(sid))
+        if known and os.path.isdir(known):
+            return known
+        return ""
+
+    def transfer_plan(self):
+        """按现在的确定件数算门店间调货：(调货单, {(门店, 商品编号): 调货后还要订的件数})"""
+        import store_orders as SO
+        so = self.settings.get("store_orders") or {}
+        far = (dict(SO.DEFAULT_FILL, **(so.get("fill") or {}))).get("far_stores") or []
+        by_store = {}
+        for x in self.rows:
+            by_store.setdefault(x.get("store"), []).append(x)
+        snap = self.meta.get("snap")
+        if not snap:
+            return [], {}
+        return R.plan_batch_transfers(by_store, snap, so.get("transfer"), far)
+
     def confirm(self):
         if not self.rows:
             return
-        root = self.win.folder_edit.text().strip()
-        if not root or not os.path.isdir(root):
-            root = QFileDialog.getExistingDirectory(self.win, tr("选择采购用的总文件夹（里面要有 distribuire 供应商报价）"), root or "")
-            if not root:
-                return
-        n = sum(1 for x in self.rows if x["final"] > 0)
-        unknown = sum(1 for x in self.rows if not x["in_db"] and x["final"] > 0)
-        text = tr("按确定件数把 {0} 个商品写进：\n{1}\\ORDINE\n\nORDINE 里原来的文件会挪进 ORDINE\\_旧订单。", n, os.path.normpath(root))
-        if unknown:
-            text += "\n\n" + tr("⚠ 其中 {0} 个商品数据库里没有，件数按清单数量，请确认无误。", unknown)
-        if QMessageBox.question(self.win, tr("确认，生成主订单"), text + "\n\n" + tr("继续？")) != QMessageBox.Yes:
+        moves, new_final = self.transfer_plan()
+        dlg = BatchConfirmDialog(self, moves)
+        if not dlg.exec():
             return
-        try:
-            for sub in ("eliminare", "distribuire"):
-                os.makedirs(os.path.join(root, sub), exist_ok=True)
-            path, written, skipped = R.write_checked_order(self.rows, root, self.meta["store"])
-        except Exception as e:
-            QMessageBox.critical(self.win, tr("确认，生成主订单"), tr("写入失败：{0}", e))
-            return
-        self.win.log(tr("✔ 采购主订单：{0}（{1} 个商品）", path, written))
-        if self.meta.get("snap"):
+        folders = dlg.folders()
+        made, problems = [], []
+        tag = datetime.now().strftime("%Y%m%d_%H%M")
+        for sid in self.meta["stores"]:
+            root = folders[sid]
+            rows = [dict(x, final=new_final.get((sid, str(x.get("code"))), x["final"]))
+                    for x in self.rows if x.get("store") == sid]
+            mine = [m for m in moves if sid in (m["from"], m["to"])]
             try:
-                R.save_snapshot(path, self.meta["store"], self.meta["snap"], self.rows)
+                for sub in ("eliminare", "distribuire"):
+                    os.makedirs(os.path.join(root, sub), exist_ok=True)
+                path, written, skipped = R.write_checked_order(rows, root, sid)
             except Exception as e:
-                self.win.log(tr("⚠ 门店库存快照没存上（批发商比价不能算调货）：{0}", e))
-        if skipped:
-            self.win.log(tr("⚠ {0} 个商品没有条码，没写进主订单：{1}", len(skipped),
-                            "、".join(f"{x['code']} {x['name'][:20]}" for x in skipped[:10])))
-        self.win.folder_edit.setText(os.path.normpath(root))
+                problems.append(tr("{0}：写入失败：{1}", R.STORES.get(sid), e))
+                continue
+            tf = None
+            if mine:
+                try:
+                    import store_orders as SO
+                    tf = SO.export_transfers(mine, os.path.join(root, f"调货单_{R.STORES.get(sid)}_{tag}.xlsx"))
+                except Exception as e:
+                    problems.append(tr("{0}：调货单没写上：{1}", R.STORES.get(sid), e))
+            if self.meta.get("snap"):
+                try:
+                    R.save_snapshot(path, sid, self.meta["snap"], rows, transfers=mine, transfers_file=tf)
+                except Exception as e:
+                    problems.append(tr("{0}：门店库存快照没存上：{1}", R.STORES.get(sid), e))
+            self.win.log(tr("✔ 采购主订单：{0}（{1} 个商品）", path, written))
+            if skipped:
+                self.win.log(tr("⚠ {0} 个商品没有条码，没写进主订单：{1}", len(skipped),
+                                "、".join(f"{x['code']} {x['name'][:20]}" for x in skipped[:10])))
+            made.append((sid, root, written, len(skipped)))
+            self.settings.setdefault("wholesale_folders", {})[str(sid)] = root
+        if not made:
+            QMessageBox.critical(self.win, tr("确认，生成主订单"), "\n".join(problems))
+            return
+        if moves:
+            self.win.log(tr("✔ 门店间调货：{0} 个商品，少订 {1} 箱", len(moves),
+                            sum(m["colli_before"] - m["colli_after"] for m in moves)))
+        # 这一批是哪几家门店（批发商比价页上可以一家一家切换过去比价）
+        self.settings["wholesale_batch"] = {"time": datetime.now().isoformat(timespec="minutes"),
+                                            "stores": {str(sid): root for sid, root, _, _ in made}}
+        first = made[0][1]
+        self.win.folder_edit.setText(os.path.normpath(first))
         self.settings["last_folder"] = self.win.folder_edit.text()
         save_settings(self.settings)
-        self.file_path = path
-        self.file_edit.setText(os.path.normpath(path))
         self.win.refresh_folder()
         if hasattr(self.win, "cmp_steps"):
             self.win.cmp_steps.set_state(1, "done", tr("已生成主订单"))
-        msg = tr("已生成采购主订单（{0} 个商品），确认后点「开始处理」分配供应商", written)
-        if skipped:
-            msg += tr("；{0} 个没条码的没写进去，详见运行日志", len(skipped))
-        self.win.banner_folder.show_msg(msg, "ok" if not skipped else "warn")
+        msg = tr("已生成 {0} 家门店的主订单（{1}）", len(made), "、".join(
+            f"{R.STORES.get(sid)} {n}" for sid, _, n, _ in made))
+        if moves:
+            msg += "；" + tr("门店间调货 {0} 个商品，少订 {1} 箱，调货单在各门店文件夹里", len(moves),
+                            sum(m["colli_before"] - m["colli_after"] for m in moves))
+        if len(made) > 1:
+            msg += "。" + tr("现在显示 {0}，比完价在上面切换到下一家", R.STORES.get(made[0][0]))
+        if problems:
+            msg += "\n⚠ " + "；".join(problems)
+        self.win.banner_folder.show_msg(msg, "warn" if problems else "ok")
         # 主订单生成了，检查窗口就用不着了：直接关掉，回到批发商比价，下一步点「开始处理」
         self.window.close()
         if self.win.isMinimized():
@@ -685,3 +826,113 @@ class OrderCheck:
         if hasattr(self.win, "btn_run"):
             self.win.btn_run.setFocus()
         self.win.show_toast(tr("主订单已生成，点「开始处理」做供应商比价"))
+
+
+class BatchConfirmDialog(QDialog):
+    """确认生成主订单：每家门店写到哪个总文件夹、先调货少订多少；调货明细可以打开看"""
+
+    def __init__(self, oc, moves):
+        super().__init__(oc.win)
+        import transfers as TR
+        self.oc, self.moves = oc, moves
+        T = oc.ui.T
+        self.setWindowTitle(tr("确认，生成主订单"))
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(22, 18, 22, 16)
+        lay.setSpacing(12)
+        t = QLabel(tr("每家门店按确定件数生成自己的主订单（各自比价、各自下单）"))
+        t.setObjectName("Section")
+        lay.addWidget(t)
+        g = QGridLayout()
+        g.setHorizontalSpacing(10)
+        g.setVerticalSpacing(8)
+        for c, h in enumerate((tr("门店"), tr("要订"), tr("调货少订"), tr("比价总文件夹"))):
+            lb = QLabel(h)
+            lb.setObjectName("Faint")
+            g.addWidget(lb, 0, c)
+        self.edits = {}
+        saved = {}
+        for m in moves:
+            saved[m["to"]] = saved.get(m["to"], 0) + (m["colli_before"] - m["colli_after"])
+        for r, sid in enumerate(oc.meta["stores"], 1):
+            rows = [x for x in oc.rows if x.get("store") == sid]
+            n = sum(1 for x in rows if x["final"] > 0)
+            g.addWidget(QLabel(store_label(sid)), r, 0)
+            g.addWidget(QLabel(tr("{0} 个商品", n)), r, 1)
+            g.addWidget(QLabel(tr("{0} 箱", saved[sid]) if saved.get(sid) else "—"), r, 2)
+            ed = QLineEdit(oc._store_folder(sid))
+            ed.setMinimumWidth(420)
+            ed.setPlaceholderText(tr("选这家门店的总文件夹（里面放它的 distribuire 供应商报价）"))
+            g.addWidget(ed, r, 3)
+            b = QPushButton(tr("选择…"))
+            b.clicked.connect(lambda _=False, ed=ed: self._pick(ed))
+            g.addWidget(b, r, 4)
+            self.edits[sid] = ed
+        g.setColumnStretch(3, 1)
+        lay.addLayout(g)
+        if moves:
+            dn = TR.by_donor(moves)
+            txt = tr("门店间调货（先用别的门店多出来的货，再订剩下的）：{0} 个商品，少订 {1} 箱。", len(moves),
+                     sum(m["colli_before"] - m["colli_after"] for m in moves)) + "　" + "　".join(
+                tr("从 {0}：{1} 个商品 · €{2:,.2f}", R.STORES.get(k, k), v["items"], v["value"]) for k, v in sorted(dn.items()))
+            row = QHBoxLayout()
+            lb = QLabel(txt)
+            lb.setWordWrap(True)
+            lb.setStyleSheet(f"color:{T('ok')};")
+            row.addWidget(lb, 1)
+            bv = QPushButton(tr("查看调货明细"))
+            bv.clicked.connect(self._show_moves)
+            row.addWidget(bv)
+            lay.addLayout(row)
+        else:
+            lb = QLabel(tr("门店间调货：这次没有可调的商品（其他门店没有多出来的货，或者一家调出的货值不到门槛）。")
+                        if oc.meta.get("snap") else tr("门店间调货：没有查到其他门店的库存，这次不调货。"))
+            lb.setObjectName("Faint")
+            lb.setWordWrap(True)
+            lay.addWidget(lb)
+        unknown = sum(1 for x in oc.rows if not x["in_db"] and x["final"] > 0)
+        if unknown:
+            w = QLabel(tr("⚠ 其中 {0} 个商品数据库里没有，件数按清单数量，请确认无误。", unknown))
+            w.setStyleSheet(f"color:{T('warn')};")
+            lay.addWidget(w)
+        h = QLabel(tr("ORDINE 里原来的文件会挪进 ORDINE\\_旧订单；调货单写进调出、调入门店各自的文件夹。"))
+        h.setObjectName("Faint")
+        h.setWordWrap(True)
+        lay.addWidget(h)
+        self.err = QLabel("")
+        self.err.setStyleSheet(f"color:{T('err')};")
+        lay.addWidget(self.err)
+        bb = QHBoxLayout()
+        bb.addStretch()
+        cancel = QPushButton(tr("取消"))
+        cancel.clicked.connect(self.reject)
+        ok = QPushButton(tr("生成主订单"))
+        ok.setObjectName("Primary")
+        ok.clicked.connect(self._ok)
+        bb.addWidget(cancel)
+        bb.addWidget(ok)
+        lay.addLayout(bb)
+
+    def _pick(self, ed):
+        d = QFileDialog.getExistingDirectory(self, tr("选择这家门店的总文件夹"), ed.text() or "")
+        if d:
+            ed.setText(os.path.normpath(d))
+
+    def _show_moves(self):
+        from store_order_page import TransferDialog
+        TransferDialog(self, self.moves, self.oc.ui).exec()
+
+    def folders(self):
+        return {sid: ed.text().strip() for sid, ed in self.edits.items()}
+
+    def _ok(self):
+        f = self.folders()
+        bad = [store_label(k) for k, v in f.items() if not v or not os.path.isdir(v)]
+        if bad:
+            self.err.setText(tr("这些门店还没选总文件夹（或文件夹不存在）：{0}", "、".join(bad)))
+            return
+        same = len(set(os.path.normcase(os.path.abspath(v)) for v in f.values())) < len(f)
+        if same:
+            self.err.setText(tr("两家门店不能用同一个总文件夹（每家店各自比价、各自下单）。"))
+            return
+        self.accept()

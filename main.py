@@ -3242,6 +3242,13 @@ class MainWindow(QMainWindow):
         self.zone_elim.remove_requested.connect(lambda n: self._remove_file(ELIMINARE_FOLDER, n))
         self.zone_sup.remove_requested.connect(lambda n: self._remove_file(DISTRIBUTUIRE_FOLDER, n))
         p1.lay.addLayout(zones)
+        # 这一批（检查清单时几家门店一起生成的主订单）：一家一家切换过去比价
+        self.batch_box = QWidget()
+        self.batch_lay = QHBoxLayout(self.batch_box)
+        self.batch_lay.setContentsMargins(0, 0, 0, 0)
+        self.batch_lay.setSpacing(8)
+        self.batch_box.hide()
+        p1.lay.addWidget(self.batch_box)
         self.banner_folder = Banner()
         p1.lay.addWidget(self.banner_folder)
         lay.addWidget(p1)
@@ -4099,10 +4106,65 @@ class MainWindow(QMainWindow):
         else:
             QMessageBox.information(self, APP_NAME, tr("还没有选总文件夹。"))
 
+    def _refresh_batch(self, path):
+        """① 下面一行：这一批的门店（点了切换总文件夹），每家显示「待比价 / 已比价」"""
+        import reorder_service as RS
+        while self.batch_lay.count():
+            it = self.batch_lay.takeAt(0)
+            if it.widget():
+                it.widget().deleteLater()
+        batch = (settings.get("wholesale_batch") or {}).get("stores") or {}
+        if len(batch) < 2:
+            self.batch_box.hide()
+            return
+        lb = QLabel(tr("这一批的门店："))
+        lb.setObjectName("Faint")
+        self.batch_lay.addWidget(lb)
+        cur = os.path.normcase(os.path.abspath(path)) if path else ""
+        for sid, folder in sorted(batch.items(), key=lambda kv: int(kv[0])):
+            has, done = self._batch_state(folder)
+            st = tr("没有主订单") if not has else (tr("✔ 已比价") if done else tr("● 待比价"))
+            b = QPushButton(f"{RS.STORES.get(int(sid), sid)}  {st}")
+            b.setObjectName("Chip")
+            b.setCheckable(True)
+            b.setChecked(os.path.normcase(os.path.abspath(folder)) == cur)
+            b.setToolTip(folder)
+            b.clicked.connect(lambda _=False, f=folder: self._switch_folder(f))
+            self.batch_lay.addWidget(b)
+        self.batch_lay.addStretch()
+        self.batch_box.show()
+
+    @staticmethod
+    def _batch_state(folder):
+        """(有没有检查清单生成的主订单, 这份主订单比过价没有)：比价结果比主订单的库存快照新 = 比过了"""
+        import reorder_service as RS
+        good, _ = RS.checked_main_orders(os.path.join(folder, ORDINE_FOLDER))
+        if not good:
+            return False, False
+        try:
+            done = os.path.getmtime(os.path.join(folder, "_备份", "last_allocation.json")) > \
+                os.path.getmtime(RS.snapshot_path(os.path.join(folder, ORDINE_FOLDER, good[0])))
+        except OSError:
+            done = False
+        return True, done
+
+    def _switch_folder(self, folder):
+        if self.running:
+            return
+        if not os.path.isdir(folder):
+            QMessageBox.information(self, tr("批发商比价"), tr("找不到这个文件夹：\n{0}", folder))
+            return
+        self.folder_edit.setText(os.path.normpath(folder))
+        settings["last_folder"] = self.folder_edit.text()
+        save_settings(settings)
+        self.refresh_folder()
+
     def refresh_folder(self):
         path = self.folder_edit.text().strip()
         self.info = info = scan_folder(path)
         self._fill_zones(path, info)
+        if hasattr(self, "batch_box"):
+            self._refresh_batch(path)
         if not path:
             self.banner_folder.show_msg(tr("还没有选择文件夹。点「选择文件夹…」或按 Ctrl+O。"), "info")
         elif info["errors"]:
@@ -4634,10 +4696,28 @@ class MainWindow(QMainWindow):
         self.cmp_steps.set_current(3)
         self.cmp_steps.set_state(3, "done", "")
         self.go_page("result")
-        self.show_toast(tr("比价分配完成"))
+        self._refresh_batch(self.folder_edit.text().strip())
+        nxt = self._next_batch_store()
+        self.show_toast(tr("比价分配完成") + ("　" + tr("下一家：{0}（在批发商比价页切换）", nxt) if nxt else ""))
+
+    def _next_batch_store(self):
+        """这一批里还没比价的下一家门店名（没有返回 None）"""
+        import reorder_service as RS
+        batch = (settings.get("wholesale_batch") or {}).get("stores") or {}
+        if len(batch) < 2:
+            return None
+        cur = os.path.normcase(os.path.abspath(self.folder_edit.text().strip()))
+        for sid, folder in sorted(batch.items(), key=lambda kv: int(kv[0])):
+            if os.path.normcase(os.path.abspath(folder)) == cur:
+                continue
+            has, done = self._batch_state(folder)
+            if has and not done:
+                return RS.STORES.get(int(sid), sid)
+        return None
 
     def show_transfers(self, *_):
-        ts = (self.last_summary or {}).get("transfers") or []
+        s = self.last_summary or {}
+        ts = list(s.get("transfers") or []) + list(s.get("transfers_out") or [])     # 调进来的 + 这家店要调出去的
         if not ts:
             return
         from store_order_page import TransferDialog
@@ -4747,7 +4827,7 @@ class MainWindow(QMainWindow):
         self._fill_scen_switch(s, res)
         self.btn_missing.setText(tr("缺失商品 ({0})", len(s.get("missing_items") or [])) if s.get("missing_items") is not None
                                  else tr("缺失商品"))
-        ts = s.get("transfers") or []
+        ts = list(s.get("transfers") or []) + list(s.get("transfers_out") or [])
         self.btn_transfers.setVisible(bool(ts))
         self.btn_transfers.setText(tr("调货单 ({0})", len(ts)))
         self.k_rows.set(f"{s.get('total_rows', 0):,}")
@@ -4776,6 +4856,9 @@ class MainWindow(QMainWindow):
             msgs.append(tr("门店间调货：{0} 个商品，少订 {1} 箱（货值 €{2:,.2f}），调货单在总文件夹里：{3}",
                            len(ts), sum(t["colli_before"] - t["colli_after"] for t in ts), sum(t["value"] for t in ts),
                            os.path.basename(s.get("transfers_file") or "")))
+        if s.get("transfers_out"):
+            to = s["transfers_out"]
+            msgs.append(tr("这家店要调出 {0} 个商品给其他门店（货值 €{1:,.2f}），见调货单", len(to), sum(t["value"] for t in to)))
         if mo.get("warning"):
             msgs.append(mo["warning"])
             kind = "err"

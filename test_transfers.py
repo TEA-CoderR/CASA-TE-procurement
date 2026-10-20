@@ -127,3 +127,58 @@ def test_wholesale_transfer_status():
     assert service.transfer_status(snap, {"store_orders": {"transfer": {"enabled": False}}})[0] == "off"
     code, text = service.transfer_status(snap, {})
     assert "FOIANO" not in text.split("从")[1].split("调")[0]                          # 远的门店不在调出名单里
+
+
+def test_batch_transfers_across_store_lists():
+    """几家门店的清单一起检查：先用别的门店多出来的货（调货），再订剩下的"""
+    import reorder_service as RS
+    rows = {2: [{"code": "100", "ean": "8001", "name": "PIATTI", "final": 3, "pack": 12, "price": 2.0, "in_db": True},
+                {"code": "200", "ean": "8002", "name": "BICCHIERI", "final": 30, "pack": 10, "price": 1.0, "in_db": True}],
+            3: [{"code": "200", "ean": "8002", "name": "BICCHIERI", "final": 2, "pack": 10, "price": 1.0, "in_db": True}],
+            1: [{"code": "100", "ean": "8001", "name": "PIATTI", "final": 2, "pack": 12, "price": 2.0, "in_db": True}]}
+    snap = {2: {"100": {"inv": 0, "daily": 0.1, "cycle": 30}, "200": {"inv": 0, "daily": 1, "cycle": 30}},
+            3: {"100": {"inv": 0, "daily": 0, "cycle": 30}, "200": {"inv": 100, "daily": 1, "cycle": 30}},
+            4: {"100": {"inv": 40, "daily": 0.5, "cycle": 30}, "200": {"inv": 90, "daily": 1, "cycle": 30}},
+            1: {"100": {"inv": 0, "daily": 0.1, "cycle": 30}}}
+    moves, new = RS.plan_batch_transfers(rows, snap, {"min_value": 1}, far=[1])
+    by = {(m["to"], m["code"]): m for m in moves}
+    # MARLIA 要 3 个 PIATTI（一箱 12）：从 S.MARCO 调 3 件，不用订
+    assert by[(2, "100")]["from"] == 4 and by[(2, "100")]["pieces"] == 3 and new[(2, "100")] == 0
+    # S.FILIPPO 自己也要订 BICCHIERI → 不能调出给 MARLIA；它要的 2 件从 S.MARCO 调
+    assert by[(3, "200")]["from"] == 4 and new[(3, "200")] == 0
+    assert all(not (m["from"] == 3 and m["code"] == "200") for m in moves)
+    # FOIANO 离得远：不调进
+    assert (1, "100") not in by
+    # 调货关掉：什么都不调
+    assert RS.plan_batch_transfers(rows, snap, {"enabled": False}) == ([], {})
+
+
+def test_snapshot_keeps_planned_transfers(tmp_path):
+    import reorder_service as RS
+    main = str(tmp_path / "ORDINE" / "确认订单_MARLIA.xlsx")
+    mv = [{"from": 4, "to": 2, "code": "100", "pieces": 3, "value": 6.0, "to_days": float("inf")}]
+    RS.save_snapshot(main, 2, {2: {"100": {"inv": 0, "daily": 0.1, "cycle": 30, "ean": "8001"}}},
+                     transfers=mv, transfers_file="x.xlsx")
+    got = RS.load_snapshot(main)
+    assert got["planned_transfers"][0]["from"] == 4 and got["transfers_file"] == "x.xlsx"
+    RS.save_snapshot(main, 2, {2: {}})
+    assert "planned_transfers" not in RS.load_snapshot(main)       # 单独检查（旧做法）：比价时再算
+
+
+def test_guess_store_folder(tmp_path):
+    import os
+    import reorder_service as RS
+    for n in ("FOIANO", "MARLIA"):
+        (tmp_path / "2026-10" / n / "ORDINE1").mkdir(parents=True)
+    base = str(tmp_path / "2026-10" / "FOIANO" / "ORDINE1")
+    assert RS.guess_store_folder(base, 2) == str(tmp_path / "2026-10" / "MARLIA" / "ORDINE1")
+    assert RS.guess_store_folder(base, 1) == base
+    assert RS.guess_store_folder(base, 3) is None                     # S.FILIPPO 还没有文件夹
+    assert RS.guess_store_folder(str(tmp_path / "x"), 2) is None
+
+
+def test_transfer_status_planned():
+    import service
+    snap = {"store": 2, "planned_transfers": [{"from": 4, "to": 2}, {"from": 2, "to": 3}]}
+    code, text = service.transfer_status(snap, {})
+    assert code == "planned" and "1" in text
