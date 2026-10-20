@@ -2098,4 +2098,10 @@ TRANSLATIONS = {
     '回到这一块的主页面': ("Back to this section's main page", 'Torna alla pagina principale di questa sezione'),
     '清单里的 {0} 个商品在数据库里一个都没找到：可能是数据库刚才没连上，或者清单里的条码 / 商品编号不对。请检查数据库连接后再点一次「开始」。': ('None of the {0} items in the list were found in the database: the database may have been disconnected, or the barcodes / item numbers in the list are wrong. Check the database connection and click "Start" again.', 'Nessuno dei {0} articoli della lista è stato trovato nel database: forse il database era scollegato, oppure i codici a barre / articolo della lista sono sbagliati. Controlla la connessione e clicca di nuovo «Avvia».'),
     '把门店发来的订货清单拖到这里（一家店一份，新的替换旧的）。清单会一直留着：想重新比价，直接再点「开始」': ('Drop the stores\' order lists here (one per store, a new one replaces the old). Lists stay here: to compare again just click "Start" again', "Trascina qui le liste d'ordine dei negozi (una per negozio, la nuova sostituisce la vecchia). Le liste restano qui: per riconfrontare clicca di nuovo «Avvia»"),
+    '显示全部明细': ('Show all details', 'Mostra tutti i dettagli'),
+    '只看要点': ('Key points only', 'Solo i punti chiave'),
+    '起订量没达标的供应商': ('Suppliers below minimum order', "Fornitori sotto l'ordine minimo"),
+    '鼠标停在数字上看是哪几家': ('Hover the number to see which ones', 'Passa il mouse sul numero per vedere quali'),
+    '✔ 是选用的方案。点「缺失商品」的数字看缺了哪些商品。': ('✔ = scenario used. Click the "Missing items" number to see which items.', '✔ = scenario usato. Clicca il numero «Articoli mancanti» per vederli.'),
+    '在上面的卡片里选方案。鼠标停在左边的项目或格子上看说明。': ('Pick a scenario in the cards above. Hover a label or cell for an explanation.', 'Scegli uno scenario nelle schede sopra. Passa il mouse su voci o celle per la spiegazione.'),
 }

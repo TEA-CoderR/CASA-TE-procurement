@@ -1989,8 +1989,10 @@ def scen_letter(i):
     return "ABCDEFGHIJ"[i] if i < 10 else str(i + 1)
 
 
-def fill_scenario_table(t, results, chosen=None, recommended=None):
+def fill_scenario_table(t, results, chosen=None, recommended=None, compact=False):
     """
+    compact=True（默认显示）：只放做决定要看的几行——采购总额、比 A 多花 / 少花、缺失商品、其中不够卖一周的、
+    起订量没达标的；其余（价差拆分、箱数、各供应商金额、每条起订规则…）点「显示全部明细」才看
     方案对比明细表：每个方案一列（表头「A 全部供应商」），格子里只放数字，说明放在鼠标提示里。
     分四段：金额 / 商品 / 各供应商金额 / 起订量。
     和第一个方案（A，基准）比的差额 = 同样商品的价差 − 少买的商品 + 多买到的商品。
@@ -2092,6 +2094,21 @@ def fill_scenario_table(t, results, chosen=None, recommended=None):
             rule_tips[len(L)] = tips
             L.append(("rule", ru.get("name") or "", vals, tr("起订条件：{0}", _rule_cond(ru))))
 
+    if compact:
+        keep = ("total", "vs", "missing", "urgent")
+        L = [ln for ln in L if ln[0] in keep]
+        if rules:
+            vals, tips = [], []
+            for r in results:
+                bad = [x.get("name") for x in r.get("rules") or [] if x.get("status") == "未达标"]
+                vals.append(f"{len(bad)}" if bad else "0")
+                tips.append("、".join(bad))
+            rule_tips = {len(L): tips}
+            L.append(("unmet", tr("起订量没达标的供应商"), vals, tr("鼠标停在数字上看是哪几家")))
+        else:
+            rule_tips = {}
+        sup_tips = {}
+
     t.setRowCount(len(L))
     links = {}
     for row, ln in enumerate(L):
@@ -2141,7 +2158,7 @@ def fill_scenario_table(t, results, chosen=None, recommended=None):
                     it.setForeground(QColor(T("ok")))
                 else:
                     it.setForeground(QColor(T("ok") if good else T("err")))
-            elif kind == "urgent" and txt != "0":
+            elif kind in ("urgent", "unmet") and txt != "0":
                 it.setForeground(QColor(T("err")))
                 f.setBold(True)
                 it.setFont(f)
@@ -2529,9 +2546,16 @@ class ScenarioDialog(QDialog):
         self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.table.cellClicked.connect(self._clicked)
         lay.addWidget(self.table, 1)
-        hint = QLabel(tr("在上面的卡片里选方案。表格可以选中格子按 Ctrl+C 复制，或右键复制；鼠标停在左边的项目或格子上看说明。"))
+        hr = QHBoxLayout()
+        hint = QLabel(tr("在上面的卡片里选方案。鼠标停在左边的项目或格子上看说明。"))
         hint.setObjectName("Faint")
-        lay.addWidget(hint)
+        hr.addWidget(hint, 1)
+        self.full = False
+        self.b_full = QPushButton(tr("显示全部明细"))
+        self.b_full.setObjectName("Link")
+        self.b_full.clicked.connect(self._toggle_full)
+        hr.addWidget(self.b_full)
+        lay.addLayout(hr)
         btns = QHBoxLayout()
         exp = QPushButton(tr("导出对比"))
         exp.clicked.connect(self.export)
@@ -2568,8 +2592,13 @@ class ScenarioDialog(QDialog):
         self.chosen = i
         for c in self.cards:
             c.set_selected(c.i == i)
-        self.links = fill_scenario_table(self.table, self.results, i, self.rec)
+        self.links = fill_scenario_table(self.table, self.results, i, self.rec, compact=not self.full)
         self.ok.setText(tr("用 {0}「{1}」写入", scen_letter(i), tr(self.results[i]["name"])))
+
+    def _toggle_full(self):
+        self.full = not self.full
+        self.b_full.setText(tr("只看要点") if self.full else tr("显示全部明细"))
+        self.links = fill_scenario_table(self.table, self.results, self.chosen, self.rec, compact=not self.full)
 
     def _clicked(self, row, col):
         if (row, col) in self.links:
@@ -2585,9 +2614,11 @@ class ScenarioDialog(QDialog):
         ws = wb.active
         ws.title = "方案对比"
         t = self.table
+        fill_scenario_table(t, self.results, self.chosen, self.rec)          # 导出的是全部明细
         ws.append([t.horizontalHeaderItem(c).text() for c in range(t.columnCount())])
         for r in range(t.rowCount()):
             ws.append([(t.item(r, c).text() if t.item(r, c) else "") for c in range(t.columnCount())])
+        self.links = fill_scenario_table(t, self.results, self.chosen, self.rec, compact=not self.full)
         for c in ws[1]:
             c.font = Font(bold=True)
         diff = (self.results[0].get("diff") if self.results else None) or []
@@ -3463,9 +3494,16 @@ class MainWindow(QMainWindow):
         self.k_missing.mousePressEvent = lambda _e: self.show_missing()
 
         self.scen_panel = Panel(tr("方案对比"))
-        sh = QLabel(tr("这次同时算的几种方案；✔ 是选用的方案。点「缺失商品」那一行的数字看缺了哪些商品。"))
+        shr = QHBoxLayout()
+        sh = QLabel(tr("✔ 是选用的方案。点「缺失商品」的数字看缺了哪些商品。"))
         sh.setObjectName("Faint")
-        self.scen_panel.lay.addWidget(sh)
+        shr.addWidget(sh, 1)
+        self.scen_full = False
+        self.btn_scen_full = QPushButton(tr("显示全部明细"))
+        self.btn_scen_full.setObjectName("Link")
+        self.btn_scen_full.clicked.connect(self._toggle_scen_full)
+        shr.addWidget(self.btn_scen_full)
+        self.scen_panel.lay.addLayout(shr)
         self.scen_table = make_table([""], stretch_col=None)
         self.scen_table.setSelectionBehavior(QAbstractItemView.SelectItems)
         self.scen_table.setSelectionMode(QAbstractItemView.ExtendedSelection)
@@ -5263,6 +5301,11 @@ class MainWindow(QMainWindow):
 
         threading.Thread(target=work, daemon=True).start()
 
+    def _toggle_scen_full(self):
+        self.scen_full = not self.scen_full
+        if self.last_summary:
+            self.show_summary(self.last_summary)
+
     def _scen_clicked(self, row, col):
         res = (self.last_summary or {}).get("scenarios") or []
         i = getattr(self, "_scen_links", {}).get((row, col))
@@ -5275,8 +5318,9 @@ class MainWindow(QMainWindow):
         self.scen_panel.setVisible(bool(res))
         if res:
             chosen = next((i for i, r in enumerate(res) if r.get("chosen")), None)
-            self._scen_links = fill_scenario_table(self.scen_table, res, chosen)
+            self._scen_links = fill_scenario_table(self.scen_table, res, chosen, compact=not self.scen_full)
             self.scen_table.setFixedHeight(min(520, 44 + 36 * self.scen_table.rowCount()))
+            self.btn_scen_full.setText(tr("只看要点") if self.scen_full else tr("显示全部明细"))
         self._fill_scen_switch(s, res)
         self.btn_missing.setText(tr("缺失商品 ({0})", len(s.get("missing_items") or [])) if s.get("missing_items") is not None
                                  else tr("缺失商品"))

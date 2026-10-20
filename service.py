@@ -369,8 +369,9 @@ def safe_save(wb, original_path, calc_path, log):
         # 先保存修改后的 workbook 到临时文件
         wb.save(calc_path)
         
-        # 直接同步到原始文件（避免 Excel COM 的性能问题）
-        shutil.copy2(calc_path, original_path)
+        # 直接同步到原始文件（避免 Excel COM 的性能问题）；没有公式时本来就存在原文件上，不用再复制
+        if os.path.normcase(os.path.abspath(calc_path)) != os.path.normcase(os.path.abspath(original_path)):
+            shutil.copy2(calc_path, original_path)
         log(tr("  ✔ 已保存到 {0}", os.path.basename(original_path)))
         
     except Exception as e:
