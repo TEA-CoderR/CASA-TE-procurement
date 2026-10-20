@@ -225,9 +225,14 @@ def main():
     git_precheck()
     cur = current_version()
     print(f"\n现在的版本：{cur}")
-    ver = ask("新版本号", bump(cur))
-    if not ver.startswith("v"):
-        ver = "v" + ver
+    import re
+    while True:
+        ver = ask("新版本号", bump(cur)).strip().lstrip("vV")
+        if re.fullmatch(r"\d+\.\d+\.\d+", ver):
+            ver = "v" + ver
+            break
+        # 输入法打出「、」「。」这类字符时版本号会变成乱码，同事那边就不会提示更新：重新输入
+        print("⚠ 版本号要写成 3.1.1 这样（三个数字用英文句点隔开，输入法切到英文）。请重新输入。")
     if not U.is_newer(ver, cur) and ver != cur:
         print("⚠ 新版本号不比现在大，同事那边不会提示更新。")
     print("更新说明（可以多行，空行结束）：")
