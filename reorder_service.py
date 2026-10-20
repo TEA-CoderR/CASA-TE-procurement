@@ -79,26 +79,40 @@ def guess_store(filename):
     return None
 
 
-def guess_store_folder(base_folder, store_id):
+BATCH_DIR = "批发商比价"
+
+
+def batch_folder(root, day=None):
     """
-    批发商比价每家门店一个总文件夹（例如 …\\2026-10\\FOIANO\\ORDINE1）：
-    把 base_folder 路径里的门店名换成 store_id 的门店名，那个文件夹存在就返回它，否则 None
+    这一批（检查清单确认时生成主订单）的文件夹，结构固定、一看就懂：
+      根目录\\批发商比价\\2026-10-20\\            ← 这一天的一批（这里放整批的调货单）
+      根目录\\批发商比价\\2026-10-20\\MARLIA\\     ← 每家门店一个，里面 ORDINE / eliminare / distribuire
+    同一天再确认一次就用同一个文件夹（主订单替换，原来的挪进 ORDINE\\_旧订单）
     """
-    if not base_folder:
+    day = day or datetime.now()
+    return os.path.join(root, BATCH_DIR, f"{day:%Y-%m-%d}")
+
+
+def batch_store_folder(root, store_id, day=None):
+    return os.path.join(batch_folder(root, day), STORES.get(store_id, str(store_id)))
+
+
+def batch_root_of(path):
+    """path 是 根目录\\批发商比价\\日期\\门店（或日期）时返回根目录，否则 None"""
+    if not path:
         return None
-    target = STORES.get(store_id)
-    if not target:
-        return None
-    parts = os.path.normpath(base_folder).split(os.sep)
-    norm = lambda t: re.sub(r"[\s._\-]", "", str(t).upper())
-    names = {norm(n): n for k, n in STORES.items() if k}
-    for i in range(len(parts) - 1, -1, -1):
-        if norm(parts[i]) in names:
-            cand = os.sep.join(parts[:i] + [target] + parts[i + 1:])
-            if norm(parts[i]) == norm(target):
-                return base_folder if os.path.isdir(base_folder) else None
-            return cand if os.path.isdir(cand) else None
+    parts = os.path.normpath(path).split(os.sep)
+    for k in (3, 2):
+        if len(parts) > k and parts[-k] == BATCH_DIR and re.fullmatch(r"\d{4}-\d{2}-\d{2}", parts[-k + 1] or ""):
+            return os.sep.join(parts[:-k]) or os.sep
     return None
+
+
+def make_store_folder(path):
+    """建好门店的比价文件夹和三个子文件夹"""
+    for sub in ("ORDINE", "eliminare", "distribuire"):
+        os.makedirs(os.path.join(path, sub), exist_ok=True)
+    return path
 
 
 # =====================================================================

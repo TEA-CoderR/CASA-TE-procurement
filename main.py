@@ -3213,7 +3213,7 @@ class MainWindow(QMainWindow):
         p1 = Panel(tr("① 总文件夹"))
         row = QHBoxLayout()
         self.folder_edit = QLineEdit()
-        self.folder_edit.setPlaceholderText(tr("比价用的总文件夹（里面有 eliminare、distribuire；主订单由 ② 生成后放进 ORDINE）"))
+        self.folder_edit.setPlaceholderText(tr("这家门店的比价文件夹（② 确认后自动建在 根目录\\批发商比价\\日期\\门店，并切换过来）"))
         self.folder_edit.editingFinished.connect(self.refresh_folder)
         b1 = QPushButton(tr("选择文件夹…"))
         self.btn_folder = b1
@@ -4123,7 +4123,10 @@ class MainWindow(QMainWindow):
         cur = os.path.normcase(os.path.abspath(path)) if path else ""
         for sid, folder in sorted(batch.items(), key=lambda kv: int(kv[0])):
             has, done = self._batch_state(folder)
-            st = tr("没有主订单") if not has else (tr("✔ 已比价") if done else tr("● 待比价"))
+            prices = [f for f in (_excel_files(os.path.join(folder, DISTRIBUTUIRE_FOLDER)) or [])
+                      if ".calc." not in f.lower() and "缺失报告" not in f]
+            st = tr("没有主订单") if not has else (tr("✔ 已比价") if done else
+                                                 (tr("● 待比价") if prices else tr("● 缺供应商报价")))
             b = QPushButton(f"{RS.STORES.get(int(sid), sid)}  {st}")
             b.setObjectName("Chip")
             b.setCheckable(True)
