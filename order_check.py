@@ -552,6 +552,10 @@ class OrderCheck:
                     for r in R.check_rows(x["rows"], x["result"], x["unit"]):
                         r["store"] = x["store"]
                         rows.append(r)
+                if rows and not any(r.get("in_db") for r in rows):
+                    # 一个都没在数据库里找到：几乎一定是数据库刚才没连上或者清单不对，不能拿这个结果去生成主订单
+                    raise RuntimeError(tr("清单里的 {0} 个商品在数据库里一个都没找到：可能是数据库刚才没连上，或者清单里的条码 / 商品编号不对。请检查数据库连接后再点一次「开始」。",
+                                          len(rows)))
                 # 箱规、件价用 distribuire 里最便宜那家的报价（比价默认挑它）；报价里没有的才用数据库的
                 dlg.post_step(3, "running", "", "")
                 dlg.post_progress(86)
@@ -1071,10 +1075,11 @@ class OrderCheck:
         import service as SV
         import price_check as PC
         import supplier_names as SN
+        import workspace as W
         files = {}
         for f in sorted(os.listdir(price_dir)):
             low = f.lower()
-            if not low.endswith((".xlsx", ".xls")) or f.startswith(("~", "$")) or ".calc." in low:
+            if not low.endswith((".xlsx", ".xls")) or f.startswith(("~", "$")) or not W.is_price_name(f):
                 continue
             try:
                 name = SN.label_of(f, self.settings)
@@ -1169,9 +1174,9 @@ class OrderCheck:
                     tf = SO.export_transfers(mine, os.path.join(root, f"调货单_{R.STORES.get(sid)}_{tag}.xlsx"))
                 except Exception as e:
                     problems.append(tr("{0}：调货单没写上：{1}", R.STORES.get(sid), e))
-            if self.meta.get("snap"):
+            if True:                                   # 一定要存（没查到其他门店库存也存空的）：没有快照的主订单会被当成旧系统文件
                 try:
-                    R.save_snapshot(path, sid, self.meta["snap"], rows, transfers=mine, transfers_file=tf)
+                    R.save_snapshot(path, sid, self.meta.get("snap") or {}, rows, transfers=mine, transfers_file=tf)
                 except Exception as e:
                     problems.append(tr("{0}：门店库存快照没存上：{1}", R.STORES.get(sid), e))
             self.win.log(tr("✔ 采购主订单：{0}（{1} 个商品）", path, written))
@@ -1194,9 +1199,9 @@ class OrderCheck:
         self.settings["wholesale_batch"] = {"time": datetime.now().isoformat(timespec="minutes"),
                                             "stores": {str(sid): root for sid, root, _, _ in made}}
         save_settings(self.settings)
-        # 用过的门店清单、扣减文件挪进 _已处理 / _已用（下次不会再用一遍）
+        # 用过的扣减文件挪进 _已用（下次不会再扣一遍；今天再比价用的是比价文件夹里那份）
         try:
-            W.archive_used(root_dir, [sid for sid, _, _, _ in made], [x["path"] for x in self.lists])
+            W.archive_used(root_dir, [sid for sid, _, _, _ in made])     # 门店清单留着：想重新比价直接再点「开始」
         except Exception as e:
             problems.append(tr("用过的清单 / 扣减文件没挪走：{0}", e))
         msg = tr("已生成 {0} 家门店的主订单（{1}）", len(made), "、".join(

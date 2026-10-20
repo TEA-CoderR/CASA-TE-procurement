@@ -245,3 +245,16 @@ def test_plain_reason():
     assert got[-1] == "S.FILIPPO 库存多：有 24 件，够卖 240 天，卖不完 → 调 6 件过来，这边少订 1 箱"
     assert "卖不动" in p(0, 0, 60, 0, transfer={"name": "A", "inv": 5, "days": float("inf"), "pieces": 5})[-1]
     assert p(1, 1, 30, 0, in_db=False) == ["数据库里找不到这个商品，没有销量和库存可以参考"]
+
+
+def test_codes_from_eans_raises_when_db_fails():
+    """数据库查不了要报错（以前悄悄返回空，整张清单都成了「数据库没有」）"""
+    class BadDB:
+        engine = None
+    try:
+        R.codes_from_eans(BadDB(), ["8001"])
+    except RuntimeError as e:
+        assert "数据库" in str(e)
+    else:
+        raise AssertionError("应该报错")
+    assert R.codes_from_eans(BadDB(), []) == {}

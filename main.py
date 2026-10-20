@@ -4109,8 +4109,8 @@ class MainWindow(QMainWindow):
         lists = []
         for sid, f in st["lists"]:
             t, tip = self._file_tip(W.lists_dir(root), f)
-            lists.append(((W.STORES.get(sid) if sid else tr("⚠ 哪家店？")) + " · " + f, tip))
-        self.zone_lists.set_files(lists, tr("把门店发来的订货清单拖到这里（一家店一份，新的替换旧的）"))
+            lists.append(((W.STORES.get(sid) if sid else tr("⚠ 哪家店？")) + " · " + f + (f"  ({t:%d/%m})" if t else ""), tip))
+        self.zone_lists.set_files(lists, tr("把门店发来的订货清单拖到这里（一家店一份，新的替换旧的）。清单会一直留着：想重新比价，直接再点「开始」"))
         pr = []
         for f in st["prices"]:
             t, tip = self._file_tip(W.price_dir(root), f)
@@ -4290,7 +4290,7 @@ class MainWindow(QMainWindow):
         """三个放文件区里一行的文字 → 文件路径"""
         import workspace as W
         root = self.ws_root()
-        name = re.sub(r"\s+\(\d\d/\d\d\)$", "", label)
+        name = re.sub(r"\s+\(\d\d/\d\d\)$", "", label)       # 去掉后面的「(日期)」
         if kind == "prices":
             return os.path.join(W.price_dir(root), name)
         store, _, f = name.partition(" · ")

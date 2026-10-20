@@ -217,19 +217,24 @@ def test_connection(db):
 
 
 def codes_from_eans(db, eans):
-    """条码 → 商品编号：先查 prodotti.CodBarre，再查 codbarre 表（一个商品多个条码）"""
+    """
+    条码 → 商品编号：先查 prodotti.CodBarre，再查 codbarre 表（一个商品多个条码）。
+    商品表查不了（数据库断了等）直接报错——以前悄悄跳过，结果整张清单都变成「数据库没有」
+    """
     import pandas as pd
     eans = sorted({e for e in eans if e})
     out = {}
     for i in range(0, len(eans), 2000):
         chunk = eans[i:i + 2000]
         ph = ", ".join(["%s"] * len(chunk))
-        for q in (f"SELECT CodArticolo, CodBarre FROM prodotti WHERE CodBarre IN ({ph})",
-                  f"SELECT CodArticolo, CodBarre FROM codbarre WHERE CodBarre IN ({ph})"):
+        for k, q in enumerate((f"SELECT CodArticolo, CodBarre FROM prodotti WHERE CodBarre IN ({ph})",
+                               f"SELECT CodArticolo, CodBarre FROM codbarre WHERE CodBarre IN ({ph})")):
             try:
                 df = pd.read_sql(q, db.engine, params=tuple(chunk))
-            except Exception:
-                continue
+            except Exception as e:
+                if k == 0:
+                    raise RuntimeError(f"用条码查商品编号失败（数据库）：{e}") from e
+                continue              # codbarre（多条码表）没有也不要紧
             for _, x in df.iterrows():
                 e = _clean_code(x["CodBarre"])
                 if e and e not in out and x["CodArticolo"]:
