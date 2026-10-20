@@ -1989,10 +1989,30 @@ def scen_letter(i):
     return "ABCDEFGHIJ"[i] if i < 10 else str(i + 1)
 
 
+def _SC_URGENT_DAYS():
+    import scenarios as _SC
+    return _SC.URGENT_DAYS
+
+
+def scen_items(r, kind):
+    """方案对比里能点开的列表：missing 缺失商品 / urgent 紧急缺货商品 / excl 只有被排除供应商有的"""
+    import scenarios as _SC
+    miss = r.get("missing") or []
+    if kind == "urgent":
+        return [m for m in miss if _SC.urgent(m)]
+    if kind == "excl":
+        return [m for m in miss if m.get("reason") == "只有被排除的供应商有报价"]
+    return list(miss)
+
+
+SCEN_LIST_TITLE = {"missing": "缺失商品", "urgent": "紧急缺货商品", "excl": "只有被排除供应商有的商品"}
+
+
 def fill_scenario_table(t, results, chosen=None, recommended=None, compact=False):
     """
-    金额一段是一道算式（用户要一眼看出关系）：A 的采购总额 ＋ 同样商品的价差 － 少买的商品（＋ 多买到的）＝ 这个方案的采购总额。
+    金额：采购总额、同样商品的价差、少买的商品；商品：缺失、紧急缺货、只有被排除供应商有的（这三行点数字看列表）…
     不放：比 A 多花 / 少花、凑单多花、买得到 / 要订、比 A 换了供应商的（用户说没用）。compact 参数不用了（保留兼容）
+    返回 {(表格行, 列): (方案下标, 列表种类)}
     方案对比明细表：每个方案一列（表头「A 全部供应商」），格子里只放数字，说明放在鼠标提示里。
     分四段：金额 / 商品 / 各供应商金额 / 起订量。
     和第一个方案（A，基准）比的差额 = 同样商品的价差 − 少买的商品 + 多买到的商品。
@@ -2027,32 +2047,26 @@ def fill_scenario_table(t, results, chosen=None, recommended=None, compact=False
         return ["—" if i == 0 else f(r) for i, r in enumerate(results)]
 
     # (种类, 名称, 值, 鼠标提示)
-    # 金额：一道算式，A 的采购总额 ＋ 同样商品的价差 － 少买的商品（＋ 多买到的）＝ 这个方案的采购总额
     L = [("sec", tr("金额 €"))]
-    if new and n > 1:
-        L.append(("base", tr("A 的采购总额"), [_money_txt(results[0]["total"])] * n,
-                  tr("基准：「{0}」的采购总额", first)))
+    L.append(("total", tr("采购总额"), [_money_txt(r["total"]) for r in results],
+              tr("这个方案买到的所有商品：箱数 × 每箱件数 × 件价")))
+    if new:
         L.append(("price", tr("同样商品的价差"), base_only(lambda r: _money_txt(r["price_diff"], True)),
                   tr("两个方案都买得到的商品，换了供应商以后贵了（+）还是便宜了（−）。这才是真正的价格差。")))
         L.append(("lost", tr("少买的商品"), base_only(lambda r: _money_txt(-r["lost_value"], True)),
                   tr("A 里买得到、这个方案买不到的商品，在 A 里要花的钱。总额变低常常是因为少买了货，不是更便宜。")))
         if any(r.get("gained_rows") for r in results):
             L.append(("gained", tr("多买到的商品"), base_only(lambda r: _money_txt(r["gained_value"], True)), ""))
-        L.append(("total", tr("＝ 采购总额"), [_money_txt(r["total"]) for r in results],
-                  tr("这个方案买到的所有商品：箱数 × 每箱件数 × 件价")))
-    else:
-        L.append(("total", tr("采购总额"), [_money_txt(r["total"]) for r in results],
-                  tr("这个方案买到的所有商品：箱数 × 每箱件数 × 件价")))
 
     L.append(("sec", tr("商品")))
     L.append(("missing", tr("缺失商品（点数字看列表）"), [f"{len(r['missing']):,}" for r in results],
               tr("点数字看缺了哪些商品")))
-    import scenarios as _SC
     if any(m.get("daily") is not None for r in results for m in r["missing"]):
-        L.append(("urgent", tr("　其中店里不够卖一周的"), [f"{_SC.urgent_count(r['missing']):,}" for r in results],
-                  tr("买不到、店里库存又不够卖 {0} 天的商品：这次不订很可能断货（推荐方案先看这个）", _SC.URGENT_DAYS)))
+        L.append(("urgent", tr("　紧急缺货商品"), [f"{len(scen_items(r, 'urgent')):,}" for r in results],
+                  tr("买不到、店里库存又不够卖 {0} 天的商品：这次不订很可能断货。点数字看列表", _SC_URGENT_DAYS())))
+    L.append(("excl", tr("　只有被排除供应商有的"), [f"{len(scen_items(r, 'excl')):,}" for r in results],
+              tr("这些商品只有被排除的那家供应商有报价：不用它就买不到。点数字看列表")))
     if new:
-        L.append(("lost_rows", tr("　比 A 少买的"), base_only(lambda r: f"{r.get('lost_rows', 0):,}"), ""))
         L.append(("colli", tr("采购箱数"), [f"{r.get('colli', 0):,.0f}" for r in results], ""))
         L.append(("mqty", tr("缺失箱数"), [f"{r.get('missing_qty', 0):,.0f}" for r in results], ""))
     L.append(("changes", tr("凑单换供应商的"), [f"{r.get('changes', 0):,}" for r in results],
@@ -2126,12 +2140,13 @@ def fill_scenario_table(t, results, chosen=None, recommended=None, compact=False
                 it.setToolTip(sup_tips[row][c - 1])
             if row in rule_tips and rule_tips[row][c - 1]:
                 it.setToolTip(rule_tips[row][c - 1])
-            if kind == "missing":
-                links[(row, c)] = c - 1
-                it.setToolTip(tr("点开看缺了哪些商品"))
-                if r["missing"]:
-                    it.setForeground(QColor(T("warn")))
+            if kind in ("missing", "urgent", "excl"):
+                links[(row, c)] = (c - 1, kind)
+                it.setToolTip(tr("点开看列表"))
+                if txt != "0":
+                    it.setForeground(QColor(T("err") if kind == "urgent" else T("warn")))
                     f.setUnderline(True)
+                    f.setBold(kind == "urgent")
                     it.setFont(f)
             elif kind in ("vs", "price", "lost", "gained") and c > 1 and txt not in ("—", "0.00"):
                 good = txt.startswith("-") if kind in ("vs", "price") else False
@@ -2141,14 +2156,6 @@ def fill_scenario_table(t, results, chosen=None, recommended=None, compact=False
                     it.setForeground(QColor(T("ok")))
                 else:
                     it.setForeground(QColor(T("ok") if good else T("err")))
-            elif kind == "urgent" and txt != "0":
-                it.setForeground(QColor(T("err")))
-                f.setBold(True)
-                it.setFont(f)
-            elif kind == "lost_rows" and c > 1 and txt not in ("—", "0"):
-                it.setForeground(QColor(T("warn")))
-            elif kind == "extra" and (r.get("extra_cost") or 0) > 0.005:
-                it.setForeground(QColor(T("warn")))
             elif kind == "rule":
                 st = next((y.get("status") for y in r.get("rules") or [] if y.get("name") == label), None)
                 if st == "未达标":
@@ -2578,7 +2585,9 @@ class ScenarioDialog(QDialog):
 
     def _clicked(self, row, col):
         if (row, col) in self.links:
-            self._missing(self.links[(row, col)])
+            i, kind = self.links[(row, col)]
+            MissingDialog(self, scen_items(self.results[i], kind),
+                          tr("{0} · {1} {2}", tr(SCEN_LIST_TITLE[kind]), scen_letter(i), tr(self.results[i]["name"]))).exec()
 
     def export(self):
         path, _ = QFileDialog.getSaveFileName(self, tr("导出对比"), "方案对比.xlsx", tr("Excel 文件 (*.xlsx)"))
@@ -3459,7 +3468,7 @@ class MainWindow(QMainWindow):
         self.k_changes = Kpi(tr("改了供应商的商品"))
         self.k_cost = Kpi(tr("比只按最低价多花"))
         self.k_time = Kpi(tr("用时"))
-        for k in (self.k_rows, self.k_priced, self.k_missing, self.k_changes, self.k_cost, self.k_time):
+        for k in (self.k_rows, self.k_priced, self.k_missing, self.k_changes, self.k_time):     # 「比只按最低价多花」不放了
             kpis.addWidget(k)
         lay.addLayout(kpis)
         # 「没有报价」那张卡可以点开看缺失商品列表
@@ -5270,9 +5279,10 @@ class MainWindow(QMainWindow):
 
     def _scen_clicked(self, row, col):
         res = (self.last_summary or {}).get("scenarios") or []
-        i = getattr(self, "_scen_links", {}).get((row, col))
-        if i is not None and i < len(res):
-            MissingDialog(self, res[i]["missing"], tr("缺失商品 · {0}", tr(res[i]["name"]))).exec()
+        got = getattr(self, "_scen_links", {}).get((row, col))
+        if got is not None and got[0] < len(res):
+            i, kind = got
+            MissingDialog(self, scen_items(res[i], kind), tr("{0} · {1}", tr(SCEN_LIST_TITLE[kind]), tr(res[i]["name"]))).exec()
 
     def show_summary(self, s):
         mo = s.get("min_order", {})
@@ -5294,7 +5304,7 @@ class MainWindow(QMainWindow):
         n_ch = len(s.get("changes") or [])
         self.k_changes.set(f"{n_ch:,}")
         extra = mo.get("extra_cost", 0) or 0
-        self.k_cost.set(f"€{extra:,.2f}", T("warn") if extra > 0.005 else None)
+        self.k_cost.set(f"€{extra:,.2f}", T("warn") if extra > 0.005 else None)       # 不显示了（用户说没意义），留着不出错
         self.k_time.set(tr("{0:.0f} 秒", s.get('elapsed', 0)))
 
         msgs, kind = [], "ok"

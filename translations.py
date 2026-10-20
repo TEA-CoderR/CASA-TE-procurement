@@ -2117,4 +2117,13 @@ TRANSLATIONS = {
     '，少买 {0} 个（€{1:,.2f}）': (', {0} fewer items (€{1:,.2f})', ', {0} articoli in meno (€{1:,.2f})'),
     '同样商品的价差': ('Price difference on the same items', 'Differenza di prezzo sugli stessi articoli'),
     '多买到的商品': ('Extra items bought', 'Articoli in più acquistati'),
+    '\u3000紧急缺货商品': ('\u3000Urgent shortages', '\u3000Mancanze urgenti'),
+    '买不到、店里库存又不够卖 {0} 天的商品：这次不订很可能断货。点数字看列表': ('Items not bought whose store stock lasts less than {0} days: likely to run out. Click the number for the list', "Articoli non acquistati con giacenza per meno di {0} giorni: probabile esaurimento. Clicca il numero per l'elenco"),
+    '\u3000只有被排除供应商有的': ('\u3000Only the excluded supplier has', '\u3000Solo il fornitore escluso li ha'),
+    '这些商品只有被排除的那家供应商有报价：不用它就买不到。点数字看列表': ("Only the excluded supplier quotes these items: without it they can't be bought. Click the number for the list", "Solo il fornitore escluso quota questi articoli: senza di lui non si possono comprare. Clicca il numero per l'elenco"),
+    '点开看列表': ('Click to see the list', "Clicca per vedere l'elenco"),
+    '紧急缺货商品': ('Urgent shortages', 'Mancanze urgenti'),
+    '只有被排除供应商有的商品': ('Items only the excluded supplier has', 'Articoli che ha solo il fornitore escluso'),
+    '缺失商品': ('Missing items', 'Articoli mancanti'),
+    '{0} · {1} {2}': ('{0} · {1} {2}', '{0} · {1} {2}'),
 }
