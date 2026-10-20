@@ -936,126 +936,366 @@ class QtyDelegate(QStyledItemDelegate):
             QTimer.singleShot(0, lambda: self.dlg.set_qty(i, q))
 
 
-class QtyFillDialog(QDialog):
-    """
-    修改分配 →「按销量加量凑单」：供应商没达到起订条件时，不换供应商，给分到它那里、卖得快的商品多订几箱，
-    加完库存最多够卖 N 天（和门店配货「加商品凑单 → 按销量推荐」同一个规则）。确认后 self.adds = {行号: 加的数量}
-    """
+class _CandSig(QObject):
+    loaded = Signal(object)
 
-    def __init__(self, md, under):
+
+class FillItemsDialog(QDialog):
+    """
+    修改分配 →「加商品凑单」（和门店配货的「加商品凑单」同一个做法）：
+    供应商没达到起订条件时，不换供应商，从这家的报价里挑商品多订——已经在订单里的可以多订几箱，
+    这次没订的（库存还够、但卖得快的快消品）也可以加进来。表格显示门店的日均、库存、够卖天数；
+    「加（箱）」可以自己填，也可以「按销量推荐补齐」。确认后 self.result = {"rows": {行号: 加几箱}, "new": [(商品, 加几箱)]}
+    """
+    COLS = [tr("名称"), "EAN", tr("在订单里"), tr("日均"), tr("本店库存"), tr("库存够卖（天）"), tr("已订（箱）"),
+            tr("每箱件数"), tr("一箱 €"), tr("加（箱）") + " ✎", tr("订后够卖（天）"), tr("加的金额 €")]
+    ADD = 9
+    WIDTHS = (300, 130, 76, 60, 70, 100, 76, 70, 70, 76, 100, 90)
+
+    def __init__(self, md, rules, target=None):
         super().__init__(md)
-        self.md, self.under, self.adds = md, under, None
+        self.md, self.rules, self.result = md, rules, None
+        self.items, self.adds = [], {}            # adds: {key: 加几箱}
         self.limit = float((settings.get("store_orders") or {}).get("fill", {}).get("max_stock_days") or 60)
-        self.setWindowTitle(tr("按销量加量凑单"))
-        self.resize(940, 560)
+        self._filling = False
+        self.setWindowTitle(tr("加商品凑单"))
+        self.resize(1320, 760)
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(22, 18, 22, 16)
+        lay.setContentsMargins(20, 16, 20, 14)
         lay.setSpacing(10)
-        t = QLabel(tr("按销量加量凑单"))
-        t.setObjectName("PageTitle")
-        t.setStyleSheet("font-size:18px;")
-        lay.addWidget(t)
-        sub = QLabel(tr("不换供应商：给分到这家、卖得快的商品多订几箱，补齐起订条件。加完以后库存最多够卖 {0} 天（配货设置里的凑单天数），不会压太久。和「继续凑单」（把在别家更便宜的商品换过来）不同：多出来的钱买的是以后要卖的货，不是多付的差价。",
-                      int(self.limit)))
-        sub.setObjectName("Muted")
-        sub.setWordWrap(True)
-        lay.addWidget(sub)
         top = QHBoxLayout()
+        top.setSpacing(10)
         top.addWidget(QLabel(tr("供应商")))
         self.sup = QComboBox()
-        for ru in under:
+        self.sup.setMinimumWidth(320)
+        for ru in rules:
             self.sup.addItem(f"{ru['name']}　（{describe_condition(ru)}）", ru["target"])
-        self.sup.currentIndexChanged.connect(lambda _: self.compute())
+        if target:
+            self.sup.setCurrentIndex(max(0, self.sup.findData(target)))
         top.addWidget(self.sup)
-        top.addSpacing(16)
-        self.loose = QCheckBox(tr("不限够卖天数"))
-        self.loose.setToolTip(tr("在天数限制内加不够时，可以不管够卖天数，仍然按销量从快到慢加"))
-        self.loose.toggled.connect(lambda _: self.compute())
-        top.addWidget(self.loose)
+        top.addSpacing(8)
+        self.search = QLineEdit()
+        self.search.setPlaceholderText(tr("条码或名称"))
+        self.search.setMaximumWidth(220)
+        top.addWidget(self.search)
+        self.only_sell = QCheckBox(tr("只看卖得动的"))
+        self.only_sell.setChecked(True)
+        self.only_new = QCheckBox(tr("只看这次没订的"))
+        top.addWidget(self.only_sell)
+        top.addWidget(self.only_new)
         top.addStretch()
         lay.addLayout(top)
-        self.msg = Banner()
-        lay.addWidget(self.msg)
-        self.table = make_table([tr("行"), "EAN", "ARTICOLO", tr("现在"), tr("加"), tr("库存够卖（天）"), tr("订后够卖（天）"),
-                                 tr("多订金额 €")], stretch_col=2, numeric_cols=(0, 3, 4, 5, 6, 7))
-        from erp_widgets import RowSorter
-        self.sorter = RowSorter(self.table)
+        self.state = QLabel("")
+        self.state.setObjectName("Banner")
+        self.state.setTextFormat(Qt.RichText)
+        self.state.setWordWrap(True)
+        lay.addWidget(self.state)
+        # 提示就显示在这个窗口里
+        nb = QHBoxLayout()
+        nb.setSpacing(10)
+        self.note = QLabel("")
+        self.note.setWordWrap(True)
+        self.note_btn = QPushButton("")
+        self.note_btn.setObjectName("Outline")
+        self.note_btn.clicked.connect(lambda: self._note_cb and self._note_cb())
+        self._note_cb = None
+        nb.addWidget(self.note, 1)
+        nb.addWidget(self.note_btn)
+        self.note_box = QFrame()
+        self.note_box.setLayout(nb)
+        self.note_box.hide()
+        lay.addWidget(self.note_box)
+        self.table = make_table(self.COLS, stretch_col=None, numeric_cols=tuple(range(3, 12)))
+        hh = self.table.horizontalHeader()
+        hh.setSectionResizeMode(QHeaderView.Interactive)
+        hh.setStretchLastSection(False)
+        for c, wd in enumerate(self.WIDTHS):
+            self.table.setColumnWidth(c, wd)
+        self.table.setTextElideMode(Qt.ElideRight)
+        self.table.horizontalHeaderItem(5).setToolTip(tr("库存够卖 = 本店库存 ÷ 日均（账面库存是负数时按 0 算）"))
+        self.table.horizontalHeaderItem(10).setToolTip(tr("订后够卖 =（本店库存 + 已订和加的箱数 × 每箱件数）÷ 日均"))
+        self.table.horizontalHeaderItem(self.ADD).setToolTip(tr("双击填要加几箱，0 = 不加"))
+        self.table.setEditTriggers(QAbstractItemView.DoubleClicked | QAbstractItemView.SelectedClicked |
+                                   QAbstractItemView.EditKeyPressed | QAbstractItemView.AnyKeyPressed)
+        self.table.itemChanged.connect(self._edited)
         lay.addWidget(self.table, 1)
+        from erp_widgets import TableSortFilter
+        self.ctl = TableSortFilter(self.table, lambda: len(self.items), self._text, self._fill, key=self._key,
+                                   hide=self._hidden, numeric=tuple(range(3, 12)))
+        self.search.textChanged.connect(lambda _: self.ctl.render())
+        self.only_sell.toggled.connect(lambda _: self.ctl.render())
+        self.only_new.toggled.connect(lambda _: self.ctl.render())
+        tip = QLabel(tr("先列已经在订单里的，再列报价里这次没订的商品；按日均销量从高到低排。「按销量推荐」只加加完后库存够卖不超过 {0} 天的商品（配货设置里的凑单天数）。新加的商品只在这家下单，会写进主订单和这家的订单。",
+                        int(self.limit)))
+        tip.setObjectName("Faint")
+        tip.setWordWrap(True)
+        lay.addWidget(tip)
         btns = QHBoxLayout()
+        b_sug = QPushButton(tr("按销量推荐补齐起订量"))
+        b_sug.setObjectName("Outline")
+        b_sug.clicked.connect(lambda: self.suggest(False))
+        b_clear = QPushButton(tr("全部清零"))
+        b_clear.clicked.connect(self.clear)
+        btns.addWidget(b_sug)
+        btns.addWidget(b_clear)
         btns.addStretch()
         cancel = QPushButton(tr("取消"))
         cancel.clicked.connect(self.reject)
-        self.ok = QPushButton(tr("加上"))
+        self.ok = QPushButton(tr("加进订单"))
         self.ok.setObjectName("Primary")
         self.ok.clicked.connect(self._ok)
         btns.addWidget(cancel)
         btns.addWidget(self.ok)
         lay.addLayout(btns)
-        self.res = None
-        self.compute()
+        self.sup.currentIndexChanged.connect(lambda _: self.load())
+        self.load()
 
+    # ---------- 数据 ----------
     def rule(self):
         t = self.sup.currentData()
-        return next((ru for ru in self.under if ru["target"] == t), None)
+        return next((ru for ru in self.rules if ru["target"] == t), None)
 
-    def compute(self):
-        from allocation_plan import suggest_qty_fill, qty_step, _ordered_pieces, _cover
-        import store_orders as SO
+    def load(self):
+        """这家已经在订单里的商品马上列出来；报价里没订的商品要读报价、查数据库，在后台载入后补上"""
+        from allocation_plan import _ordered_pieces, _box_pieces, _amt, qty_step
         ru = self.rule()
         if ru is None:
             return
-        md = self.md
-        res = suggest_qty_fill(md.rows, md.assign, ru, self.limit, ignore_days=self.loose.isChecked())
-        self.res = res
         t = ru["target"]
-        by_row = {r["row"]: r for r in md.rows}
-        unit = tr("件") if md.pieces_mode else tr("箱")
-        rows = sorted(res["boxes"], key=lambda row: -res["boxes"][row])
-        self.table.setRowCount(len(rows))
-        for k, row in enumerate(rows):
-            r = by_row[row]
-            n = res["boxes"][row]
-            add = res["adds"][row]
-            pcs = _ordered_pieces(r, t)
-            from allocation_plan import _box_pieces, _amt
-            after = _cover(r, pcs + n * _box_pieces(r, t))
-            table_set_row(self.table, k, [str(row), r.get("ean", ""), r.get("articolo", ""), f"{md._qty(r):g}",
-                                          f"+{add:g}" + (tr("（{0:g} 箱）", n) if md.pieces_mode else ""),
-                                          SO.days_text(_cover(r, 0)), SO.days_text(after),
-                                          f"{(_amt(r, t) or 0) * add:,.2f}"])
-            self.table.item(k, 4).setForeground(QColor(T("accent")))
-            if after > self.limit:
-                self.table.item(k, 6).setForeground(QColor(T("warn")))
-            self.table.item(k, 2).setToolTip(f"{r.get('articolo', '')}\nEAN {r.get('ean', '')}")
-        self.sorter.apply()
-        bc, ba = res["before"]
-        head = tr("{0}：现在 {1:g} 箱 / €{2:,.2f}，要求 {3}。", ru["name"], bc, ba, describe_condition(ru))
-        if not res["candidates"]:
-            self.msg.show_msg(head + tr("分到这家的商品都没有销量，没法按销量推荐。"), "warn")
-        elif res["ok"]:
-            self.msg.show_msg(head + tr("加 {0} 个商品、{1:g} 箱（多订 €{2:,.2f}）就达标：{3:g} 箱 / €{4:,.2f}。",
-                                        len(res["boxes"]), sum(res["boxes"].values()), res["value"],
-                                        res["colli"], res["amount"]), "ok")
-        elif res["boxes"]:
-            self.msg.show_msg(head + tr("加完库存最多够卖 {0} 天的话，只能加到 {1:g} 箱 / €{2:,.2f}，还是不够。可以勾选「不限够卖天数」，或者只加这些、剩下的再手动改。",
-                                        int(self.limit), res["colli"], res["amount"]), "warn")
+        md = self.md
+        self.adds = {}
+        items = []
+        for r in md.rows:
+            if md.assign.get(r["row"]) != t or md._qty(r) <= 0:
+                continue
+            pk = _box_pieces(r, t)
+            items.append({"key": ("row", r["row"]), "row": r["row"], "name": r.get("articolo", ""), "ean": r.get("ean", ""),
+                          "in_order": True, "daily": r.get("daily"), "inv": r.get("inv"),
+                          "have": _ordered_pieces(r, t), "ordered": _ordered_pieces(r, t) / pk if pk else 0,
+                          "pack": pk, "box": (_amt(r, t) or 0) * qty_step(r, t)})
+        self.items = items
+        self.ctl.set_sort(3, True) if items else self.ctl.render()
+        self._refresh_state()
+        cached = md.cand_cache.get(t)
+        if cached is not None:
+            self._add_new(t, cached)
+        elif md.ctx:
+            self._show_note(tr("正在读取 {0} 的报价、查门店销量和库存，报价里这次没订的商品稍后列出来…", ru["name"]))
+            md.load_candidates(t, lambda res, t=t: self._loaded(t, res))
         else:
-            self.msg.show_msg(head + tr("分到这家的商品库存都已经够卖 {0} 天以上，再加会压货。可以勾选「不限够卖天数」。", int(self.limit)), "warn")
-        self.ok.setEnabled(bool(res["boxes"]))
-        self.ok.setText(tr("加上（达标）") if res["ok"] and res["boxes"] else tr("加上"))
+            self._show_note(tr("这次结果没有存报价文件的位置，只能在订单里已有的商品上加量。"))
+
+    def _loaded(self, t, res):
+        try:
+            if not self.isVisible() or self.sup.currentData() != t:
+                return
+        except RuntimeError:                  # 窗口已经关了
+            return
+        if isinstance(res, Exception):
+            self._show_note(tr("报价里没订的商品载入失败（只能在订单里已有的商品上加量）：{0}", res))
+            return
+        self._hide_note()
+        self._add_new(t, res)
+
+    def _add_new(self, t, cands):
+        have = {x["ean"] for x in self.items}
+        for c in cands:
+            if c["ean"] in have:
+                continue
+            pk = float(c.get("pack") or 1)
+            self.items.append({"key": ("ean", c["ean"]), "cand": c, "name": c.get("name") or c.get("desc") or "",
+                               "ean": c["ean"], "in_order": False, "daily": c.get("daily"), "inv": c.get("inv"),
+                               "have": 0.0, "ordered": 0, "pack": pk, "box": float(c["price"]) * pk})
+        self.ctl.set_sort(3, True)            # 日均从高到低
+        self._refresh_state()
+
+    # ---------- 表格 ----------
+    def _cover(self, x, boxes=0):
+        import store_orders as SO
+        if x.get("daily") is None:
+            return None
+        return SO.cover_days({"inv": x.get("inv") or 0, "daily": x["daily"]}, (x["have"] or 0) + boxes * x["pack"])
+
+    def _text(self, i, c):
+        import store_orders as SO
+        x = self.items[i]
+        n = self.adds.get(x["key"], 0)
+        daily = x.get("daily")
+        vals = [x["name"], x["ean"], tr("是") if x["in_order"] else "",
+                f"{daily:.2f}" if daily else ("0" if daily is not None else ""),
+                f"{x['inv']:g}" if isinstance(x.get("inv"), (int, float)) else "",
+                SO.days_text(self._cover(x)) if daily is not None else "",
+                f"{x['ordered']:g}" if x["ordered"] else "", f"{x['pack']:g}", f"{x['box']:,.2f}",
+                f"{n:g}" if n else "",
+                SO.days_text(self._cover(x, n)) if (daily is not None and (n or x["in_order"])) else "",
+                f"{n * x['box']:,.2f}" if n else ""]
+        return vals[c]
+
+    def _key(self, i, c):
+        x = self.items[i]
+        if c == 3:
+            return float(x.get("daily") or 0)
+        if c in (5, 10):
+            v = self._cover(x, self.adds.get(x["key"], 0) if c == 10 else 0)
+            return 1e9 if v is None or v == float("inf") else v
+        if c == self.ADD:
+            return float(self.adds.get(x["key"], 0))
+        return None
+
+    def _hidden(self, i):
+        x = self.items[i]
+        if self.only_sell.isChecked() and not float(x.get("daily") or 0) > 0 and not self.adds.get(x["key"]):
+            return True
+        if self.only_new.isChecked() and x["in_order"]:
+            return True
+        q = self.search.text().strip().lower()
+        return bool(q) and q not in f"{x['ean']} {x['name']}".lower()
+
+    def _fill(self, i, k):
+        x = self.items[i]
+        table_set_row(self.table, k, [self._text(i, c) for c in range(len(self.COLS))])
+        for c in range(len(self.COLS)):
+            it = self.table.item(k, c)
+            if c == self.ADD:
+                it.setFlags(it.flags() | Qt.ItemIsEditable)
+                it.setData(Qt.UserRole, i)
+                it.setBackground(QColor(T("accent_soft")))
+                if self.adds.get(x["key"]):
+                    it.setForeground(QColor(T("accent")))
+                    f = it.font()
+                    f.setBold(True)
+                    it.setFont(f)
+            else:
+                it.setFlags(it.flags() & ~Qt.ItemIsEditable)
+        self.table.item(k, 0).setToolTip(f"{x['name']}\nEAN {x['ean']}")
+        n = self.adds.get(x["key"], 0)
+        v = self._cover(x, n)
+        if n and v is not None and v > self.limit:
+            self.table.item(k, 10).setForeground(QColor(T("warn")))
+            self.table.item(k, 10).setToolTip(tr("订完要很久才卖得完（超过 {0} 天），可能压货", int(self.limit)))
+
+    def _edited(self, item):
+        if self._filling or item.column() != self.ADD:
+            return
+        i = self.ctl.row_at(item.row())
+        if i is None:
+            return
+        try:
+            n = float(item.text().strip().replace(",", ".") or 0)
+            if n < 0 or n != int(n):
+                raise ValueError
+            n = int(n)
+        except ValueError:
+            n = None
+        key = self.items[i]["key"]
+
+        def apply():
+            if n is None:
+                self._show_note(tr("箱数要填 0 或正整数"))
+            elif n:
+                self.adds[key] = n
+            else:
+                self.adds.pop(key, None)
+            self.ctl.update_row(i)
+            self._refresh_state()
+        QTimer.singleShot(0, apply)            # 等编辑框关掉再更新这一行（编辑中途改格子会卡住）
+
+    def _totals(self):
+        """这家现在（加之前）的箱数、金额，和加完后的"""
+        ru = self.rule()
+        c0, a0 = self.md._sup_totals(ru["target"])
+        by = {x["key"]: x for x in self.items}
+        c = c0 + sum(self.adds.values())
+        a = a0 + sum(n * by[k]["box"] for k, n in self.adds.items() if k in by)
+        return c0, a0, c, a
+
+    def _refresh_state(self):
+        from min_order_optimizer import _satisfied
+        ru = self.rule()
+        if ru is None:
+            return
+        c0, a0, c, a = self._totals()
+        ok = _satisfied(c, a, ru["min_colli"], ru["min_amount"], ru["mode"])
+        gaps = []
+        if ru["min_colli"] and c < ru["min_colli"]:
+            gaps.append(tr("差 {0:g} 箱", ru["min_colli"] - c))
+        if ru["min_amount"] and a < ru["min_amount"]:
+            gaps.append(tr("差 €{0:,.2f}", ru["min_amount"] - a))
+        txt = tr("<b>{0}</b>　现在 {1:g} 箱 / €{2:,.2f}　起订量 {3}", ru["name"], c0, a0, describe_condition(ru))
+        if self.adds:
+            txt += "　→　" + tr("加上以后 {0:g} 箱 / €{1:,.2f}", c, a)
+        txt += "　<b>" + (tr("已达标") if ok else tr("未达标") + "（" + tr("、").join(gaps) + "）") + "</b>"
+        self.state.setText(txt)
+        kind = "ok" if ok else "err"
+        self.state.setStyleSheet(f"background:{T(kind + '_soft')}; color:{T(kind)};")
+        n_new = sum(1 for k in self.adds if k[0] == "ean")
+        self.ok.setEnabled(bool(self.adds))
+        self.ok.setText(tr("加进订单（{0} 个商品，其中新商品 {1} 个）", len(self.adds), n_new) if self.adds else tr("加进订单"))
+
+    def _show_note(self, text, button=None, cb=None):
+        self.note.setText(text)
+        self.note_btn.setVisible(bool(button))
+        self.note_btn.setText(button or "")
+        self._note_cb = cb
+        self.note_box.show()
+
+    def _hide_note(self):
+        self.note_box.hide()
+
+    # ---------- 操作 ----------
+    def suggest(self, ignore_days=False):
+        from allocation_plan import suggest_items
+        ru = self.rule()
+        if ru is None:
+            return
+        c0, a0, _, _ = self._totals()
+        cands = [dict(x, key=x["key"]) for x in self.items if x.get("daily") is not None]
+        res = suggest_items(cands, c0, a0, ru, self.limit, ignore_days)
+        if not res["boxes"] and not res["ok"]:
+            self._show_note(tr("加完库存都会超过 {0} 天（或者没有卖得动的商品），按销量推荐不出来。可以自己在「加（箱）」里填，或者不限天数推荐。", int(self.limit)),
+                            tr("仍然按销量推荐"), lambda: self.suggest(True))
+            return
+        self.adds = dict(res["boxes"])
+        self.ctl.render()
+        self._refresh_state()
+        if res["ok"]:
+            self._show_note(tr("已推荐 {0} 个商品、{1:g} 箱（€{2:,.2f}），加上就达标。可以再改「加（箱）」。",
+                               len(res["boxes"]), sum(res["boxes"].values()), res["value"]))
+        elif not ignore_days:
+            self._show_note(tr("加完库存最多够卖 {0} 天的话，只能加到 {1:g} 箱 / €{2:,.2f}，还是不够。", int(self.limit), res["colli"], res["amount"]),
+                            tr("仍然按销量推荐"), lambda: self.suggest(True))
+        else:
+            self._show_note(tr("卖得动的商品全加上也不够起订量：{0:g} 箱 / €{1:,.2f}。", res["colli"], res["amount"]))
+
+    def clear(self):
+        self.adds = {}
+        self._hide_note()
+        self.ctl.render()
+        self._refresh_state()
 
     def _ok(self):
-        if self.res and self.res["boxes"]:
-            self.adds = dict(self.res["adds"])
-            self.accept()
+        if not self.adds:
+            return
+        by = {x["key"]: x for x in self.items}
+        self.result = {"target": self.rule()["target"],
+                       "rows": {k[1]: n for k, n in self.adds.items() if k[0] == "row"},
+                       "new": [(by[k]["cand"], n) for k, n in self.adds.items() if k[0] == "ean" and k in by]}
+        self.accept()
 
 
 class ManualDialog(QDialog):
     """手动调整每个商品的供应商。确认后返回 self.result（{行号: 供应商}）"""
 
-    def __init__(self, parent, rows, rules, baseline, proposed, notes=None, edit_mode=False):
+    def __init__(self, parent, rows, rules, baseline, proposed, notes=None, edit_mode=False, ctx=None):
         super().__init__(parent)
         self.edit_mode = edit_mode
+        # ctx（修改分配）：{"ordine_file", "distribuire_path", "headers"}，加商品凑单读报价、查门店库存用
+        self.ctx = ctx
+        self.cand_cache = {}                      # {供应商: 报价里这次没订的商品}
+        self._cand_sig = _CandSig()
+        self._cand_sig.loaded.connect(lambda p: p[0](p[1]))
+        self._orig_rows = {r["row"] for r in rows}
+        self.new_rows = []
         self.setWindowTitle(tr("修改分配") if edit_mode else tr("手动调整供应商"))
         self.resize(1180, 760)
         self.rows = [dict(r) for r in rows]      # 改数量时换成新的行，不动原来的
@@ -1186,10 +1426,10 @@ class ManualDialog(QDialog):
         ok.clicked.connect(self._ok)
         btns.addWidget(b_base)
         btns.addWidget(b_auto)
-        if edit_mode and self.has_stock and rules:
-            b_fill = QPushButton(tr("按销量加量凑单…"))
-            b_fill.setToolTip(tr("没达到起订条件的供应商：不换供应商，给卖得快的商品多订几箱补齐（加完库存够卖不超过凑单天数）"))
-            b_fill.clicked.connect(self.qty_fill)
+        if edit_mode and rules:
+            b_fill = QPushButton(tr("加商品凑单…"))
+            b_fill.setToolTip(tr("没达到起订条件的供应商：不换供应商，从它的报价里挑商品多订（订单里已有的多订几箱，或者加这次没订、但卖得快的商品），和门店配货的加商品凑单一样"))
+            b_fill.clicked.connect(self.add_items)
             btns.addWidget(b_fill)
         btns.addStretch()
         btns.addWidget(cancel)
@@ -1273,6 +1513,10 @@ class ManualDialog(QDialog):
         self.table.item(k, 6).setData(Qt.UserRole, i)
         self.table.item(k, 3).setData(Qt.UserRole, i)
         r = self.rows[i]
+        if r["row"] not in self._orig_rows:
+            self.table.item(k, 2).setForeground(QColor(T("accent")))
+            self.table.item(k, 2).setToolTip(tr("加商品凑单新加的商品（原来不在订单里），确认后写进主订单和 {0} 的订单",
+                                                short(r.get("added") or "")))
         if self.edit_mode:
             it = self.table.item(k, 3)
             it.setFlags(it.flags() | Qt.ItemIsEditable)
@@ -1334,6 +1578,7 @@ class ManualDialog(QDialog):
             self.refresh_status()
 
     def _reset(self, a, msg):
+        self.rows = [r for r in self.rows if r["row"] in self._orig_rows]     # 加商品凑单新加的商品也去掉
         self.assign = dict(a)
         self._fill_table()
         self.refresh_status()
@@ -1355,22 +1600,70 @@ class ManualDialog(QDialog):
                 out.append(ru)
         return out
 
-    def qty_fill(self):
+    def add_items(self):
         under = self.under_rules()
-        if not under:
-            QMessageBox.information(self, tr("按销量加量凑单"), tr("分到货的起订供应商都已经达标，不用加。"))
+        all_rules = [ru for ru, _ in self.status_labels]
+        rules = under + [ru for ru in all_rules if ru not in under]     # 没达标的排前面
+        dlg = FillItemsDialog(self, rules, under[0]["target"] if under else None)
+        if not dlg.exec() or not dlg.result:
             return
-        dlg = QtyFillDialog(self, under)
-        if not dlg.exec() or not dlg.adds:
-            return
+        from allocation_plan import qty_step
+        import service as SV
+        t = dlg.result["target"]
         idx = {r["row"]: i for i, r in enumerate(self.rows)}
-        for row, add in dlg.adds.items():
+        for row, n in dlg.result["rows"].items():
             i = idx.get(row)
             if i is not None:
-                self.set_qty(i, self._qty(self.rows[i]) + add)
+                self.set_qty(i, self._qty(self.rows[i]) + n * qty_step(self.rows[i], t))
+        heads = list((self.rows[0].get("prices") or {}).keys()) if self.rows else []
+        nxt = max([r["row"] for r in self.rows] + [1]) + 1
+        store = (self.ctx or {}).get("store")
+        for item, n in dlg.result["new"]:
+            r = SV.make_added_row(nxt, item, n * float(item.get("pack") or 1), t, heads, store)
+            self.rows.append(r)
+            self.assign[r["row"]] = t
+            self.baseline[r["row"]] = t
+            nxt += 1
         self.only_changed.setChecked(True)          # 只看改过的，方便核对加了哪些
         self.only_multi.setChecked(False)
-        self.apply_filter()
+        self._fill_table()
+        self.refresh_status()
+
+    def load_candidates(self, t, done):
+        """后台读供应商 t 的报价、查门店库存：报价里有、主订单里没有的商品 → done(列表或 Exception)"""
+        ctx = self.ctx or {}
+        rows = list(self.rows)
+
+        def work():
+            try:
+                import service as SV
+                import reorder_service as RS
+                from reorder_page import algo_params
+                price = SV.read_price_file(os.path.join(ctx["distribuire_path"], t))
+                cands = SV.new_item_candidates(price, rows)
+                stock = {}
+                if cands and ctx.get("store"):
+                    db = RS.make_db(settings.get("db") or None)
+                    cfg = settings.get("reorder") or {}
+                    stock = RS.stock_for_eans(db, ctx["store"], [c["ean"] for c in cands],
+                                              cfg.get("days") or RS.DEFAULT_SALES_DAYS, int(cfg.get("cycle", 30) or 30),
+                                              algo_params(settings))
+                out = []
+                for c in cands:
+                    d = stock.get(c["ean"])
+                    if d:
+                        out.append(dict(c, **d))
+                    else:                                  # 数据库里没有（没有销量数据），也列出来，可以手动加
+                        out.append(dict(c, name=c.get("desc") or "", daily=None, inv=None))
+                res = out
+            except Exception as e:
+                file_logger.error(f"load candidates failed: {e}", exc_info=True)
+                res = e
+            if not isinstance(res, Exception):
+                self.cand_cache[t] = res
+            self._cand_sig.loaded.emit((done, res))
+
+        threading.Thread(target=work, daemon=True).start()
 
     def refresh_status(self):
         from min_order_optimizer import _satisfied
@@ -1402,10 +1695,10 @@ class ManualDialog(QDialog):
         """搜索框和两个开关（表头的按列筛选另外算）"""
         r = self.rows[i]
         n_offers = sum(1 for p in r["prices"].values() if p is not None)
-        if self.only_multi.isChecked() and n_offers < 2:
+        if self.only_multi.isChecked() and n_offers < 2 and r["row"] in self._orig_rows:
             return True
         if self.only_changed.isChecked() and self.assign.get(r["row"]) == self.baseline.get(r["row"]) \
-                and r["row"] not in self.qty_changed:
+                and r["row"] not in self.qty_changed and r["row"] in self._orig_rows:
             return True
         text = self.filter.text().strip().lower()
         if text:
@@ -1424,6 +1717,13 @@ class ManualDialog(QDialog):
                 != QMessageBox.Yes:
             return
         self.result = dict(self.assign)
+        # 加商品凑单新加的商品（数量改成 0 的不要了）；它们的数量跟着行走，不算「改了数量」
+        self.new_rows = [r for r in self.rows if r["row"] not in self._orig_rows and self._qty(r) > 0]
+        for r in self.rows:
+            if r["row"] not in self._orig_rows:
+                self.qty_changed.pop(r["row"], None)
+                if self._qty(r) <= 0:
+                    self.result.pop(r["row"], None)
         self.accept()
 
 
@@ -4110,13 +4410,18 @@ class MainWindow(QMainWindow):
             return
         st = data["state"]
         cur = dict(st["assignment"])
-        dlg = ManualDialog(self, st["rows"], st["rules"], st["baseline"], cur, edit_mode=True)
+        import reorder_service as RS
+        snap = RS.load_snapshot(st.get("ordine_file") or "") if st.get("ordine_file") else None
+        ctx = {"ordine_file": st.get("ordine_file"), "distribuire_path": st.get("distribuire_path"),
+               "store": (snap or {}).get("store")} if st.get("distribuire_path") else None
+        dlg = ManualDialog(self, st["rows"], st["rules"], st["baseline"], cur, edit_mode=True, ctx=ctx)
         if not dlg.exec() or dlg.result is None:
             return
         new = dlg.result
         qty = dict(dlg.qty_changed)
+        added = list(dlg.new_rows)
         changed = [r["row"] for r in st["rows"] if new.get(r["row"]) != cur.get(r["row"])]
-        if not changed and not qty:
+        if not changed and not qty and not added:
             self.show_toast(tr("没有改动"))
             return
         parts = []
@@ -4124,6 +4429,8 @@ class MainWindow(QMainWindow):
             parts.append(tr("{0} 个商品换供应商", len(changed)))
         if qty:
             parts.append(tr("{0} 个商品改数量", len(qty)))
+        if added:
+            parts.append(tr("新加 {0} 个商品", len(added)))
         if QMessageBox.question(self, tr("修改分配"),
                                 tr("要把 {0}，并重新写入主订单和供应商文件。写入前会自动备份。继续？",
                                    tr("、").join(parts))) != QMessageBox.Yes:
@@ -4149,7 +4456,8 @@ class MainWindow(QMainWindow):
             from service import rewrite_assignment
             try:
                 out, n = rewrite_assignment(data, new, sources, self.log,
-                                            progress=lambda p, t: self.bridge.progress.emit(int(p), t), qty=qty)
+                                            progress=lambda p, t: self.bridge.progress.emit(int(p), t), qty=qty,
+                                            new_rows=added)
                 self.bridge.rewrite_done.emit((out, n, None))
             except Exception as e:
                 file_logger.error(f"rewrite failed: {e}", exc_info=True)
@@ -4364,7 +4672,7 @@ class MainWindow(QMainWindow):
             msgs.append(mo["warning"])
             kind = "err"
             if current and any(r.get("daily") is not None for r in ((s.get("state") or {}).get("rows") or [])):
-                msgs.append(tr("没达标的供应商可以点「修改分配…」→「按销量加量凑单…」：不换供应商，给卖得快的商品多订几箱补齐。"))
+                msgs.append(tr("没达标的供应商可以点「修改分配…」→「加商品凑单…」：不换供应商，从它的报价里挑卖得快的商品多订（订单里没有的也能加）。"))
         if mo.get("unmatched"):
             msgs.append(tr("这些规则这次没有找到供应商文件：{0}", tr("、").join(mo["unmatched"])))
             kind = "warn" if kind == "ok" else kind

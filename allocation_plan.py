@@ -230,59 +230,65 @@ def qty_step(r, s):
     return _box_pieces(r, s) if r.get("pieces") is not None else 1.0
 
 
-def suggest_qty_fill(rows, assign, rule, max_days=60, ignore_days=False, max_steps=2000):
+def suggest_items(cands, colli, amount, rule, max_days=60, ignore_days=False, max_steps=3000):
     """
-    rows: 主订单各行（要有 inv / daily，来自检查门店清单的库存快照）；assign: {行号: 供应商}
-    rule: 起订规则（target / min_colli / min_amount / mode）
-    返回 {"adds": {行号: 加的数量（箱，按件数订货时为件）}, "boxes": {行号: 加几箱},
-          "ok": 是否达标, "colli", "amount"（加完后）, "value"（多订的货值）,
-          "before": (箱, 金额), "candidates": 有销量数据、可以加的商品数}
-    已经达标 → adds 为空、ok=True。在天数限制内加不够 → ok=False（adds 是能加的那些，没有加进去）。
+    按销量推荐补齐起订量（门店配货「加商品凑单」同一个规则）：先加卖得最快的（加完够卖天数最少的）；
+    只差金额时找一箱就够、多出来最少的；加完库存最多够卖 max_days 天（ignore_days=True 不限）。
+    cands: [{"key", "daily", "inv", "have"（已经要到货的件数）, "pack"（每箱件数）, "box"（一箱 €）}]
+    colli / amount：这家现在的箱数、金额。
+    返回 {"boxes": {key: 加几箱}, "ok", "colli", "amount"（加完后）, "value"（加的金额）}
     """
-    t = rule["target"]
     mc, ma, mode = rule.get("min_colli") or 0, rule.get("min_amount") or 0, rule.get("mode", "all")
-    mine = [r for r in rows if assign.get(r["row"]) == t and _qty(r["qty"]) > 0]
-    c0, a0 = _totals(rows, assign, t)
-    out = {"adds": {}, "boxes": {}, "ok": True, "colli": c0, "amount": a0, "value": 0.0,
-           "before": (c0, a0), "candidates": 0}
-    if not mine or _satisfied(c0, a0, mc, ma, mode):
-        return out
-    cands = [r for r in mine if r.get("daily") is not None and float(r.get("daily") or 0) > 0
-             and (_amt(r, t) or 0) > 0]
-    out["candidates"] = len(cands)
-    extra = {r["row"]: 0 for r in cands}             # 每个商品加了几箱
-    c, a = c0, a0
+    cands = [x for x in cands if float(x.get("daily") or 0) > 0 and float(x.get("box") or 0) > 0]
+    extra = {x["key"]: 0 for x in cands}
+    c, a = colli, amount
     for _ in range(max_steps):
         if _satisfied(c, a, mc, ma, mode):
             break
         opts = []
-        for r in cands:
-            pk = _box_pieces(r, t)
-            after = _cover(r, _ordered_pieces(r, t) + (extra[r["row"]] + 1) * pk)
+        for x in cands:
+            pk = float(x.get("pack") or 1)
+            after = _cover(x, float(x.get("have") or 0) + (extra[x["key"]] + 1) * pk)
             if not ignore_days and after > max_days + 1e-9:
                 continue
-            box = (_amt(r, t) or 0) * qty_step(r, t)       # 一箱的金额
-            opts.append((after, box, r["row"]))
+            opts.append((after, float(x["box"]), x["key"]))
         if not opts:
             break
         need_c = bool(mc) and c < mc - 1e-9
         need_a = bool(ma) and a < ma - 1e-9
         if need_a and not need_c:
-            # 只差金额：先找一箱就够、多出来最少的；没有就加卖得最快的
             gap = ma - a
-            enough = [x for x in opts if x[1] >= gap - 1e-9]
-            pick = min(enough, key=lambda x: (x[1], x[0])) if enough else min(opts)
+            enough = [o for o in opts if o[1] >= gap - 1e-9]
+            pick = min(enough, key=lambda o: (o[1], o[0])) if enough else min(opts, key=lambda o: (o[0], o[1]))
         else:
-            pick = min(opts)                              # 差箱数：加卖得最快的（加完够卖天数最少）
-        _, box, row = pick
-        extra[row] += 1
+            pick = min(opts, key=lambda o: (o[0], o[1]))
+        extra[pick[2]] += 1
         c += 1
-        a += box
-    out["colli"], out["amount"], out["value"] = c, a, a - a0
-    out["ok"] = _satisfied(c, a, mc, ma, mode)
-    by_row = {r["row"]: r for r in cands}
-    for row, n in extra.items():
-        if n:
-            out["boxes"][row] = n
-            out["adds"][row] = n * qty_step(by_row[row], t)
+        a += pick[1]
+    return {"boxes": {k: n for k, n in extra.items() if n}, "ok": _satisfied(c, a, mc, ma, mode),
+            "colli": c, "amount": a, "value": a - amount}
+
+
+def suggest_qty_fill(rows, assign, rule, max_days=60, ignore_days=False, max_steps=2000):
+    """
+    只在已经分给这家的商品上加量（不加新商品）。
+    rows: 主订单各行（要有 inv / daily，来自检查门店清单的库存快照）；assign: {行号: 供应商}
+    返回 {"adds": {行号: 加的数量（箱，按件数订货时为件）}, "boxes": {行号: 加几箱}, "ok", "colli", "amount",
+          "value", "before": (箱, 金额), "candidates": 有销量数据、可以加的商品数}
+    """
+    t = rule["target"]
+    mine = [r for r in rows if assign.get(r["row"]) == t and _qty(r["qty"]) > 0]
+    c0, a0 = _totals(rows, assign, t)
+    out = {"adds": {}, "boxes": {}, "ok": True, "colli": c0, "amount": a0, "value": 0.0,
+           "before": (c0, a0), "candidates": 0}
+    if not mine or _satisfied(c0, a0, rule.get("min_colli") or 0, rule.get("min_amount") or 0, rule.get("mode", "all")):
+        return out
+    cands = [{"key": r["row"], "daily": r.get("daily"), "inv": r.get("inv"), "have": _ordered_pieces(r, t),
+              "pack": _box_pieces(r, t), "box": (_amt(r, t) or 0) * qty_step(r, t)}
+             for r in mine if r.get("daily") is not None]
+    out["candidates"] = sum(1 for x in cands if float(x["daily"] or 0) > 0 and x["box"] > 0)
+    res = suggest_items(cands, c0, a0, rule, max_days, ignore_days, max_steps)
+    by_row = {r["row"]: r for r in mine}
+    out.update(ok=res["ok"], colli=res["colli"], amount=res["amount"], value=res["value"], boxes=res["boxes"])
+    out["adds"] = {row: n * qty_step(by_row[row], t) for row, n in res["boxes"].items()}
     return out

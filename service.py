@@ -1404,6 +1404,105 @@ def _write_missing_report(distribuire_path, rows, assignment):
     return path
 
 
+# =====================
+# 修改分配 →「加商品凑单」：供应商报价里、这次没订的商品（库存足但卖得快的快消品等）加进来凑起订量
+# =====================
+_DESC_HEADS = ("DESCRIZIONE", "DESCRIPTION", "ARTICOLO", "PRODOTTO", "DENOMINAZIONE", "NOME")
+
+
+def read_price_file(path, log=None):
+    """
+    一个供应商报价文件 → {EAN: {"price": 件价, "pack": 每箱件数, "desc": 品名}}（和比价时读报价同一套规则）
+    """
+    log = log or (lambda *a: None)
+    wb, _, _ = safe_open(path, log)
+    if not wb:
+        raise ValueError(tr("打不开报价文件：{0}", os.path.basename(path)))
+    try:
+        ws = wb.active
+        col_ean, row_ean = find_col(ws, COL_CODICE_EAN)
+        col_price, row_price = find_col(ws, COL_PREZZO_NETTO)
+        if not col_ean or not col_price:
+            raise ValueError(tr("{0} 缺少必要列", os.path.basename(path)))
+        header_row = max(row_ean, row_price)
+        col_ord, _ = find_col(ws, COL_ORDINE)
+        pack_col, _ = _detect_pack_col(ws, path, header_row, col_ord, col_price)
+        col_desc = None
+        for h in _DESC_HEADS:
+            c, _r = find_col(ws, h)
+            if c:
+                col_desc = c
+                break
+        out = {}
+        for i in range(header_row + 1, get_last_row(ws, col_ean) + 1):
+            e = clean_ean(ws.cell(i, col_ean).value)
+            p = parse_price(ws.cell(i, col_price).value)
+            if e and p is not None and e not in out:
+                out[e] = {"price": p, "pack": (parse_pack(ws.cell(i, pack_col).value) if pack_col else 1) or 1,
+                          "desc": str(ws.cell(i, col_desc).value or "").strip() if col_desc else ""}
+        return out
+    finally:
+        wb.close()
+        try:
+            safe_cleanup_calculated_files(log)      # 计算公式用的临时副本（.calc.xlsx）不留在 distribuire 里
+        except Exception:
+            pass
+
+
+def new_item_candidates(price_map, order_rows):
+    """报价里有、主订单里没有的商品：[{"ean", "price", "pack", "desc"}]"""
+    have = {r.get("ean") for r in order_rows if r.get("ean")}
+    return [dict(v, ean=e) for e, v in price_map.items() if e not in have]
+
+
+def make_added_row(row_no, item, pieces, target, supplier_headers, store=None):
+    """
+    加商品凑单加进来的新商品 → 主订单的一行（按件数订货）：只有这家供应商有价（就是要在它那里凑单）。
+    item: {"ean", "price", "pack", "desc"/"name", "code", "inv", "daily", "cycle"}
+    """
+    unit = {h: (float(item["price"]) if h == target else None) for h in supplier_headers}
+    packs = {h: (float(item.get("pack") or 1) if h == target else 1) for h in supplier_headers}
+    r = _price_row_pieces(row_no, float(pieces), unit, packs, item["ean"], item.get("name") or item.get("desc") or "")
+    r["added"] = target                      # 加商品凑单加进来的（换方案时保留，界面标出来）
+    r["code"] = item.get("code") or ""
+    for k in ("inv", "daily", "cycle"):
+        if item.get(k) is not None:
+            r[k] = item[k]
+    if store is not None:
+        r["store"] = store
+    return r
+
+
+def _append_added_rows(ws, rows, supplier_headers):
+    """把加商品凑单的新商品写进主订单（主订单是检查门店清单生成的，列名固定，见 reorder_service.ORDER_HEADERS）"""
+    import reorder_service as RS
+    cols = {}
+    for h in RS.ORDER_HEADERS:
+        c, _ = find_col(ws, h)
+        if c:
+            cols[h] = c
+    sup_col = {}
+    for c in range(SUPPLIER_MATRIX_START_COL, ws.max_column + 1):
+        v = ws.cell(1, c).value
+        if v:
+            sup_col[v] = c
+    for r in rows:
+        i = r["row"]
+        t = r["added"]
+        pk = (r.get("packs") or {}).get(t) or 1
+        vals = {"CODICE EAN": r["ean"], "ARTICOLO": r.get("articolo", ""), "COLLI": (r.get("colli") or {}).get(t, 0),
+                "PEZZI": int(r["qty"]) if float(r["qty"]).is_integer() else r["qty"], "CodArticolo": r.get("code") or None,
+                "CASSA_DB": pk, "NEGOZIO": RS.STORES.get(r.get("store"), "") if r.get("store") else None}
+        for h, v in vals.items():
+            if h in cols:
+                ws.cell(i, cols[h]).value = v
+        if "CODICE EAN" in cols:
+            ws.cell(i, cols["CODICE EAN"]).number_format = "@"
+        if t in sup_col:
+            ws.cell(i, sup_col[t]).value = (r.get("unit") or {}).get(t)
+        ws.cell(i, EAN_COUNT_COL).value = 1
+
+
 def can_switch_scenario(data):
     """结果里存了每个方案的分配，才能不重算直接换方案"""
     st = (data or {}).get("state") or {}
@@ -1424,6 +1523,9 @@ def switch_scenario(data, idx, log, progress=None):
         raise ValueError(tr("这次结果没有存各方案的分配，不能直接换方案，请重新处理"))
     excl = set(scs[idx].get("excluded") or [])
     new = dict(st["scenario_assigns"][idx])
+    for r in st["rows"]:                       # 加商品凑单加进来的商品：方案里没有它，留在原来的供应商
+        if r.get("added") and r["row"] not in new:
+            new[r["row"]] = st["assignment"].get(r["row"])
     baseline = st["baseline"]
     sources = {}
     for r in st["rows"]:
@@ -1440,10 +1542,11 @@ def switch_scenario(data, idx, log, progress=None):
     return rewrite_assignment(d2, new, sources, log, progress, force=True)
 
 
-def rewrite_assignment(data, new_assign, new_sources, log, progress=None, force=False, qty=None):
+def rewrite_assignment(data, new_assign, new_sources, log, progress=None, force=False, qty=None, new_rows=None):
     """
     data: 上次处理的 summary（含 state）
     new_assign: {行号: 供应商}，new_sources: {行号: 来源}
+    new_rows: 加商品凑单新加的商品（make_added_row 做的行，行号接在主订单最后面）
     只处理供应商变了的商品：从原供应商文件清掉、写进新供应商文件，更新主订单 AD / AC 列。
     返回新的 summary。
     """
@@ -1463,12 +1566,19 @@ def rewrite_assignment(data, new_assign, new_sources, log, progress=None, force=
     rows, rules, baseline = st["rows"], st["rules"], st["baseline"]
     old = st["assignment"]
     ordine_file, dist = st["ordine_file"], st["distribuire_path"]
+    new_rows = [r for r in (new_rows or []) if r["row"] not in {x["row"] for x in rows}]
+    if new_rows:
+        rows = list(rows) + list(new_rows)
+        baseline = {**baseline, **{r["row"]: r["added"] for r in new_rows}}     # 新商品本来就是给这家的，不算「换供应商」
+        new_assign = {**new_assign, **{r["row"]: new_assign.get(r["row"]) or r["added"] for r in new_rows}}
+        new_sources = {**new_sources, **{r["row"]: "加商品凑单" for r in new_rows}}
     # 改了数量的商品（qty = {行号: 新数量}）
-    old_q = {r["row"]: r.get("qty") for r in rows}
+    old_q = {r["row"]: r.get("qty") for r in st["rows"]}
     if qty:
         rows = [set_row_qty(r, qty[r["row"]]) if r["row"] in qty else r for r in rows]
     q_changed = {r["row"] for r in rows if r.get("qty") != old_q.get(r["row"])}
     changed = [r for r in rows if old.get(r["row"]) != new_assign.get(r["row"]) or r["row"] in q_changed]
+    added_now = {r["row"] for r in new_rows}
     out = _copy.deepcopy(data)
     if not changed and not force:
         return out, 0
@@ -1476,8 +1586,10 @@ def rewrite_assignment(data, new_assign, new_sources, log, progress=None, force=
     log("\n" + "=" * 50)
     n_sup = sum(1 for r in changed if old.get(r["row"]) != new_assign.get(r["row"]))
     log(tr("[修改分配] 有 {0} 个商品换了供应商，重新写入文件", n_sup))
-    if q_changed:
-        log(tr("[修改分配] 有 {0} 个商品改了数量", len(q_changed)))
+    if q_changed - added_now:
+        log(tr("[修改分配] 有 {0} 个商品改了数量", len(q_changed - added_now)))
+    if added_now:
+        log(tr("[修改分配] 加商品凑单：新加 {0} 个商品", len(added_now)))
     P(5, tr("备份原始文件..."))
     try:
         out["backup_dir"] = _backup_inputs(ordine_file, dist, log)
@@ -1490,6 +1602,8 @@ def rewrite_assignment(data, new_assign, new_sources, log, progress=None, force=
     with open(ordine_file, "rb") as f:
         wb = load_workbook(io.BytesIO(f.read()))
     ws = wb.active
+    if new_rows:
+        _append_added_rows(ws, new_rows, list((rows[0].get("prices") or {}).keys()) if rows else [])
     col_colli_m, _ = find_col(ws, COL_COLLI)
     col_pezzi_m, _ = find_col(ws, "PEZZI")
     for r in changed:
@@ -1600,7 +1714,7 @@ def rewrite_assignment(data, new_assign, new_sources, log, progress=None, force=
     mo.update(rules=rep["rules"], extra_cost=rep["extra_cost"], changes=len(rep["changes"]),
               warning=None if all(r["status"] != "未达标" for r in rep["rules"])
               else tr("有起订供应商没有达标，请检查"))
-    out["state"] = dict(st, assignment=dict(new_assign), sources=dict(new_sources), rows=rows)
+    out["state"] = dict(st, assignment=dict(new_assign), sources=dict(new_sources), rows=rows, baseline=dict(baseline))
     try:
         out["state"]["written"] = _written_fingerprints(ordine_file, dist)
     except Exception as e:

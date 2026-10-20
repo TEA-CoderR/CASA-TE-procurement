@@ -342,12 +342,8 @@ class OrderCheck:
         if self.running:
             return
         if not self.file_info:
-            p = self._main_order_path()
-            if p and os.path.exists(p):
-                self.load_file(p)
-            if not self.file_info:
-                QMessageBox.information(self.win, tr("检查门店订货清单"), tr("先选择订货清单。"))
-                return
+            QMessageBox.information(self.win, tr("检查门店订货清单"), tr("先把门店发来的订货清单拖进来，或点「选择文件…」。"))
+            return
         store, cycle = self.store.currentData(), self.cycle.currentData()
         use_cfg = self.use_cfg.isChecked()
         algo = self.current_algo()

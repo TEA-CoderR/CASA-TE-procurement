@@ -731,6 +731,31 @@ def load_snapshot(main_order_path):
     return data
 
 
+def stock_for_eans(db, store_id, eans, days_list=None, reorder_cycle=30, algo=None):
+    """
+    一批条码在这家门店的库存和日均（批发商比价「加商品凑单」列报价里没订的商品用）：
+    {条码: {"code", "name", "inv"（负数当 0）, "daily", "cycle"}}；数据库里没有的条码不返回
+    """
+    days_list = list(days_list or DEFAULT_SALES_DAYS)
+    by_ean = codes_from_eans(db, eans)
+    if not by_ean:
+        return {}
+    codes = sorted(set(by_ean.values()))
+    df = compute_suggestions(db, store_id, codes, days_list, reorder_cycle, None, algo=algo)
+    st = stock_of(df, days_list)
+    names = {}
+    if df is not None and len(df):
+        for _, r in df.iterrows():
+            if _val(r, "CodArticolo") is not None:
+                names[str(int(r["CodArticolo"]))] = str(_val(r, "Descrizione", "") or "").strip()
+    out = {}
+    for e, code in by_ean.items():
+        d = st.get(code)
+        if d:
+            out[e] = {"code": code, "name": names.get(code, ""), "inv": d["inv"], "daily": d["daily"], "cycle": d["cycle"]}
+    return out
+
+
 def checked_main_orders(ordine_folder):
     """
     ORDINE 文件夹里的主订单：(能用的, 旧系统的)。
