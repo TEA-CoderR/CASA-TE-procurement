@@ -53,8 +53,15 @@ _STOP = {"FORMATTATO", "LISTINO", "PREZZI", "OFFERTA", "SPA", "SRL", "SNC", "XLS
 
 
 def same_supplier(label, db_name):
+    """
+    报价表的供应商名称和数据库登记的供应商是不是同一家（粗略）：有共同的词，
+    或者数据库名称里的词（5 个字母以上）出现在连写的报价表名称里（例如 FlliPetrillo ↔ F.LLI PETRILLO）
+    """
     a, b = _words(label), _words(db_name)
-    return bool(a and b and (a & b))
+    if a and b and (a & b):
+        return True
+    flat = re.sub(r"[^A-Z0-9]", "", str(label or "").upper())
+    return any(len(w) >= 5 and w in flat for w in b)
 
 
 def compare(files, db_items, tol=TOL):

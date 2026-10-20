@@ -32,6 +32,8 @@ def test_same_supplier():
     assert P.same_supplier("MEGA CASH", "MEGA CASH & CARRY SRL")
     assert not P.same_supplier("formattato_listino", "LISTINO SRL")
     assert not P.same_supplier("MEGA", "")
+    assert P.same_supplier("Ordine FlliPetrillo Foiano 1810", "F.LLI PETRILLO & C. S.R.L.")
+    assert not P.same_supplier("Ordine Meloni Foiano 1810", "MEGA CASH & CARRY SRL")
 
 
 def test_conclusion_and_export():
