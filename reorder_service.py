@@ -731,6 +731,22 @@ def load_snapshot(main_order_path):
     return data
 
 
+def checked_main_orders(ordine_folder):
+    """
+    ORDINE 文件夹里的主订单：(能用的, 旧系统的)。
+    主订单只能由「检查门店订货清单」生成（_备份/门店库存 里有它的库存快照）；没有快照的是旧系统的文件，不能再用来比价。
+    能用的按时间从新到旧排。
+    """
+    if not os.path.isdir(ordine_folder):
+        return [], []
+    names = sorted(f for f in os.listdir(ordine_folder)
+                   if os.path.isfile(os.path.join(ordine_folder, f)) and f.lower().endswith((".xlsx", ".xls", ".xlsm"))
+                   and not f.startswith("~$"))
+    good = [n for n in names if load_snapshot(os.path.join(ordine_folder, n))]
+    good.sort(key=lambda n: os.path.getmtime(os.path.join(ordine_folder, n)), reverse=True)
+    return good, [n for n in names if n not in good]
+
+
 def write_checked_order(rows, root_folder, store_id, source_name=""):
     """
     确认后的订货量写成采购主订单（ORDINE 文件夹）：PEZZI = 确定件数，COLLI = 按数据库箱规折合的箱数。

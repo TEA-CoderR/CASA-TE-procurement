@@ -542,6 +542,13 @@ def run_process(ordine_file, eliminare_path, distribuire_path, log, progress=Non
                "min_order": {"enabled": False, "rules": [], "unmatched": [], "extra_cost": 0.0,
                              "changes": 0, "warning": None}}
 
+    # 主订单只能由「检查门店订货清单」生成（带门店库存快照）；旧系统的文件不再处理，一个文件都不动
+    import reorder_service as RS
+    if not RS.load_snapshot(ordine_file):
+        summary["error"] = tr("主订单不是「② 检查门店订货清单」生成的，不能比价。请先检查门店清单、生成主订单。")
+        log(tr("❌ {0}", summary["error"]))
+        return summary
+
     # 每次都从原文件开始算（重复处理结果一样）：文件还是上次程序写出来的样子 → 先恢复成原文件
     import originals as OG
     root_dir = os.path.dirname(os.path.dirname(ordine_file))
@@ -813,7 +820,6 @@ def run_process(ordine_file, eliminare_path, distribuire_path, log, progress=Non
     # 最低价分配 + 起订量凑单优化
     P(62, tr("选择供应商（最低价 + 起订量凑单）..."))
     # 检查门店清单时存的各门店库存快照：够卖天数、门店间调货
-    import reorder_service as RS
     snapshot = RS.load_snapshot(ordine_file)
     summary["transfers"] = []
     if snapshot:
@@ -828,8 +834,6 @@ def run_process(ordine_file, eliminare_path, distribuire_path, log, progress=Non
         if summary["transfers"]:
             log(tr("门店间调货：{0} 个商品，少订 {1} 箱", len(summary["transfers"]),
                    sum(t["colli_before"] - t["colli_after"] for t in summary["transfers"])))
-    else:
-        log(tr("这份主订单没有门店库存快照（不是「检查门店清单」生成的），不算调货和够卖天数"))
     transfer_rows = {t["row"]: t for t in summary["transfers"]}
     assignment = _select_suppliers(rows_data, supplier_headers, ws_main, log, settings, summary, decide, choose)
     if assignment is None:

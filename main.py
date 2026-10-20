@@ -360,21 +360,29 @@ def _excel_files(path):
 
 
 def scan_folder(root_path):
-    info = {"ok": False, "errors": [], "warnings": [], "ordine": None, "eliminare": [], "suppliers": [], "temp": []}
+    """
+    errors：不能开始的问题；need_order：还没有能用的主订单（要先在 ② 检查门店清单生成），也不能开始，
+    但这是每次比价的正常第一步，界面上不当成错误显示。
+    """
+    info = {"ok": False, "errors": [], "warnings": [], "ordine": None, "ordine_old": [], "need_order": None,
+            "eliminare": [], "suppliers": [], "temp": []}
     if not root_path or not os.path.isdir(root_path):
         info["errors"].append(tr("请选择总文件夹"))
         return info
-    ordine = _excel_files(os.path.join(root_path, ORDINE_FOLDER))
+    import reorder_service as RS
+    good, old = RS.checked_main_orders(os.path.join(root_path, ORDINE_FOLDER))
     elim = _excel_files(os.path.join(root_path, ELIMINARE_FOLDER))
     dist = _excel_files(os.path.join(root_path, DISTRIBUTUIRE_FOLDER))
-    if ordine is None:
-        info["errors"].append(tr("缺少 {0} 文件夹", ORDINE_FOLDER))
-    elif not ordine:
-        info["errors"].append(tr("{0} 里没有 Excel 文件", ORDINE_FOLDER))
+    info["ordine_old"] = old
+    if good:
+        info["ordine"] = good[0]
+        if len(good) > 1:
+            info["warnings"].append(tr("{0} 里有 {1} 个主订单，用最新的：{2}", ORDINE_FOLDER, len(good), good[0]))
+    elif old:
+        info["need_order"] = tr("ORDINE 里的「{0}」不是「② 检查门店订货清单」生成的（旧系统的文件），不能再直接比价。请把门店清单在 ② 里检查一遍，点「确认，生成主订单」。",
+                                old[0])
     else:
-        info["ordine"] = ordine[0]
-        if len(ordine) > 1:
-            info["warnings"].append(tr("{0} 里有 {1} 个文件，只处理第一个：{2}", ORDINE_FOLDER, len(ordine), ordine[0]))
+        info["need_order"] = tr("还没有主订单：在下面「② 检查门店订货清单」检查门店清单，点「确认，生成主订单」。")
     if elim is None:
         info["errors"].append(tr("缺少 {0} 文件夹", ELIMINARE_FOLDER))
     else:
@@ -396,7 +404,7 @@ def scan_folder(root_path):
             info["warnings"].append(tr("有 {0} 个上次留下的临时文件（.calc.xlsx 等），处理时会自动忽略", len(info['temp'])))
     if info["ordine"] and info["ordine"] in (info["eliminare"] or []):
         info["warnings"].append(tr("eliminare 里有和主订单同名的文件，请确认是否放错"))
-    info["ok"] = not info["errors"]
+    info["ok"] = not info["errors"] and not info["need_order"]
     return info
 
 
@@ -1023,7 +1031,7 @@ class QtyFillDialog(QDialog):
         bc, ba = res["before"]
         head = tr("{0}：现在 {1:g} 箱 / €{2:,.2f}，要求 {3}。", ru["name"], bc, ba, describe_condition(ru))
         if not res["candidates"]:
-            self.msg.show_msg(head + tr("分到这家的商品都没有销量数据（主订单不是「检查门店清单」生成的，或者都没卖过），没法按销量推荐。"), "warn")
+            self.msg.show_msg(head + tr("分到这家的商品都没有销量，没法按销量推荐。"), "warn")
         elif res["ok"]:
             self.msg.show_msg(head + tr("加 {0} 个商品、{1:g} 箱（多订 €{2:,.2f}）就达标：{3:g} 箱 / €{4:,.2f}。",
                                         len(res["boxes"]), sum(res["boxes"].values()), res["value"],
@@ -2815,13 +2823,13 @@ class MainWindow(QMainWindow):
     def _page_order(self):
         w, lay = self._page(tr("批发商比价"), tr("几家批发商卖的商品差不多：按最低价给每个商品选供应商，帮有起订量的供应商凑单，把订购数量写回各家报价文件。"))
         from erp_widgets import StepBar
-        self.cmp_steps = StepBar([(tr("总文件夹"), ""), (tr("检查门店清单"), tr("推荐")), (tr("比价分配"), ""), (tr("查看结果"), "")])
+        self.cmp_steps = StepBar([(tr("总文件夹"), ""), (tr("检查门店清单"), tr("生成主订单")), (tr("比价分配"), ""), (tr("查看结果"), "")])
         lay.addWidget(self.cmp_steps)
 
         p1 = Panel(tr("① 总文件夹"))
         row = QHBoxLayout()
         self.folder_edit = QLineEdit()
-        self.folder_edit.setPlaceholderText(tr("包含 ORDINE、eliminare、distribuire 三个子文件夹的文件夹"))
+        self.folder_edit.setPlaceholderText(tr("比价用的总文件夹（里面有 eliminare、distribuire；主订单由 ② 生成后放进 ORDINE）"))
         self.folder_edit.editingFinished.connect(self.refresh_folder)
         b1 = QPushButton(tr("选择文件夹…"))
         self.btn_folder = b1
@@ -2833,20 +2841,18 @@ class MainWindow(QMainWindow):
         row.addWidget(b2)
         p1.lay.addLayout(row)
 
-        # 三个文件区：直接把文件拖进来（或点「选择文件…」），程序放进总文件夹对应的子文件夹；
-        # 原来的文件挪进子文件夹里的 _旧订单 / _旧文件，不删除。也照样可以自己去文件夹里放。
+        # 两个文件区：直接把文件拖进来（或点「选择文件…」），程序放进总文件夹对应的子文件夹；
+        # 原来的文件挪进子文件夹里的 _旧文件，不删除。也照样可以自己去文件夹里放。
+        # 主订单不在这里放：只能由「② 检查门店订货清单」生成（带门店库存，才能算调货和够卖天数）
         from erp_widgets import DropZone
         zones = QHBoxLayout()
         zones.setSpacing(12)
-        self.zone_ordine = DropZone(tr("主订单 · ORDINE"), "", multi=False)
         self.zone_elim = DropZone(tr("扣减文件 · eliminare"), "", multi=True, removable=True)
         self.zone_sup = DropZone(tr("供应商报价 · distribuire"), "", multi=True, removable=True)
-        for z, sub in ((self.zone_ordine, ORDINE_FOLDER), (self.zone_elim, ELIMINARE_FOLDER),
-                       (self.zone_sup, DISTRIBUTUIRE_FOLDER)):
+        for z, sub in ((self.zone_elim, ELIMINARE_FOLDER), (self.zone_sup, DISTRIBUTUIRE_FOLDER)):
             z.setMinimumHeight(120)
             z.open_folder.connect(lambda sub=sub: self._open_sub(sub))
             zones.addWidget(z, 1)
-        self.zone_ordine.files_dropped.connect(self._drop_ordine)
         self.zone_elim.files_dropped.connect(self._drop_eliminare)
         self.zone_sup.files_dropped.connect(self._drop_suppliers)
         self.zone_elim.remove_requested.connect(lambda n: self._remove_file(ELIMINARE_FOLDER, n))
@@ -3558,7 +3564,7 @@ class MainWindow(QMainWindow):
         ok = bool(path) and os.path.isdir(path)
         no_root = tr("先在上面选总文件夹；也可以直接拖文件进来，会先让你选")
         if not ok:
-            for z in (self.zone_ordine, self.zone_elim, self.zone_sup):
+            for z in (self.zone_elim, self.zone_sup):
                 z.set_files([], no_root)
             return
 
@@ -3570,9 +3576,6 @@ class MainWindow(QMainWindow):
                 out.append((f"{n}  ({t:%d/%m})" if with_date and t else n, tip))
             return out
 
-        self.zone_ordine.set_files(items(ORDINE_FOLDER, [info["ordine"]] if info["ordine"] else []),
-                                   tr("拖新的主订单进来会替换现在这个（旧的挪进 ORDINE\\_旧订单）") if info["ordine"]
-                                   else tr("把主订单拖到这里"))
         self.zone_elim.set_files(items(ELIMINARE_FOLDER, info["eliminare"] or []),
                                  tr("把已处理 / 已下单的文件拖到这里，可以一次拖好几个"))
         self.zone_sup.set_files(items(DISTRIBUTUIRE_FOLDER, info["suppliers"] or [], True),
@@ -3612,28 +3615,6 @@ class MainWindow(QMainWindow):
         self.log("[文件] " + msg)
         self.refresh_folder()
         self.show_toast(msg)
-
-    def _drop_ordine(self, files):
-        import file_inbox as FI
-        if self._busy_drop():
-            return
-        if len(files) > 1:
-            QMessageBox.information(self, tr("主订单"), tr("主订单一次只能放一个文件。"))
-            return
-        root = self._ensure_root()
-        if not root:
-            return
-        cur = (self.info or {}).get("ordine")
-        new = os.path.basename(files[0])
-        if cur and cur != new and QMessageBox.question(
-                self, tr("主订单"), tr("把主订单换成「{0}」？\n原来的「{1}」挪进 ORDINE\\_旧订单（不删除）。", new, cur)) != QMessageBox.Yes:
-            return
-        try:
-            r = FI.import_ordine(root, files)
-        except Exception as e:
-            self._file_error(e)
-            return
-        self._after_drop(tr("主订单已换成 {0}", os.path.basename(r["file"])))
 
     def _drop_eliminare(self, files):
         import file_inbox as FI
@@ -3748,9 +3729,12 @@ class MainWindow(QMainWindow):
             self.order_check.folder_changed()
         if hasattr(self, "cmp_steps") and not self.running:
             ok = bool(info.get("ok"))
-            self.cmp_steps.set_state(0, "done" if ok else "now", info.get("ordine") or tr("选择总文件夹"))
-            self.cmp_steps.set_state(1, "todo", tr("推荐"))
-            self.cmp_steps.set_state(2, "now" if ok else "todo", tr("{0} 家供应商", len(info.get("suppliers") or [])) if ok else "")
+            folder_ok = bool(path) and not info["errors"]
+            self.cmp_steps.set_state(0, "done" if folder_ok else "now",
+                                     tr("{0} 家供应商", len(info.get("suppliers") or [])) if folder_ok else tr("选择总文件夹"))
+            self.cmp_steps.set_state(1, "done" if info.get("ordine") else ("now" if folder_ok else "todo"),
+                                     info.get("ordine") or tr("生成主订单"))
+            self.cmp_steps.set_state(2, "now" if ok else "todo", "")
             self.cmp_steps.set_state(3, "todo", "")
 
     def edit_scenarios(self):
@@ -3775,7 +3759,7 @@ class MainWindow(QMainWindow):
             self.show_toast(tr("供应商名称已保存"))
 
     def _snapshot_line(self, ordine_file):
-        """开始处理前的提示：主订单是不是「检查门店清单」生成的（有门店库存快照才算调货和够卖天数）"""
+        """开始处理前的提示：主订单是哪家门店的清单生成的（会算门店间调货和够卖天数）"""
         import reorder_service as RS
         try:
             snap = RS.load_snapshot(ordine_file)
@@ -3783,7 +3767,7 @@ class MainWindow(QMainWindow):
             snap = None
         if snap:
             return "\n\n" + tr("门店库存快照：有（{0}），会算门店间调货和够卖天数。", RS.STORES.get(snap.get("store"), ""))
-        return "\n\n" + tr("⚠ 这份主订单不是「② 检查门店订货清单」生成的，没有门店库存数据：不算门店间调货和够卖天数。以后建议都从门店清单开始。")
+        return ""
 
     def _scenario_line(self):
         if not settings.get("scenarios_enabled", True):
@@ -3843,8 +3827,11 @@ class MainWindow(QMainWindow):
             return
         self.refresh_folder()
         info = self.info
-        if not info["ok"]:
+        if info["errors"]:
             QMessageBox.warning(self, tr("不能开始"), tr("文件夹检查没有通过：\n\n{0}", "\n".join(info["errors"])))
+            return
+        if info.get("need_order"):
+            QMessageBox.information(self, tr("不能开始"), info["need_order"])
             return
         root_path = self.folder_edit.text().strip()
         n_rules = len([r for r in settings["rules"] if r.get("enabled", True)]) if self.t_min.isChecked() else 0

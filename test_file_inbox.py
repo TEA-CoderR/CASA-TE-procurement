@@ -1,7 +1,5 @@
-"""批发商比价：拖入文件放进 ORDINE / eliminare / distribuire，旧文件挪进 _旧订单 / _旧文件（不删除）"""
+"""批发商比价：拖入文件放进 eliminare / distribuire，旧文件挪进 _旧文件（不删除）"""
 import os
-
-import pytest
 
 import file_inbox as FI
 
@@ -12,30 +10,6 @@ def _mk(folder, name, text="x"):
     with open(p, "w") as f:
         f.write(text)
     return p
-
-
-def test_ordine_keeps_only_new_file(tmp_path):
-    root = str(tmp_path / "root")
-    _mk(os.path.join(root, "ORDINE"), "vecchio.xlsx", "old")
-    new = _mk(str(tmp_path / "dl"), "nuovo.xlsx", "new")
-    r = FI.import_ordine(root, [new])
-    assert FI.excel_files(os.path.join(root, "ORDINE")) == ["nuovo.xlsx"]
-    assert os.path.exists(os.path.join(root, "ORDINE", "_旧订单", "vecchio.xlsx"))
-    assert os.path.exists(new)                                   # 拖进来的原文件还在原地（复制，不是剪切）
-    assert len(r["archived"]) == 1
-    with pytest.raises(ValueError):
-        FI.import_ordine(root, [new, new])                       # 主订单只能一个
-    with pytest.raises(ValueError):
-        FI.import_ordine(root, [_mk(str(tmp_path / "dl"), "a.pdf")])
-
-
-def test_ordine_same_name_replaced(tmp_path):
-    root = str(tmp_path / "root")
-    _mk(os.path.join(root, "ORDINE"), "ord.xlsx", "old")
-    new = _mk(str(tmp_path / "dl"), "ord.xlsx", "new")
-    FI.import_ordine(root, [new])
-    assert open(os.path.join(root, "ORDINE", "ord.xlsx")).read() == "new"
-    assert open(os.path.join(root, "ORDINE", "_旧订单", "ord.xlsx")).read() == "old"
 
 
 def test_eliminare_add_and_replace(tmp_path):

@@ -85,3 +85,32 @@ def test_snapshot_roundtrip_and_wholesale(tmp_path):
     rows2 = [service._price_row_pieces(2, 3, {"MEGA": 1.0}, {"MEGA": 12}, "800001", "A")]
     assert service.wholesale_transfers(rows2, ["MEGA"], got, {"store_orders": {"transfer": {"enabled": False}}}) == []
     assert service.wholesale_transfers(rows2, ["MEGA"], None, {}) == []
+
+
+def test_only_checked_main_orders_are_used(tmp_path):
+    """主订单只能由检查门店清单生成：没有库存快照的（旧系统的文件）不能用来比价"""
+    import os
+    import time
+    import reorder_service as RS
+    import service
+    folder = tmp_path / "root" / "ORDINE"
+    folder.mkdir(parents=True)
+    assert RS.checked_main_orders(str(tmp_path / "nope")) == ([], [])
+    old = folder / "ordine_vecchio.xlsx"
+    old.write_bytes(b"x")
+    (folder / "~$lock.xlsx").write_bytes(b"x")
+    assert RS.checked_main_orders(str(folder)) == ([], ["ordine_vecchio.xlsx"])
+    snap = {2: {"1": {"inv": 0, "daily": 0.1, "cycle": 30, "ean": "800001"}}}
+    for n in ("确认订单_A.xlsx", "确认订单_B.xlsx"):
+        p = folder / n
+        p.write_bytes(b"x")
+        RS.save_snapshot(str(p), 2, snap)
+    t = time.time()
+    os.utime(folder / "确认订单_A.xlsx", (t, t))
+    os.utime(folder / "确认订单_B.xlsx", (t - 100, t - 100))
+    assert RS.checked_main_orders(str(folder)) == (["确认订单_A.xlsx", "确认订单_B.xlsx"], ["ordine_vecchio.xlsx"])
+    # 旧主订单直接拿去比价：不处理、文件不动
+    logs = []
+    s = service.run_process(str(old), str(tmp_path / "root" / "eliminare"), str(tmp_path / "root" / "distribuire"),
+                            logs.append)
+    assert s["error"] and not s["ok"] and old.read_bytes() == b"x"

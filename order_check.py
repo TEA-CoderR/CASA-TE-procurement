@@ -1,7 +1,7 @@
 """
-「订单处理」页上的第一步：检查门店订货清单
+批发商比价的 ②：检查门店订货清单（比价用的主订单只能从这里生成）
 
-门店发来的订货清单（通常就是 ORDINE 里的主订单）→ 按这家门店的销量、数据库库存和订货周期算建议量
+门店发来的订货清单 → 按这家门店的销量、数据库库存和订货周期算建议量
 → 逐条对比清单数量：增加 / 减少 / 不订 / 不变 → 可以手动改「确定件数」
 → 确认后生成新的主订单（PEZZI = 确定件数），原文件挪进 ORDINE\\_旧订单，再点「开始处理」做供应商比价分配。
 """
@@ -73,8 +73,8 @@ class OrderCheck:
 
     def build(self):
         ui = self.ui
-        p = ui.Panel(tr("② 检查门店订货清单（推荐）"))
-        intro = QLabel(tr("把门店发来的订货清单拖进来：按销量和数据库库存检查数量是否合理（增加 / 减少 / 不订），同时查其他门店的库存；确认后生成新的主订单，再点下面的「开始处理」做供应商比价。这样比价时还能算门店间调货和够卖天数。"))
+        p = ui.Panel(tr("② 检查门店订货清单"))
+        intro = QLabel(tr("比价用的主订单只从这里生成：把门店发来的订货清单拖进来，按销量和数据库库存检查数量（增加 / 减少 / 不订），同时查其他门店的库存；确认后生成主订单，再点下面的「开始处理」做供应商比价（会算门店间调货和够卖天数）。"))
         intro.setObjectName("Faint")
         intro.setWordWrap(True)
         p.lay.addWidget(intro)
@@ -83,19 +83,25 @@ class OrderCheck:
         r1.addWidget(QLabel(tr("清单")))
         self.file_edit = QLineEdit()
         self.file_edit.setReadOnly(True)
-        self.file_edit.setPlaceholderText(tr("默认用 ORDINE 里的主订单；门店发来的清单可以直接拖到这里，或点「选择文件…」"))
+        self.file_edit.setPlaceholderText(tr("把门店发来的订货清单拖到这里，或点「选择文件…」"))
         self.file_edit.setToolTip(tr("把门店发来的订货清单（Excel）拖到这里"))
         from erp_widgets import accept_file_drops
         accept_file_drops(self.file_edit, self._dropped, (".xlsx", ".xlsm"))
         r1.addWidget(self.file_edit, 1)
-        b1 = QPushButton(tr("用主订单"))
-        b1.setToolTip(tr("用总文件夹 ORDINE 里的主订单"))
-        b1.clicked.connect(self.use_main_order)
-        r1.addWidget(b1)
         b2 = QPushButton(tr("选择文件…"))
         b2.clicked.connect(self.choose_file)
         r1.addWidget(b2)
         p.lay.addLayout(r1)
+        # 现在的主订单（上一次在这里确认生成的）
+        r0 = QHBoxLayout()
+        self.order_lbl = QLabel("")
+        self.order_lbl.setWordWrap(True)
+        r0.addWidget(self.order_lbl, 1)
+        self.btn_open_order = QPushButton(tr("打开主订单"))
+        self.btn_open_order.setObjectName("Link")
+        self.btn_open_order.clicked.connect(lambda: self.win.open_main_order())
+        r0.addWidget(self.btn_open_order)
+        p.lay.addLayout(r0)
 
         r2 = QHBoxLayout()
         r2.setSpacing(10)
@@ -247,18 +253,6 @@ class OrderCheck:
         return p
 
     # ---------- 选文件 ----------
-    def _main_order_path(self):
-        root = self.win.folder_edit.text().strip()
-        name = (self.win.info or {}).get("ordine")
-        return os.path.join(root, "ORDINE", name) if root and name else ""
-
-    def use_main_order(self):
-        p = self._main_order_path()
-        if not p or not os.path.exists(p):
-            QMessageBox.information(self.win, tr("检查门店订货清单"), tr("总文件夹的 ORDINE 里没有主订单。"))
-            return
-        self.load_file(p)
-
     def choose_file(self):
         start = os.path.dirname(self.file_edit.text()) if self.file_edit.text() else (self.cfg.get("last_dir") or "")
         path, _ = QFileDialog.getOpenFileName(self.win, tr("选择订货清单"), start, tr("Excel 文件 (*.xlsx *.xlsm)"))
@@ -273,11 +267,28 @@ class OrderCheck:
         self.win.show_toast(tr("已载入清单：{0}", os.path.basename(path)))
 
     def folder_changed(self):
-        """总文件夹变了：没选过文件时默认用主订单"""
-        if not self.file_path or not os.path.exists(self.file_path):
-            p = self._main_order_path()
-            if p and os.path.exists(p):
-                self.load_file(p, quiet=True)
+        """总文件夹变了：显示现在的主订单是哪家门店、什么时候生成的"""
+        if not hasattr(self, "order_lbl"):
+            return
+        info = self.win.info or {}
+        T = self.ui.T
+        name = info.get("ordine")
+        if name:
+            root = self.win.folder_edit.text().strip()
+            path = os.path.join(root, "ORDINE", name)
+            snap = R.load_snapshot(path) or {}
+            try:
+                when = datetime.fromtimestamp(os.path.getmtime(path))
+                when = f"{when:%d/%m %H:%M}"
+            except OSError:
+                when = ""
+            self.order_lbl.setText(tr("✔ 现在的主订单：{0}（{1}，{2} 生成）。门店清单变了就重新检查、再确认一次，会替换它。",
+                                      name, store_label(snap.get("store")) if snap.get("store") else "—", when))
+            self.order_lbl.setStyleSheet(f"color:{T('ok')};")
+        else:
+            self.order_lbl.setText(info.get("need_order") or tr("还没有主订单。"))
+            self.order_lbl.setStyleSheet(f"color:{T('warn') if info.get('ordine_old') else T('muted')};")
+        self.btn_open_order.setVisible(bool(name))
 
     def load_file(self, path, quiet=False):
         self.file_edit.setText(os.path.normpath(path))
