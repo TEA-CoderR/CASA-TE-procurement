@@ -98,6 +98,13 @@ def build_qss():
                        border-left: 3px solid {t['side_bar']}; padding-left: 7px; }}
     #NavBadge {{ background: #2E6BEA; color: #FFFFFF; border-radius: 8px; font-size: 11px; padding: 0 6px;
                  font-family: "{NUM_FONT}"; }}
+    #NavBtn[open="true"] {{ color: #FFFFFF; font-weight: 600; }}
+    #NavArrow {{ color: {t['side_muted']}; font-size: 14px; background: transparent; }}
+    #NavSubBox {{ background: transparent; border: none; border-left: 1px solid {t['side_active']}; }}
+    #NavSub {{ background: transparent; color: {t['side_text']}; border: none; border-radius: 6px;
+               text-align: left; padding: 0 12px; min-height: 30px; max-height: 30px; font-size: 12px; margin-left: 6px; }}
+    #NavSub:hover {{ background: {t['side_active']}; color: #FFFFFF; }}
+    #NavSub:checked {{ background: {t['side_active']}; color: #FFFFFF; font-weight: 600; }}
     #NavSoon {{ background: rgba(255,255,255,0.08); color: {t['side_muted']}; border-radius: 8px; font-size: 10px; padding: 0 6px; }}
     #DbBox {{ background: rgba(255,255,255,0.05); border-radius: 9px; }}
     #DbTitle {{ color: #E6EBF3; font-size: 12px; }}

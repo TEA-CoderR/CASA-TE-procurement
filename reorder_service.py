@@ -79,6 +79,42 @@ def guess_store(filename):
     return None
 
 
+BATCH_DIR = "批发商比价"
+
+
+def batch_folder(root, day=None):
+    """
+    这一批（检查清单确认时生成主订单）的文件夹，结构固定、一看就懂：
+      根目录\\批发商比价\\2026-10-20\\            ← 这一天的一批（这里放整批的调货单）
+      根目录\\批发商比价\\2026-10-20\\MARLIA\\     ← 每家门店一个，里面 ORDINE / eliminare / distribuire
+    同一天再确认一次就用同一个文件夹（主订单替换，原来的挪进 ORDINE\\_旧订单）
+    """
+    day = day or datetime.now()
+    return os.path.join(root, BATCH_DIR, f"{day:%Y-%m-%d}")
+
+
+def batch_store_folder(root, store_id, day=None):
+    return os.path.join(batch_folder(root, day), STORES.get(store_id, str(store_id)))
+
+
+def batch_root_of(path):
+    """path 是 根目录\\批发商比价\\日期\\门店（或日期）时返回根目录，否则 None"""
+    if not path:
+        return None
+    parts = os.path.normpath(path).split(os.sep)
+    for k in (3, 2):
+        if len(parts) > k and parts[-k] == BATCH_DIR and re.fullmatch(r"\d{4}-\d{2}-\d{2}", parts[-k + 1] or ""):
+            return os.sep.join(parts[:-k]) or os.sep
+    return None
+
+
+def make_store_folder(path):
+    """建好门店的比价文件夹和三个子文件夹"""
+    for sub in ("ORDINE", "eliminare", "distribuire"):
+        os.makedirs(os.path.join(path, sub), exist_ok=True)
+    return path
+
+
 # =====================================================================
 # 订货清单解析
 # =====================================================================
@@ -217,7 +253,7 @@ def extract_products(db, store_id, day, query_days, supplier_groups=None):
 
 
 def compute_suggestions(db, store_id, product_codes, days_list=None, reorder_cycle=30, supplier_ids=None,
-                        use_supplier_cycles=True, round_to_db_pack=True, algo=None, groups=None):
+                        use_supplier_cycles=True, round_to_db_pack=True, algo=None, groups=None, want_raw=False):
     """
     原程序 Suggerimenti Ordini 的 query_reorder()：查数据 → process_reorder_data。
     返回每个商品一行的 DataFrame（suggested_order_qty = 建议件数）。
@@ -230,6 +266,8 @@ def compute_suggestions(db, store_id, product_codes, days_list=None, reorder_cyc
     groups: 原程序算法时，把商品分成几组分别算（门店配货：每个 SCHEDA 一组）。原程序一次只算一个导入的 SCHEDA，
             A/B/C 等级是和「这一批商品的 30 天平均销量」比的，所以要按供应商分开算才和原程序一样。
             数据库只查一次，查回来再按组拆开，速度不变。
+    want_raw: 原程序算法按数据库箱规取整时，另外给一列 raw_order_qty = 取整之前的件数（门店间调货要知道真正要几件）。
+              用同一份查回来的数据再跑一遍原程序（不取整），不多查数据库；原程序的建议件数不受影响。
     """
     import pandas as pd
     from fenpei.config import AppConfig
@@ -296,18 +334,32 @@ def compute_suggestions(db, store_id, product_codes, days_list=None, reorder_cyc
             df = df.merge(part["last_sale_date"], on="CodArticolo", how="left")
         return df
 
-    if groups and not use_v2:
-        frames = []
-        for g in groups:
-            keep = {int(c) for c in g if str(c).strip().isdigit()}
-            part = {k: (v[v["CodArticolo"].isin(keep)] if isinstance(v, pd.DataFrame) and "CodArticolo" in v.columns
-                        else v) for k, v in data.items()}
-            if part.get("inventory") is None or part["inventory"].empty:
-                continue
-            frames.append(run(part))
-        result_df = pd.concat(frames, ignore_index=True) if frames else run(data)
-    else:
-        result_df = run(data)
+    def process(dd):
+        if groups and not use_v2:
+            frames = []
+            for g in groups:
+                keep = {int(c) for c in g if str(c).strip().isdigit()}
+                part = {k: (v[v["CodArticolo"].isin(keep)] if isinstance(v, pd.DataFrame) and "CodArticolo" in v.columns
+                            else v) for k, v in dd.items()}
+                if part.get("inventory") is None or part["inventory"].empty:
+                    continue
+                frames.append(run(part))
+            return pd.concat(frames, ignore_index=True) if frames else run(dd)
+        return run(dd)
+
+    result_df = process(data)
+    if want_raw and round_to_db_pack and not use_v2 and data.get("inventory") is not None \
+            and "qtasmallbox" in data["inventory"].columns and len(result_df):
+        d2 = dict(data)
+        inv2 = data["inventory"].copy()
+        inv2["qtasmallbox"] = 0                     # 原程序只在 qtasmallbox > 1 时取整
+        d2["inventory"] = inv2
+        try:
+            raw = process(d2)[["CodArticolo", "suggested_order_qty"]].drop_duplicates("CodArticolo")
+            result_df = result_df.merge(raw.rename(columns={"suggested_order_qty": "raw_order_qty"}),
+                                        on="CodArticolo", how="left")
+        except Exception:
+            pass
     # 每个商品实际用的订货周期（界面显示用）
     if "IDFornitore" in result_df.columns:
         result_df["reorder_cycle_used"] = result_df["IDFornitore"].apply(
@@ -414,8 +466,13 @@ def _val(row, key, default=None):
     return v
 
 
-def to_rows(result_df, file_rows=None):
-    """把计算结果整理成界面 / 导出 / 主订单用的行；file_rows 是订货清单（用来带上原数量）"""
+def to_rows(result_df, file_rows=None, days_list=None):
+    """
+    把计算结果整理成界面 / 导出 / 主订单用的行；file_rows 是订货清单（用来带上原数量）。
+    inv0 / daily0：算「库存够卖」「订后够卖」用的库存（负数当 0）和日均（新算法的加权日均；
+    原程序算法没有日均，用最近一个周期的销量 ÷ 天数），和门店配货的够卖天数同一个算法。
+    """
+    days_list = list(days_list or DEFAULT_SALES_DAYS)
     by_code = {}
     for x in file_rows or []:
         if x.get("code"):
@@ -454,6 +511,8 @@ def to_rows(result_df, file_rows=None):
             "safety": _val(r, "safety_stock"),
             "daily": _val(r, "daily_rate"),
             "target": _val(r, "target_stock"),
+            "inv0": max(0.0, float(_val(r, "store_inventory", 0) or 0)),
+            "daily0": daily_of(r, days_list),
         })
     out.sort(key=lambda x: (-(x["priority"] or 0), x["code"]))
     return out
@@ -604,6 +663,208 @@ def check_rows(file_rows, result_rows, unit="colli"):
                    "final": int(math.ceil(qty)), "verdict": "数据库没有", "in_db": False}
         out.append(row)
     return out
+
+
+# =====================================================================
+# 各门店库存快照（检查门店清单时一起查，批发商比价用来算门店间调货、够卖天数）
+# =====================================================================
+def daily_of(r, days_list):
+    """一行计算结果的日均：新算法有加权日均；原程序算法用最近一个周期（没有就用第 3 个周期）的销量"""
+    v = _val(r, "daily_rate")
+    if v is not None:
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            pass
+    s1 = float(_val(r, "sales_1", 0) or 0)
+    s3 = float(_val(r, "sales_3", 0) or 0)
+    if s1 > 0:
+        return s1 / days_list[0]
+    if s3 > 0:
+        return s3 / days_list[2]
+    return 0.0
+
+
+def stock_of(df, days_list):
+    """一家门店的计算结果 → {商品编号: {"inv", "daily", "cycle", "ean"}}（负库存当 0）"""
+    out = {}
+    if df is None or not len(df):
+        return out
+    for _, r in df.iterrows():
+        if _val(r, "CodArticolo") is None:
+            continue
+        code = str(int(r["CodArticolo"]))
+        out[code] = {"inv": max(0.0, float(_val(r, "store_inventory", 0) or 0)),
+                     "daily": daily_of(r, days_list),
+                     "cycle": float(_val(r, "reorder_cycle_used", 30) or 30),
+                     "ean": _clean_code(_val(r, "CodBarre", "")) or ""}
+    return out
+
+
+def stock_snapshot(db, codes, days_list, reorder_cycle, stores, use_supplier_cycles=True, algo=None,
+                   own=None, own_df=None, on_store=None):
+    """
+    几家门店同一批商品的库存和日均：{门店号: {商品编号: {inv, daily, cycle, ean}}}。
+    own / own_df：本店已经算过的结果，直接用，不再查。
+    """
+    snap = {}
+    for k, sid in enumerate(stores):
+        if on_store:
+            on_store(k, sid)
+        if sid == own and own_df is not None:
+            df = own_df
+        else:
+            df = compute_suggestions(db, sid, codes, days_list, reorder_cycle, None,
+                                     use_supplier_cycles=use_supplier_cycles, algo=algo)
+        snap[sid] = stock_of(df, days_list)
+    return snap
+
+
+def snapshot_path(main_order_path):
+    """主订单旁边的库存快照文件：总文件夹/_备份/门店库存/<主订单文件名>.json"""
+    root = os.path.dirname(os.path.dirname(main_order_path))
+    return os.path.join(root, "_备份", "门店库存", os.path.basename(main_order_path) + ".json")
+
+
+def save_snapshot(main_order_path, store_id, snap, rows=None, transfers=None, transfers_file=None):
+    """
+    存快照：按条码（主订单按条码找商品）→ {"code", "stores": {门店号: {inv, daily, cycle}}}
+    rows：检查清单的行（补上快照里没有条码的商品的条码）
+    transfers：检查清单时（几家门店一起）已经定好的门店间调货（这家店调进 / 调出的）；
+               存了就说明主订单的件数已经减掉了调货，比价时不再重算调货（None = 旧做法，比价时再算）
+    """
+    import json
+    ean_of = {}
+    for x in rows or []:
+        if x.get("code") and x.get("ean"):
+            ean_of[str(x["code"])] = _clean_code(x["ean"])
+    by_ean = {}
+    for sid, d in snap.items():
+        for code, v in d.items():
+            ean = ean_of.get(code) or v.get("ean")
+            if not ean:
+                continue
+            e = by_ean.setdefault(ean, {"code": code, "stores": {}})
+            e["stores"][str(sid)] = {"inv": v["inv"], "daily": v["daily"], "cycle": v["cycle"]}
+    path = snapshot_path(main_order_path)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        data = {"store": store_id, "made": datetime.now().isoformat(timespec="seconds"),
+                "main_order": os.path.basename(main_order_path), "by_ean": by_ean}
+        if transfers is not None:
+            data["planned_transfers"] = transfers
+            data["transfers_file"] = transfers_file
+        json.dump(data, f, ensure_ascii=False)
+    return path
+
+
+def load_snapshot(main_order_path):
+    """读快照；没有 / 读不了 / 不是这份主订单的 → None。门店号转回 int"""
+    import json
+    try:
+        with open(snapshot_path(main_order_path), encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return None
+    if data.get("main_order") != os.path.basename(main_order_path):
+        return None
+    for e in data.get("by_ean", {}).values():
+        e["stores"] = {int(k): v for k, v in e.get("stores", {}).items()}
+    return data
+
+
+def stock_for_eans(db, store_id, eans, days_list=None, reorder_cycle=30, algo=None):
+    """
+    一批条码在这家门店的库存和日均（批发商比价「加商品凑单」列报价里没订的商品用）：
+    {条码: {"code", "name", "inv"（负数当 0）, "daily", "cycle"}}；数据库里没有的条码不返回
+    """
+    days_list = list(days_list or DEFAULT_SALES_DAYS)
+    by_ean = codes_from_eans(db, eans)
+    if not by_ean:
+        return {}
+    codes = sorted(set(by_ean.values()))
+    df = compute_suggestions(db, store_id, codes, days_list, reorder_cycle, None, algo=algo)
+    st = stock_of(df, days_list)
+    names = {}
+    if df is not None and len(df):
+        for _, r in df.iterrows():
+            if _val(r, "CodArticolo") is not None:
+                names[str(int(r["CodArticolo"]))] = str(_val(r, "Descrizione", "") or "").strip()
+    out = {}
+    for e, code in by_ean.items():
+        d = st.get(code)
+        if d:
+            out[e] = {"code": code, "name": names.get(code, ""), "inv": d["inv"], "daily": d["daily"], "cycle": d["cycle"]}
+    return out
+
+
+def plan_batch_transfers(store_rows, snap, cfg=None, far=()):
+    """
+    几家门店的清单一起检查以后，先算门店间调货、再订剩下的（和门店配货同一个规则，见 transfers.py）：
+      store_rows: {门店号: 检查清单的行}（用 final 确定件数、pack 数据库箱规、price 进价、code、ean、name）
+      snap:       {门店号: {商品编号: {inv, daily, cycle}}}：五家店这批商品的库存和日均
+    调出门店留够自己一个订货周期；这次自己也要订这个商品的门店不调出；离得远的门店（far）不调出也不调进。
+    返回 (moves, new_final)：moves 是调货单的行；new_final {(门店, 商品编号): 调货以后还要订的件数}
+    """
+    import transfers as TR
+    import store_orders as SO
+    cfg = TR.config(cfg)
+    if not cfg.get("enabled"):
+        return [], {}
+    ordering = {(sid, str(x["code"])) for sid, rows in store_rows.items() for x in rows
+                if x.get("code") and int(x.get("final") or 0) > 0}
+    needs, info = [], {}
+    for sid, rows in store_rows.items():
+        for x in rows:
+            final = int(x.get("final") or 0)
+            pack = float(x.get("pack") or 0)
+            if not x.get("in_db", True) or not x.get("code") or final <= 0 or pack <= 0:
+                continue
+            k = len(needs)
+            needs.append({"id": k, "store": sid, "key": str(x["code"]), "need": final, "pack": pack,
+                          "colli": int(math.ceil(final / pack)), "price": float(x.get("price") or 0)})
+            info[k] = (sid, x)
+    avail = {}
+    for sid, d in (snap or {}).items():
+        for code, v in d.items():
+            if (sid, str(code)) in ordering:
+                continue
+            sp = TR.surplus(v)
+            if sp > 0:
+                avail[(sid, str(code))] = sp
+    moves, _ = TR.plan(needs, avail, cfg, far)
+    new_final, out = {}, []
+    for m in moves:
+        sid, x = info[m["need_id"]]
+        code = str(x["code"])
+        left = max(0, int(x["final"]) - int(m["pieces"]))
+        new_final[(sid, code)] = left
+        d_from = (snap.get(m["from"]) or {}).get(code)
+        d_to = (snap.get(sid) or {}).get(code)
+        out.append({"from": m["from"], "to": sid, "code": code, "ean": x.get("ean") or "", "desc": x.get("name") or "",
+                    "supplier": "", "pieces": int(m["pieces"]), "value": float(m["value"]),
+                    "price": float(x.get("price") or 0), "colli_before": m["colli_before"], "colli_after": m["colli_after"],
+                    "need": int(x["final"]), "pack": m["pack"],
+                    "from_days": SO.cover_days(d_from, -m["pieces"]) if d_from else None,
+                    "to_days": SO.cover_days(d_to, left + m["pieces"]) if d_to else None})
+    out.sort(key=lambda t: (t["from"], t["to"], t["desc"]))
+    return out, new_final
+
+
+def checked_main_orders(ordine_folder):
+    """
+    ORDINE 文件夹里的主订单：(能用的, 旧系统的)。
+    主订单只能由「检查门店订货清单」生成（_备份/门店库存 里有它的库存快照）；没有快照的是旧系统的文件，不能再用来比价。
+    能用的按时间从新到旧排。
+    """
+    if not os.path.isdir(ordine_folder):
+        return [], []
+    names = sorted(f for f in os.listdir(ordine_folder)
+                   if os.path.isfile(os.path.join(ordine_folder, f)) and f.lower().endswith((".xlsx", ".xls", ".xlsm"))
+                   and not f.startswith("~$"))
+    good = [n for n in names if load_snapshot(os.path.join(ordine_folder, n))]
+    good.sort(key=lambda n: os.path.getmtime(os.path.join(ordine_folder, n)), reverse=True)
+    return good, [n for n in names if n not in good]
 
 
 def write_checked_order(rows, root_folder, store_id, source_name=""):

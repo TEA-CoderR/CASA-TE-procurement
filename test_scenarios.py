@@ -140,3 +140,10 @@ def test_supplier_names_carry_over_and_rule_matching():
     assert match_rules(st["rules"], new)[0] == []                     # 只按文件名：下周就找不到了
     m, _ = match_rules(st["rules"], new, SN.labels(new, st))
     assert [h for _, h in m] == ["formattato_061020.xlsx"]
+
+
+def test_urgent_missing():
+    import scenarios as SC
+    items = [{"inv": 2, "daily": 1}, {"inv": 20, "daily": 1}, {"inv": 0, "daily": 0}, {"qty": 3}, {"inv": -5, "daily": 0.5}]
+    assert [SC.urgent(m) for m in items] == [True, False, False, False, True]
+    assert SC.urgent_count(items) == 2

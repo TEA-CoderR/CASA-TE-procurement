@@ -193,3 +193,17 @@ def test_old_algorithm_per_supplier_groups_match_original():
     mixed = R.compute_suggestions(DB(), 1, a + b, algo={"engine": "v1"}, use_supplier_cycles=False)
     mixed_t = dict(zip(mixed["CodArticolo"], mixed["sales_tier"]))
     assert tiers[11] != mixed_t[11]          # 混在一起算时，乙的畅销品会被甲压成低等级
+
+
+def test_to_rows_cover_inputs():
+    """库存够卖 / 订后够卖用的库存负数当 0；原程序算法没有日均时用最近一个周期销量 ÷ 天数"""
+    import pandas as pd
+    import store_orders as SO
+    df = pd.DataFrame([{"CodArticolo": 1, "store_inventory": -13, "sales_1": 23, "sales_3": 88},
+                       {"CodArticolo": 2, "store_inventory": 20, "sales_1": 0, "sales_3": 45, "daily_rate": None},
+                       {"CodArticolo": 3, "store_inventory": 5, "sales_1": 30, "daily_rate": 2.0}])
+    rows = {x["code"]: x for x in R.to_rows(df, days_list=[30, 60, 90, 180])}
+    assert rows["1"]["inv0"] == 0 and abs(rows["1"]["daily0"] - 23 / 30) < 1e-9
+    assert SO.cover_days({"inv": rows["1"]["inv0"], "daily": rows["1"]["daily0"]}) == 0     # 不会是负数
+    assert abs(rows["2"]["daily0"] - 45 / 90) < 1e-9
+    assert rows["3"]["daily0"] == 2.0

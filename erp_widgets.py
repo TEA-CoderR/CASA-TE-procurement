@@ -1084,8 +1084,11 @@ class DropZone(QFrame):
             self.files_dropped.emit(files)
 
 
-def accept_file_drops(widget, callback, exts=(".xlsx", ".xls", ".xlsm")):
-    """让一个现成的控件（例如显示文件路径的输入框）也能拖文件进来：拖进来的第一个文件交给 callback(路径)"""
+def accept_file_drops(widget, callback, exts=(".xlsx", ".xls", ".xlsm"), multi=False):
+    """
+    让一个现成的控件（例如显示文件路径的输入框）也能拖文件进来：拖进来的第一个文件交给 callback(路径)；
+    multi=True 时一次拖好几个，callback([路径, …])
+    """
     widget.setAcceptDrops(True)
 
     def enter(e):
@@ -1103,7 +1106,7 @@ def accept_file_drops(widget, callback, exts=(".xlsx", ".xls", ".xlsm")):
         files = _local_files(e.mimeData(), exts)
         if files:
             e.acceptProposedAction()
-            callback(files[0])
+            callback(files if multi else files[0])
 
     def move(e):
         if _local_files(e.mimeData(), exts):
@@ -1119,10 +1122,204 @@ def _sort_key(text):
     """排序用：能当数字的按数字（1,234.50 / €12 / +3.5），否则按文字（不分大小写）"""
     s = str(text or "").strip()
     t = s.replace("€", "").replace(",", "").replace("×", " ").split(" ")[0].strip()
+    pct = t.endswith("%")
     try:
-        return (0, float(t), "")
+        return (0, float(t[:-1] if pct else t), "")
     except ValueError:
         return (1, 0.0, s.lower())
+
+
+SORT_ROLE = Qt.UserRole + 40          # 格子里可以放一个专门排序用的值（不放就按显示的文字排）
+
+
+def header_text(table, c):
+    """列名（去掉排序 / 筛选标记，导出 Excel 用）"""
+    it = table.horizontalHeaderItem(c)
+    return (it.text() if it else "").replace(" ⏷", "").replace(" ↑", "").replace(" ↓", "")
+
+
+def remember_columns(table, cfg, key, fields, save, ver=1):
+    """
+    表格的列可以拖动换位置、拖宽度；顺序和宽度记在 cfg[key + "_columns" / "_widths"]，下次打开照旧。
+      fields[c] = 第 c 列（逻辑列）的固定编号（存设置用；以后加列、改默认顺序不会认错列）
+      save()    = 保存设置；ver = 默认顺序版本，改了默认顺序就加 1（用户拖过的顺序作废一次，列宽保留）
+    返回 reset()：恢复默认顺序
+    """
+    hh = table.horizontalHeader()
+    hh.setSectionsMovable(True)
+    hh.setFirstSectionMovable(True)
+    col_of = {f: c for c, f in enumerate(fields)}
+    if cfg.get(key + "_columns_ver") != ver:
+        cfg.pop(key + "_columns", None)
+        cfg[key + "_columns_ver"] = ver
+        save()
+    hh.blockSignals(True)
+    for f, wd in (cfg.get(key + "_widths") or {}).items():
+        c = col_of.get(int(f)) if str(f).lstrip("-").isdigit() else None
+        if c is not None and wd and wd > 20:
+            table.setColumnWidth(c, int(wd))
+    order = [int(f) for f in (cfg.get(key + "_columns") or []) if str(f).lstrip("-").isdigit() and int(f) in col_of]
+    for v, f in enumerate(order):
+        cur = hh.visualIndex(col_of[f])
+        if cur != v and cur >= 0:
+            hh.moveSection(cur, v)
+    hh.blockSignals(False)
+    timer = QTimer(table)
+    timer.setSingleShot(True)
+    timer.setInterval(400)
+
+    def store():
+        n = table.columnCount()
+        cfg[key + "_columns"] = [fields[hh.logicalIndex(v)] for v in range(n)]
+        cfg[key + "_widths"] = {str(fields[c]): table.columnWidth(c) for c in range(n)}
+        save()
+
+    timer.timeout.connect(store)
+    hh.sectionMoved.connect(lambda *_: timer.start())
+    hh.sectionResized.connect(lambda *_: timer.start())
+
+    def reset():
+        hh.blockSignals(True)
+        for c in range(table.columnCount()):
+            cur = hh.visualIndex(c)
+            if cur != c:
+                hh.moveSection(cur, c)
+        hh.blockSignals(False)
+        cfg.pop(key + "_columns", None)
+        save()
+
+    return reset
+
+
+def fit_to_screen(w, margin=12):
+    """窗口比屏幕（可用区域，去掉任务栏）大、或者跑到屏幕外面时：缩小并挪回屏幕里"""
+    from PySide6.QtGui import QGuiApplication
+    try:
+        scr = w.screen() or QGuiApplication.primaryScreen()
+    except RuntimeError:
+        return
+    if scr is None:
+        return
+    av = scr.availableGeometry()
+    g, fg = w.geometry(), w.frameGeometry()
+    ew, eh = fg.width() - g.width(), fg.height() - g.height()        # 标题栏、边框
+    max_w, max_h = av.width() - ew - 2 * margin, av.height() - eh - 2 * margin
+    if g.width() > max_w or g.height() > max_h:
+        w.resize(min(g.width(), max_w), min(g.height(), max_h))
+        fg = w.frameGeometry()
+    x = min(max(fg.x(), av.x()), av.x() + av.width() - fg.width())
+    y = min(max(fg.y(), av.y()), av.y() + av.height() - fg.height())
+    if (x, y) != (fg.x(), fg.y()):
+        w.move(max(x, av.x()), max(y, av.y()))
+
+
+class ScreenFit(QObject):
+    """全程序：每个对话框 / 小窗口打开时都检查一次，不会比屏幕大、不会跑出屏幕（按钮被挡住就点不到了）"""
+
+    def eventFilter(self, obj, ev):
+        from PySide6.QtCore import QEvent
+        from PySide6.QtWidgets import QMainWindow
+        if ev.type() == QEvent.Show and isinstance(obj, (QDialog, QMainWindow)) and obj.isWindow() \
+                and not obj.isMaximized() and not obj.isFullScreen():
+            def later(o=obj):
+                try:
+                    if o.isVisible():
+                        fit_to_screen(o)
+                except RuntimeError:          # 窗口已经关掉了
+                    pass
+            QTimer.singleShot(0, later)
+        return False
+
+
+class RowSorter(QObject):
+    """
+    给「一次填好的表格」加点表头排序（点一下升序，再点一下降序）。
+      pin_last  最后一行（合计）永远留在最后
+      refill    表格里有按钮 / 小标签这种控件时用：传 refill(order) 由调用方按新顺序重画
+                （order[k] = 原来第几行现在放到第 k 行）；不传就直接搬动格子
+      on_sorted 排完以后调用（例如重新套用搜索框的筛选）
+    调用方每次重新填完表格后调用 apply()，保持用户选的排序。
+    数字按数字排（€、逗号、%、「3 箱」都认），格子有 SORT_ROLE 数据时按它排。
+    """
+
+    def __init__(self, table, pin_last=False, refill=None, on_sorted=None, skip=()):
+        super().__init__(table)
+        self.t, self.pin_last, self.refill, self.on_sorted = table, pin_last, refill, on_sorted
+        self.skip = set(skip)               # 不能排序的列（例如勾选框）
+        self.col, self.desc = None, False
+        self.titles = [header_text(table, c) for c in range(table.columnCount())]
+        hh = table.horizontalHeader()
+        hh.setSectionsClickable(True)
+        hh.setSortIndicatorShown(False)
+        hh.sectionClicked.connect(self._clicked)
+        table.setSortingEnabled(False)
+        if not hh.toolTip():
+            hh.setToolTip(tr("点表头排序（再点一次反过来）"))
+
+    def _clicked(self, c):
+        if c in self.skip:
+            return
+        if self.col != c:
+            self.col, self.desc = c, False
+        else:
+            self.desc = not self.desc
+        self.apply()
+
+    def reset(self):
+        self.col, self.desc = None, False
+        self._marks()
+
+    def _key(self, r):
+        it = self.t.item(r, self.col)
+        if it is None:
+            return (2, 0.0, "")
+        v = it.data(SORT_ROLE)
+        if v is not None:
+            return (0, float(v), "") if isinstance(v, (int, float)) else (1, 0.0, str(v).lower())
+        k = _sort_key(it.text())
+        return k if it.text().strip() not in ("", "—", "-") else (2, 0.0, "")   # 空的放最后
+
+    def apply(self):
+        """按现在选的列重新排一次（没选列就什么都不做）"""
+        self._marks()
+        t = self.t
+        n = t.rowCount() - (1 if self.pin_last and t.rowCount() else 0)
+        if self.col is None or n <= 1:
+            return
+        keys = [self._key(r) for r in range(n)]
+        filled = [r for r in range(n) if keys[r][0] != 2]
+        empty = [r for r in range(n) if keys[r][0] == 2]
+        order = sorted(filled, key=lambda r: keys[r], reverse=self.desc) + empty
+        if order == list(range(n)):
+            return
+        if self.refill:
+            self.refill(order)
+        else:
+            blocked = t.signalsBlocked()
+            t.blockSignals(True)
+            cols = t.columnCount()
+            rows = [[t.takeItem(r, c) for c in range(cols)] for r in range(n)]
+            hidden = [t.isRowHidden(r) for r in range(n)]
+            for k, r in enumerate(order):
+                for c in range(cols):
+                    if rows[r][c] is not None:
+                        t.setItem(k, c, rows[r][c])
+                t.setRowHidden(k, hidden[r])
+            t.blockSignals(blocked)
+            t.viewport().update()
+        if self.on_sorted:
+            self.on_sorted()
+
+    def _marks(self):
+        for c, title in enumerate(self.titles):
+            it = self.t.horizontalHeaderItem(c)
+            if it is not None:
+                it.setText(title + ((" ↓" if self.desc else " ↑") if c == self.col else ""))
+
+    def set_title(self, c, text):
+        if 0 <= c < len(self.titles):
+            self.titles[c] = text
+            self._marks()
 
 
 class TableSortFilter(QObject):
@@ -1208,6 +1405,16 @@ class TableSortFilter(QObject):
             it.setText(title + mark)
         hh.viewport().update()
         self.rendered.emit(len(vis), n)
+
+    def set_title(self, c, text, tip=None):
+        """改列名（排序 / 筛选标记会自动加在后面）"""
+        if 0 <= c < len(self.titles):
+            self.titles[c] = text
+            it = self.t.horizontalHeaderItem(c)
+            if it is not None:
+                it.setText(text)
+                if tip is not None:
+                    it.setToolTip(tip)
 
     def set_filter(self, c, values=None):
         """这一列只显示 values 里的值；values 为 None / 空 = 不筛选这一列"""

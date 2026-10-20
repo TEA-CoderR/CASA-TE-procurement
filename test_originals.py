@@ -98,3 +98,52 @@ def test_set_row_qty_cases_and_pieces():
     p2 = service.set_row_qty(p, 25)
     assert p2["colli"] == {"A": 5, "B": 3} and p2["qty"] == 25 and p2["qty_orig"] == 10
     assert service._order_qty(p2, "B") == 3
+
+
+def test_rewrite_adds_new_items(tmp_path, monkeypatch):
+    """修改分配 → 加商品凑单：报价里这次没订的商品写进主订单（新的一行）和这家供应商的订单"""
+    from openpyxl import Workbook, load_workbook
+    import reorder_service as RS
+    import service
+    from config import SUPPLIER_RESULT_COL
+    monkeypatch.setattr(service, "_save_history", lambda *a, **k: None)
+    monkeypatch.setattr(service, "save_state", lambda *a, **k: None)
+    monkeypatch.setattr(service, "_backup_inputs", lambda *a, **k: None)
+    monkeypatch.setattr(service, "_written_fingerprints", lambda *a, **k: {})
+    root = tmp_path / "root"
+    (root / "ORDINE").mkdir(parents=True)
+    (root / "distribuire").mkdir()
+    main = root / "ORDINE" / "确认订单.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.append(RS.ORDER_HEADERS)
+    ws.append(["8000000000011", "OLD", 1, 6, "1", 6, "FOIANO"])
+    ws.cell(1, 31).value = "MEGA.xlsx"
+    ws.cell(2, SUPPLIER_RESULT_COL).value = "MEGA.xlsx"
+    wb.save(main)
+    sup = root / "distribuire" / "MEGA.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.append(["CODICE EAN", "DESCRIZIONE", "PREZZO NETTO", "ORDINE"])
+    ws.append(["8000000000011", "OLD", 1.0, 1])
+    ws.append(["8000000000028", "NUOVO", 2.0, None])
+    wb.save(sup)
+    old = service._price_row_pieces(2, 6, {"MEGA.xlsx": 1.0}, {"MEGA.xlsx": 6}, "8000000000011", "OLD")
+    data = {"state": {"rows": [old], "rules": [], "baseline": {2: "MEGA.xlsx"}, "assignment": {2: "MEGA.xlsx"},
+                      "sources": {}, "ordine_file": str(main), "distribuire_path": str(root / "distribuire")},
+            "suppliers": [{"name": "MEGA.xlsx", "colli": 1, "amount": 6, "rows": 1}]}
+    assert service.new_item_candidates({"8000000000011": {"price": 1, "pack": 6, "desc": ""},
+                                        "8000000000028": {"price": 2.0, "pack": 4, "desc": "NUOVO"}}, [old]) == \
+        [{"price": 2.0, "pack": 4, "desc": "NUOVO", "ean": "8000000000028"}]
+    item = {"ean": "8000000000028", "price": 2.0, "pack": 4, "desc": "NUOVO", "code": "77", "inv": 0, "daily": 1.0}
+    new = service.make_added_row(3, item, 8, "MEGA.xlsx", ["MEGA.xlsx"], store=1)
+    assert new["colli"]["MEGA.xlsx"] == 2 and new["added"] == "MEGA.xlsx"
+    out, n = service.rewrite_assignment(data, {2: "MEGA.xlsx"}, {}, lambda *a: None, new_rows=[new])
+    m = load_workbook(main).active
+    assert m.cell(3, 1).value == "8000000000028" and m.cell(3, 4).value == 8 and m.cell(3, 3).value == 2
+    assert m.cell(3, SUPPLIER_RESULT_COL).value == "MEGA.xlsx"
+    s_ = load_workbook(sup).active
+    assert s_.cell(3, 4).value == 2                     # 这家的订单写 2 箱
+    st = out["state"]
+    assert st["assignment"][3] == "MEGA.xlsx" and st["baseline"][3] == "MEGA.xlsx"
+    assert any(r["row"] == 3 for r in st["rows"]) and not out["changes"]     # 新商品不算「换供应商」

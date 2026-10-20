@@ -1,8 +1,8 @@
 """
-批发商比价：把拖进来（或选进来）的文件放进总文件夹的 ORDINE / eliminare / distribuire。
-原来的文件不删，挪进子文件夹（ORDINE/_旧订单、eliminare/_旧文件、distribuire/_旧文件），随时能找回。
+批发商比价：把拖进来（或选进来）的文件放进总文件夹的 eliminare / distribuire。
+原来的文件不删，挪进子文件夹（eliminare/_旧文件、distribuire/_旧文件），随时能找回。
+（主订单 ORDINE 不从这里放：只能由「检查门店订货清单」生成，见 reorder_service.write_checked_order）
 
-  · ORDINE（主订单）：只能有一个文件 → 新的放进去，原来的挪走
   · eliminare（扣减文件）：可以有好几个 → 新的加进去；同名的先把旧的挪走
   · distribuire（供应商报价）：每家一个文件，每周更新 → 按文件名认出是哪家供应商，替换那一家的旧报价；
     认不出（新供应商、名字对不上、对上好几家）的交给界面问用户
@@ -63,28 +63,6 @@ def _check_sources(files):
     missing = [f for f in files if not os.path.isfile(f)]
     if missing:
         raise ValueError("找不到文件：" + "、".join(missing))
-
-
-# ---------------------------------------------------------------------
-# ORDINE：只留一个主订单
-# ---------------------------------------------------------------------
-def import_ordine(root, files):
-    """返回 {"file": 新主订单路径, "archived": [挪走的旧文件]}"""
-    _check_sources(files)
-    if len(files) != 1:
-        raise ValueError("主订单一次只能放一个文件")
-    folder = os.path.join(root, "ORDINE")
-    os.makedirs(folder, exist_ok=True)
-    src = files[0]
-    archived = []
-    for f in excel_files(folder):
-        p = os.path.join(folder, f)
-        if os.path.abspath(p) != os.path.abspath(src):
-            archived.append(archive(p, os.path.join(folder, OLD_DIRS["ORDINE"])))
-    dst, moved = _copy_in(src, folder)
-    if moved:
-        archived.append(moved)
-    return {"file": dst, "archived": archived}
 
 
 # ---------------------------------------------------------------------
@@ -185,3 +163,55 @@ def apply_suppliers(root, plan):
         dst, _ = _copy_in(p["src"], folder)
         done.append((os.path.basename(dst), rep))
     return done
+
+
+# ---------------------------------------------------------------------
+# 几家门店共用一套供应商报价（总文件夹\distribuire，每周更新）：
+# 每家门店的比价文件夹里放一份副本（订货数量写在副本的 ORDINE 列，各店互不影响）
+# ---------------------------------------------------------------------
+def _is_price_file(name):
+    low = name.lower()
+    return is_excel(name) and ".calc." not in low and not low.endswith(".xls.xlsx") and "缺失报告" not in name \
+        and "missing" not in low
+
+
+def sync_shared_prices(shared_dir, store_dist, record_path):
+    """
+    把共用报价同步到门店文件夹：共用的新文件 / 更新过的文件复制过来；共用里已经没有的（上次从共用复制来的）挪进 _旧文件。
+    门店副本被比价写过（ORDINE 列）不算更新——只看共用文件有没有变（record_path 记着每个文件复制时共用文件的时间和大小）。
+    返回 (复制了的, 挪走了的)
+    """
+    import json
+    if not os.path.isdir(shared_dir):
+        return [], []
+    os.makedirs(store_dist, exist_ok=True)
+    try:
+        with open(record_path, encoding="utf-8") as f:
+            rec = json.load(f)
+    except (OSError, ValueError):
+        rec = {}
+    shared = [f for f in excel_files(shared_dir) if _is_price_file(f)]
+    copied, archived = [], []
+    for name in shared:
+        src = os.path.join(shared_dir, name)
+        st = os.stat(src)
+        sig = [round(st.st_mtime, 3), st.st_size]
+        dst = os.path.join(store_dist, name)
+        if rec.get(name) == sig and os.path.exists(dst):
+            continue
+        if os.path.exists(dst):
+            os.remove(dst)
+        shutil.copy2(src, dst)
+        rec[name] = sig
+        copied.append(name)
+    for name in list(rec):
+        if name in shared:
+            continue
+        p = os.path.join(store_dist, name)
+        if os.path.exists(p):
+            archived.append(archive(p, os.path.join(store_dist, OLD_DIRS["distribuire"])))
+        rec.pop(name, None)
+    os.makedirs(os.path.dirname(record_path), exist_ok=True)
+    with open(record_path, "w", encoding="utf-8") as f:
+        json.dump(rec, f, ensure_ascii=False)
+    return copied, archived

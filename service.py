@@ -95,6 +95,107 @@ def _order_qty(r, s):
     return (r or {}).get("qty")
 
 
+def attach_stock(rows_data, snapshot):
+    """主订单的每一行加上本店库存、日均、订货周期（来自检查门店清单时的快照），算够卖天数用"""
+    if not snapshot:
+        return 0
+    own = snapshot.get("store")
+    n = 0
+    for r in rows_data:
+        e = (snapshot.get("by_ean") or {}).get(r.get("ean"))
+        d = (e or {}).get("stores", {}).get(own) if e else None
+        if d:
+            r["inv"], r["daily"], r["cycle"] = d["inv"], d["daily"], d["cycle"]
+            n += 1
+    return n
+
+
+def transfer_status(snapshot, settings):
+    """
+    批发商比价这次会不会算门店间调货：(状态, 说明)
+      "no_snapshot" 主订单没有门店库存快照 / "off" 调货关了 / "far" 这家门店离得远，不参与 / "on" 会算
+    """
+    import transfers as TR
+    import store_orders as SO
+    so = (settings or {}).get("store_orders") or {}
+    cfg = TR.config(so.get("transfer"))
+    if not snapshot:
+        return "no_snapshot", tr("门店间调货：主订单没有门店库存数据，不算调货")
+    if snapshot.get("planned_transfers") is not None:
+        own = snapshot.get("store")
+        pt = snapshot["planned_transfers"]
+        n_in = sum(1 for t in pt if t.get("to") == own)
+        n_out = sum(1 for t in pt if t.get("from") == own)
+        if not n_in and not n_out:
+            return "planned", tr("门店间调货：检查清单时已经和其他门店一起算过，这家店这次没有调货")
+        return "planned", tr("门店间调货：检查清单时已经算好（调进 {0} 个商品、调出 {1} 个），主订单是减掉调货以后的数量", n_in, n_out)
+    if not cfg.get("enabled"):
+        return "off", tr("门店间调货：已关闭（点「门店间调货…」打开）")
+    own = snapshot.get("store")
+    far = (dict(SO.DEFAULT_FILL, **(so.get("fill") or {}))).get("far_stores") or []
+    name = SO.STORE_SHEETS.get(own, str(own))
+    if own in far:
+        return "far", tr("门店间调货：{0} 设成「离得远」，不参与调货（点「门店间调货…」可以改）", name)
+    when = tr("整箱会多出一半以上时才调") if cfg.get("mode") == "waste" else tr("所有要订的商品都先看能不能调")
+    others = tr("、").join(SO.STORE_SHEETS[k] for k in SO.STORE_SHEETS if k != own and k not in far)
+    return "on", tr("门店间调货：开启，{0} 从 {1} 调；{2}，每家调出门店货值至少 €{3:g}",
+                    name, others or "—", when, float(cfg.get("min_value") or 0))
+
+
+def wholesale_transfers(rows_data, supplier_headers, snapshot, settings, labels=None):
+    """
+    批发商比价的门店间调货（规则和门店配货一样，transfers.py）：
+      只对按件数订货的主订单（PEZZI）；箱规按最低价那家算（零头 = 要的件数按它的箱规取整多出来的）；
+      其他门店留够自己一个订货周期，多出来的才调；每家调出门店货值 ≥ 门槛才调；远的门店不参与。
+    调到货的商品，主订单件数减掉调货件数（rows_data 里直接换成新的行），起订量 / 比价按减完的件数算。
+    返回调货清单（格式和门店配货的调货单一样）
+    """
+    import transfers as TR
+    import store_orders as SO
+    so = (settings or {}).get("store_orders") or {}
+    cfg = TR.config(so.get("transfer"))
+    if not snapshot or not cfg.get("enabled"):
+        return []
+    own = snapshot.get("store")
+    far = (dict(SO.DEFAULT_FILL, **(so.get("fill") or {}))).get("far_stores") or []
+    by_ean = snapshot.get("by_ean") or {}
+    labels = labels or {}
+    needs, info, avail = [], {}, {}
+    for k, r in enumerate(rows_data):
+        if r.get("pieces") is None or not r.get("ean") or (r.get("qty") or 0) <= 0:
+            continue
+        priced = [(p, h) for h, p in (r.get("unit") or {}).items() if p is not None]
+        if not priced:
+            continue
+        price, s0 = min(priced)
+        pack = (r.get("packs") or {}).get(s0) or 1
+        colli = (r.get("colli") or {}).get(s0) or 0
+        needs.append({"id": k, "store": own, "key": r["ean"], "need": r["qty"], "pack": pack, "colli": colli,
+                      "price": price})
+        info[k] = (r, s0)
+        for sid, d in (by_ean.get(r["ean"]) or {}).get("stores", {}).items():
+            if sid != own:
+                sp = TR.surplus(d)
+                if sp > 0:
+                    avail[(sid, r["ean"])] = sp
+    if not needs:
+        return []
+    moves, _ = TR.plan(needs, avail, cfg, far)
+    out = []
+    for m in moves:
+        r, s0 = info[m["need_id"]]
+        new = set_row_qty(r, max(0.0, r["qty"] - m["pieces"]))
+        rows_data[m["need_id"]] = new
+        d_from = by_ean[r["ean"]]["stores"].get(m["from"])
+        d_to = by_ean[r["ean"]]["stores"].get(own)
+        out.append(dict(m, row=r["row"], ean=r["ean"], code=by_ean[r["ean"]].get("code", ""), desc=r.get("articolo", ""),
+                        supplier=labels.get(s0) or s0, price=m["value"] / m["pieces"] if m["pieces"] else 0.0,
+                        from_days=SO.cover_days(d_from, -m["pieces"]),
+                        to_days=SO.cover_days(d_to, new["qty"] + m["pieces"])))
+    out.sort(key=lambda x: (x["from"], x["desc"]))
+    return out
+
+
 def _select_suppliers(rows_data, supplier_headers, ws_main, log, settings, summary, decide=None, choose=None):
     """
     返回 {行号: 供应商}；返回 None 表示操作员取消了处理。
@@ -473,6 +574,13 @@ def run_process(ordine_file, eliminare_path, distribuire_path, log, progress=Non
                "min_order": {"enabled": False, "rules": [], "unmatched": [], "extra_cost": 0.0,
                              "changes": 0, "warning": None}}
 
+    # 主订单只能由「检查门店订货清单」生成（带门店库存快照）；旧系统的文件不再处理，一个文件都不动
+    import reorder_service as RS
+    if not RS.load_snapshot(ordine_file):
+        summary["error"] = tr("主订单不是「② 检查门店订货清单」生成的，不能比价。请先检查门店清单、生成主订单。")
+        log(tr("❌ {0}", summary["error"]))
+        return summary
+
     # 每次都从原文件开始算（重复处理结果一样）：文件还是上次程序写出来的样子 → 先恢复成原文件
     import originals as OG
     root_dir = os.path.dirname(os.path.dirname(ordine_file))
@@ -743,6 +851,38 @@ def run_process(ordine_file, eliminare_path, distribuire_path, log, progress=Non
 
     # 最低价分配 + 起订量凑单优化
     P(62, tr("选择供应商（最低价 + 起订量凑单）..."))
+    # 检查门店清单时存的各门店库存快照：够卖天数、门店间调货
+    snapshot = RS.load_snapshot(ordine_file)
+    summary["transfers"] = []
+    if snapshot:
+        n_stock = attach_stock(rows_data, snapshot)
+        log(tr("门店库存快照：{0} 个商品有库存和日均（来自「检查门店清单」）", n_stock))
+        if snapshot.get("planned_transfers") is not None:
+            # 检查清单时已经和其他门店一起算好调货，主订单件数已经减掉了：这里只拿来显示（这家店调进来的）
+            own = snapshot.get("store")
+            summary["transfers"] = [t for t in snapshot["planned_transfers"] if t.get("to") == own]
+            summary["transfers_out"] = [t for t in snapshot["planned_transfers"] if t.get("from") == own]
+            if snapshot.get("transfers_file") and os.path.exists(snapshot["transfers_file"]):
+                summary["transfers_file"] = snapshot["transfers_file"]
+            if summary["transfers_out"]:
+                log(tr("门店间调货：这家店要调出 {0} 个商品给其他门店（见调货单）", len(summary["transfers_out"])))
+        else:
+            try:
+                import supplier_names as SN
+                summary["transfers"] = wholesale_transfers(rows_data, supplier_headers, snapshot, settings,
+                                                           SN.labels(supplier_headers, settings))
+            except Exception as e:
+                log(tr("⚠ 调货计算失败（按原来的件数订）：{0}", e))
+        if summary["transfers"]:
+            log(tr("门店间调货：{0} 个商品，少订 {1} 箱", len(summary["transfers"]),
+                   sum(t["colli_before"] - t["colli_after"] for t in summary["transfers"])))
+        else:
+            code, text = transfer_status(snapshot, settings)
+            summary["transfer_note"] = text if code not in ("on",) else \
+                tr("门店间调货：这次没有可调的商品（其他门店没有多出来的货，或者一家调出的货值不到门槛）")
+            log(summary["transfer_note"])
+    # 比价时才算的调货（旧主订单）要改主订单的件数；检查清单时算好的已经改过了（没有 row）
+    transfer_rows = {t["row"]: t for t in summary["transfers"] if "row" in t}
     assignment = _select_suppliers(rows_data, supplier_headers, ws_main, log, settings, summary, decide, choose)
     if assignment is None:
         log(tr("⚠ 操作员取消了处理，主订单和供应商文件都没有改动"))
@@ -751,6 +891,10 @@ def run_process(ordine_file, eliminare_path, distribuire_path, log, progress=Non
         summary["error"] = tr("已取消，文件没有改动")
         summary["cancelled"] = True
         return summary
+    # 全部靠调货的商品（件数减到 0）：不向批发商订
+    for r in rows_data:
+        if r["row"] in transfer_rows and (r.get("qty") or 0) <= 0:
+            assignment.pop(r["row"], None)
 
     # 各供应商分配汇总
     for h in supplier_headers:
@@ -777,8 +921,21 @@ def run_process(ordine_file, eliminare_path, distribuire_path, log, progress=Non
     missing_count = 0
     missing_items = []  # [(ean, articolo), ...]
     row_by_i = {r["row"]: r for r in rows_data}
+    # 调货：主订单 PEZZI 改成减完的件数，备注写从哪家店调了几件；全部靠调货的商品不向批发商订
+    for i, t in transfer_rows.items():
+        r = row_by_i.get(i)
+        if col_pezzi and r is not None:
+            ws_main.cell(i, col_pezzi).value = int(r["qty"]) if float(r["qty"]).is_integer() else r["qty"]
+        note = tr("调货 {0:g} 件（从 {1}）", t["pieces"], RS.STORES.get(t["from"], t["from"]))
+        old = ws_main.cell(i, MIN_ORDER_NOTE_COL).value
+        ws_main.cell(i, MIN_ORDER_NOTE_COL).value = f"{old}；{note}" if old else note
     for i in range(2, main_last + 1):
         best_supplier = assignment.get(i)
+        if i in transfer_rows and not best_supplier:
+            ws_main.cell(i, SUPPLIER_RESULT_COL).value = tr("调货")
+            if col_colli_sel:
+                ws_main.cell(i, col_colli_sel).value = 0
+            continue
 
         if best_supplier:
             ws_main.cell(i, SUPPLIER_RESULT_COL).value = best_supplier
@@ -1059,6 +1216,20 @@ def run_process(ordine_file, eliminare_path, distribuire_path, log, progress=Non
         # 写完以后的文件指纹：下次处理时认出「还是程序写的」→ 恢复原文件再算
         "written": _written_fingerprints(ordine_file, distribuire_path),
     }
+    planned = bool(snapshot) and snapshot.get("planned_transfers") is not None
+    if not planned:
+        summary["transfers_file"] = None
+    if summary.get("transfers") and not planned:
+        try:
+            import store_orders as SO
+            store_name = RS.STORES.get((snapshot or {}).get("store"), "")
+            from datetime import datetime as _dt
+            tf = os.path.join(root_dir, f"调货单_{store_name}_{_dt.now():%Y%m%d_%H%M}.xlsx")
+            SO.export_transfers(summary["transfers"], tf)
+            summary["transfers_file"] = tf
+            log(tr("✔ 调货单：{0}", os.path.basename(tf)))
+        except Exception as e:
+            log(tr("⚠ 调货单生成失败：{0}", e))
     _save_history(summary, log, settings.get("history_keep_days", 180))
     save_state(summary)
     return summary
@@ -1283,6 +1454,105 @@ def _write_missing_report(distribuire_path, rows, assignment):
     return path
 
 
+# =====================
+# 修改分配 →「加商品凑单」：供应商报价里、这次没订的商品（库存足但卖得快的快消品等）加进来凑起订量
+# =====================
+_DESC_HEADS = ("DESCRIZIONE", "DESCRIPTION", "ARTICOLO", "PRODOTTO", "DENOMINAZIONE", "NOME")
+
+
+def read_price_file(path, log=None):
+    """
+    一个供应商报价文件 → {EAN: {"price": 件价, "pack": 每箱件数, "desc": 品名}}（和比价时读报价同一套规则）
+    """
+    log = log or (lambda *a: None)
+    wb, _, _ = safe_open(path, log)
+    if not wb:
+        raise ValueError(tr("打不开报价文件：{0}", os.path.basename(path)))
+    try:
+        ws = wb.active
+        col_ean, row_ean = find_col(ws, COL_CODICE_EAN)
+        col_price, row_price = find_col(ws, COL_PREZZO_NETTO)
+        if not col_ean or not col_price:
+            raise ValueError(tr("{0} 缺少必要列", os.path.basename(path)))
+        header_row = max(row_ean, row_price)
+        col_ord, _ = find_col(ws, COL_ORDINE)
+        pack_col, _ = _detect_pack_col(ws, path, header_row, col_ord, col_price)
+        col_desc = None
+        for h in _DESC_HEADS:
+            c, _r = find_col(ws, h)
+            if c:
+                col_desc = c
+                break
+        out = {}
+        for i in range(header_row + 1, get_last_row(ws, col_ean) + 1):
+            e = clean_ean(ws.cell(i, col_ean).value)
+            p = parse_price(ws.cell(i, col_price).value)
+            if e and p is not None and e not in out:
+                out[e] = {"price": p, "pack": (parse_pack(ws.cell(i, pack_col).value) if pack_col else 1) or 1,
+                          "desc": str(ws.cell(i, col_desc).value or "").strip() if col_desc else ""}
+        return out
+    finally:
+        wb.close()
+        try:
+            safe_cleanup_calculated_files(log)      # 计算公式用的临时副本（.calc.xlsx）不留在 distribuire 里
+        except Exception:
+            pass
+
+
+def new_item_candidates(price_map, order_rows):
+    """报价里有、主订单里没有的商品：[{"ean", "price", "pack", "desc"}]"""
+    have = {r.get("ean") for r in order_rows if r.get("ean")}
+    return [dict(v, ean=e) for e, v in price_map.items() if e not in have]
+
+
+def make_added_row(row_no, item, pieces, target, supplier_headers, store=None):
+    """
+    加商品凑单加进来的新商品 → 主订单的一行（按件数订货）：只有这家供应商有价（就是要在它那里凑单）。
+    item: {"ean", "price", "pack", "desc"/"name", "code", "inv", "daily", "cycle"}
+    """
+    unit = {h: (float(item["price"]) if h == target else None) for h in supplier_headers}
+    packs = {h: (float(item.get("pack") or 1) if h == target else 1) for h in supplier_headers}
+    r = _price_row_pieces(row_no, float(pieces), unit, packs, item["ean"], item.get("name") or item.get("desc") or "")
+    r["added"] = target                      # 加商品凑单加进来的（换方案时保留，界面标出来）
+    r["code"] = item.get("code") or ""
+    for k in ("inv", "daily", "cycle"):
+        if item.get(k) is not None:
+            r[k] = item[k]
+    if store is not None:
+        r["store"] = store
+    return r
+
+
+def _append_added_rows(ws, rows, supplier_headers):
+    """把加商品凑单的新商品写进主订单（主订单是检查门店清单生成的，列名固定，见 reorder_service.ORDER_HEADERS）"""
+    import reorder_service as RS
+    cols = {}
+    for h in RS.ORDER_HEADERS:
+        c, _ = find_col(ws, h)
+        if c:
+            cols[h] = c
+    sup_col = {}
+    for c in range(SUPPLIER_MATRIX_START_COL, ws.max_column + 1):
+        v = ws.cell(1, c).value
+        if v:
+            sup_col[v] = c
+    for r in rows:
+        i = r["row"]
+        t = r["added"]
+        pk = (r.get("packs") or {}).get(t) or 1
+        vals = {"CODICE EAN": r["ean"], "ARTICOLO": r.get("articolo", ""), "COLLI": (r.get("colli") or {}).get(t, 0),
+                "PEZZI": int(r["qty"]) if float(r["qty"]).is_integer() else r["qty"], "CodArticolo": r.get("code") or None,
+                "CASSA_DB": pk, "NEGOZIO": RS.STORES.get(r.get("store"), "") if r.get("store") else None}
+        for h, v in vals.items():
+            if h in cols:
+                ws.cell(i, cols[h]).value = v
+        if "CODICE EAN" in cols:
+            ws.cell(i, cols["CODICE EAN"]).number_format = "@"
+        if t in sup_col:
+            ws.cell(i, sup_col[t]).value = (r.get("unit") or {}).get(t)
+        ws.cell(i, EAN_COUNT_COL).value = 1
+
+
 def can_switch_scenario(data):
     """结果里存了每个方案的分配，才能不重算直接换方案"""
     st = (data or {}).get("state") or {}
@@ -1303,6 +1573,9 @@ def switch_scenario(data, idx, log, progress=None):
         raise ValueError(tr("这次结果没有存各方案的分配，不能直接换方案，请重新处理"))
     excl = set(scs[idx].get("excluded") or [])
     new = dict(st["scenario_assigns"][idx])
+    for r in st["rows"]:                       # 加商品凑单加进来的商品：方案里没有它，留在原来的供应商
+        if r.get("added") and r["row"] not in new:
+            new[r["row"]] = st["assignment"].get(r["row"])
     baseline = st["baseline"]
     sources = {}
     for r in st["rows"]:
@@ -1319,10 +1592,11 @@ def switch_scenario(data, idx, log, progress=None):
     return rewrite_assignment(d2, new, sources, log, progress, force=True)
 
 
-def rewrite_assignment(data, new_assign, new_sources, log, progress=None, force=False, qty=None):
+def rewrite_assignment(data, new_assign, new_sources, log, progress=None, force=False, qty=None, new_rows=None):
     """
     data: 上次处理的 summary（含 state）
     new_assign: {行号: 供应商}，new_sources: {行号: 来源}
+    new_rows: 加商品凑单新加的商品（make_added_row 做的行，行号接在主订单最后面）
     只处理供应商变了的商品：从原供应商文件清掉、写进新供应商文件，更新主订单 AD / AC 列。
     返回新的 summary。
     """
@@ -1342,12 +1616,19 @@ def rewrite_assignment(data, new_assign, new_sources, log, progress=None, force=
     rows, rules, baseline = st["rows"], st["rules"], st["baseline"]
     old = st["assignment"]
     ordine_file, dist = st["ordine_file"], st["distribuire_path"]
+    new_rows = [r for r in (new_rows or []) if r["row"] not in {x["row"] for x in rows}]
+    if new_rows:
+        rows = list(rows) + list(new_rows)
+        baseline = {**baseline, **{r["row"]: r["added"] for r in new_rows}}     # 新商品本来就是给这家的，不算「换供应商」
+        new_assign = {**new_assign, **{r["row"]: new_assign.get(r["row"]) or r["added"] for r in new_rows}}
+        new_sources = {**new_sources, **{r["row"]: "加商品凑单" for r in new_rows}}
     # 改了数量的商品（qty = {行号: 新数量}）
-    old_q = {r["row"]: r.get("qty") for r in rows}
+    old_q = {r["row"]: r.get("qty") for r in st["rows"]}
     if qty:
         rows = [set_row_qty(r, qty[r["row"]]) if r["row"] in qty else r for r in rows]
     q_changed = {r["row"] for r in rows if r.get("qty") != old_q.get(r["row"])}
     changed = [r for r in rows if old.get(r["row"]) != new_assign.get(r["row"]) or r["row"] in q_changed]
+    added_now = {r["row"] for r in new_rows}
     out = _copy.deepcopy(data)
     if not changed and not force:
         return out, 0
@@ -1355,8 +1636,10 @@ def rewrite_assignment(data, new_assign, new_sources, log, progress=None, force=
     log("\n" + "=" * 50)
     n_sup = sum(1 for r in changed if old.get(r["row"]) != new_assign.get(r["row"]))
     log(tr("[修改分配] 有 {0} 个商品换了供应商，重新写入文件", n_sup))
-    if q_changed:
-        log(tr("[修改分配] 有 {0} 个商品改了数量", len(q_changed)))
+    if q_changed - added_now:
+        log(tr("[修改分配] 有 {0} 个商品改了数量", len(q_changed - added_now)))
+    if added_now:
+        log(tr("[修改分配] 加商品凑单：新加 {0} 个商品", len(added_now)))
     P(5, tr("备份原始文件..."))
     try:
         out["backup_dir"] = _backup_inputs(ordine_file, dist, log)
@@ -1369,6 +1652,8 @@ def rewrite_assignment(data, new_assign, new_sources, log, progress=None, force=
     with open(ordine_file, "rb") as f:
         wb = load_workbook(io.BytesIO(f.read()))
     ws = wb.active
+    if new_rows:
+        _append_added_rows(ws, new_rows, list((rows[0].get("prices") or {}).keys()) if rows else [])
     col_colli_m, _ = find_col(ws, COL_COLLI)
     col_pezzi_m, _ = find_col(ws, "PEZZI")
     for r in changed:
@@ -1479,7 +1764,7 @@ def rewrite_assignment(data, new_assign, new_sources, log, progress=None, force=
     mo.update(rules=rep["rules"], extra_cost=rep["extra_cost"], changes=len(rep["changes"]),
               warning=None if all(r["status"] != "未达标" for r in rep["rules"])
               else tr("有起订供应商没有达标，请检查"))
-    out["state"] = dict(st, assignment=dict(new_assign), sources=dict(new_sources), rows=rows)
+    out["state"] = dict(st, assignment=dict(new_assign), sources=dict(new_sources), rows=rows, baseline=dict(baseline))
     try:
         out["state"]["written"] = _written_fingerprints(ordine_file, dist)
     except Exception as e:

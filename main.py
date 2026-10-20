@@ -360,21 +360,29 @@ def _excel_files(path):
 
 
 def scan_folder(root_path):
-    info = {"ok": False, "errors": [], "warnings": [], "ordine": None, "eliminare": [], "suppliers": [], "temp": []}
+    """
+    errors：不能开始的问题；need_order：还没有能用的主订单（要先在 ② 检查门店清单生成），也不能开始，
+    但这是每次比价的正常第一步，界面上不当成错误显示。
+    """
+    info = {"ok": False, "errors": [], "warnings": [], "ordine": None, "ordine_old": [], "need_order": None,
+            "eliminare": [], "suppliers": [], "temp": []}
     if not root_path or not os.path.isdir(root_path):
         info["errors"].append(tr("请选择总文件夹"))
         return info
-    ordine = _excel_files(os.path.join(root_path, ORDINE_FOLDER))
+    import reorder_service as RS
+    good, old = RS.checked_main_orders(os.path.join(root_path, ORDINE_FOLDER))
     elim = _excel_files(os.path.join(root_path, ELIMINARE_FOLDER))
     dist = _excel_files(os.path.join(root_path, DISTRIBUTUIRE_FOLDER))
-    if ordine is None:
-        info["errors"].append(tr("缺少 {0} 文件夹", ORDINE_FOLDER))
-    elif not ordine:
-        info["errors"].append(tr("{0} 里没有 Excel 文件", ORDINE_FOLDER))
+    info["ordine_old"] = old
+    if good:
+        info["ordine"] = good[0]
+        if len(good) > 1:
+            info["warnings"].append(tr("{0} 里有 {1} 个主订单，用最新的：{2}", ORDINE_FOLDER, len(good), good[0]))
+    elif old:
+        info["need_order"] = tr("ORDINE 里的「{0}」不是「② 检查门店订货清单」生成的（旧系统的文件），不能再直接比价。请把门店清单在 ② 里检查一遍，点「确认，生成主订单」。",
+                                old[0])
     else:
-        info["ordine"] = ordine[0]
-        if len(ordine) > 1:
-            info["warnings"].append(tr("{0} 里有 {1} 个文件，只处理第一个：{2}", ORDINE_FOLDER, len(ordine), ordine[0]))
+        info["need_order"] = tr("还没有主订单：在下面「② 检查门店订货清单」检查门店清单，点「确认，生成主订单」。")
     if elim is None:
         info["errors"].append(tr("缺少 {0} 文件夹", ELIMINARE_FOLDER))
     else:
@@ -396,7 +404,7 @@ def scan_folder(root_path):
             info["warnings"].append(tr("有 {0} 个上次留下的临时文件（.calc.xlsx 等），处理时会自动忽略", len(info['temp'])))
     if info["ordine"] and info["ordine"] in (info["eliminare"] or []):
         info["warnings"].append(tr("eliminare 里有和主订单同名的文件，请确认是否放错"))
-    info["ok"] = not info["errors"]
+    info["ok"] = not info["errors"] and not info["need_order"]
     return info
 
 
@@ -842,7 +850,12 @@ class DecisionDialog(QDialog):
     def _confirm_drop(self, info):
         name = info["name"]
         items = info.get("lost_items") or []
-        lines = [tr("{0}　{1}　{2:g} 箱", it['ean'], it['articolo'][:40], it['qty']) for it in items[:15]]
+        import store_orders as SO
+        import scenarios as _SC
+        items = sorted(items, key=lambda it: (not _SC.urgent(it), it.get("articolo") or ""))   # 不够卖一周的排前面
+        lines = [tr("{0}　{1}　{2:g} 箱", it['ean'], it['articolo'][:40], it['qty'])
+                 + (tr("　店里够卖 {0} 天", SO.days_text(SO.cover_days(it))) if it.get("daily") is not None else "")
+                 + ("　⚠" if _SC.urgent(it) else "") for it in items[:15]]
         if len(items) > 15:
             lines.append(tr("……还有 {0} 个", len(items) - 15))
         box = QMessageBox(self)
@@ -923,12 +936,441 @@ class QtyDelegate(QStyledItemDelegate):
             QTimer.singleShot(0, lambda: self.dlg.set_qty(i, q))
 
 
+class _CandSig(QObject):
+    loaded = Signal(object)
+
+
+class FillItemsDialog(QDialog):
+    """
+    修改分配 →「加商品凑单」（和门店配货的「加商品凑单」同一个做法）：
+    供应商没达到起订条件时，不换供应商，从这家的报价里挑商品多订——已经在订单里的可以多订几箱，
+    这次没订的（库存还够、但卖得快的快消品）也可以加进来。表格显示门店的日均、库存、够卖天数；
+    「加（箱）」可以自己填，也可以「按销量推荐补齐」。确认后 self.result = {"rows": {行号: 加几箱}, "new": [(商品, 加几箱)]}
+    """
+    COLS = [tr("名称"), "EAN", tr("在订单里"), tr("日均"), tr("本店库存"), tr("库存够卖（天）"), tr("已订（箱）"),
+            tr("每箱件数"), tr("一箱 €"), tr("加（箱）") + " ✎", tr("订后够卖（天）"), tr("加的金额 €")]
+    ADD = 9
+    WIDTHS = (300, 130, 76, 60, 70, 100, 76, 70, 70, 76, 100, 90)
+
+    def __init__(self, md, rules, target=None):
+        super().__init__(md)
+        self.md, self.rules, self.result = md, rules, None
+        self.items, self.adds = [], {}            # adds: {key: 加几箱}
+        self.limit = float((settings.get("store_orders") or {}).get("fill", {}).get("max_stock_days") or 60)
+        self._filling = False
+        self.setWindowTitle(tr("加商品凑单"))
+        self.resize(1320, 760)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(20, 16, 20, 14)
+        lay.setSpacing(10)
+        top = QHBoxLayout()
+        top.setSpacing(10)
+        top.addWidget(QLabel(tr("供应商")))
+        self.sup = QComboBox()
+        self.sup.setMinimumWidth(320)
+        for ru in rules:
+            self.sup.addItem(f"{ru['name']}　（{describe_condition(ru)}）", ru["target"])
+        if target:
+            self.sup.setCurrentIndex(max(0, self.sup.findData(target)))
+        top.addWidget(self.sup)
+        top.addSpacing(8)
+        self.search = QLineEdit()
+        self.search.setPlaceholderText(tr("条码或名称"))
+        self.search.setMaximumWidth(220)
+        top.addWidget(self.search)
+        self.only_sell = QCheckBox(tr("只看卖得动的"))
+        self.only_sell.setChecked(True)
+        self.only_new = QCheckBox(tr("只看这次没订的"))
+        top.addWidget(self.only_sell)
+        top.addWidget(self.only_new)
+        top.addStretch()
+        lay.addLayout(top)
+        self.state = QLabel("")
+        self.state.setObjectName("Banner")
+        self.state.setTextFormat(Qt.RichText)
+        self.state.setWordWrap(True)
+        lay.addWidget(self.state)
+        # 提示就显示在这个窗口里
+        nb = QHBoxLayout()
+        nb.setSpacing(10)
+        self.note = QLabel("")
+        self.note.setWordWrap(True)
+        self.note_btn = QPushButton("")
+        self.note_btn.setObjectName("Outline")
+        self.note_btn.clicked.connect(lambda: self._note_cb and self._note_cb())
+        self._note_cb = None
+        nb.addWidget(self.note, 1)
+        nb.addWidget(self.note_btn)
+        self.note_box = QFrame()
+        self.note_box.setLayout(nb)
+        self.note_box.hide()
+        lay.addWidget(self.note_box)
+        self.table = make_table(self.COLS, stretch_col=None, numeric_cols=tuple(range(3, 12)))
+        hh = self.table.horizontalHeader()
+        hh.setSectionResizeMode(QHeaderView.Interactive)
+        hh.setStretchLastSection(False)
+        for c, wd in enumerate(self.WIDTHS):
+            self.table.setColumnWidth(c, wd)
+        self.table.setTextElideMode(Qt.ElideRight)
+        self.table.horizontalHeaderItem(5).setToolTip(tr("库存够卖 = 本店库存 ÷ 日均（账面库存是负数时按 0 算）"))
+        self.table.horizontalHeaderItem(10).setToolTip(tr("订后够卖 =（本店库存 + 已订和加的箱数 × 每箱件数）÷ 日均"))
+        self.table.horizontalHeaderItem(self.ADD).setToolTip(tr("双击填要加几箱，0 = 不加"))
+        self.table.setEditTriggers(QAbstractItemView.DoubleClicked | QAbstractItemView.SelectedClicked |
+                                   QAbstractItemView.EditKeyPressed | QAbstractItemView.AnyKeyPressed)
+        self.table.itemChanged.connect(self._edited)
+        lay.addWidget(self.table, 1)
+        from erp_widgets import TableSortFilter
+        self.ctl = TableSortFilter(self.table, lambda: len(self.items), self._text, self._fill, key=self._key,
+                                   hide=self._hidden, numeric=tuple(range(3, 12)))
+        self.search.textChanged.connect(lambda _: self.ctl.render())
+        self.only_sell.toggled.connect(lambda _: self.ctl.render())
+        self.only_new.toggled.connect(lambda _: self.ctl.render())
+        tip = QLabel(tr("先列已经在订单里的，再列报价里这次没订的商品；按日均销量从高到低排。「按销量推荐」只加加完后库存够卖不超过 {0} 天的商品（配货设置里的凑单天数）。新加的商品只在这家下单，会写进主订单和这家的订单。",
+                        int(self.limit)))
+        tip.setObjectName("Faint")
+        tip.setWordWrap(True)
+        lay.addWidget(tip)
+        btns = QHBoxLayout()
+        b_sug = QPushButton(tr("按销量推荐补齐起订量"))
+        b_sug.setObjectName("Outline")
+        b_sug.clicked.connect(lambda: self.suggest(False))
+        b_clear = QPushButton(tr("全部清零"))
+        b_clear.clicked.connect(self.clear)
+        btns.addWidget(b_sug)
+        btns.addWidget(b_clear)
+        btns.addStretch()
+        cancel = QPushButton(tr("取消"))
+        cancel.clicked.connect(self.reject)
+        self.ok = QPushButton(tr("加进订单"))
+        self.ok.setObjectName("Primary")
+        self.ok.clicked.connect(self._ok)
+        btns.addWidget(cancel)
+        btns.addWidget(self.ok)
+        lay.addLayout(btns)
+        self.sup.currentIndexChanged.connect(lambda _: self.load())
+        self.load()
+
+    # ---------- 数据 ----------
+    def rule(self):
+        t = self.sup.currentData()
+        return next((ru for ru in self.rules if ru["target"] == t), None)
+
+    def load(self):
+        """这家已经在订单里的商品马上列出来；报价里没订的商品要读报价、查数据库，在后台载入后补上"""
+        from allocation_plan import _ordered_pieces, _box_pieces, _amt, qty_step
+        ru = self.rule()
+        if ru is None:
+            return
+        t = ru["target"]
+        md = self.md
+        self.adds = {}
+        items = []
+        for r in md.rows:
+            if md.assign.get(r["row"]) != t or md._qty(r) <= 0:
+                continue
+            pk = _box_pieces(r, t)
+            items.append({"key": ("row", r["row"]), "row": r["row"], "name": r.get("articolo", ""), "ean": r.get("ean", ""),
+                          "in_order": True, "daily": r.get("daily"), "inv": r.get("inv"),
+                          "have": _ordered_pieces(r, t), "ordered": _ordered_pieces(r, t) / pk if pk else 0,
+                          "pack": pk, "box": (_amt(r, t) or 0) * qty_step(r, t)})
+        self.items = items
+        self.ctl.set_sort(3, True) if items else self.ctl.render()
+        self._refresh_state()
+        cached = md.cand_cache.get(t)
+        if cached is not None:
+            self._add_new(t, cached)
+        elif md.ctx:
+            self._show_note(tr("正在读取 {0} 的报价、查门店销量和库存，报价里这次没订的商品稍后列出来…", ru["name"]))
+            md.load_candidates(t, lambda res, t=t: self._loaded(t, res))
+        else:
+            self._show_note(tr("这次结果没有存报价文件的位置，只能在订单里已有的商品上加量。"))
+
+    def _loaded(self, t, res):
+        try:
+            if not self.isVisible() or self.sup.currentData() != t:
+                return
+        except RuntimeError:                  # 窗口已经关了
+            return
+        if isinstance(res, Exception):
+            self._show_note(tr("报价里没订的商品载入失败（只能在订单里已有的商品上加量）：{0}", res))
+            return
+        self._hide_note()
+        self._add_new(t, res)
+
+    def _add_new(self, t, cands):
+        have = {x["ean"] for x in self.items}
+        for c in cands:
+            if c["ean"] in have:
+                continue
+            pk = float(c.get("pack") or 1)
+            self.items.append({"key": ("ean", c["ean"]), "cand": c, "name": c.get("name") or c.get("desc") or "",
+                               "ean": c["ean"], "in_order": False, "daily": c.get("daily"), "inv": c.get("inv"),
+                               "have": 0.0, "ordered": 0, "pack": pk, "box": float(c["price"]) * pk})
+        self.ctl.set_sort(3, True)            # 日均从高到低
+        self._refresh_state()
+
+    # ---------- 表格 ----------
+    def _cover(self, x, boxes=0):
+        import store_orders as SO
+        if x.get("daily") is None:
+            return None
+        return SO.cover_days({"inv": x.get("inv") or 0, "daily": x["daily"]}, (x["have"] or 0) + boxes * x["pack"])
+
+    def _text(self, i, c):
+        import store_orders as SO
+        x = self.items[i]
+        n = self.adds.get(x["key"], 0)
+        daily = x.get("daily")
+        vals = [x["name"], x["ean"], tr("是") if x["in_order"] else "",
+                f"{daily:.2f}" if daily else ("0" if daily is not None else ""),
+                f"{x['inv']:g}" if isinstance(x.get("inv"), (int, float)) else "",
+                SO.days_text(self._cover(x)) if daily is not None else "",
+                f"{x['ordered']:g}" if x["ordered"] else "", f"{x['pack']:g}", f"{x['box']:,.2f}",
+                f"{n:g}" if n else "",
+                SO.days_text(self._cover(x, n)) if (daily is not None and (n or x["in_order"])) else "",
+                f"{n * x['box']:,.2f}" if n else ""]
+        return vals[c]
+
+    def _key(self, i, c):
+        x = self.items[i]
+        if c == 3:
+            return float(x.get("daily") or 0)
+        if c in (5, 10):
+            v = self._cover(x, self.adds.get(x["key"], 0) if c == 10 else 0)
+            return 1e9 if v is None or v == float("inf") else v
+        if c == self.ADD:
+            return float(self.adds.get(x["key"], 0))
+        return None
+
+    def _hidden(self, i):
+        x = self.items[i]
+        if self.only_sell.isChecked() and not float(x.get("daily") or 0) > 0 and not self.adds.get(x["key"]):
+            return True
+        if self.only_new.isChecked() and x["in_order"]:
+            return True
+        q = self.search.text().strip().lower()
+        return bool(q) and q not in f"{x['ean']} {x['name']}".lower()
+
+    def _fill(self, i, k):
+        x = self.items[i]
+        table_set_row(self.table, k, [self._text(i, c) for c in range(len(self.COLS))])
+        for c in range(len(self.COLS)):
+            it = self.table.item(k, c)
+            if c == self.ADD:
+                it.setFlags(it.flags() | Qt.ItemIsEditable)
+                it.setData(Qt.UserRole, i)
+                it.setBackground(QColor(T("accent_soft")))
+                if self.adds.get(x["key"]):
+                    it.setForeground(QColor(T("accent")))
+                    f = it.font()
+                    f.setBold(True)
+                    it.setFont(f)
+            else:
+                it.setFlags(it.flags() & ~Qt.ItemIsEditable)
+        self.table.item(k, 0).setToolTip(f"{x['name']}\nEAN {x['ean']}")
+        n = self.adds.get(x["key"], 0)
+        v = self._cover(x, n)
+        if n and v is not None and v > self.limit:
+            self.table.item(k, 10).setForeground(QColor(T("warn")))
+            self.table.item(k, 10).setToolTip(tr("订完要很久才卖得完（超过 {0} 天），可能压货", int(self.limit)))
+
+    def _edited(self, item):
+        if self._filling or item.column() != self.ADD:
+            return
+        i = self.ctl.row_at(item.row())
+        if i is None:
+            return
+        try:
+            n = float(item.text().strip().replace(",", ".") or 0)
+            if n < 0 or n != int(n):
+                raise ValueError
+            n = int(n)
+        except ValueError:
+            n = None
+        key = self.items[i]["key"]
+
+        def apply():
+            if n is None:
+                self._show_note(tr("箱数要填 0 或正整数"))
+            elif n:
+                self.adds[key] = n
+            else:
+                self.adds.pop(key, None)
+            self.ctl.update_row(i)
+            self._refresh_state()
+        QTimer.singleShot(0, apply)            # 等编辑框关掉再更新这一行（编辑中途改格子会卡住）
+
+    def _totals(self):
+        """这家现在（加之前）的箱数、金额，和加完后的"""
+        ru = self.rule()
+        c0, a0 = self.md._sup_totals(ru["target"])
+        by = {x["key"]: x for x in self.items}
+        c = c0 + sum(self.adds.values())
+        a = a0 + sum(n * by[k]["box"] for k, n in self.adds.items() if k in by)
+        return c0, a0, c, a
+
+    def _refresh_state(self):
+        from min_order_optimizer import _satisfied
+        ru = self.rule()
+        if ru is None:
+            return
+        c0, a0, c, a = self._totals()
+        ok = _satisfied(c, a, ru["min_colli"], ru["min_amount"], ru["mode"])
+        gaps = []
+        if ru["min_colli"] and c < ru["min_colli"]:
+            gaps.append(tr("差 {0:g} 箱", ru["min_colli"] - c))
+        if ru["min_amount"] and a < ru["min_amount"]:
+            gaps.append(tr("差 €{0:,.2f}", ru["min_amount"] - a))
+        txt = tr("<b>{0}</b>　现在 {1:g} 箱 / €{2:,.2f}　起订量 {3}", ru["name"], c0, a0, describe_condition(ru))
+        if self.adds:
+            txt += "　→　" + tr("加上以后 {0:g} 箱 / €{1:,.2f}", c, a)
+        txt += "　<b>" + (tr("已达标") if ok else tr("未达标") + "（" + tr("、").join(gaps) + "）") + "</b>"
+        self.state.setText(txt)
+        kind = "ok" if ok else "err"
+        self.state.setStyleSheet(f"background:{T(kind + '_soft')}; color:{T(kind)};")
+        n_new = sum(1 for k in self.adds if k[0] == "ean")
+        self.ok.setEnabled(bool(self.adds))
+        self.ok.setText(tr("加进订单（{0} 个商品，其中新商品 {1} 个）", len(self.adds), n_new) if self.adds else tr("加进订单"))
+
+    def _show_note(self, text, button=None, cb=None):
+        self.note.setText(text)
+        self.note_btn.setVisible(bool(button))
+        self.note_btn.setText(button or "")
+        self._note_cb = cb
+        self.note_box.show()
+
+    def _hide_note(self):
+        self.note_box.hide()
+
+    # ---------- 操作 ----------
+    def suggest(self, ignore_days=False):
+        from allocation_plan import suggest_items
+        ru = self.rule()
+        if ru is None:
+            return
+        c0, a0, _, _ = self._totals()
+        cands = [dict(x, key=x["key"]) for x in self.items if x.get("daily") is not None]
+        res = suggest_items(cands, c0, a0, ru, self.limit, ignore_days)
+        if not res["boxes"] and not res["ok"]:
+            self._show_note(tr("加完库存都会超过 {0} 天（或者没有卖得动的商品），按销量推荐不出来。可以自己在「加（箱）」里填，或者不限天数推荐。", int(self.limit)),
+                            tr("仍然按销量推荐"), lambda: self.suggest(True))
+            return
+        self.adds = dict(res["boxes"])
+        self.ctl.render()
+        self._refresh_state()
+        if res["ok"]:
+            self._show_note(tr("已推荐 {0} 个商品、{1:g} 箱（€{2:,.2f}），加上就达标。可以再改「加（箱）」。",
+                               len(res["boxes"]), sum(res["boxes"].values()), res["value"]))
+        elif not ignore_days:
+            self._show_note(tr("加完库存最多够卖 {0} 天的话，只能加到 {1:g} 箱 / €{2:,.2f}，还是不够。", int(self.limit), res["colli"], res["amount"]),
+                            tr("仍然按销量推荐"), lambda: self.suggest(True))
+        else:
+            self._show_note(tr("卖得动的商品全加上也不够起订量：{0:g} 箱 / €{1:,.2f}。", res["colli"], res["amount"]))
+
+    def clear(self):
+        self.adds = {}
+        self._hide_note()
+        self.ctl.render()
+        self._refresh_state()
+
+    def _ok(self):
+        if not self.adds:
+            return
+        by = {x["key"]: x for x in self.items}
+        self.result = {"target": self.rule()["target"],
+                       "rows": {k[1]: n for k, n in self.adds.items() if k[0] == "row"},
+                       "new": [(by[k]["cand"], n) for k, n in self.adds.items() if k[0] == "ean" and k in by]}
+        self.accept()
+
+
+class TransferSettingsDialog(QDialog):
+    """门店间调货设置（门店配货和批发商比价共用：settings.json → store_orders.transfer / fill.far_stores）"""
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        import transfers as TR
+        import store_orders as SO
+        self.setWindowTitle(tr("门店间调货"))
+        so = settings.setdefault("store_orders", {})
+        tc = TR.config(so.get("transfer"))
+        far = set((dict(SO.DEFAULT_FILL, **(so.get("fill") or {}))).get("far_stores") or [])
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(22, 18, 22, 16)
+        lay.setSpacing(10)
+        t = QLabel(tr("门店之间调货：要的件数远小于一箱时，从别的门店调多出来的货，少订一箱"))
+        t.setObjectName("Section")
+        t.setWordWrap(True)
+        lay.addWidget(t)
+        self.on = QCheckBox(tr("启用调货"))
+        self.on.setChecked(bool(tc["enabled"]))
+        lay.addWidget(self.on)
+        g = QGridLayout()
+        g.setSpacing(10)
+        self.mode = QComboBox()
+        self.mode.addItem(tr("整箱会多出一半以上时才调"), "waste")
+        self.mode.addItem(tr("所有要订的商品都先看能不能调"), "all")
+        self.mode.setCurrentIndex(max(0, self.mode.findData(tc.get("mode"))))
+        self.minv = QDoubleSpinBox()
+        self.minv.setRange(0, 100000)
+        self.minv.setDecimals(0)
+        self.minv.setValue(float(tc["min_value"]))
+        self.minv.setFixedWidth(100)
+        g.addWidget(QLabel(tr("什么时候调")), 0, 0)
+        g.addWidget(self.mode, 0, 1, 1, 2)
+        g.addWidget(QLabel(tr("每家调出门店货值至少 €")), 1, 0)
+        g.addWidget(self.minv, 1, 1)
+        hh = QLabel(tr("货值太低不值得人工拣货，不如直接订"))
+        hh.setObjectName("Faint")
+        g.addWidget(hh, 1, 2)
+        lay.addLayout(g)
+        lf = QLabel(tr("离得远的门店（不调出、也不调进；门店配货借货也不借它的货）"))
+        lf.setObjectName("Section")
+        lf.setWordWrap(True)
+        lay.addWidget(lf)
+        row = QHBoxLayout()
+        self.far = {}
+        for k, name in SO.STORE_SHEETS.items():
+            cb = QCheckBox(name)
+            cb.setChecked(k in far)
+            self.far[k] = cb
+            row.addWidget(cb)
+        row.addStretch()
+        lay.addLayout(row)
+        h = QLabel(tr("调出门店留够自己一个订货周期的销量（日均 × 订货周期），多出来的才调；自己这次也要订的商品不调出。门店配货和批发商比价用同一套设置。"))
+        h.setObjectName("Faint")
+        h.setWordWrap(True)
+        lay.addWidget(h)
+        bb = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        bb.accepted.connect(self.save)
+        bb.rejected.connect(self.reject)
+        lay.addWidget(bb)
+        self.setMinimumWidth(560)
+
+    def save(self):
+        import transfers as TR
+        import store_orders as SO
+        so = settings.setdefault("store_orders", {})
+        so["transfer"] = dict(TR.config(so.get("transfer")), enabled=self.on.isChecked(),
+                              mode=self.mode.currentData(), min_value=self.minv.value())
+        so["fill"] = dict(dict(SO.DEFAULT_FILL, **(so.get("fill") or {})),
+                          far_stores=[k for k, cb in self.far.items() if cb.isChecked()])
+        save_settings(settings)
+        self.accept()
+
+
 class ManualDialog(QDialog):
     """手动调整每个商品的供应商。确认后返回 self.result（{行号: 供应商}）"""
 
-    def __init__(self, parent, rows, rules, baseline, proposed, notes=None, edit_mode=False):
+    def __init__(self, parent, rows, rules, baseline, proposed, notes=None, edit_mode=False, ctx=None):
         super().__init__(parent)
         self.edit_mode = edit_mode
+        # ctx（修改分配）：{"ordine_file", "distribuire_path", "headers"}，加商品凑单读报价、查门店库存用
+        self.ctx = ctx
+        self.cand_cache = {}                      # {供应商: 报价里这次没订的商品}
+        self._cand_sig = _CandSig()
+        self._cand_sig.loaded.connect(lambda p: p[0](p[1]))
+        self._orig_rows = {r["row"] for r in rows}
+        self.new_rows = []
         self.setWindowTitle(tr("修改分配") if edit_mode else tr("手动调整供应商"))
         self.resize(1180, 760)
         self.rows = [dict(r) for r in rows]      # 改数量时换成新的行，不动原来的
@@ -960,20 +1402,29 @@ class ManualDialog(QDialog):
                            "; ".join(notes)), "warn")
             lay.addWidget(nb)
 
-        # 起订情况 + 总额
-        self.status_box = QHBoxLayout()
-        self.status_box.setSpacing(10)
+        # 起订情况 + 总额：每行最多 3 个，文字太长自动换行（供应商多的时候窗口不会被撑得比屏幕还宽）
+        self.status_box = QGridLayout()
+        self.status_box.setHorizontalSpacing(10)
+        self.status_box.setVerticalSpacing(8)
         self.status_labels = []
-        for ru in rules:
+        per_row = 3
+        for k, ru in enumerate(rules):
             lb = QLabel()
             lb.setObjectName("Banner")
             lb.setTextFormat(Qt.RichText)
+            lb.setWordWrap(True)
             self.status_labels.append((ru, lb))
-            self.status_box.addWidget(lb)
+            self.status_box.addWidget(lb, k // per_row, k % per_row)
         self.total_lbl = QLabel()
         self.total_lbl.setObjectName("Banner")
-        self.status_box.addWidget(self.total_lbl)
-        self.status_box.addStretch()
+        self.total_lbl.setWordWrap(True)
+        n = len(rules)
+        if n % per_row:                               # 最后一行还有空位：总额放在后面
+            self.status_box.addWidget(self.total_lbl, n // per_row, n % per_row, 1, per_row - n % per_row)
+        else:
+            self.status_box.addWidget(self.total_lbl, n // per_row, 0, 1, per_row)
+        for c in range(per_row):
+            self.status_box.setColumnStretch(c, 1)
         lay.addLayout(self.status_box)
 
         bar = QHBoxLayout()
@@ -1000,8 +1451,14 @@ class ManualDialog(QDialog):
 
         self.table = make_table([tr("行"), "EAN", "ARTICOLO", tr("件数") if self.pieces_mode else tr("箱数"),
                                  tr("最低价供应商"), tr("件价"),
-                                 tr("当前供应商"), tr("当前件价"), tr("比最低价多花 €")],
-                                stretch_col=2, numeric_cols=(0, 3, 5, 7, 8))
+                                 tr("当前供应商"), tr("当前件价"), tr("比最低价多花 €"),
+                                 tr("库存够卖（天）"), tr("订后够卖（天）")],
+                                stretch_col=2, numeric_cols=(0, 3, 5, 7, 8, 9, 10))
+        self.has_stock = any(r.get("daily") is not None for r in self.rows)
+        self.table.horizontalHeaderItem(9).setToolTip(tr("库存够卖 = 现在的库存按日均还能卖几天"))
+        self.table.horizontalHeaderItem(10).setToolTip(tr("订后够卖 =（库存 + 这次从当前供应商订的件数）÷ 日均"))
+        for c_ in (9, 10):
+            self.table.setColumnHidden(c_, not self.has_stock)     # 旧主订单没有库存数据，不显示这两列
         self.table.setFocusPolicy(Qt.StrongFocus)
         # 只有「当前供应商」这一列能改（而且要有不止一家报价）；其他格子只能看、复制
         self.table.setEditTriggers(QAbstractItemView.DoubleClicked | QAbstractItemView.SelectedClicked)
@@ -1012,7 +1469,7 @@ class ManualDialog(QDialog):
         lay.addWidget(self.table, 1)
         from erp_widgets import TableSortFilter
         self.ctl = TableSortFilter(self.table, lambda: len(self.rows), self._text, self._fill_row,
-                                   hide=self._hidden, numeric=(0, 3, 8))
+                                   hide=self._hidden, numeric=(0, 3, 8, 9, 10))
         self.ctl.rendered.connect(lambda n, tot: self.count_lbl.setText(
             tr("显示 {0} / {1} 行 · 点表头排序，右键表头筛选", n, tot)))
         # 按供应商筛选：选 MEGA 就只看 MEGA 的商品
@@ -1044,6 +1501,11 @@ class ManualDialog(QDialog):
         ok.clicked.connect(self._ok)
         btns.addWidget(b_base)
         btns.addWidget(b_auto)
+        if edit_mode and rules:
+            b_fill = QPushButton(tr("加商品凑单…"))
+            b_fill.setToolTip(tr("没达到起订条件的供应商：不换供应商，从它的报价里挑商品多订（订单里已有的多订几箱，或者加这次没订、但卖得快的商品），和门店配货的加商品凑单一样"))
+            b_fill.clicked.connect(self.add_items)
+            btns.addWidget(b_fill)
         btns.addStretch()
         btns.addWidget(cancel)
         btns.addWidget(ok)
@@ -1092,10 +1554,24 @@ class ManualDialog(QDialog):
         pc = r["prices"].get(c) if c else None
         extra = (pc - pb) * q if (pb is not None and pc is not None) else None
         n_offers = sum(1 for p in r["prices"].values() if p is not None)
+        d0, d1 = self._cover(r, c)
         return [str(r["row"]), r.get("ean", ""), r.get("articolo", ""), f"{q:g}",
                 short(b) if b else tr("无报价"), fmt_unit(_unit(r, b), _pack(r, b)),
                 short(c) if c else tr("无报价"), fmt_unit(_unit(r, c), _pack(r, c)),
-                f"{extra:+,.2f}" if extra else ""], n_offers, extra, b, c
+                f"{extra:+,.2f}" if extra else "", d0, d1], n_offers, extra, b, c
+
+    def _cover(self, r, c):
+        """库存够卖 / 订后够卖（天）：主订单是「检查门店清单」生成的才有库存和日均"""
+        if r.get("daily") is None:
+            return "", ""
+        import store_orders as SO
+        d = {"inv": r.get("inv") or 0, "daily": r.get("daily") or 0}
+        if c:
+            pieces = ((r.get("colli") or {}).get(c, 0) * (_pack(r, c) or 1)) if r.get("pieces") is not None \
+                else self._qty(r) * (_pack(r, c) or 1)
+        else:
+            pieces = 0
+        return SO.days_text(SO.cover_days(d)), (SO.days_text(SO.cover_days(d, pieces)) if c else "")
 
     def _text(self, i, col):
         return self._vals(i)[0][col]
@@ -1105,12 +1581,17 @@ class ManualDialog(QDialog):
         if n_offers > 1 and c:
             vals[6] += "　▾"
         table_set_row(self.table, k, vals, color=None)
-        for col in range(9):                      # 先全部设成不能改
+        self.table.item(k, 2).setToolTip(f"{vals[2]}\nEAN {vals[1]}")
+        for col in range(self.table.columnCount()):   # 先全部设成不能改
             it = self.table.item(k, col)
             it.setFlags(it.flags() & ~Qt.ItemIsEditable)
         self.table.item(k, 6).setData(Qt.UserRole, i)
         self.table.item(k, 3).setData(Qt.UserRole, i)
         r = self.rows[i]
+        if r["row"] not in self._orig_rows:
+            self.table.item(k, 2).setForeground(QColor(T("accent")))
+            self.table.item(k, 2).setToolTip(tr("加商品凑单新加的商品（原来不在订单里），确认后写进主订单和 {0} 的订单",
+                                                short(r.get("added") or "")))
         if self.edit_mode:
             it = self.table.item(k, 3)
             it.setFlags(it.flags() | Qt.ItemIsEditable)
@@ -1128,10 +1609,18 @@ class ManualDialog(QDialog):
             it.setFlags(it.flags() | Qt.ItemIsEditable)
             it.setToolTip(tr("点击选择其他供应商"))
         if c != b:
-            for col in range(9):
+            for col in range(self.table.columnCount()):
                 self.table.item(k, col).setBackground(QColor(T("accent_soft")))
         if extra and extra > 0:
             self.table.item(k, 8).setForeground(QColor(T("warn")))
+        if vals[10] not in ("", "∞"):
+            try:
+                limit = float((settings.get("store_orders") or {}).get("fill", {}).get("max_stock_days") or 60)
+                if float(vals[10].replace(",", "")) > limit:
+                    self.table.item(k, 10).setForeground(QColor(T("warn")))
+                    self.table.item(k, 10).setToolTip(tr("订完要很久才卖得完，可能压货"))
+            except ValueError:
+                pass
 
     def _set_row(self, i):
         self.ctl.update_row(i)
@@ -1164,27 +1653,110 @@ class ManualDialog(QDialog):
             self.refresh_status()
 
     def _reset(self, a, msg):
+        self.rows = [r for r in self.rows if r["row"] in self._orig_rows]     # 加商品凑单新加的商品也去掉
         self.assign = dict(a)
         self._fill_table()
         self.refresh_status()
         self.apply_filter()
         self.total_lbl.setToolTip(msg)
 
+    def _sup_totals(self, t):
+        """供应商 t 现在分到几箱、多少钱（按件数订货时箱数按这家的箱规算）"""
+        from allocation_plan import _totals
+        return _totals(self.rows, self.assign, t)
+
+    def under_rules(self):
+        """分到了货、但没达到起订条件的供应商"""
+        from min_order_optimizer import _satisfied
+        out = []
+        for ru, _ in self.status_labels:
+            c, a = self._sup_totals(ru["target"])
+            if c > 0 and not _satisfied(c, a, ru["min_colli"], ru["min_amount"], ru["mode"]):
+                out.append(ru)
+        return out
+
+    def add_items(self):
+        under = self.under_rules()
+        all_rules = [ru for ru, _ in self.status_labels]
+        rules = under + [ru for ru in all_rules if ru not in under]     # 没达标的排前面
+        dlg = FillItemsDialog(self, rules, under[0]["target"] if under else None)
+        if not dlg.exec() or not dlg.result:
+            return
+        from allocation_plan import qty_step
+        import service as SV
+        t = dlg.result["target"]
+        idx = {r["row"]: i for i, r in enumerate(self.rows)}
+        for row, n in dlg.result["rows"].items():
+            i = idx.get(row)
+            if i is not None:
+                self.set_qty(i, self._qty(self.rows[i]) + n * qty_step(self.rows[i], t))
+        heads = list((self.rows[0].get("prices") or {}).keys()) if self.rows else []
+        nxt = max([r["row"] for r in self.rows] + [1]) + 1
+        store = (self.ctx or {}).get("store")
+        for item, n in dlg.result["new"]:
+            r = SV.make_added_row(nxt, item, n * float(item.get("pack") or 1), t, heads, store)
+            self.rows.append(r)
+            self.assign[r["row"]] = t
+            self.baseline[r["row"]] = t
+            nxt += 1
+        self.only_changed.setChecked(True)          # 只看改过的，方便核对加了哪些
+        self.only_multi.setChecked(False)
+        self._fill_table()
+        self.refresh_status()
+
+    def load_candidates(self, t, done):
+        """后台读供应商 t 的报价、查门店库存：报价里有、主订单里没有的商品 → done(列表或 Exception)"""
+        ctx = self.ctx or {}
+        rows = list(self.rows)
+
+        def work():
+            try:
+                import service as SV
+                import reorder_service as RS
+                from reorder_page import algo_params
+                price = SV.read_price_file(os.path.join(ctx["distribuire_path"], t))
+                cands = SV.new_item_candidates(price, rows)
+                stock = {}
+                if cands and ctx.get("store"):
+                    db = RS.make_db(settings.get("db") or None)
+                    cfg = settings.get("reorder") or {}
+                    stock = RS.stock_for_eans(db, ctx["store"], [c["ean"] for c in cands],
+                                              cfg.get("days") or RS.DEFAULT_SALES_DAYS, int(cfg.get("cycle", 30) or 30),
+                                              algo_params(settings))
+                out = []
+                for c in cands:
+                    d = stock.get(c["ean"])
+                    if d:
+                        out.append(dict(c, **d))
+                    else:                                  # 数据库里没有（没有销量数据），也列出来，可以手动加
+                        out.append(dict(c, name=c.get("desc") or "", daily=None, inv=None))
+                res = out
+            except Exception as e:
+                file_logger.error(f"load candidates failed: {e}", exc_info=True)
+                res = e
+            if not isinstance(res, Exception):
+                self.cand_cache[t] = res
+            self._cand_sig.loaded.emit((done, res))
+
+        threading.Thread(target=work, daemon=True).start()
+
     def refresh_status(self):
         from min_order_optimizer import _satisfied
         for ru, lb in self.status_labels:
-            c = a = 0.0
-            for r in self.rows:
-                if self.assign.get(r["row"]) == ru["target"]:
-                    q = self._qty(r)
-                    c += q
-                    a += q * (_amt(r, ru["target"]) or 0)
+            c, a = self._sup_totals(ru["target"])
             if c == 0:
                 kind, st = "info", tr("不下单")
             elif _satisfied(c, a, ru["min_colli"], ru["min_amount"], ru["mode"]):
                 kind, st = "ok", tr("已达标")
             else:
                 kind, st = "err", tr("未达标")
+                gaps = []
+                if ru["min_colli"] and c < ru["min_colli"]:
+                    gaps.append(tr("差 {0:g} 箱", ru["min_colli"] - c))
+                if ru["min_amount"] and a < ru["min_amount"]:
+                    gaps.append(tr("差 €{0:,.2f}", ru["min_amount"] - a))
+                if gaps:
+                    st += "（" + tr("、").join(gaps) + "）"
             lb.setText(tr("<b>{0}</b>　{1:,.0f} 箱 / €{2:,.2f}　要求 {3}　<b>{4}</b>", ru['name'], c, a, describe_condition(ru), st))
             lb.setStyleSheet(f"background:{T(kind + '_soft')}; color:{T(kind)};")
         cost = self._money(self.assign)
@@ -1198,10 +1770,10 @@ class ManualDialog(QDialog):
         """搜索框和两个开关（表头的按列筛选另外算）"""
         r = self.rows[i]
         n_offers = sum(1 for p in r["prices"].values() if p is not None)
-        if self.only_multi.isChecked() and n_offers < 2:
+        if self.only_multi.isChecked() and n_offers < 2 and r["row"] in self._orig_rows:
             return True
         if self.only_changed.isChecked() and self.assign.get(r["row"]) == self.baseline.get(r["row"]) \
-                and r["row"] not in self.qty_changed:
+                and r["row"] not in self.qty_changed and r["row"] in self._orig_rows:
             return True
         text = self.filter.text().strip().lower()
         if text:
@@ -1215,20 +1787,18 @@ class ManualDialog(QDialog):
 
     def _ok(self):
         from min_order_optimizer import _satisfied
-        bad = []
-        for ru, _ in self.status_labels:
-            c = a = 0.0
-            for r in self.rows:
-                if self.assign.get(r["row"]) == ru["target"]:
-                    q = self._qty(r)
-                    c += q
-                    a += q * (_amt(r, ru["target"]) or 0)
-            if c > 0 and not _satisfied(c, a, ru["min_colli"], ru["min_amount"], ru["mode"]):
-                bad.append(ru["name"])
+        bad = [ru["name"] for ru in self.under_rules()]
         if bad and QMessageBox.question(self, tr("手动调整"), tr("{0} 还没有达到起订条件。仍然按现在的方案写入？", ", ".join(bad))) \
                 != QMessageBox.Yes:
             return
         self.result = dict(self.assign)
+        # 加商品凑单新加的商品（数量改成 0 的不要了）；它们的数量跟着行走，不算「改了数量」
+        self.new_rows = [r for r in self.rows if r["row"] not in self._orig_rows and self._qty(r) > 0]
+        for r in self.rows:
+            if r["row"] not in self._orig_rows:
+                self.qty_changed.pop(r["row"], None)
+                if self._qty(r) <= 0:
+                    self.result.pop(r["row"], None)
         self.accept()
 
 
@@ -1265,8 +1835,11 @@ class MissingDialog(QDialog):
         exp = QPushButton(tr("导出 Excel"))
         bar.addWidget(exp)
         lay.addLayout(bar)
-        self.table = make_table([tr("行"), "EAN", "ARTICOLO", tr("数量"), tr("原因"), tr("有报价的供应商")],
-                                stretch_col=2, numeric_cols=(0, 3))
+        self.table = make_table([tr("行"), "EAN", "ARTICOLO", tr("数量"), tr("原因"), tr("有报价的供应商"),
+                                 tr("库存够卖（天）")],
+                                stretch_col=2, numeric_cols=(0, 3, 6))
+        self.table.horizontalHeaderItem(6).setToolTip(tr("这个商品店里现在的库存还能卖几天（买不到时还能撑多久）"))
+        self.table.setColumnHidden(6, not any(m.get("daily") is not None for m in self.items))
         self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
         lay.addWidget(self.table, 1)
         from erp_widgets import TableSortFilter
@@ -1289,12 +1862,18 @@ class MissingDialog(QDialog):
 
     def _text(self, i, c):
         m = self.items[i]
+        if c == 6:
+            if m.get("daily") is None:
+                return ""
+            import store_orders as SO
+            return SO.days_text(SO.cover_days({"inv": m.get("inv") or 0, "daily": m.get("daily") or 0}))
         return [str(m.get("row", "")), m.get("ean", "") or "", str(m.get("articolo") or ""),
                 f"{float(m.get('qty') or 0):g}", tr(m.get("reason") or ""),
                 tr("、").join(short(x) for x in (m.get("offers") or []))][c]
 
     def _fill(self, i, k):
-        table_set_row(self.table, k, [self._text(i, c) for c in range(6)])
+        table_set_row(self.table, k, [self._text(i, c) for c in range(7)])
+        self.table.item(k, 2).setToolTip(str(self.items[i].get("articolo") or ""))
         if self.items[i].get("reason") == MISSING_REASONS[1]:
             self.table.item(k, 4).setForeground(QColor(T("warn")))
 
@@ -1386,6 +1965,10 @@ def fill_scenario_table(t, results, chosen=None, recommended=None):
               [(f"{r['priced']:,} / {r['need']:,}" if r.get("need") else f"{r['priced']:,}") for r in results], ""))
     L.append(("missing", tr("缺失商品（点数字看列表）"), [f"{len(r['missing']):,}" for r in results],
               tr("点数字看缺了哪些商品")))
+    import scenarios as _SC
+    if any(m.get("daily") is not None for r in results for m in r["missing"]):
+        L.append(("urgent", tr("　其中店里不够卖一周的"), [f"{_SC.urgent_count(r['missing']):,}" for r in results],
+                  tr("买不到、店里库存又不够卖 {0} 天的商品：这次不订很可能断货（推荐方案先看这个）", _SC.URGENT_DAYS)))
     if new:
         L.append(("lost_rows", tr("　比 A 少买的"), base_only(lambda r: f"{r.get('lost_rows', 0):,}"), ""))
         L.append(("switched", tr("比 A 换了供应商的"), base_only(lambda r: f"{r.get('switched', 0):,}"), ""))
@@ -1477,6 +2060,10 @@ def fill_scenario_table(t, results, chosen=None, recommended=None):
                     it.setForeground(QColor(T("ok")))
                 else:
                     it.setForeground(QColor(T("ok") if good else T("err")))
+            elif kind == "urgent" and txt != "0":
+                it.setForeground(QColor(T("err")))
+                f.setBold(True)
+                it.setFont(f)
             elif kind == "lost_rows" and c > 1 and txt not in ("—", "0"):
                 it.setForeground(QColor(T("warn")))
             elif kind == "extra" and (r.get("extra_cost") or 0) > 0.005:
@@ -1565,9 +2152,13 @@ class ScenarioCard(QFrame):
         dl.setStyleSheet(f"color:{d_col}; background:transparent;")
         v.addWidget(dl)
         nm = len(r["missing"])
-        mb = QPushButton(tr("缺失 {0} 个商品 ›", nm))
+        import scenarios as _SC
+        nu = _SC.urgent_count(r["missing"])
+        mb = QPushButton(tr("缺失 {0} 个商品（{1} 个店里不够卖一周）›", nm, nu) if nu else tr("缺失 {0} 个商品 ›", nm))
+        if nu:
+            mb.setToolTip(tr("这些商品这次买不到，店里的库存又不够卖 {0} 天，很可能断货", _SC.URGENT_DAYS))
         mb.setObjectName("Link")
-        mb.setStyleSheet(f"text-align:left; padding:2px 0; color:{T('warn') if nm else T('muted')};")
+        mb.setStyleSheet(f"text-align:left; padding:2px 0; color:{T('err') if nu else T('warn') if nm else T('muted')};")
         mb.clicked.connect(lambda: on_missing(i))
         v.addWidget(mb, 0, Qt.AlignLeft)
         self.pick_btn = QPushButton(tr("选这个方案"))
@@ -1647,7 +2238,15 @@ class ScenarioDiffDialog(QDialog):
         heads = ["EAN", "ARTICOLO", tr("箱数")] + [f"{scen_letter(i)}  {tr(r['name'])}" for i, r in enumerate(results)] \
             + [tr("差价 €")]
         self.c_gap = 3 + self.n
-        self.table = make_table(heads, stretch_col=1, numeric_cols=(2, self.c_gap))
+        # 有门店库存快照时：买不到的商品店里还能撑几天
+        self.c_cover = self.c_gap + 1 if any(m.get("daily") is not None for m in self.diff) else None
+        if self.c_cover:
+            heads.append(tr("库存够卖（天）"))
+        self.table = make_table(heads, stretch_col=1, numeric_cols=(2, self.c_gap) + ((self.c_cover,) if self.c_cover else ()))
+        if self.c_cover:
+            self.kind.addItem(tr("只看买不到、店里又不够卖一周的"), "urgent")
+            self.table.horizontalHeaderItem(self.c_cover).setToolTip(
+                tr("店里现在的库存还能卖几天：有方案买不到、又不够卖一周的标红"))
         self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
         hh = self.table.horizontalHeader()
         for c in range(3, 3 + self.n):
@@ -1657,7 +2256,7 @@ class ScenarioDiffDialog(QDialog):
         lay.addWidget(self.table, 1)
         from erp_widgets import TableSortFilter
         self.ctl = TableSortFilter(self.table, lambda: len(self.diff), self._text, self._fill, key=self._key,
-                                   hide=self._hidden, numeric=(2, self.c_gap))
+                                   hide=self._hidden, numeric=(2, self.c_gap) + ((self.c_cover,) if self.c_cover else ()))
         self.ctl.rendered.connect(lambda k, tot: self.count.setText(
             tr("显示 {0} / {1} 个 · 点表头排序，右键表头筛选", k, tot)))
         self.search.textChanged.connect(lambda _: self.ctl.render())
@@ -1681,10 +2280,17 @@ class ScenarioDiffDialog(QDialog):
         if c < self.c_gap:
             s_ = m["sups"][c - 3] if c - 3 < len(m["sups"]) else ""
             return s_ or tr("买不到")
+        if c == self.c_cover:
+            import store_orders as SO
+            return SO.days_text(SO.cover_days(m)) if m.get("daily") is not None else ""
         g = self._gap(m)
         return "" if g is None else f"{g:,.2f}"
 
     def _key(self, i, c):
+        if c == self.c_cover:
+            import store_orders as SO
+            v = SO.cover_days(self.diff[i]) if self.diff[i].get("daily") is not None else None
+            return 1e9 if v is None or v == float("inf") else v
         if c == self.c_gap:
             g = self._gap(self.diff[i])
             return -1.0 if g is None else g
@@ -1708,6 +2314,12 @@ class ScenarioDiffDialog(QDialog):
                     f = it.font()
                     f.setBold(True)
                     it.setFont(f)
+        if self.c_cover and any(not s_ for s_ in m["sups"]):
+            import scenarios as _SC
+            if _SC.urgent(m):
+                it = self.table.item(k, self.c_cover)
+                it.setForeground(QColor(T("err")))
+                it.setToolTip(tr("有方案买不到，店里库存又不够卖 {0} 天", _SC.URGENT_DAYS))
 
     def _hidden(self, i):
         m = self.diff[i]
@@ -1717,6 +2329,10 @@ class ScenarioDiffDialog(QDialog):
             return True
         if kind == "switch" and lost:
             return True
+        if kind == "urgent":
+            import scenarios as _SC
+            if not (lost and _SC.urgent(m)):
+                return True
         q = self.search.text().strip().lower()
         if q and q not in str(m.get("ean", "")).lower() and q not in str(m.get("articolo", "")).lower():
             return True
@@ -2007,17 +2623,28 @@ CMP_STAGES = [(0, "备份、打开主订单"), (10, "扣减已处理数量"), (2
               (62, "选供应商、起订量凑单"), (70, "写回供应商文件"), (96, "保存主订单")]
 
 
+def _all_pages(side, sub_pages):
+    """侧边栏的页面 + 批发商比价里的标签页（不在侧边栏上的）。
+    注意：不能在 class 里直接写这个列表推导式——class 里的变量在推导式里看不到，启动就会报错闪退。"""
+    on_side = {k for k, _ in side}
+    return list(side) + [(k, t) for subs in sub_pages.values() for k, t in subs if k not in on_side]
+
+
 class MainWindow(QMainWindow):
     # 货物分配系统是主系统；采购管理是其中一个模块
     NAV_GROUPS = [
         (tr("概览"), [("home", tr("工作台"))]),
-        (tr("采购管理"), [("store_orders", tr("门店配货")), ("order", tr("批发商比价")), ("result", tr("比价结果")),
-                        ("tracking", tr("采购订单跟踪")), ("history", tr("历史记录")), ("rules", tr("起订规则")),
-                        ("search", tr("缺失查找"))]),
+        (tr("采购管理"), [("store_orders", tr("门店配货")), ("order", tr("批发商比价")),
+                        ("tracking", tr("采购订单跟踪"))]),
         (tr("分货管理"), [("distribution", tr("分货数据处理")), ("import", tr("导入 / 导出"))]),
         (tr("系统"), [("settings", tr("系统设置")), ("log", tr("运行日志"))]),
     ]
-    NAV = [item for _, items in NAV_GROUPS for item in items]
+    # 批发商比价里面的几页：侧边栏只放「批发商比价」，进去以后顶部一排标签切换
+    SUB_PAGES = {"order": [("order", tr("比价处理")), ("result", tr("比价结果")), ("history", tr("历史记录")),
+                           ("rules", tr("起订规则")), ("search", tr("缺失查找"))]}
+    SUB_PARENT = {k: parent for parent, subs in SUB_PAGES.items() for k, _ in subs}
+    NAV_SIDE = [item for _, items in NAV_GROUPS for item in items]          # 侧边栏上的
+    NAV = _all_pages(NAV_SIDE, SUB_PAGES)                                    # 所有页面（含标签页）
     NAV_SECTION = {k: g for g, items in NAV_GROUPS for k, _ in items}
     SOON = {"tracking"}   # 还没做（采购订单跟踪）
 
@@ -2059,6 +2686,7 @@ class MainWindow(QMainWindow):
         rv = QVBoxLayout(right)
         rv.setContentsMargins(0, 0, 0, 0)
         rv.setSpacing(0)
+        self._last_sub = {}
         rv.addWidget(self._build_topbar())
         self.stack = QStackedWidget()
         self.stack.setObjectName("Content")
@@ -2186,6 +2814,9 @@ class MainWindow(QMainWindow):
         nv.setContentsMargins(10, 0, 10, 0)
         nv.setSpacing(2)
         self.nav_group = QButtonGroup(self)
+        self.nav_group.setExclusive(True)
+        self.nav_sub_btns = {}     # 二级菜单按钮 {页面: 按钮}
+        self.nav_tree = {}         # 有二级菜单的父菜单 {页面: (按钮, 箭头, 子菜单)}
         self.nav_btns = []
         self.nav_badges = {}
         idx = 0
@@ -2199,7 +2830,7 @@ class MainWindow(QMainWindow):
                 b.setCheckable(True)
                 b.setCursor(Qt.PointingHandCursor)
                 b.setIconSize(QSize(17, 17))
-                b.clicked.connect(lambda _=False, i=idx: self.go(i))
+                b.clicked.connect(lambda _=False, k=key: self._side_clicked(k))
                 self.nav_group.addButton(b, idx)
                 self.nav_btns.append((b, key))
                 b.toggled.connect(lambda on, b=b, k=key: b.setIcon(icon(k, "#FFFFFF" if on else T("side_text"))))
@@ -2223,6 +2854,34 @@ class MainWindow(QMainWindow):
                     self.nav_badges[key] = badge
                 nv.addWidget(b)
                 idx += 1
+                if key in self.SUB_PAGES:
+                    # 二级菜单：父菜单只负责展开 / 进入，自己不参与「选中」；右边一个小箭头
+                    self.nav_group.removeButton(b)
+                    b.setCheckable(False)
+                    arrow = QLabel("›")
+                    arrow.setObjectName("NavArrow")
+                    bl.addWidget(arrow, 0, Qt.AlignVCenter)
+                    box = QFrame()
+                    box.setObjectName("NavSubBox")
+                    sv = QVBoxLayout(box)
+                    sv.setContentsMargins(0, 2, 0, 4)
+                    sv.setSpacing(1)
+                    for sk, st in self.SUB_PAGES[key]:
+                        c = QPushButton(st.replace("&", "&&"))
+                        c.setObjectName("NavSub")
+                        c.setCheckable(True)
+                        c.setCursor(Qt.PointingHandCursor)
+                        c.clicked.connect(lambda _=False, k=sk: self.go_page(k))
+                        self.nav_group.addButton(c)
+                        self.nav_sub_btns[sk] = c
+                        sv.addWidget(c)
+                    wrap = QWidget()
+                    wl = QHBoxLayout(wrap)
+                    wl.setContentsMargins(22, 0, 0, 0)       # 缩进，左边一条细竖线（NavSubBox 的左边框）
+                    wl.addWidget(box)
+                    wrap.hide()
+                    nv.addWidget(wrap)
+                    self.nav_tree[key] = (b, arrow, wrap)
             nv.addSpacing(6)
         nv.addStretch()
         sa = QScrollArea()
@@ -2428,19 +3087,52 @@ class MainWindow(QMainWindow):
         self.go([k for k, _ in self.NAV].index(key))
 
     def go(self, i):
+        """i = 页面在 NAV 里的位置（侧边栏的页面在前，批发商比价里的标签页在后）"""
         self.stack.setCurrentIndex(i)
-        self.nav_group.button(i).setChecked(True)
         key, text = self.NAV[i]
-        self.crumb_sec.setText(self.NAV_SECTION.get(key, ""))
-        self.crumb_cur.setText(text)
+        parent = self.SUB_PARENT.get(key, key)
+        side = [k for k, _ in self.NAV_SIDE]
+        if key in self.nav_sub_btns:
+            self.nav_sub_btns[key].setChecked(True)
+        elif parent in side:
+            self.nav_btns[side.index(parent)][0].setChecked(True)
+        ptext = dict(self.NAV_SIDE).get(parent, text)
+        self.crumb_sec.setText(self.NAV_SECTION.get(parent, ""))
+        self.crumb_cur.setText(ptext if key == parent and key not in self.SUB_PAGES else
+                               f"{ptext}  /  {text}")
+        # 二级菜单：在这一块里就展开，换到别的模块就收起（同一时间只展开一组）
+        for pk, (pb, arrow, wrap) in self.nav_tree.items():
+            on = pk == parent
+            wrap.setVisible(on)
+            arrow.setText("⌄" if on else "›")
+            pb.setProperty("open", on)
+            pb.style().unpolish(pb)
+            pb.style().polish(pb)
+            pb.setIcon(icon(pk, "#FFFFFF" if on else T("side_text")))
+        if parent in self.SUB_PAGES:
+            self._last_sub[parent] = key
         if key == "home" and hasattr(self, "dashboard"):
             self.dashboard.refresh()
+
+    def _side_clicked(self, key):
+        """侧边栏一级菜单。有二级菜单的（批发商比价）：不在这一块里 → 展开并回到上次看的那一页；
+        已经在这一块里 → 只是收起 / 展开子菜单，不换页面"""
+        cur = self.NAV[self.stack.currentIndex()][0] if self.stack.count() else None
+        if key in self.nav_tree and self.SUB_PARENT.get(cur, cur) == key:
+            pb, arrow, wrap = self.nav_tree[key]
+            show = wrap.isHidden()
+            wrap.setVisible(show)
+            arrow.setText("⌄" if show else "›")
+            return
+        self.go_page(self._last_sub.get(key, key))
 
     def apply_theme(self):
         theme.set_theme(settings.get("theme", "light"))
         QApplication.instance().setStyleSheet(build_qss())
         for b, ic in self.nav_btns:
             b.setIcon(icon(ic, "#FFFFFF" if b.isChecked() else T("side_text")))
+        for pk, (pb, _arrow, _wrap) in self.nav_tree.items():
+            pb.setIcon(icon(pk, "#FFFFFF" if pb.property("open") else T("side_text")))
         dark = settings.get("theme") == "dark"
         self.theme_btn.setIcon(icon("sun" if dark else "moon", T("muted"), 16))
         self.theme_btn.setToolTip(tr("浅色模式") if dark else tr("深色模式"))
@@ -2515,13 +3207,13 @@ class MainWindow(QMainWindow):
     def _page_order(self):
         w, lay = self._page(tr("批发商比价"), tr("几家批发商卖的商品差不多：按最低价给每个商品选供应商，帮有起订量的供应商凑单，把订购数量写回各家报价文件。"))
         from erp_widgets import StepBar
-        self.cmp_steps = StepBar([(tr("总文件夹"), ""), (tr("检查门店清单"), tr("可选")), (tr("比价分配"), ""), (tr("查看结果"), "")])
+        self.cmp_steps = StepBar([(tr("总文件夹"), ""), (tr("检查门店清单"), tr("生成主订单")), (tr("比价分配"), ""), (tr("查看结果"), "")])
         lay.addWidget(self.cmp_steps)
 
         p1 = Panel(tr("① 总文件夹"))
         row = QHBoxLayout()
         self.folder_edit = QLineEdit()
-        self.folder_edit.setPlaceholderText(tr("包含 ORDINE、eliminare、distribuire 三个子文件夹的文件夹"))
+        self.folder_edit.setPlaceholderText(tr("这家门店的比价文件夹（② 确认后自动建在 根目录\\批发商比价\\日期\\门店，并切换过来）"))
         self.folder_edit.editingFinished.connect(self.refresh_folder)
         b1 = QPushButton(tr("选择文件夹…"))
         self.btn_folder = b1
@@ -2533,25 +3225,30 @@ class MainWindow(QMainWindow):
         row.addWidget(b2)
         p1.lay.addLayout(row)
 
-        # 三个文件区：直接把文件拖进来（或点「选择文件…」），程序放进总文件夹对应的子文件夹；
-        # 原来的文件挪进子文件夹里的 _旧订单 / _旧文件，不删除。也照样可以自己去文件夹里放。
+        # 两个文件区：直接把文件拖进来（或点「选择文件…」），程序放进总文件夹对应的子文件夹；
+        # 原来的文件挪进子文件夹里的 _旧文件，不删除。也照样可以自己去文件夹里放。
+        # 主订单不在这里放：只能由「② 检查门店订货清单」生成（带门店库存，才能算调货和够卖天数）
         from erp_widgets import DropZone
         zones = QHBoxLayout()
         zones.setSpacing(12)
-        self.zone_ordine = DropZone(tr("主订单 · ORDINE"), "", multi=False)
         self.zone_elim = DropZone(tr("扣减文件 · eliminare"), "", multi=True, removable=True)
         self.zone_sup = DropZone(tr("供应商报价 · distribuire"), "", multi=True, removable=True)
-        for z, sub in ((self.zone_ordine, ORDINE_FOLDER), (self.zone_elim, ELIMINARE_FOLDER),
-                       (self.zone_sup, DISTRIBUTUIRE_FOLDER)):
+        for z, sub in ((self.zone_elim, ELIMINARE_FOLDER), (self.zone_sup, DISTRIBUTUIRE_FOLDER)):
             z.setMinimumHeight(120)
             z.open_folder.connect(lambda sub=sub: self._open_sub(sub))
             zones.addWidget(z, 1)
-        self.zone_ordine.files_dropped.connect(self._drop_ordine)
         self.zone_elim.files_dropped.connect(self._drop_eliminare)
         self.zone_sup.files_dropped.connect(self._drop_suppliers)
         self.zone_elim.remove_requested.connect(lambda n: self._remove_file(ELIMINARE_FOLDER, n))
         self.zone_sup.remove_requested.connect(lambda n: self._remove_file(DISTRIBUTUIRE_FOLDER, n))
         p1.lay.addLayout(zones)
+        # 这一批（检查清单时几家门店一起生成的主订单）：一家一家切换过去比价
+        self.batch_box = QWidget()
+        self.batch_lay = QHBoxLayout(self.batch_box)
+        self.batch_lay.setContentsMargins(0, 0, 0, 0)
+        self.batch_lay.setSpacing(8)
+        self.batch_box.hide()
+        p1.lay.addWidget(self.batch_box)
         self.banner_folder = Banner()
         p1.lay.addWidget(self.banner_folder)
         lay.addWidget(p1)
@@ -2582,6 +3279,10 @@ class MainWindow(QMainWindow):
         b_scen = QPushButton(tr("管理方案"))
         b_scen.clicked.connect(self.edit_scenarios)
         opts.addWidget(b_scen)
+        b_tr = QPushButton(tr("门店间调货…"))
+        b_tr.setToolTip(tr("要的件数远小于一箱时，从别的门店调多出来的货，少订一箱（和门店配货同一套设置）"))
+        b_tr.clicked.connect(self.edit_transfers)
+        opts.addWidget(b_tr)
         b_names = QPushButton(tr("供应商名称"))
         b_names.setToolTip(tr("给供应商文件起名字（比如 formattato_… 叫 MEGA CASH），方案排除和起订规则都按名字认"))
         b_names.clicked.connect(self.edit_supplier_names)
@@ -2701,6 +3402,8 @@ class MainWindow(QMainWindow):
         self.sum_table.horizontalHeader().setStretchLastSection(True)
         self.sum_table.setItemDelegateForColumn(9, StatusDelegate(self.sum_table))
         self.sum_table.setMinimumHeight(240)
+        from erp_widgets import RowSorter
+        self.sum_sorter = RowSorter(self.sum_table, pin_last=True)          # 合计行永远在最后
         pt.lay.addWidget(self.sum_table)
         acts = QHBoxLayout()
         b1 = QPushButton(tr("打开主订单"))
@@ -2710,6 +3413,10 @@ class MainWindow(QMainWindow):
         b2.clicked.connect(self.open_supplier_folder)
         self.btn_missing = QPushButton(tr("缺失商品"))
         self.btn_missing.clicked.connect(self.show_missing)
+        self.btn_transfers = QPushButton(tr("调货单"))
+        self.btn_transfers.setToolTip(tr("从其他门店调货的商品（要的件数远小于一箱时，调别的门店多出来的货，少订一箱）"))
+        self.btn_transfers.clicked.connect(self.show_transfers)
+        self.btn_transfers.hide()
         self.btn_backup = QPushButton(tr("打开备份"))
         self.btn_backup.clicked.connect(lambda: self.last_summary and open_path(self.last_summary.get("backup_dir")))
         self.btn_backup.setEnabled(False)
@@ -2720,6 +3427,7 @@ class MainWindow(QMainWindow):
         acts.addWidget(b1)
         acts.addWidget(self.btn_edit)
         acts.addWidget(self.btn_missing)
+        acts.addWidget(self.btn_transfers)
         acts.addWidget(b2)
         acts.addWidget(self.btn_backup)
         acts.addStretch()
@@ -2745,6 +3453,7 @@ class MainWindow(QMainWindow):
                                      tr("多花 €"), tr("原因")], stretch_col=2, numeric_cols=(0, 3, 5, 7, 8))
         self.chg_table.setItemDelegateForColumn(9, StatusDelegate(self.chg_table))
         self.chg_table.setMinimumHeight(320)
+        self.chg_sorter = RowSorter(self.chg_table)
         pc.lay.addWidget(self.chg_table)
         self.chg_empty = QLabel(tr("这次没有改动，所有商品都按最低价选的供应商。"))
         self.chg_empty.setObjectName("Muted")
@@ -2774,12 +3483,13 @@ class MainWindow(QMainWindow):
             wb = Workbook()
             ws = wb.active
             ws.title = tr("改动明细")
-            ws.append([t.horizontalHeaderItem(c).text() for c in range(t.columnCount())])
+            from erp_widgets import header_text
+            ws.append([header_text(t, c) for c in range(t.columnCount())])
             for r in range(t.rowCount()):
                 ws.append([tr(t.item(r, c).text()) if t.item(r, c) else "" for c in range(t.columnCount())])
             ws2 = wb.create_sheet(tr("各供应商"))
             st = self.sum_table
-            ws2.append([st.horizontalHeaderItem(c).text() for c in range(st.columnCount())])
+            ws2.append([header_text(st, c) for c in range(st.columnCount())])
             for r in range(st.rowCount()):
                 ws2.append([tr(st.item(r, c).text()) if st.item(r, c) else "" for c in range(st.columnCount())])
             for sh in (ws, ws2):
@@ -3102,6 +3812,8 @@ class MainWindow(QMainWindow):
                                       tr("搜索时间"), tr("可能的替代品")], stretch_col=7, numeric_cols=(2, 3, 4))
         self.miss_table.setMinimumHeight(460)
         self.miss_table.setWordWrap(True)
+        from erp_widgets import RowSorter
+        self.miss_sorter = RowSorter(self.miss_table)
         p.lay.addWidget(self.miss_table)
         lay.addWidget(p, 1)
         return w
@@ -3135,6 +3847,8 @@ class MainWindow(QMainWindow):
         self.rules_table.setItemDelegateForColumn(6, StatusDelegate(self.rules_table))
         self.rules_table.setMinimumHeight(300)
         self.rules_table.doubleClicked.connect(lambda _: self.edit_rule())
+        from erp_widgets import RowSorter
+        self.rules_sorter = RowSorter(self.rules_table)
         p.lay.addWidget(self.rules_table)
         acts = QHBoxLayout()
         for text, fn, name in [(tr("编辑"), self.edit_rule, None), (tr("启用 / 停用"), self.toggle_rule, None),
@@ -3245,7 +3959,7 @@ class MainWindow(QMainWindow):
         ok = bool(path) and os.path.isdir(path)
         no_root = tr("先在上面选总文件夹；也可以直接拖文件进来，会先让你选")
         if not ok:
-            for z in (self.zone_ordine, self.zone_elim, self.zone_sup):
+            for z in (self.zone_elim, self.zone_sup):
                 z.set_files([], no_root)
             return
 
@@ -3257,13 +3971,42 @@ class MainWindow(QMainWindow):
                 out.append((f"{n}  ({t:%d/%m})" if with_date and t else n, tip))
             return out
 
-        self.zone_ordine.set_files(items(ORDINE_FOLDER, [info["ordine"]] if info["ordine"] else []),
-                                   tr("拖新的主订单进来会替换现在这个（旧的挪进 ORDINE\\_旧订单）") if info["ordine"]
-                                   else tr("把主订单拖到这里"))
         self.zone_elim.set_files(items(ELIMINARE_FOLDER, info["eliminare"] or []),
                                  tr("把已处理 / 已下单的文件拖到这里，可以一次拖好几个"))
-        self.zone_sup.set_files(items(DISTRIBUTUIRE_FOLDER, info["suppliers"] or [], True),
-                                tr("每周拖新的报价文件进来，自动替换同一家的旧报价"))
+        pr = self._price_root(path)
+        if pr != path:                        # 这一批的门店文件夹：显示共用的那套报价
+            shared = scan_folder(pr).get("suppliers") or []
+            out = []
+            for n in shared:
+                t, tip = self._file_tip(os.path.join(pr, DISTRIBUTUIRE_FOLDER), n)
+                out.append((f"{n}  ({t:%d/%m})" if t else n, tip))
+            self.zone_sup.set_files(out, tr("所有门店共用 {0}：每周拖新的报价进来，自动替换同一家的旧报价",
+                                            os.path.join(pr, DISTRIBUTUIRE_FOLDER)))
+        else:
+            self.zone_sup.set_files(items(DISTRIBUTUIRE_FOLDER, info["suppliers"] or [], True),
+                                    tr("每周拖新的报价文件进来，自动替换同一家的旧报价"))
+
+    def _price_root(self, path=None):
+        """供应商报价放在哪：这一批的门店文件夹（根目录\\批发商比价\\日期\\门店）→ 共用的根目录；否则就是这个总文件夹"""
+        import reorder_service as RS
+        path = self.folder_edit.text().strip() if path is None else path
+        return RS.batch_root_of(path) or path
+
+    def sync_prices(self, path):
+        """门店文件夹的报价副本跟共用的报价同步（共用的更新了就复制过来）"""
+        import reorder_service as RS
+        import file_inbox as FI
+        r = RS.batch_root_of(path) if path else None
+        if not r or not os.path.isdir(path):
+            return
+        try:
+            os.makedirs(os.path.join(r, DISTRIBUTUIRE_FOLDER), exist_ok=True)
+            c, a = FI.sync_shared_prices(os.path.join(r, DISTRIBUTUIRE_FOLDER), os.path.join(path, DISTRIBUTUIRE_FOLDER),
+                                         os.path.join(path, "_备份", "报价来源.json"))
+            if c or a:
+                self.log(tr("[文件] {0}：从共用报价复制 {1} 个、挪走 {2} 个", os.path.basename(path), len(c), len(a)))
+        except Exception as e:
+            self.log(tr("⚠ 共用报价没同步过来：{0}", e))
 
     def _zone_name(self, w, name):
         """× 按钮发来的名字带着「(日期)」，还原成文件名"""
@@ -3299,28 +4042,6 @@ class MainWindow(QMainWindow):
         self.log("[文件] " + msg)
         self.refresh_folder()
         self.show_toast(msg)
-
-    def _drop_ordine(self, files):
-        import file_inbox as FI
-        if self._busy_drop():
-            return
-        if len(files) > 1:
-            QMessageBox.information(self, tr("主订单"), tr("主订单一次只能放一个文件。"))
-            return
-        root = self._ensure_root()
-        if not root:
-            return
-        cur = (self.info or {}).get("ordine")
-        new = os.path.basename(files[0])
-        if cur and cur != new and QMessageBox.question(
-                self, tr("主订单"), tr("把主订单换成「{0}」？\n原来的「{1}」挪进 ORDINE\\_旧订单（不删除）。", new, cur)) != QMessageBox.Yes:
-            return
-        try:
-            r = FI.import_ordine(root, files)
-        except Exception as e:
-            self._file_error(e)
-            return
-        self._after_drop(tr("主订单已换成 {0}", os.path.basename(r["file"])))
 
     def _drop_eliminare(self, files):
         import file_inbox as FI
@@ -3358,6 +4079,7 @@ class MainWindow(QMainWindow):
         root = self._ensure_root()
         if not root:
             return
+        root = self._price_root(root)             # 门店文件夹：放进共用的报价（所有门店一起更新）
         try:
             plan = FI.plan_suppliers(root, files, [r.get("keyword") for r in settings.get("rules", [])])
         except Exception as e:
@@ -3393,6 +4115,8 @@ class MainWindow(QMainWindow):
         if self._busy_drop():
             return
         root = self.folder_edit.text().strip()
+        if sub == DISTRIBUTUIRE_FOLDER:
+            root = self._price_root(root)
         name = self._zone_name(None, name)
         if not root or not os.path.exists(os.path.join(root, sub, name)):
             self.refresh_folder()
@@ -3409,6 +4133,8 @@ class MainWindow(QMainWindow):
 
     def _open_sub(self, sub):
         root = self.folder_edit.text().strip()
+        if sub == DISTRIBUTUIRE_FOLDER:
+            root = self._price_root(root)
         p = os.path.join(root, sub) if root else ""
         if p and os.path.isdir(p):
             open_path(p)
@@ -3417,10 +4143,70 @@ class MainWindow(QMainWindow):
         else:
             QMessageBox.information(self, APP_NAME, tr("还没有选总文件夹。"))
 
+    def _refresh_batch(self, path):
+        """① 下面一行：这一批的门店（点了切换总文件夹），每家显示「待比价 / 已比价」"""
+        import reorder_service as RS
+        while self.batch_lay.count():
+            it = self.batch_lay.takeAt(0)
+            if it.widget():
+                it.widget().deleteLater()
+        batch = (settings.get("wholesale_batch") or {}).get("stores") or {}
+        if len(batch) < 2:
+            self.batch_box.hide()
+            return
+        lb = QLabel(tr("这一批的门店："))
+        lb.setObjectName("Faint")
+        self.batch_lay.addWidget(lb)
+        cur = os.path.normcase(os.path.abspath(path)) if path else ""
+        for sid, folder in sorted(batch.items(), key=lambda kv: int(kv[0])):
+            has, done = self._batch_state(folder)
+            prices = [f for f in (_excel_files(os.path.join(folder, DISTRIBUTUIRE_FOLDER)) or [])
+                      if ".calc." not in f.lower() and "缺失报告" not in f]
+            st = tr("没有主订单") if not has else (tr("✔ 已比价") if done else
+                                                 (tr("● 待比价") if prices else tr("● 缺供应商报价")))
+            b = QPushButton(f"{RS.STORES.get(int(sid), sid)}  {st}")
+            b.setObjectName("Chip")
+            b.setCheckable(True)
+            b.setChecked(os.path.normcase(os.path.abspath(folder)) == cur)
+            b.setToolTip(folder)
+            b.clicked.connect(lambda _=False, f=folder: self._switch_folder(f))
+            self.batch_lay.addWidget(b)
+        self.batch_lay.addStretch()
+        self.batch_box.show()
+
+    @staticmethod
+    def _batch_state(folder):
+        """(有没有检查清单生成的主订单, 这份主订单比过价没有)：比价结果比主订单的库存快照新 = 比过了"""
+        import reorder_service as RS
+        good, _ = RS.checked_main_orders(os.path.join(folder, ORDINE_FOLDER))
+        if not good:
+            return False, False
+        try:
+            done = os.path.getmtime(os.path.join(folder, "_备份", "last_allocation.json")) > \
+                os.path.getmtime(RS.snapshot_path(os.path.join(folder, ORDINE_FOLDER, good[0])))
+        except OSError:
+            done = False
+        return True, done
+
+    def _switch_folder(self, folder):
+        if self.running:
+            return
+        if not os.path.isdir(folder):
+            QMessageBox.information(self, tr("批发商比价"), tr("找不到这个文件夹：\n{0}", folder))
+            return
+        self.folder_edit.setText(os.path.normpath(folder))
+        settings["last_folder"] = self.folder_edit.text()
+        save_settings(settings)
+        self.refresh_folder()
+
     def refresh_folder(self):
         path = self.folder_edit.text().strip()
+        if not self.running:
+            self.sync_prices(path)
         self.info = info = scan_folder(path)
         self._fill_zones(path, info)
+        if hasattr(self, "batch_box"):
+            self._refresh_batch(path)
         if not path:
             self.banner_folder.show_msg(tr("还没有选择文件夹。点「选择文件夹…」或按 Ctrl+O。"), "info")
         elif info["errors"]:
@@ -3435,9 +4221,12 @@ class MainWindow(QMainWindow):
             self.order_check.folder_changed()
         if hasattr(self, "cmp_steps") and not self.running:
             ok = bool(info.get("ok"))
-            self.cmp_steps.set_state(0, "done" if ok else "now", info.get("ordine") or tr("选择总文件夹"))
-            self.cmp_steps.set_state(1, "todo", tr("可选"))
-            self.cmp_steps.set_state(2, "now" if ok else "todo", tr("{0} 家供应商", len(info.get("suppliers") or [])) if ok else "")
+            folder_ok = bool(path) and not info["errors"]
+            self.cmp_steps.set_state(0, "done" if folder_ok else "now",
+                                     tr("{0} 家供应商", len(info.get("suppliers") or [])) if folder_ok else tr("选择总文件夹"))
+            self.cmp_steps.set_state(1, "done" if info.get("ordine") else ("now" if folder_ok else "todo"),
+                                     info.get("ordine") or tr("生成主订单"))
+            self.cmp_steps.set_state(2, "now" if ok else "todo", "")
             self.cmp_steps.set_state(3, "todo", "")
 
     def edit_scenarios(self):
@@ -3450,6 +4239,31 @@ class MainWindow(QMainWindow):
                 save_settings(settings)
                 self.refresh_rule_line()
 
+    def edit_transfers(self):
+        if TransferSettingsDialog(self).exec():
+            self.refresh_rule_line()
+            sp = getattr(self, "store_orders", None)
+            if sp is not None and getattr(sp, "calc", None):
+                try:                      # 门店配货已经算过：按新设置重算调货
+                    sp.apply_transfers()
+                    sp._refresh_matrix()
+                except Exception:
+                    pass
+            self.show_toast(tr("调货设置已保存"))
+
+    def _transfer_line(self):
+        """现在的主订单会不会算门店间调货（显示在比价分配那一栏）"""
+        import reorder_service as RS
+        import service as SV
+        name = (self.info or {}).get("ordine")
+        if not name:
+            return ""
+        try:
+            snap = RS.load_snapshot(os.path.join(self.folder_edit.text().strip(), ORDINE_FOLDER, name))
+            return SV.transfer_status(snap, settings)[1]
+        except Exception:
+            return ""
+
     def edit_supplier_names(self):
         heads = (self.info or {}).get("suppliers") or []
         if not heads:
@@ -3460,6 +4274,19 @@ class MainWindow(QMainWindow):
             if hasattr(self, "rules_table"):
                 self.refresh_rules_table()
             self.show_toast(tr("供应商名称已保存"))
+
+    def _snapshot_line(self, ordine_file):
+        """开始处理前的提示：主订单是哪家门店的清单生成的（会算门店间调货和够卖天数）"""
+        import reorder_service as RS
+        try:
+            snap = RS.load_snapshot(ordine_file)
+        except Exception:
+            snap = None
+        if snap:
+            import service as SV
+            return "\n\n" + tr("门店库存：{0}（会算够卖天数）", RS.STORES.get(snap.get("store"), "")) + "\n" + \
+                SV.transfer_status(snap, settings)[1]
+        return ""
 
     def _scenario_line(self):
         if not settings.get("scenarios_enabled", True):
@@ -3472,9 +4299,9 @@ class MainWindow(QMainWindow):
 
     def refresh_rule_line(self):
         self._refresh_rule_line()
-        extra = self._scenario_line()
-        if extra:
-            self.rule_line.setText(self.rule_line.text() + "\n" + extra)
+        for extra in (self._scenario_line(), self._transfer_line()):
+            if extra:
+                self.rule_line.setText(self.rule_line.text() + "\n" + extra)
 
     def _refresh_rule_line(self):
         if not self.t_min.isChecked():
@@ -3519,8 +4346,11 @@ class MainWindow(QMainWindow):
             return
         self.refresh_folder()
         info = self.info
-        if not info["ok"]:
+        if info["errors"]:
             QMessageBox.warning(self, tr("不能开始"), tr("文件夹检查没有通过：\n\n{0}", "\n".join(info["errors"])))
+            return
+        if info.get("need_order"):
+            QMessageBox.information(self, tr("不能开始"), info["need_order"])
             return
         root_path = self.folder_edit.text().strip()
         n_rules = len([r for r in settings["rules"] if r.get("enabled", True)]) if self.t_min.isChecked() else 0
@@ -3528,7 +4358,8 @@ class MainWindow(QMainWindow):
                + (tr("处理前会自动备份到 总文件夹\\_备份。") if self.t_backup.isChecked()
                   else tr("自动备份已关闭，建议先手动备份。"))
                + tr("\n\n重复处理同一批文件时，会先恢复成原文件再算，不会重复扣减，结果和上次一样。")
-               + (("\n\n" + self._scenario_line()) if self._scenario_line() else ""))
+               + (("\n\n" + self._scenario_line()) if self._scenario_line() else "")
+               + self._snapshot_line(os.path.join(root_path, ORDINE_FOLDER, info["ordine"])))
         box = QMessageBox(self)
         box.setWindowTitle(tr("开始处理"))
         box.setText(tr("确认开始处理？"))
@@ -3789,13 +4620,18 @@ class MainWindow(QMainWindow):
             return
         st = data["state"]
         cur = dict(st["assignment"])
-        dlg = ManualDialog(self, st["rows"], st["rules"], st["baseline"], cur, edit_mode=True)
+        import reorder_service as RS
+        snap = RS.load_snapshot(st.get("ordine_file") or "") if st.get("ordine_file") else None
+        ctx = {"ordine_file": st.get("ordine_file"), "distribuire_path": st.get("distribuire_path"),
+               "store": (snap or {}).get("store")} if st.get("distribuire_path") else None
+        dlg = ManualDialog(self, st["rows"], st["rules"], st["baseline"], cur, edit_mode=True, ctx=ctx)
         if not dlg.exec() or dlg.result is None:
             return
         new = dlg.result
         qty = dict(dlg.qty_changed)
+        added = list(dlg.new_rows)
         changed = [r["row"] for r in st["rows"] if new.get(r["row"]) != cur.get(r["row"])]
-        if not changed and not qty:
+        if not changed and not qty and not added:
             self.show_toast(tr("没有改动"))
             return
         parts = []
@@ -3803,6 +4639,8 @@ class MainWindow(QMainWindow):
             parts.append(tr("{0} 个商品换供应商", len(changed)))
         if qty:
             parts.append(tr("{0} 个商品改数量", len(qty)))
+        if added:
+            parts.append(tr("新加 {0} 个商品", len(added)))
         if QMessageBox.question(self, tr("修改分配"),
                                 tr("要把 {0}，并重新写入主订单和供应商文件。写入前会自动备份。继续？",
                                    tr("、").join(parts))) != QMessageBox.Yes:
@@ -3828,7 +4666,8 @@ class MainWindow(QMainWindow):
             from service import rewrite_assignment
             try:
                 out, n = rewrite_assignment(data, new, sources, self.log,
-                                            progress=lambda p, t: self.bridge.progress.emit(int(p), t), qty=qty)
+                                            progress=lambda p, t: self.bridge.progress.emit(int(p), t), qty=qty,
+                                            new_rows=added)
                 self.bridge.rewrite_done.emit((out, n, None))
             except Exception as e:
                 file_logger.error(f"rewrite failed: {e}", exc_info=True)
@@ -3899,7 +4738,32 @@ class MainWindow(QMainWindow):
         self.cmp_steps.set_current(3)
         self.cmp_steps.set_state(3, "done", "")
         self.go_page("result")
-        self.show_toast(tr("比价分配完成"))
+        self._refresh_batch(self.folder_edit.text().strip())
+        nxt = self._next_batch_store()
+        self.show_toast(tr("比价分配完成") + ("　" + tr("下一家：{0}（在批发商比价页切换）", nxt) if nxt else ""))
+
+    def _next_batch_store(self):
+        """这一批里还没比价的下一家门店名（没有返回 None）"""
+        import reorder_service as RS
+        batch = (settings.get("wholesale_batch") or {}).get("stores") or {}
+        if len(batch) < 2:
+            return None
+        cur = os.path.normcase(os.path.abspath(self.folder_edit.text().strip()))
+        for sid, folder in sorted(batch.items(), key=lambda kv: int(kv[0])):
+            if os.path.normcase(os.path.abspath(folder)) == cur:
+                continue
+            has, done = self._batch_state(folder)
+            if has and not done:
+                return RS.STORES.get(int(sid), sid)
+        return None
+
+    def show_transfers(self, *_):
+        s = self.last_summary or {}
+        ts = list(s.get("transfers") or []) + list(s.get("transfers_out") or [])     # 调进来的 + 这家店要调出去的
+        if not ts:
+            return
+        from store_order_page import TransferDialog
+        TransferDialog(self, ts, _UI).exec()
 
     def show_missing(self, *_):
         s = self.last_summary or {}
@@ -4005,6 +4869,9 @@ class MainWindow(QMainWindow):
         self._fill_scen_switch(s, res)
         self.btn_missing.setText(tr("缺失商品 ({0})", len(s.get("missing_items") or [])) if s.get("missing_items") is not None
                                  else tr("缺失商品"))
+        ts = list(s.get("transfers") or []) + list(s.get("transfers_out") or [])
+        self.btn_transfers.setVisible(bool(ts))
+        self.btn_transfers.setText(tr("调货单 ({0})", len(ts)))
         self.k_rows.set(f"{s.get('total_rows', 0):,}")
         self.k_priced.set(f"{s.get('priced_rows', 0):,}")
         self.k_missing.set(f"{s.get('missing', 0):,}", T("warn") if s.get("missing") else None)
@@ -4024,9 +4891,21 @@ class MainWindow(QMainWindow):
         msgs.append(tr("{0} 已处理：eliminare 删除 {1} 行、更新 {2} 行。", s.get('main_file'), d, u))
         if s.get("scenario"):
             msgs.append(tr("选用方案：{0}（几种方案的对比在下面「方案对比」）", tr(s["scenario"])))
+        if s.get("transfer_note") and current:
+            msgs.append(s["transfer_note"])
+        if s.get("transfers"):
+            ts = s["transfers"]
+            msgs.append(tr("门店间调货：{0} 个商品，少订 {1} 箱（货值 €{2:,.2f}），调货单在总文件夹里：{3}",
+                           len(ts), sum(t["colli_before"] - t["colli_after"] for t in ts), sum(t["value"] for t in ts),
+                           os.path.basename(s.get("transfers_file") or "")))
+        if s.get("transfers_out"):
+            to = s["transfers_out"]
+            msgs.append(tr("这家店要调出 {0} 个商品给其他门店（货值 €{1:,.2f}），见调货单", len(to), sum(t["value"] for t in to)))
         if mo.get("warning"):
             msgs.append(mo["warning"])
             kind = "err"
+            if current and any(r.get("daily") is not None for r in ((s.get("state") or {}).get("rows") or [])):
+                msgs.append(tr("没达标的供应商可以点「修改分配…」→「加商品凑单…」：不换供应商，从它的报价里挑卖得快的商品多订（订单里没有的也能加）。"))
         if mo.get("unmatched"):
             msgs.append(tr("这些规则这次没有找到供应商文件：{0}", tr("、").join(mo["unmatched"])))
             kind = "warn" if kind == "ok" else kind
@@ -4074,6 +4953,7 @@ class MainWindow(QMainWindow):
         table_set_row(t, len(sups), [tr("合计"), f"{tot[0]:,}", f"{tot[1]:,.0f}", f"{tot[2]:,.0f}", "",
                                      f"{tot[3]:,.2f}", f"{tot[4]:,.2f}", sign(tot[4] - tot[3], "{:,.2f}"),
                                      "", ""], bold=True)
+        self.sum_sorter.apply()
 
         chs = s.get("changes") or []
         ct = self.chg_table
@@ -4096,6 +4976,7 @@ class MainWindow(QMainWindow):
         self.chg_title.setText(tr("改了供应商的商品（{0}）", len(chs)))
         ct.setVisible(bool(chs))
         self.chg_empty.setVisible(not chs)
+        self.chg_sorter.apply()
         self._filter_changes(self.chg_filter.text())
         self.btn_backup.setEnabled(bool(s.get("backup_dir")))
         self.btn_edit.setEnabled(bool(s.get("state")) and current and not self.running)
@@ -4129,6 +5010,8 @@ class MainWindow(QMainWindow):
                                  f"€{float(r.get('drop_extra') or 0):,.2f}" if float(r.get("drop_extra") or 0) else tr("不用"),
                                  f, st],
                           color=T("faint") if not r.get("enabled", True) else None)
+            t.item(i, 0).setData(Qt.UserRole, i)          # 排序后也能找到是第几条规则
+        self.rules_sorter.apply()
         if not rules:
             self.banner_rules.show_msg(tr("还没有起订规则。点「新增供应商规则」，填上供应商的起订箱数或金额。"), "info")
         else:
@@ -4139,7 +5022,9 @@ class MainWindow(QMainWindow):
         if not rows:
             QMessageBox.information(self, tr("起订量"), tr("先在表格里选一条规则。"))
             return None
-        return rows[0].row()
+        it = self.rules_table.item(rows[0].row(), 0)
+        i = it.data(Qt.UserRole) if it is not None else None
+        return i if isinstance(i, int) and 0 <= i < len(settings["rules"]) else None
 
     def _save_rules(self, msg):
         if save_settings(settings):
@@ -4240,6 +5125,7 @@ class MainWindow(QMainWindow):
             msg += tr("，网络找到 {0} 个", web_found)
         self.miss_status.setText(msg + "。")
         self.log(tr("✔ 缺失查找完成：{0}", msg))
+        self.miss_sorter.apply()
         self._filter_missing(self.miss_filter.text())
         self.go_page("search")
 
@@ -4295,7 +5181,8 @@ class MainWindow(QMainWindow):
             wb = Workbook()
             ws = wb.active
             ws.title = tr("缺失查找结果")
-            ws.append([t.horizontalHeaderItem(c).text() for c in range(t.columnCount())])
+            from erp_widgets import header_text
+            ws.append([header_text(t, c) for c in range(t.columnCount())])
             for r in range(t.rowCount()):
                 ws.append([tr(t.item(r, c).text()) if t.item(r, c) else "" for c in range(t.columnCount())])
             for col in ws.columns:
@@ -4466,6 +5353,9 @@ def main():
     from erp_widgets import CopyHelper
     app._copy_helper = CopyHelper(app)          # 程序里的文字都可以选中复制，表格 Ctrl+C / 右键复制
     app.installEventFilter(app._copy_helper)
+    from erp_widgets import ScreenFit
+    app._screen_fit = ScreenFit(app)            # 窗口打开时不会比屏幕大、不会跑出屏幕
+    app.installEventFilter(app._screen_fit)
     f = QFont(UI_FONT, 10)
     app.setFont(f)
     win = MainWindow()

@@ -1,7 +1,5 @@
-"""批发商比价：拖入文件放进 ORDINE / eliminare / distribuire，旧文件挪进 _旧订单 / _旧文件（不删除）"""
+"""批发商比价：拖入文件放进 eliminare / distribuire，旧文件挪进 _旧文件（不删除）"""
 import os
-
-import pytest
 
 import file_inbox as FI
 
@@ -12,30 +10,6 @@ def _mk(folder, name, text="x"):
     with open(p, "w") as f:
         f.write(text)
     return p
-
-
-def test_ordine_keeps_only_new_file(tmp_path):
-    root = str(tmp_path / "root")
-    _mk(os.path.join(root, "ORDINE"), "vecchio.xlsx", "old")
-    new = _mk(str(tmp_path / "dl"), "nuovo.xlsx", "new")
-    r = FI.import_ordine(root, [new])
-    assert FI.excel_files(os.path.join(root, "ORDINE")) == ["nuovo.xlsx"]
-    assert os.path.exists(os.path.join(root, "ORDINE", "_旧订单", "vecchio.xlsx"))
-    assert os.path.exists(new)                                   # 拖进来的原文件还在原地（复制，不是剪切）
-    assert len(r["archived"]) == 1
-    with pytest.raises(ValueError):
-        FI.import_ordine(root, [new, new])                       # 主订单只能一个
-    with pytest.raises(ValueError):
-        FI.import_ordine(root, [_mk(str(tmp_path / "dl"), "a.pdf")])
-
-
-def test_ordine_same_name_replaced(tmp_path):
-    root = str(tmp_path / "root")
-    _mk(os.path.join(root, "ORDINE"), "ord.xlsx", "old")
-    new = _mk(str(tmp_path / "dl"), "ord.xlsx", "new")
-    FI.import_ordine(root, [new])
-    assert open(os.path.join(root, "ORDINE", "ord.xlsx")).read() == "new"
-    assert open(os.path.join(root, "ORDINE", "_旧订单", "ord.xlsx")).read() == "old"
 
 
 def test_eliminare_add_and_replace(tmp_path):
@@ -97,3 +71,29 @@ def test_suppliers_user_choice_and_same_name(tmp_path):
     assert open(os.path.join(dist, "PETRILLO.xlsx")).read() == "new"
     assert sorted(FI.excel_files(dist)) == ["PETRILLO.xlsx", "listino settimana 42.xlsx"]
     assert sorted(os.listdir(os.path.join(dist, "_旧文件"))) == ["MELONI.xlsx", "PETRILLO.xlsx"]
+
+
+def test_sync_shared_prices(tmp_path):
+    """几家门店共用 总文件夹\\distribuire：同步到门店文件夹（新的 / 更新的复制，共用里没有了的挪走，门店副本写过订单不算更新）"""
+    import time
+    shared = str(tmp_path / "root" / "distribuire")
+    store = str(tmp_path / "root" / "批发商比价" / "2026-10-20" / "MARLIA" / "distribuire")
+    rec = str(tmp_path / "root" / "批发商比价" / "2026-10-20" / "MARLIA" / "_备份" / "报价来源.json")
+    _mk(shared, "MEGA.xlsx", "v1")
+    _mk(shared, "MELONI.xlsx", "m1")
+    _mk(shared, "~$MEGA.xlsx", "lock")
+    c, a = FI.sync_shared_prices(shared, store, rec)
+    assert sorted(c) == ["MEGA.xlsx", "MELONI.xlsx"] and not a
+    with open(os.path.join(store, "MEGA.xlsx"), "w") as f:     # 比价时写了订单
+        f.write("v1 + ordine")
+    _mk(store, "缺失报告.xlsx")
+    assert FI.sync_shared_prices(shared, store, rec) == ([], [])
+    assert open(os.path.join(store, "MEGA.xlsx")).read() == "v1 + ordine"
+    time.sleep(0.01)
+    os.remove(os.path.join(shared, "MELONI.xlsx"))
+    _mk(shared, "MEGA.xlsx", "v2 nuovo")                       # 每周更新
+    c, a = FI.sync_shared_prices(shared, store, rec)
+    assert c == ["MEGA.xlsx"] and len(a) == 1
+    assert open(os.path.join(store, "MEGA.xlsx")).read() == "v2 nuovo"
+    assert sorted(FI.excel_files(store)) == ["MEGA.xlsx", "缺失报告.xlsx"]
+    assert FI.sync_shared_prices(str(tmp_path / "nope"), store, rec) == ([], [])

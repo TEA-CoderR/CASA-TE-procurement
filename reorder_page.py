@@ -183,6 +183,9 @@ def algo_summary(p):
               p["max_stock_days"], p["pack_threshold"])
 
 
+_ALGO_UIS = []          # 各页面的算法选择（改了一个，其他跟着变）
+
+
 def algo_widgets(page, ui):
     """算法选择 + 设置按钮 + 一行说明；挂到 page 上：page.current_algo()、切换时禁用订货周期"""
     from PySide6.QtWidgets import QComboBox
@@ -200,11 +203,13 @@ def algo_widgets(page, ui):
     info.setWordWrap(True)
     row.addWidget(info, 1)
 
-    def refresh(*_):
-        cur = algo_params(page.settings)
-        cur["engine"] = engine.currentData()
-        page.settings["algo"] = cur
-        save_settings(page.settings)
+    def apply_ui(cur):
+        """按设置更新这一页的算法下拉、说明和可用状态（不保存）"""
+        i = engine.findData(cur.get("engine", "v2"))
+        if i >= 0 and i != engine.currentIndex():
+            engine.blockSignals(True)
+            engine.setCurrentIndex(i)
+            engine.blockSignals(False)
         info.setText(algo_summary(cur))
         v1 = cur["engine"] == "v1"
         for w in (getattr(page, "cycle", None), getattr(page, "use_cfg", None)):
@@ -217,12 +222,28 @@ def algo_widgets(page, ui):
         btn.setEnabled(not v1)
         btn.setToolTip(tr("原程序算法严格按原程序计算，不用填算法设置") if v1 else "")
 
+    def refresh(*_):
+        cur = algo_params(page.settings)
+        cur["engine"] = engine.currentData()
+        page.settings["algo"] = cur
+        save_settings(page.settings)
+        # 门店配货和检查门店订货清单用同一个算法设置：一页改了，另一页跟着变（两边算出来才一样）
+        for other in list(_ALGO_UIS):
+            if other is apply_ui:
+                continue
+            try:
+                other(cur)
+            except RuntimeError:              # 那一页已经关掉了
+                _ALGO_UIS.remove(other)
+        apply_ui(cur)
+
     def open_dialog():
         if AlgoDialog(page.win, page.settings).exec():
             refresh()
 
     engine.currentIndexChanged.connect(refresh)
     btn.clicked.connect(open_dialog)
+    _ALGO_UIS.append(apply_ui)
     page.current_algo = lambda: dict(algo_params(page.settings), engine=engine.currentData())
-    refresh()
+    apply_ui(dict(algo_params(page.settings), engine=engine.currentData()))
     return row, engine, info

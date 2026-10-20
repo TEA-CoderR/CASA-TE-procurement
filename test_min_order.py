@@ -297,3 +297,59 @@ def test_rule_condition_three_options():
     assert not _satisfied(210, 100, c, a, m) and _satisfied(10, 800, c, a, m)
     c, a, m = effective_limits(200, 700, "all")
     assert not _satisfied(210, 100, c, a, m) and _satisfied(210, 800, c, a, m)
+
+
+# ---- 按销量加量凑单（修改分配） ----
+def _qrow(r, qty, price, pack, inv, daily, sup="S.xlsx"):
+    from service import _price_row
+    x = _price_row(r, qty, {sup: price, "O.xlsx": price * 1.2}, {sup: pack, "O.xlsx": pack})
+    x["inv"], x["daily"] = inv, daily
+    return x
+
+
+def test_qty_fill_adds_fastest_within_days():
+    from allocation_plan import suggest_qty_fill
+    rows = [_qrow(2, 2, 1.0, 10, 0, 2.0),     # 卖得快：每加一箱 +5 天
+            _qrow(3, 2, 1.0, 10, 0, 0.5),     # 卖得慢：每加一箱 +20 天
+            _qrow(4, 1, 1.0, 10, 0, 0)]       # 没销量：不加
+    assign = {2: "S.xlsx", 3: "S.xlsx", 4: "S.xlsx"}
+    rule = {"target": "S.xlsx", "min_colli": 10, "min_amount": 0, "mode": "all"}
+    res = suggest_qty_fill(rows, assign, rule, max_days=60)
+    assert res["ok"] and res["colli"] >= 10
+    assert res["boxes"][2] >= res["boxes"].get(3, 0)
+    assert 4 not in res["boxes"]
+    # 加完都不超过 60 天
+    for r in rows[:2]:
+        n = r["qty"] + res["boxes"].get(r["row"], 0)
+        assert n * 10 / r["daily"] <= 60
+
+
+def test_qty_fill_respects_day_limit():
+    from allocation_plan import suggest_qty_fill
+    rows = [_qrow(2, 1, 1.0, 10, 0, 0.5)]     # 一箱已经够卖 20 天，最多到 60 天 = 3 箱
+    rule = {"target": "S.xlsx", "min_colli": 10, "min_amount": 0, "mode": "all"}
+    res = suggest_qty_fill(rows, {2: "S.xlsx"}, rule, max_days=60)
+    assert not res["ok"] and res["boxes"] == {2: 2}
+    res2 = suggest_qty_fill(rows, {2: "S.xlsx"}, rule, max_days=60, ignore_days=True)
+    assert res2["ok"] and res2["boxes"] == {2: 9}
+
+
+def test_qty_fill_amount_only_picks_one_box_that_is_enough():
+    from allocation_plan import suggest_qty_fill
+    rows = [_qrow(2, 5, 2.0, 10, 0, 5.0),     # 一箱 €20
+            _qrow(3, 5, 1.0, 6, 0, 5.0)]      # 一箱 €6，卖得一样快
+    assign = {2: "S.xlsx", 3: "S.xlsx"}
+    rule = {"target": "S.xlsx", "min_colli": 0, "min_amount": 135, "mode": "all"}   # 现在 €130，差 €5
+    res = suggest_qty_fill(rows, assign, rule, max_days=60)
+    assert res["ok"] and res["boxes"] == {3: 1}
+
+
+def test_qty_fill_already_ok_and_pieces_mode():
+    from allocation_plan import suggest_qty_fill
+    from service import _price_row_pieces
+    rule = {"target": "S.xlsx", "min_colli": 3, "min_amount": 0, "mode": "all"}
+    r = _price_row_pieces(2, 12, {"S.xlsx": 1.0}, {"S.xlsx": 6})
+    r["inv"], r["daily"] = 0, 1.0
+    assert suggest_qty_fill([r], {2: "S.xlsx"}, dict(rule, min_colli=2))["adds"] == {}
+    res = suggest_qty_fill([r], {2: "S.xlsx"}, rule)
+    assert res["ok"] and res["adds"] == {2: 6.0} and res["boxes"] == {2: 1}

@@ -122,6 +122,24 @@ def in_git():
     return os.path.isdir(os.path.join(HERE, ".git")) and bool(shutil.which("git"))
 
 
+def _new_modules():
+    import glob
+    import re
+    names = set()
+    for spec in glob.glob(os.path.join(HERE, "*.spec")):
+        with open(spec, encoding="utf-8", errors="replace") as f:
+            names |= set(re.findall(r"'([A-Za-z_][A-Za-z0-9_]*)'", f.read()))
+    out = []
+    for f in _git("ls-files", "--others", "--exclude-standard", check=False).splitlines():
+        base = os.path.basename(f)
+        if "/" in f or not base.endswith(".py"):
+            continue
+        mod = base[:-3]
+        if mod in names or (mod.startswith("test_") and mod[5:] in names):
+            out.append(f)
+    return out
+
+
 def git_precheck():
     """有没提交的改动 / 没推送的提交时先处理，保证发布的程序 = GitHub 上的代码"""
     if not in_git():
@@ -134,12 +152,20 @@ def git_precheck():
         _git("config", "user.email", ask("邮箱"))
     _git("fetch", "-q", "origin", check=False)
     dirty = _git("status", "--porcelain", "--untracked-files=no")
-    if dirty:
-        print("有还没提交的改动：\n" + dirty)
+    # 新加的程序模块（写进了 .spec 的 hiddenimports、但还没交给 git 管的 .py）和它的测试：
+    # 不一起提交的话，GitHub 上的代码会缺文件，别人拉下来打不开。文件夹里以前的临时脚本不管
+    new_py = _new_modules()
+    if dirty or new_py:
+        if dirty:
+            print("有还没提交的改动：\n" + dirty)
+        if new_py:
+            print("有新加的程序文件（会一起提交）：\n" + "\n".join("  " + f for f in new_py))
         if ask("先把这些改动提交再发布？(y/n)", "y").lower() != "y":
             raise SystemExit("已取消。先提交（git add / git commit）再发布。")
         msg = ask("提交说明", "发布前的改动")
         _git("add", "-u")
+        if new_py:
+            _git("add", "--", *new_py)
         _git("commit", "-q", "-m", msg)
     behind = _git("rev-list", "--count", "HEAD..@{u}", check=False)
     if behind and behind != "0":
