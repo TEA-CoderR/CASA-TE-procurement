@@ -138,15 +138,18 @@ def transfer_status(snapshot, settings):
         return "far", tr("门店间调货：{0} 设成「离得远」，不参与调货（点「门店间调货…」可以改）", name)
     when = tr("整箱会多出一半以上时才调") if cfg.get("mode") == "waste" else tr("所有要订的商品都先看能不能调")
     others = tr("、").join(SO.STORE_SHEETS[k] for k in SO.STORE_SHEETS if k != own and k not in far)
-    return "on", tr("门店间调货：开启，{0} 从 {1} 调；{2}，每家调出门店货值至少 €{3:g}",
-                    name, others or "—", when, float(cfg.get("min_value") or 0))
+    text = tr("门店间调货：开启，{0} 从 {1} 调；{2}，每个商品调货货值至少 €{3:g}",
+              name, others or "—", when, float(cfg.get("item_min_value") or 0))
+    if float(cfg.get("min_value") or 0) > 0:
+        text += tr("，每家调出门店合计至少 €{0:g}", float(cfg["min_value"]))
+    return "on", text
 
 
 def wholesale_transfers(rows_data, supplier_headers, snapshot, settings, labels=None):
     """
     批发商比价的门店间调货（规则和门店配货一样，transfers.py）：
       只对按件数订货的主订单（PEZZI）；箱规按最低价那家算（零头 = 要的件数按它的箱规取整多出来的）；
-      其他门店留够自己一个订货周期，多出来的才调；每家调出门店货值 ≥ 门槛才调；远的门店不参与。
+      其他门店留够自己一个订货周期，多出来的才调；每个商品调货货值 ≥ 门槛才调；远的门店不参与。
     调到货的商品，主订单件数减掉调货件数（rows_data 里直接换成新的行），起订量 / 比价按减完的件数算。
     返回调货清单（格式和门店配货的调货单一样）
     """
@@ -879,7 +882,7 @@ def run_process(ordine_file, eliminare_path, distribuire_path, log, progress=Non
         else:
             code, text = transfer_status(snapshot, settings)
             summary["transfer_note"] = text if code not in ("on",) else \
-                tr("门店间调货：这次没有可调的商品（其他门店没有多出来的货，或者一家调出的货值不到门槛）")
+                tr("门店间调货：这次没有可调的商品（其他门店没有多出来的货，或者商品调货货值不到门槛）")
             log(summary["transfer_note"])
     # 比价时才算的调货（旧主订单）要改主订单的件数；检查清单时算好的已经改过了（没有 row）
     transfer_rows = {t["row"]: t for t in summary["transfers"] if "row" in t}
