@@ -1946,4 +1946,11 @@ TRANSLATIONS = {
     '只看少订': ('Order less only', 'Solo ordina di meno'),
     '只看不订': ('Skipped only', 'Solo non ordinati'),
     '只看手动改过的': ('Edited by hand only', 'Solo modificati a mano'),
+    '到货后够卖 =（本店库存 + 确定件数 − 调给别的店的）÷ 日均：订的货和调进来的货都到了以后能卖几天（调进来的已经算在确定件数里）；改确定件数时跟着变，超过凑单天数标黄（可能压货）': ('Days after delivery = (store stock + final pcs − pcs sent to other stores) ÷ daily sales: how long it lasts once the order and the transfers arrive (incoming transfers are included in the final pcs); updates when you edit, yellow above the fill-up days (overstock)', "Giorni dopo l'arrivo = (giacenza + pezzi definitivi − pezzi ceduti ad altri negozi) ÷ vendite giornaliere: quanto dura quando arrivano ordine e trasferimenti (i trasferimenti in entrata sono già nei pezzi definitivi); si aggiorna modificando, giallo oltre i giorni di riempimento (sovrascorta)"),
+    '门店间调货（按现在的确定件数实时算）：从哪家门店调进几件，调进来的就少订': ('Store transfers (live, from the current final pcs): pieces received from which store; received pieces are not ordered', 'Trasferimenti tra negozi (in tempo reale dai pezzi definitivi): pezzi ricevuti e da quale negozio; i pezzi ricevuti non si ordinano'),
+    '到货后够卖（天）': ('Days after delivery', "Giorni dopo l'arrivo"),
+    '门店间调货：从哪家门店调进几件（调进来的就少订）': ('Store transfer: pieces received from which store (received pieces are ordered less)', 'Trasferimento: pezzi ricevuti e da quale negozio (si ordina di meno)'),
+    '到货后够卖 =（库存 + 订的货 + 调进来的 − 调给别的店的）÷ 日均：这次订的货和调的货都到了以后能卖几天；超过凑单天数标黄，可能压货': ('Days after delivery = (stock + ordered + received − sent to other stores) ÷ daily sales: how long it lasts once this order and the transfers arrive; yellow above the fill-up days (overstock)', "Giorni dopo l'arrivo = (giacenza + ordinato + ricevuto − ceduto ad altri negozi) ÷ vendite giornaliere: quanto dura quando arrivano ordine e trasferimenti; giallo oltre i giorni di riempimento (sovrascorta)"),
+    '建议（箱）': ('Suggested (cases)', 'Suggeriti (colli)'),
+    '需求（件）': ('Demand (pcs)', 'Fabbisogno (pz)'),
 }

@@ -33,11 +33,13 @@ from reorder_page import short_decision, store_label, algo_widgets
 #   「判断」只写结论：不订 / 照清单订 / 多订 N 箱 / 少订 N 箱 / 建议调货（和门店清单比；为什么建议放在鼠标提示里）
 #   紧接着「清单 → 确定 → 调货」对比改前改后和调货件数：
 #     清单按箱：清单箱数 | 确定箱数 | 确定件数 ✎；清单按件：清单件数 | 确定件数 ✎（箱数列自动藏起来）
-_ORDER = [22, 0, 3, 4, 9, 11, 15, 12, 14, 24, 20, 23, 21, 16, 18, 13, 25, 19, 5, 6, 7, 8, 17, 10, 1, 2]
-_LAYOUT_VER = 4           # 改了默认顺序就加 1
+# 2026-10-20 第三版：和门店配货的订货明细同一个样子（调货只显示从哪家调进来）：
+#   门店 条码 名称 等级 周期 本店库存 日均 库存够卖 每箱件数 | 清单 判断 确定箱数 确定件数 ✎ 调货 | 到货后够卖 原因
+_ORDER = [22, 2, 3, 16, 17, 4, 18, 9, 10, 11, 12, 0, 15, 14, 24, 20, 25, 13, 19, 23, 21, 5, 6, 7, 8, 1]
+_LAYOUT_VER = 5           # 改了默认顺序就加 1
 # 默认只显示审核要看的：门店 判断 名称 | 本店库存 库存够卖 | 清单 → 确定 | 调货 | 确定订后够卖
 # （等级、日均、建议件数、变化、原因等在「显示哪些列」里打开）
-_DEFAULT_HIDDEN = [12, 23, 21, 16, 18, 13, 25, 19, 5, 6, 7, 8, 17, 10, 1, 2]
+_DEFAULT_HIDDEN = [12, 13, 19, 23, 21, 5, 6, 7, 8, 1]
 CHANGE_COL, TRANSFER_COL, REASON_COL = 23, 24, 25
 
 
@@ -210,9 +212,9 @@ class OrderCheck:
         tb.addWidget(b_f)
         bl.addLayout(tb)
         self.table = ui.make_table(_perm([tr("判断"), tr("商品编号"), tr("条码"), tr("名称"), tr("本店库存"),
-                                          "30", "60", "90", "180", tr("库存够卖（天）"), tr("箱规"), tr("清单数量"),
+                                          "30", "60", "90", "180", tr("库存够卖（天）"), tr("每箱件数"), tr("清单数量"),
                                           tr("清单件数"), tr("建议件数"), tr("确定件数"), tr("确定箱数"), tr("等级"), tr("周期"), tr("日均"),
-                                          tr("目标库存"), tr("确定订后够卖（天）"), tr("清单订后够卖（天）"), tr("门店"),
+                                          tr("目标库存"), tr("到货后够卖（天）"), tr("清单订后够卖（天）"), tr("门店"),
                                           tr("变化（件）"), tr("调货"), tr("原因")]),
                                    numeric_cols=[_col(k) for k in list(range(4, 16)) + [17, 18, 19, 20, 21, 23]])
         self.table.setMinimumHeight(380)
@@ -229,7 +231,7 @@ class OrderCheck:
         self.table.horizontalHeaderItem(_col(9)).setToolTip(
             tr("库存够卖 = 本店库存 ÷ 日均（账面库存是负数时按 0 算）。门店配货、检查订货清单、批发商比价都是这个算法"))
         self.table.horizontalHeaderItem(AFTER_COL).setToolTip(
-            tr("确定订后够卖 =（本店库存 + 确定件数）÷ 日均，改确定件数时跟着变；超过凑单天数标黄（可能压货）"))
+            tr("到货后够卖 =（本店库存 + 确定件数 − 调给别的店的）÷ 日均：订的货和调进来的货都到了以后能卖几天（调进来的已经算在确定件数里）；改确定件数时跟着变，超过凑单天数标黄（可能压货）"))
         self.table.horizontalHeaderItem(LIST_AFTER_COL).setToolTip(
             tr("清单订后够卖 =（本店库存 + 门店清单原来的件数）÷ 日均：门店自己报的量订完能卖几天，和「确定订后够卖」对比"))
         self.table.horizontalHeaderItem(_col(18)).setToolTip(
@@ -237,7 +239,7 @@ class OrderCheck:
         self.table.horizontalHeaderItem(_col(CHANGE_COL)).setToolTip(
             tr("确定件数 − 门店清单的件数：+ 是比门店要的多订，− 是少订"))
         self.table.horizontalHeaderItem(_col(TRANSFER_COL)).setToolTip(
-            tr("门店间调货（按现在的确定件数实时算）：调进 = 从别的门店拿货、少订；调出 = 这家店多出来的货给别的门店"))
+            tr("门店间调货（按现在的确定件数实时算）：从哪家门店调进几件，调进来的就少订"))
         self.table.horizontalHeaderItem(_col(REASON_COL)).setToolTip(
             tr("系统为什么这么建议：库存够卖几天、订货周期里大约卖多少"))
         self.table.itemChanged.connect(self._edited)
@@ -253,7 +255,7 @@ class OrderCheck:
         from erp_widgets import ColumnChooser
         self._forced = set()
         self.cols = ColumnChooser(self.table, self.cfg, "check_cols", _ORDER, lambda: save_settings(self.settings),
-                                  _DEFAULT_HIDDEN, ver=3, forced=lambda: self._forced)
+                                  _DEFAULT_HIDDEN, ver=4, forced=lambda: self._forced)
         self._moves_in, self._moves_out = {}, {}
         self._plan_timer = QTimer()
         self._plan_timer.setSingleShot(True)
@@ -580,7 +582,7 @@ class OrderCheck:
                       f"{x['cycle']:g}" if isinstance(x.get("cycle"), (int, float)) else "",
                       f"{daily:.2f}" if daily else "",
                       f"{x['target']:.0f}" if isinstance(x.get("target"), (int, float)) else "",
-                      _days(_cover(x, x["final"])) if x["final"] > 0 else "",
+                      _days(self._arrive_days(x)),
                       _days(_cover(x, x["file_pcs"])) if (x.get("file_pcs") or 0) > 0 else "",
                       R.STORES.get(x.get("store"), ""), self._change_text(x), self._transfer_text(x),
                       R.reason_text(x.get("inv0"), x.get("daily0"), x.get("cycle"), x.get("suggested"), x.get("target"),
@@ -589,9 +591,16 @@ class OrderCheck:
     def _verdict(self, x):
         """(类别, 文字)：确定件数和门店清单比，不订 / 照清单订 / 多订 / 少订 / 建议调货"""
         key = (x.get("store"), str(x.get("code")))
-        moved = key in self._moves_in or key in self._moves_out
+        moved = key in self._moves_in                  # 只算调进来的
         return R.review_verdict(math.ceil(x.get("file_pcs") or 0), x["final"], moved, x.get("in_db", True),
                                 x.get("pack") or None, tr("照清单订"))
+
+    def _arrive_days(self, x):
+        """到货后够卖：(库存 + 确定件数 − 调给别的店的) ÷ 日均（调进来的已经算在确定件数里）；不订也不调出 → None"""
+        out = sum(t["pieces"] for t in self._moves_out.get((x.get("store"), str(x.get("code"))), []))
+        if x["final"] <= 0 and not out:
+            return None
+        return _cover(x, x["final"] - out)
 
     def _change_text(self, x):
         """确定件数比门店清单多 / 少几件（一样就空着，表格干净）"""
@@ -603,10 +612,7 @@ class OrderCheck:
         m = self._moves_in.get(key)
         if m:                                          # 短：← 从哪家 几件（详细的在鼠标提示里）
             return f"← {R.STORES.get(m['from'], m['from'])} {m['pieces']}" + tr("件")
-        out = self._moves_out.get(key)
-        if out:
-            return f"→ {'、'.join(R.STORES.get(t['to'], t['to']) for t in out)} {sum(t['pieces'] for t in out)}" + tr("件")
-        return ""
+        return ""                                      # 调出去的不显示（审核只要知道从哪调进来）
 
     def _transfer_tip(self, x):
         key = (x.get("store"), str(x.get("code")))
@@ -614,10 +620,6 @@ class OrderCheck:
         if m:
             return tr("调进 {0} 件 ← {1}，还订 {2} 件", m["pieces"], R.STORES.get(m["from"], m["from"]),
                       max(0, int(x["final"]) - int(m["pieces"])))
-        out = self._moves_out.get(key)
-        if out:
-            return tr("调出 {0} 件 → {1}", sum(t["pieces"] for t in out),
-                      "、".join(R.STORES.get(t["to"], t["to"]) for t in out))
         return ""
 
     def _replan(self, render=True):
@@ -723,7 +725,7 @@ class OrderCheck:
             f"{math.ceil(x['final'] / pack):,}" if pack > 0 and x["final"] > 0 else "")
         # 订后够卖：跟着确定件数变；超过凑单天数标黄
         a = self.table.item(k, AFTER_COL)
-        v = _cover(x, x["final"]) if x["final"] > 0 else None
+        v = self._arrive_days(x)
         a.setText(_days(v))
         limit = self._limit()
         over = v is not None and v > limit
@@ -837,7 +839,7 @@ class OrderCheck:
                        x["pack"] or None, x["file_qty"], x["file_pcs"],
                        num(_cover(x, x["file_pcs"])) if (x.get("file_pcs") or 0) > 0 else None,
                        x["suggested"] if x["in_db"] else None, x["final"], self._change_text(x),
-                       num(_cover(x, x["final"])) if x["final"] > 0 else None, self._transfer_tip(x),
+                       num(self._arrive_days(x)), self._transfer_tip(x),
                        R.reason_text(x.get("inv0"), x.get("daily0"), x.get("cycle"), x.get("suggested"), x.get("target"),
                                      x.get("in_db", True)), x["decision"]])
             ws.cell(ws.max_row, 4).number_format = "@"
