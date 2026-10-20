@@ -24,11 +24,15 @@ from settings import save_settings
 import reorder_service as R
 from reorder_page import short_decision, store_label, algo_widgets
 
-# 表格列（逻辑顺序）→ 显示顺序：要核对、要改的列放前面
-# 从左到右按核对的顺序：门店 判断 等级 名称 | 现在：本店库存 库存够卖 | 门店清单：箱数 件数 清单订后够卖 | 建议件数 |
-# 确定：件数 箱数 确定订后够卖 | 日均 目标库存 | 各周期销量 | 周期 箱规 编号 条码（列可以拖动换位置，会记住）
-_ORDER = [22, 0, 16, 3, 4, 9, 11, 12, 21, 13, 14, 15, 20, 18, 19, 5, 6, 7, 8, 17, 10, 1, 2]
-_LAYOUT_VER = 2           # 改了默认顺序就加 1
+# 表格列（逻辑顺序）→ 显示顺序：按审核时看一行的顺序
+#   哪个商品：门店 判断 等级 名称 | 现在：本店库存 库存够卖 日均 | 门店要多少：清单箱数 清单件数 清单订后够卖 |
+#   系统建议：建议件数 | 最后订多少：确定件数 变化（比清单多 / 少几件）确定箱数 确定订后够卖 | 调货 | 原因 |
+#   （默认藏起来，「显示哪些列」里可以打开）目标库存 各周期销量 周期 箱规 编号 条码
+# 23 = 变化，24 = 调货，25 = 原因（列可以拖动换位置，会记住）
+_ORDER = [22, 0, 16, 3, 4, 9, 18, 11, 12, 21, 13, 14, 23, 15, 20, 24, 25, 19, 5, 6, 7, 8, 17, 10, 1, 2]
+_LAYOUT_VER = 3           # 改了默认顺序就加 1
+_DEFAULT_HIDDEN = [19, 5, 6, 7, 8, 17, 10, 1, 2]       # 默认不显示的列（逻辑编号）
+CHANGE_COL, TRANSFER_COL, REASON_COL = 23, 24, 25
 
 
 def _col(k):
@@ -71,6 +75,8 @@ class OrderCheck:
         self.win, self.settings, self.ui = win, settings, ui
         self.cfg = settings.setdefault("reorder", {})
         self.rows = []
+        self.meta = {}
+        self._moves = []
         self.lists = []           # 放进来的清单：[{"path", "info", "store", "unit"}]，一家门店一份
         self.running = False
         self._filling = False
@@ -193,8 +199,9 @@ class OrderCheck:
         self.table = ui.make_table(_perm([tr("判断"), tr("商品编号"), tr("条码"), tr("名称"), tr("本店库存"),
                                           "30", "60", "90", "180", tr("库存够卖（天）"), tr("箱规"), tr("清单数量"),
                                           tr("清单件数"), tr("建议件数"), tr("确定件数"), tr("确定箱数"), tr("等级"), tr("周期"), tr("日均"),
-                                          tr("目标库存"), tr("确定订后够卖（天）"), tr("清单订后够卖（天）"), tr("门店")]),
-                                   numeric_cols=[_col(k) for k in list(range(4, 16)) + [17, 18, 19, 20, 21]])
+                                          tr("目标库存"), tr("确定订后够卖（天）"), tr("清单订后够卖（天）"), tr("门店"),
+                                          tr("变化（件）"), tr("调货"), tr("原因")]),
+                                   numeric_cols=[_col(k) for k in list(range(4, 16)) + [17, 18, 19, 20, 21, 23]])
         self.table.setMinimumHeight(380)
         self.table.setEditTriggers(QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed |
                                    QAbstractItemView.AnyKeyPressed)
@@ -202,7 +209,8 @@ class OrderCheck:
         hh = self.table.horizontalHeader()
         hh.setSectionResizeMode(QHeaderView.Interactive)
         hh.setStretchLastSection(False)
-        for c, wd in enumerate(_perm((70, 80, 120, 300, 70, 52, 52, 52, 52, 96, 52, 70, 70, 70, 76, 70, 50, 50, 60, 70, 120, 120, 96))):
+        for c, wd in enumerate(_perm((70, 80, 120, 280, 70, 52, 52, 52, 52, 96, 52, 70, 70, 70, 76, 70, 50, 50, 60, 70, 120, 120, 96,
+                                      76, 200, 380))):
             self.table.setColumnWidth(c, wd)
         self.table.horizontalHeaderItem(EDIT_COL).setToolTip(tr("双击修改，0 = 不订"))
         self.table.horizontalHeaderItem(_col(9)).setToolTip(
@@ -213,21 +221,38 @@ class OrderCheck:
             tr("清单订后够卖 =（本店库存 + 门店清单原来的件数）÷ 日均：门店自己报的量订完能卖几天，和「确定订后够卖」对比"))
         self.table.horizontalHeaderItem(_col(18)).setToolTip(
             tr("新算法：加权日均（含季节）；原程序算法：最近一个周期的销量 ÷ 天数"))
+        self.table.horizontalHeaderItem(_col(CHANGE_COL)).setToolTip(
+            tr("确定件数 − 门店清单的件数：+ 是比门店要的多订，− 是少订"))
+        self.table.horizontalHeaderItem(_col(TRANSFER_COL)).setToolTip(
+            tr("门店间调货（按现在的确定件数实时算）：调进 = 从别的门店拿货、少订；调出 = 这家店多出来的货给别的门店"))
+        self.table.horizontalHeaderItem(_col(REASON_COL)).setToolTip(
+            tr("系统为什么这么建议：库存够卖几天、订货周期里大约卖多少"))
         self.table.itemChanged.connect(self._edited)
         # 点表头排序、右键表头按列筛选；上面「判断」「等级」两个下拉框快速筛选
         from erp_widgets import TableSortFilter, ColumnFilterBox
         self.ctl = TableSortFilter(self.table, lambda: len(self.rows), self._text, self._fill_row,
-                                   hide=self._hidden, numeric=tuple(_col(k) for k in list(range(4, 16)) + [17, 18, 19, 20, 21]))
+                                   hide=self._hidden, numeric=tuple(_col(k) for k in list(range(4, 16)) + [17, 18, 19, 20, 21, 23]))
         # 列可以拖动换位置、拖宽度，下次打开照旧（右键表头是筛选，所以「恢复默认列顺序」放在下面）
         from erp_widgets import remember_columns
         self._reset_cols = remember_columns(self.table, self.cfg, "check", _ORDER, lambda: save_settings(self.settings),
                                             _LAYOUT_VER)
+        # 「显示哪些列」：默认只放审核要看的，其他的勾选了才显示
+        from erp_widgets import ColumnChooser
+        self._forced = set()
+        self.cols = ColumnChooser(self.table, self.cfg, "check_cols", _ORDER, lambda: save_settings(self.settings),
+                                  _DEFAULT_HIDDEN, ver=1, forced=lambda: self._forced)
+        self._moves_in, self._moves_out = {}, {}
+        self._plan_timer = QTimer()
+        self._plan_timer.setSingleShot(True)
+        self._plan_timer.setInterval(250)
+        self._plan_timer.timeout.connect(self._replan)
         self.ctl.rendered.connect(lambda n, tot: self.count_lbl.setText(
             tr("显示 {0} / {1} 个 · 点表头排序，右键表头筛选，拖动表头换列的位置", n, tot)))
         tb.insertWidget(1, ColumnFilterBox(self.ctl, _col(22), tr("门店")))
         tb.insertWidget(2, ColumnFilterBox(self.ctl, _col(0), tr("判断")))
         tb.insertWidget(3, ColumnFilterBox(self.ctl, _col(16), tr("等级")))
         tb.insertSpacing(1, 12)
+        tb.insertWidget(tb.count() - 2, self.cols.button())
         bl.addWidget(self.table)
         self.count_lbl = QLabel("")
         self.count_lbl.setObjectName("Faint")
@@ -515,9 +540,11 @@ class OrderCheck:
         units = set(meta["units"].values())
         pieces = units == {"pcs"}
         self.ctl.set_title(_col(11), tr("清单件数") if pieces else (tr("清单箱数") if units == {"colli"} else tr("清单数量")))
-        self.table.setColumnHidden(_col(12), pieces)
-        self.table.setColumnHidden(_col(22), len(meta["stores"]) < 2)          # 只有一家门店：不显示门店列
+        # 清单本来就是件数：不显示重复的「清单件数」；只有一家门店：不显示门店列
+        self._forced = ({12} if pieces else set()) | ({22} if len(meta["stores"]) < 2 else set())
+        self.cols.apply()
         self.ctl.filters = {}
+        self._replan(render=False)
         self._fill()
         self.summary_row.show()
         self.window.setWindowTitle(tr("检查门店订货清单 — {0} · {1} 个商品",
@@ -544,7 +571,42 @@ class OrderCheck:
                       f"{x['target']:.0f}" if isinstance(x.get("target"), (int, float)) else "",
                       _days(_cover(x, x["final"])) if x["final"] > 0 else "",
                       _days(_cover(x, x["file_pcs"])) if (x.get("file_pcs") or 0) > 0 else "",
-                      R.STORES.get(x.get("store"), "")])
+                      R.STORES.get(x.get("store"), ""), self._change_text(x), self._transfer_text(x),
+                      R.reason_text(x.get("inv0"), x.get("daily0"), x.get("cycle"), x.get("suggested"), x.get("target"),
+                                    x.get("in_db", True))])
+
+    def _change_text(self, x):
+        """确定件数比门店清单多 / 少几件"""
+        d = int(x["final"]) - int(math.ceil(x.get("file_pcs") or 0))
+        return f"{d:+,}" if d else "0"
+
+    def _transfer_text(self, x):
+        key = (x.get("store"), str(x.get("code")))
+        m = self._moves_in.get(key)
+        if m:
+            return tr("调进 {0} 件 ← {1}，还订 {2} 件", m["pieces"], R.STORES.get(m["from"], m["from"]),
+                      max(0, int(x["final"]) - int(m["pieces"])))
+        out = self._moves_out.get(key)
+        if out:
+            return tr("调出 {0} 件 → {1}", sum(t["pieces"] for t in out),
+                      "、".join(R.STORES.get(t["to"], t["to"]) for t in out))
+        return ""
+
+    def _replan(self, render=True):
+        """按现在的确定件数重新算门店间调货（改了确定件数以后稍等一下再算，不卡）"""
+        self._moves_in, self._moves_out = {}, {}
+        self._moves = []
+        if self.rows and self.meta.get("snap"):
+            try:
+                self._moves, _ = self.transfer_plan()
+            except Exception as e:
+                self.win.log(tr("⚠ 调货计算失败：{0}", e))
+        for m in self._moves:
+            self._moves_in[(m["to"], str(m["code"]))] = m
+            self._moves_out.setdefault((m["from"], str(m["code"])), []).append(m)
+        if render:
+            self.ctl.render()
+            self._summary()
 
     def _text(self, i, c):
         return self._vals(i)[c]
@@ -579,6 +641,18 @@ class OrderCheck:
             for c_ in (_col(4), _col(9)):
                 t.item(k, c_).setForeground(QColor(T("warn")))
                 t.item(k, c_).setToolTip(tr("账面库存是负数（{0:g}），通常是卖了还没入库。算够卖天数时按 0 算", x["store_inv"]))
+        ch = t.item(k, _col(CHANGE_COL))
+        d = int(x["final"]) - int(math.ceil(x.get("file_pcs") or 0))
+        ch.setForeground(QColor(T("accent") if d > 0 else T("warn") if d < 0 else T("faint")))
+        if d:
+            f = ch.font()
+            f.setBold(True)
+            ch.setFont(f)
+        tri = t.item(k, _col(TRANSFER_COL))
+        if tri.text():
+            tri.setForeground(QColor(T("ok") if (x.get("store"), str(x.get("code"))) in self._moves_in else T("accent")))
+        t.item(k, _col(REASON_COL)).setToolTip(t.item(k, _col(REASON_COL)).text())
+        t.item(k, _col(REASON_COL)).setForeground(QColor(T("muted")))
         v = _cover(x, x["file_pcs"]) if (x.get("file_pcs") or 0) > 0 else None
         if v is not None and v > self._limit():
             t.item(k, LIST_AFTER_COL).setForeground(QColor(T("warn")))
@@ -611,6 +685,11 @@ class OrderCheck:
         over = v is not None and v > limit
         a.setForeground(QColor(T("warn") if over else T("text")))
         a.setToolTip(tr("订完要很久才卖得完（超过 {0} 天），可能压货", int(limit)) if over else "")
+        ch = self.table.item(k, _col(CHANGE_COL))
+        if ch is not None:
+            d = int(x["final"]) - int(math.ceil(x.get("file_pcs") or 0))
+            ch.setText(self._change_text(x))
+            ch.setForeground(QColor(T("accent") if d > 0 else T("warn") if d < 0 else T("faint")))
 
     def _show(self, i):
         k = self.ctl.pos.get(i)
@@ -639,7 +718,7 @@ class OrderCheck:
         if n is not None:
             self.rows[i]["final"] = int(n)
         # 等编辑框关掉再更新这一行（编辑中途改格子会让程序卡住）
-        QTimer.singleShot(0, lambda: (self._show(i), self._summary()))
+        QTimer.singleShot(0, lambda: (self._show(i), self._summary(), self._plan_timer.start()))
 
     def _set_all(self, which):
         for x in self.rows:
@@ -647,8 +726,7 @@ class OrderCheck:
                 x["final"] = x["suggested"] if x["in_db"] else int(math.ceil(x["file_pcs"]))
             else:
                 x["final"] = int(math.ceil(x["file_pcs"]))
-        self.ctl.render()
-        self._summary()
+        self._replan()
 
     def _filter(self, *_):
         if hasattr(self, "ctl"):
@@ -677,6 +755,10 @@ class OrderCheck:
             txt += "\n" + tr("按数据库进价估算采购金额：清单 €{0:,.2f} → 确定 €{1:,.2f}", amt_file, amt_final)
             if no_price:
                 txt += tr("（{0} 个商品没有进价，没算进去）", no_price)
+        mv = getattr(self, "_moves", None) or []
+        if mv:
+            txt += "\n" + tr("门店间调货（按现在的确定件数）：{0} 个商品，少订 {1} 箱，货值 €{2:,.2f}", len(mv),
+                             sum(m["colli_before"] - m["colli_after"] for m in mv), sum(m["value"] for m in mv))
         self.sum_msg.setText(txt)
         if hasattr(self, "page_sum"):
             self.page_sum.setText(txt)
@@ -698,7 +780,8 @@ class OrderCheck:
         ws = wb.active
         ws.title = "清单检查"
         ws.append(["门店", "判断", "商品编号", "条码", "名称", "本店库存", *[f"{x}天销量" for x in d], "库存够卖（天）", "箱规",
-                   "清单数量", "清单件数", "清单订后够卖（天）", "建议件数", "确定件数", "确定订后够卖（天）", "系统说明"])
+                   "清单数量", "清单件数", "清单订后够卖（天）", "建议件数", "确定件数", "变化（件）", "确定订后够卖（天）",
+                   "调货", "原因", "系统说明"])
         for c in ws[1]:
             c.font = Font(bold=True)
         def num(v):
@@ -709,8 +792,10 @@ class OrderCheck:
                        *x["sales"], num(_cover(x)),
                        x["pack"] or None, x["file_qty"], x["file_pcs"],
                        num(_cover(x, x["file_pcs"])) if (x.get("file_pcs") or 0) > 0 else None,
-                       x["suggested"] if x["in_db"] else None, x["final"],
-                       num(_cover(x, x["final"])) if x["final"] > 0 else None, x["decision"]])
+                       x["suggested"] if x["in_db"] else None, x["final"], self._change_text(x),
+                       num(_cover(x, x["final"])) if x["final"] > 0 else None, self._transfer_text(x),
+                       R.reason_text(x.get("inv0"), x.get("daily0"), x.get("cycle"), x.get("suggested"), x.get("target"),
+                                     x.get("in_db", True)), x["decision"]])
             ws.cell(ws.max_row, 4).number_format = "@"
         ws.freeze_panes = "A2"
         try:

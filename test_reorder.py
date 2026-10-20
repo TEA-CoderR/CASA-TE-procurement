@@ -207,3 +207,14 @@ def test_to_rows_cover_inputs():
     assert SO.cover_days({"inv": rows["1"]["inv0"], "daily": rows["1"]["daily0"]}) == 0     # 不会是负数
     assert abs(rows["2"]["daily0"] - 45 / 90) < 1e-9
     assert rows["3"]["daily0"] == 2.0
+
+
+def test_reason_text():
+    """「原因」列：一句话说清楚为什么订 / 不订、订多少"""
+    assert "不用订" in R.reason_text(60, 1, 30, 0)
+    assert "够卖 60 天" in R.reason_text(60, 1, 30, 0)
+    t = R.reason_text(-5, 1, 30, 36)
+    assert "按 0 算" in t and "订 36 件" in t and "约卖 30 件" in t
+    assert "目标库存 40" in R.reason_text(4, 1, 30, 36, target=40)
+    assert "没有销量" in R.reason_text(10, 0, 30, 0)
+    assert "数据库里没有" in R.reason_text(0, 0, 30, 0, in_db=False)

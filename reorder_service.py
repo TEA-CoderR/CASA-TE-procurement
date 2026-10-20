@@ -851,6 +851,39 @@ def plan_batch_transfers(store_rows, snap, cfg=None, far=()):
     return out, new_final
 
 
+def reason_text(inv, daily, cycle, sugg, target=None, in_db=True):
+    """
+    一句话说清楚为什么建议订 / 不订、订多少（检查清单、订货明细的「原因」列）：
+      库存够卖几天 和 订货周期比；不够 → 周期里大约卖多少 → 建议订几件
+    """
+    from i18n import tr
+    if not in_db:
+        return tr("数据库里没有这个商品，按清单数量")
+    try:
+        inv = float(inv or 0)
+        daily = float(daily or 0)
+        cycle = float(cycle or 0)
+        sugg = float(sugg or 0)
+    except (TypeError, ValueError):
+        return ""
+    inv0 = max(0.0, inv)
+    neg = tr("（账面库存 {0:g}，按 0 算）", inv) if inv < 0 else ""
+    if daily <= 0:
+        if sugg > 0:
+            return tr("没有销量{0}，原程序仍建议订 {1:g} 件", neg, sugg)
+        return tr("没有销量，库存 {0:g} 件{1}，不订", inv0, neg) if inv0 else tr("没有销量也没有库存{0}，不订", neg)
+    days = inv0 / daily
+    if sugg <= 0:
+        if cycle > 0:
+            return tr("库存 {0:g} 件够卖 {1:.0f} 天（周期 {2:g} 天）{3}，不用订", inv0, days, cycle, neg)
+        return tr("库存 {0:g} 件够卖 {1:.0f} 天{2}，不用订", inv0, days, neg)
+    if isinstance(target, (int, float)) and target == target and target > 0:
+        return tr("库存够卖 {0:.0f} 天{1}；目标库存 {2:.0f} − 库存 {3:g} → 订 {4:g} 件", days, neg, target, inv0, sugg)
+    if cycle > 0:
+        return tr("库存够卖 {0:.0f} 天{1}，周期 {2:g} 天约卖 {3:.0f} 件 → 订 {4:g} 件", days, neg, cycle, daily * cycle, sugg)
+    return tr("库存够卖 {0:.0f} 天{1} → 订 {2:g} 件", days, neg, sugg)
+
+
 def checked_main_orders(ordine_folder):
     """
     ORDINE 文件夹里的主订单：(能用的, 旧系统的)。

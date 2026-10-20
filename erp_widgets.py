@@ -1231,6 +1231,100 @@ class ScreenFit(QObject):
         return False
 
 
+class ColumnChooser(QObject):
+    """
+    「显示哪些列」：勾选的列才显示，其他的藏起来（数据多的时候表格不乱）。记在 cfg[key + "_hidden"]。
+      fields[c]      第 c 列（逻辑列）的固定编号（存设置用）
+      default_hidden 默认藏起来的列（编号）；ver 改了默认就加 1（用户以前的选择作废一次）
+      forced()       程序自己要藏的列（例如只有一家门店时的「门店」列），用户选了也不显示
+    """
+
+    def __init__(self, table, cfg, key, fields, save, default_hidden=(), ver=1, forced=None):
+        super().__init__(table)
+        self.t, self.cfg, self.key, self.fields, self.save = table, cfg, key, list(fields), save
+        self.default = [f for f in default_hidden if f in self.fields]
+        self.forced = forced or (lambda: set())
+        if cfg.get(key + "_hidden_ver") != ver:
+            cfg[key + "_hidden"] = list(self.default)
+            cfg[key + "_hidden_ver"] = ver
+            save()
+        self.apply()
+
+    def hidden(self):
+        return set(self.cfg.get(self.key + "_hidden") or [])
+
+    def apply(self):
+        h, f2 = self.hidden(), set(self.forced() or ())
+        for c, f in enumerate(self.fields):
+            self.t.setColumnHidden(c, f in h or f in f2)
+
+    def _set(self, hidden):
+        self.cfg[self.key + "_hidden"] = sorted(hidden)
+        self.save()
+        self.apply()
+
+    def button(self, text=None):
+        b = QPushButton(text or tr("显示哪些列…"))
+        b.setToolTip(tr("勾选要在表格里显示的列，其他的藏起来"))
+        b.clicked.connect(lambda: self.menu(b.mapToGlobal(b.rect().bottomLeft())))
+        return b
+
+    def menu(self, gpos):
+        from PySide6.QtWidgets import QMenu, QWidgetAction, QListWidget, QListWidgetItem
+        m = QMenu(self.t)
+        box = QWidget()
+        bv = QVBoxLayout(box)
+        bv.setContentsMargins(8, 6, 8, 6)
+        bv.setSpacing(4)
+        tip = QLabel(tr("勾选要显示的列（拖动表头可以换位置）"))
+        tip.setObjectName("Faint")
+        bv.addWidget(tip)
+        lst = QListWidget()
+        lst.setMinimumWidth(240)
+        lst.setMinimumHeight(min(520, 26 * len(self.fields) + 8))
+        hh = self.t.horizontalHeader()
+        forced = set(self.forced() or ())
+        h = self.hidden()
+        for v in range(len(self.fields)):
+            c = hh.logicalIndex(v)
+            f = self.fields[c]
+            if f in forced:
+                continue
+            it = QListWidgetItem(header_text(self.t, c).replace(" ✎", "") or "—")
+            it.setData(Qt.UserRole, f)
+            it.setFlags(it.flags() | Qt.ItemIsUserCheckable)
+            it.setCheckState(Qt.Unchecked if f in h else Qt.Checked)
+            lst.addItem(it)
+        bv.addWidget(lst)
+        row = QHBoxLayout()
+        b_all, b_def = QPushButton(tr("全部显示")), QPushButton(tr("恢复默认"))
+        for b in (b_all, b_def):
+            b.setObjectName("Link")
+            row.addWidget(b)
+        row.addStretch()
+        bv.addLayout(row)
+
+        def changed(_=None):
+            self._set({lst.item(k).data(Qt.UserRole) for k in range(lst.count())
+                       if lst.item(k).checkState() != Qt.Checked})
+
+        def set_all(hidden):
+            lst.blockSignals(True)
+            for k in range(lst.count()):
+                it = lst.item(k)
+                it.setCheckState(Qt.Unchecked if it.data(Qt.UserRole) in hidden else Qt.Checked)
+            lst.blockSignals(False)
+            self._set(set(hidden))
+
+        lst.itemChanged.connect(changed)
+        b_all.clicked.connect(lambda: set_all(set()))
+        b_def.clicked.connect(lambda: set_all(set(self.default)))
+        wa = QWidgetAction(m)
+        wa.setDefaultWidget(box)
+        m.addAction(wa)
+        m.exec(gpos)
+
+
 class RowSorter(QObject):
     """
     给「一次填好的表格」加点表头排序（点一下升序，再点一下降序）。
