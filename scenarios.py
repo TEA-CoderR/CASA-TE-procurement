@@ -208,14 +208,35 @@ def diff_items(rows, assigns, labels=None):
         out.append({"row": r["row"], "ean": r.get("ean", ""), "articolo": r.get("articolo", ""), "qty": _qty(r),
                     "sups": [(labels.get(s) or s) if s else "" for s in ss],
                     "amounts": [(_line(r, s) if s else None) for s in ss]})
+        if r.get("daily") is not None:
+            out[-1]["inv"], out[-1]["daily"] = r.get("inv") or 0, r.get("daily") or 0
     return out
 
 
+URGENT_DAYS = 7          # 库存不够卖一周 = 这次买不到就很可能断货
+
+
+def urgent(m, days=URGENT_DAYS):
+    """买不到的商品里，店里库存不够卖 days 天的（有销量才算）"""
+    daily = float((m or {}).get("daily") or 0)
+    if daily <= 0:
+        return False
+    return max(0.0, float(m.get("inv") or 0)) / daily < days
+
+
+def urgent_count(items, days=URGENT_DAYS):
+    return sum(1 for m in items or [] if urgent(m, days))
+
+
 def recommend(results):
-    """建议：缺的商品最少的方案里，采购总额最低的那个（缺得一样多才比价钱）"""
+    """
+    建议：先看会不会断货（买不到、店里库存又不够卖一周的商品最少），再看缺的商品最少，
+    最后才比采购总额（没有库存数据时就是：缺的最少里最便宜的）
+    """
     if not results:
         return None
-    return min(range(len(results)), key=lambda i: (len(results[i]["missing"]), results[i]["total"]))
+    return min(range(len(results)), key=lambda i: (urgent_count(results[i]["missing"]), len(results[i]["missing"]),
+                                                   results[i]["total"]))
 
 
 def compact(results, chosen=None):

@@ -842,7 +842,12 @@ class DecisionDialog(QDialog):
     def _confirm_drop(self, info):
         name = info["name"]
         items = info.get("lost_items") or []
-        lines = [tr("{0}　{1}　{2:g} 箱", it['ean'], it['articolo'][:40], it['qty']) for it in items[:15]]
+        import store_orders as SO
+        import scenarios as _SC
+        items = sorted(items, key=lambda it: (not _SC.urgent(it), it.get("articolo") or ""))   # 不够卖一周的排前面
+        lines = [tr("{0}　{1}　{2:g} 箱", it['ean'], it['articolo'][:40], it['qty'])
+                 + (tr("　店里够卖 {0} 天", SO.days_text(SO.cover_days(it))) if it.get("daily") is not None else "")
+                 + ("　⚠" if _SC.urgent(it) else "") for it in items[:15]]
         if len(items) > 15:
             lines.append(tr("……还有 {0} 个", len(items) - 15))
         box = QMessageBox(self)
@@ -921,6 +926,120 @@ class QtyDelegate(QStyledItemDelegate):
         i, q = idx.data(Qt.UserRole), sb.value()
         if i is not None:
             QTimer.singleShot(0, lambda: self.dlg.set_qty(i, q))
+
+
+class QtyFillDialog(QDialog):
+    """
+    修改分配 →「按销量加量凑单」：供应商没达到起订条件时，不换供应商，给分到它那里、卖得快的商品多订几箱，
+    加完库存最多够卖 N 天（和门店配货「加商品凑单 → 按销量推荐」同一个规则）。确认后 self.adds = {行号: 加的数量}
+    """
+
+    def __init__(self, md, under):
+        super().__init__(md)
+        self.md, self.under, self.adds = md, under, None
+        self.limit = float((settings.get("store_orders") or {}).get("fill", {}).get("max_stock_days") or 60)
+        self.setWindowTitle(tr("按销量加量凑单"))
+        self.resize(940, 560)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(22, 18, 22, 16)
+        lay.setSpacing(10)
+        t = QLabel(tr("按销量加量凑单"))
+        t.setObjectName("PageTitle")
+        t.setStyleSheet("font-size:18px;")
+        lay.addWidget(t)
+        sub = QLabel(tr("不换供应商：给分到这家、卖得快的商品多订几箱，补齐起订条件。加完以后库存最多够卖 {0} 天（配货设置里的凑单天数），不会压太久。和「继续凑单」（把在别家更便宜的商品换过来）不同：多出来的钱买的是以后要卖的货，不是多付的差价。",
+                      int(self.limit)))
+        sub.setObjectName("Muted")
+        sub.setWordWrap(True)
+        lay.addWidget(sub)
+        top = QHBoxLayout()
+        top.addWidget(QLabel(tr("供应商")))
+        self.sup = QComboBox()
+        for ru in under:
+            self.sup.addItem(f"{ru['name']}　（{describe_condition(ru)}）", ru["target"])
+        self.sup.currentIndexChanged.connect(lambda _: self.compute())
+        top.addWidget(self.sup)
+        top.addSpacing(16)
+        self.loose = QCheckBox(tr("不限够卖天数"))
+        self.loose.setToolTip(tr("在天数限制内加不够时，可以不管够卖天数，仍然按销量从快到慢加"))
+        self.loose.toggled.connect(lambda _: self.compute())
+        top.addWidget(self.loose)
+        top.addStretch()
+        lay.addLayout(top)
+        self.msg = Banner()
+        lay.addWidget(self.msg)
+        self.table = make_table([tr("行"), "EAN", "ARTICOLO", tr("现在"), tr("加"), tr("库存够卖（天）"), tr("订后够卖（天）"),
+                                 tr("多订金额 €")], stretch_col=2, numeric_cols=(0, 3, 4, 5, 6, 7))
+        from erp_widgets import RowSorter
+        self.sorter = RowSorter(self.table)
+        lay.addWidget(self.table, 1)
+        btns = QHBoxLayout()
+        btns.addStretch()
+        cancel = QPushButton(tr("取消"))
+        cancel.clicked.connect(self.reject)
+        self.ok = QPushButton(tr("加上"))
+        self.ok.setObjectName("Primary")
+        self.ok.clicked.connect(self._ok)
+        btns.addWidget(cancel)
+        btns.addWidget(self.ok)
+        lay.addLayout(btns)
+        self.res = None
+        self.compute()
+
+    def rule(self):
+        t = self.sup.currentData()
+        return next((ru for ru in self.under if ru["target"] == t), None)
+
+    def compute(self):
+        from allocation_plan import suggest_qty_fill, qty_step, _ordered_pieces, _cover
+        import store_orders as SO
+        ru = self.rule()
+        if ru is None:
+            return
+        md = self.md
+        res = suggest_qty_fill(md.rows, md.assign, ru, self.limit, ignore_days=self.loose.isChecked())
+        self.res = res
+        t = ru["target"]
+        by_row = {r["row"]: r for r in md.rows}
+        unit = tr("件") if md.pieces_mode else tr("箱")
+        rows = sorted(res["boxes"], key=lambda row: -res["boxes"][row])
+        self.table.setRowCount(len(rows))
+        for k, row in enumerate(rows):
+            r = by_row[row]
+            n = res["boxes"][row]
+            add = res["adds"][row]
+            pcs = _ordered_pieces(r, t)
+            from allocation_plan import _box_pieces, _amt
+            after = _cover(r, pcs + n * _box_pieces(r, t))
+            table_set_row(self.table, k, [str(row), r.get("ean", ""), r.get("articolo", ""), f"{md._qty(r):g}",
+                                          f"+{add:g}" + (tr("（{0:g} 箱）", n) if md.pieces_mode else ""),
+                                          SO.days_text(_cover(r, 0)), SO.days_text(after),
+                                          f"{(_amt(r, t) or 0) * add:,.2f}"])
+            self.table.item(k, 4).setForeground(QColor(T("accent")))
+            if after > self.limit:
+                self.table.item(k, 6).setForeground(QColor(T("warn")))
+            self.table.item(k, 2).setToolTip(f"{r.get('articolo', '')}\nEAN {r.get('ean', '')}")
+        self.sorter.apply()
+        bc, ba = res["before"]
+        head = tr("{0}：现在 {1:g} 箱 / €{2:,.2f}，要求 {3}。", ru["name"], bc, ba, describe_condition(ru))
+        if not res["candidates"]:
+            self.msg.show_msg(head + tr("分到这家的商品都没有销量数据（主订单不是「检查门店清单」生成的，或者都没卖过），没法按销量推荐。"), "warn")
+        elif res["ok"]:
+            self.msg.show_msg(head + tr("加 {0} 个商品、{1:g} 箱（多订 €{2:,.2f}）就达标：{3:g} 箱 / €{4:,.2f}。",
+                                        len(res["boxes"]), sum(res["boxes"].values()), res["value"],
+                                        res["colli"], res["amount"]), "ok")
+        elif res["boxes"]:
+            self.msg.show_msg(head + tr("加完库存最多够卖 {0} 天的话，只能加到 {1:g} 箱 / €{2:,.2f}，还是不够。可以勾选「不限够卖天数」，或者只加这些、剩下的再手动改。",
+                                        int(self.limit), res["colli"], res["amount"]), "warn")
+        else:
+            self.msg.show_msg(head + tr("分到这家的商品库存都已经够卖 {0} 天以上，再加会压货。可以勾选「不限够卖天数」。", int(self.limit)), "warn")
+        self.ok.setEnabled(bool(res["boxes"]))
+        self.ok.setText(tr("加上（达标）") if res["ok"] and res["boxes"] else tr("加上"))
+
+    def _ok(self):
+        if self.res and self.res["boxes"]:
+            self.adds = dict(self.res["adds"])
+            self.accept()
 
 
 class ManualDialog(QDialog):
@@ -1050,6 +1169,11 @@ class ManualDialog(QDialog):
         ok.clicked.connect(self._ok)
         btns.addWidget(b_base)
         btns.addWidget(b_auto)
+        if edit_mode and self.has_stock and rules:
+            b_fill = QPushButton(tr("按销量加量凑单…"))
+            b_fill.setToolTip(tr("没达到起订条件的供应商：不换供应商，给卖得快的商品多订几箱补齐（加完库存够卖不超过凑单天数）"))
+            b_fill.clicked.connect(self.qty_fill)
+            btns.addWidget(b_fill)
         btns.addStretch()
         btns.addWidget(cancel)
         btns.addWidget(ok)
@@ -1199,21 +1323,55 @@ class ManualDialog(QDialog):
         self.apply_filter()
         self.total_lbl.setToolTip(msg)
 
+    def _sup_totals(self, t):
+        """供应商 t 现在分到几箱、多少钱（按件数订货时箱数按这家的箱规算）"""
+        from allocation_plan import _totals
+        return _totals(self.rows, self.assign, t)
+
+    def under_rules(self):
+        """分到了货、但没达到起订条件的供应商"""
+        from min_order_optimizer import _satisfied
+        out = []
+        for ru, _ in self.status_labels:
+            c, a = self._sup_totals(ru["target"])
+            if c > 0 and not _satisfied(c, a, ru["min_colli"], ru["min_amount"], ru["mode"]):
+                out.append(ru)
+        return out
+
+    def qty_fill(self):
+        under = self.under_rules()
+        if not under:
+            QMessageBox.information(self, tr("按销量加量凑单"), tr("分到货的起订供应商都已经达标，不用加。"))
+            return
+        dlg = QtyFillDialog(self, under)
+        if not dlg.exec() or not dlg.adds:
+            return
+        idx = {r["row"]: i for i, r in enumerate(self.rows)}
+        for row, add in dlg.adds.items():
+            i = idx.get(row)
+            if i is not None:
+                self.set_qty(i, self._qty(self.rows[i]) + add)
+        self.only_changed.setChecked(True)          # 只看改过的，方便核对加了哪些
+        self.only_multi.setChecked(False)
+        self.apply_filter()
+
     def refresh_status(self):
         from min_order_optimizer import _satisfied
         for ru, lb in self.status_labels:
-            c = a = 0.0
-            for r in self.rows:
-                if self.assign.get(r["row"]) == ru["target"]:
-                    q = self._qty(r)
-                    c += q
-                    a += q * (_amt(r, ru["target"]) or 0)
+            c, a = self._sup_totals(ru["target"])
             if c == 0:
                 kind, st = "info", tr("不下单")
             elif _satisfied(c, a, ru["min_colli"], ru["min_amount"], ru["mode"]):
                 kind, st = "ok", tr("已达标")
             else:
                 kind, st = "err", tr("未达标")
+                gaps = []
+                if ru["min_colli"] and c < ru["min_colli"]:
+                    gaps.append(tr("差 {0:g} 箱", ru["min_colli"] - c))
+                if ru["min_amount"] and a < ru["min_amount"]:
+                    gaps.append(tr("差 €{0:,.2f}", ru["min_amount"] - a))
+                if gaps:
+                    st += "（" + tr("、").join(gaps) + "）"
             lb.setText(tr("<b>{0}</b>　{1:,.0f} 箱 / €{2:,.2f}　要求 {3}　<b>{4}</b>", ru['name'], c, a, describe_condition(ru), st))
             lb.setStyleSheet(f"background:{T(kind + '_soft')}; color:{T(kind)};")
         cost = self._money(self.assign)
@@ -1244,16 +1402,7 @@ class ManualDialog(QDialog):
 
     def _ok(self):
         from min_order_optimizer import _satisfied
-        bad = []
-        for ru, _ in self.status_labels:
-            c = a = 0.0
-            for r in self.rows:
-                if self.assign.get(r["row"]) == ru["target"]:
-                    q = self._qty(r)
-                    c += q
-                    a += q * (_amt(r, ru["target"]) or 0)
-            if c > 0 and not _satisfied(c, a, ru["min_colli"], ru["min_amount"], ru["mode"]):
-                bad.append(ru["name"])
+        bad = [ru["name"] for ru in self.under_rules()]
         if bad and QMessageBox.question(self, tr("手动调整"), tr("{0} 还没有达到起订条件。仍然按现在的方案写入？", ", ".join(bad))) \
                 != QMessageBox.Yes:
             return
@@ -1424,6 +1573,10 @@ def fill_scenario_table(t, results, chosen=None, recommended=None):
               [(f"{r['priced']:,} / {r['need']:,}" if r.get("need") else f"{r['priced']:,}") for r in results], ""))
     L.append(("missing", tr("缺失商品（点数字看列表）"), [f"{len(r['missing']):,}" for r in results],
               tr("点数字看缺了哪些商品")))
+    import scenarios as _SC
+    if any(m.get("daily") is not None for r in results for m in r["missing"]):
+        L.append(("urgent", tr("　其中店里不够卖一周的"), [f"{_SC.urgent_count(r['missing']):,}" for r in results],
+                  tr("买不到、店里库存又不够卖 {0} 天的商品：这次不订很可能断货（推荐方案先看这个）", _SC.URGENT_DAYS)))
     if new:
         L.append(("lost_rows", tr("　比 A 少买的"), base_only(lambda r: f"{r.get('lost_rows', 0):,}"), ""))
         L.append(("switched", tr("比 A 换了供应商的"), base_only(lambda r: f"{r.get('switched', 0):,}"), ""))
@@ -1515,6 +1668,10 @@ def fill_scenario_table(t, results, chosen=None, recommended=None):
                     it.setForeground(QColor(T("ok")))
                 else:
                     it.setForeground(QColor(T("ok") if good else T("err")))
+            elif kind == "urgent" and txt != "0":
+                it.setForeground(QColor(T("err")))
+                f.setBold(True)
+                it.setFont(f)
             elif kind == "lost_rows" and c > 1 and txt not in ("—", "0"):
                 it.setForeground(QColor(T("warn")))
             elif kind == "extra" and (r.get("extra_cost") or 0) > 0.005:
@@ -1603,9 +1760,13 @@ class ScenarioCard(QFrame):
         dl.setStyleSheet(f"color:{d_col}; background:transparent;")
         v.addWidget(dl)
         nm = len(r["missing"])
-        mb = QPushButton(tr("缺失 {0} 个商品 ›", nm))
+        import scenarios as _SC
+        nu = _SC.urgent_count(r["missing"])
+        mb = QPushButton(tr("缺失 {0} 个商品（{1} 个店里不够卖一周）›", nm, nu) if nu else tr("缺失 {0} 个商品 ›", nm))
+        if nu:
+            mb.setToolTip(tr("这些商品这次买不到，店里的库存又不够卖 {0} 天，很可能断货", _SC.URGENT_DAYS))
         mb.setObjectName("Link")
-        mb.setStyleSheet(f"text-align:left; padding:2px 0; color:{T('warn') if nm else T('muted')};")
+        mb.setStyleSheet(f"text-align:left; padding:2px 0; color:{T('err') if nu else T('warn') if nm else T('muted')};")
         mb.clicked.connect(lambda: on_missing(i))
         v.addWidget(mb, 0, Qt.AlignLeft)
         self.pick_btn = QPushButton(tr("选这个方案"))
@@ -1685,7 +1846,15 @@ class ScenarioDiffDialog(QDialog):
         heads = ["EAN", "ARTICOLO", tr("箱数")] + [f"{scen_letter(i)}  {tr(r['name'])}" for i, r in enumerate(results)] \
             + [tr("差价 €")]
         self.c_gap = 3 + self.n
-        self.table = make_table(heads, stretch_col=1, numeric_cols=(2, self.c_gap))
+        # 有门店库存快照时：买不到的商品店里还能撑几天
+        self.c_cover = self.c_gap + 1 if any(m.get("daily") is not None for m in self.diff) else None
+        if self.c_cover:
+            heads.append(tr("库存够卖（天）"))
+        self.table = make_table(heads, stretch_col=1, numeric_cols=(2, self.c_gap) + ((self.c_cover,) if self.c_cover else ()))
+        if self.c_cover:
+            self.kind.addItem(tr("只看买不到、店里又不够卖一周的"), "urgent")
+            self.table.horizontalHeaderItem(self.c_cover).setToolTip(
+                tr("店里现在的库存还能卖几天：有方案买不到、又不够卖一周的标红"))
         self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
         hh = self.table.horizontalHeader()
         for c in range(3, 3 + self.n):
@@ -1695,7 +1864,7 @@ class ScenarioDiffDialog(QDialog):
         lay.addWidget(self.table, 1)
         from erp_widgets import TableSortFilter
         self.ctl = TableSortFilter(self.table, lambda: len(self.diff), self._text, self._fill, key=self._key,
-                                   hide=self._hidden, numeric=(2, self.c_gap))
+                                   hide=self._hidden, numeric=(2, self.c_gap) + ((self.c_cover,) if self.c_cover else ()))
         self.ctl.rendered.connect(lambda k, tot: self.count.setText(
             tr("显示 {0} / {1} 个 · 点表头排序，右键表头筛选", k, tot)))
         self.search.textChanged.connect(lambda _: self.ctl.render())
@@ -1719,10 +1888,17 @@ class ScenarioDiffDialog(QDialog):
         if c < self.c_gap:
             s_ = m["sups"][c - 3] if c - 3 < len(m["sups"]) else ""
             return s_ or tr("买不到")
+        if c == self.c_cover:
+            import store_orders as SO
+            return SO.days_text(SO.cover_days(m)) if m.get("daily") is not None else ""
         g = self._gap(m)
         return "" if g is None else f"{g:,.2f}"
 
     def _key(self, i, c):
+        if c == self.c_cover:
+            import store_orders as SO
+            v = SO.cover_days(self.diff[i]) if self.diff[i].get("daily") is not None else None
+            return 1e9 if v is None or v == float("inf") else v
         if c == self.c_gap:
             g = self._gap(self.diff[i])
             return -1.0 if g is None else g
@@ -1746,6 +1922,12 @@ class ScenarioDiffDialog(QDialog):
                     f = it.font()
                     f.setBold(True)
                     it.setFont(f)
+        if self.c_cover and any(not s_ for s_ in m["sups"]):
+            import scenarios as _SC
+            if _SC.urgent(m):
+                it = self.table.item(k, self.c_cover)
+                it.setForeground(QColor(T("err")))
+                it.setToolTip(tr("有方案买不到，店里库存又不够卖 {0} 天", _SC.URGENT_DAYS))
 
     def _hidden(self, i):
         m = self.diff[i]
@@ -1755,6 +1937,10 @@ class ScenarioDiffDialog(QDialog):
             return True
         if kind == "switch" and lost:
             return True
+        if kind == "urgent":
+            import scenarios as _SC
+            if not (lost and _SC.urgent(m)):
+                return True
         q = self.search.text().strip().lower()
         if q and q not in str(m.get("ean", "")).lower() and q not in str(m.get("articolo", "")).lower():
             return True
@@ -4181,6 +4367,8 @@ class MainWindow(QMainWindow):
         if mo.get("warning"):
             msgs.append(mo["warning"])
             kind = "err"
+            if current and any(r.get("daily") is not None for r in ((s.get("state") or {}).get("rows") or [])):
+                msgs.append(tr("没达标的供应商可以点「修改分配…」→「按销量加量凑单…」：不换供应商，给卖得快的商品多订几箱补齐。"))
         if mo.get("unmatched"):
             msgs.append(tr("这些规则这次没有找到供应商文件：{0}", tr("、").join(mo["unmatched"])))
             kind = "warn" if kind == "ok" else kind
