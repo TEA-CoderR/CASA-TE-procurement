@@ -114,3 +114,16 @@ def test_only_checked_main_orders_are_used(tmp_path):
     s = service.run_process(str(old), str(tmp_path / "root" / "eliminare"), str(tmp_path / "root" / "distribuire"),
                             logs.append)
     assert s["error"] and not s["ok"] and old.read_bytes() == b"x"
+
+
+def test_wholesale_transfer_status():
+    """批发商比价界面上说清楚这次会不会算门店间调货（离得远的门店不参与）"""
+    import service
+    snap = {"store": 2, "by_ean": {}}
+    assert service.transfer_status(None, {})[0] == "no_snapshot"
+    assert service.transfer_status(snap, {})[0] == "on"
+    assert service.transfer_status({"store": 1}, {})[0] == "far"                       # 默认 FOIANO 离得远
+    assert service.transfer_status({"store": 1}, {"store_orders": {"fill": {"far_stores": []}}})[0] == "on"
+    assert service.transfer_status(snap, {"store_orders": {"transfer": {"enabled": False}}})[0] == "off"
+    code, text = service.transfer_status(snap, {})
+    assert "FOIANO" not in text.split("从")[1].split("调")[0]                          # 远的门店不在调出名单里

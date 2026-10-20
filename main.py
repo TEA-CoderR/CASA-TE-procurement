@@ -1283,6 +1283,81 @@ class FillItemsDialog(QDialog):
         self.accept()
 
 
+class TransferSettingsDialog(QDialog):
+    """门店间调货设置（门店配货和批发商比价共用：settings.json → store_orders.transfer / fill.far_stores）"""
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        import transfers as TR
+        import store_orders as SO
+        self.setWindowTitle(tr("门店间调货"))
+        so = settings.setdefault("store_orders", {})
+        tc = TR.config(so.get("transfer"))
+        far = set((dict(SO.DEFAULT_FILL, **(so.get("fill") or {}))).get("far_stores") or [])
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(22, 18, 22, 16)
+        lay.setSpacing(10)
+        t = QLabel(tr("门店之间调货：要的件数远小于一箱时，从别的门店调多出来的货，少订一箱"))
+        t.setObjectName("Section")
+        t.setWordWrap(True)
+        lay.addWidget(t)
+        self.on = QCheckBox(tr("启用调货"))
+        self.on.setChecked(bool(tc["enabled"]))
+        lay.addWidget(self.on)
+        g = QGridLayout()
+        g.setSpacing(10)
+        self.mode = QComboBox()
+        self.mode.addItem(tr("整箱会多出一半以上时才调"), "waste")
+        self.mode.addItem(tr("所有要订的商品都先看能不能调"), "all")
+        self.mode.setCurrentIndex(max(0, self.mode.findData(tc.get("mode"))))
+        self.minv = QDoubleSpinBox()
+        self.minv.setRange(0, 100000)
+        self.minv.setDecimals(0)
+        self.minv.setValue(float(tc["min_value"]))
+        self.minv.setFixedWidth(100)
+        g.addWidget(QLabel(tr("什么时候调")), 0, 0)
+        g.addWidget(self.mode, 0, 1, 1, 2)
+        g.addWidget(QLabel(tr("每家调出门店货值至少 €")), 1, 0)
+        g.addWidget(self.minv, 1, 1)
+        hh = QLabel(tr("货值太低不值得人工拣货，不如直接订"))
+        hh.setObjectName("Faint")
+        g.addWidget(hh, 1, 2)
+        lay.addLayout(g)
+        lf = QLabel(tr("离得远的门店（不调出、也不调进；门店配货借货也不借它的货）"))
+        lf.setObjectName("Section")
+        lf.setWordWrap(True)
+        lay.addWidget(lf)
+        row = QHBoxLayout()
+        self.far = {}
+        for k, name in SO.STORE_SHEETS.items():
+            cb = QCheckBox(name)
+            cb.setChecked(k in far)
+            self.far[k] = cb
+            row.addWidget(cb)
+        row.addStretch()
+        lay.addLayout(row)
+        h = QLabel(tr("调出门店留够自己一个订货周期的销量（日均 × 订货周期），多出来的才调；自己这次也要订的商品不调出。门店配货和批发商比价用同一套设置。"))
+        h.setObjectName("Faint")
+        h.setWordWrap(True)
+        lay.addWidget(h)
+        bb = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        bb.accepted.connect(self.save)
+        bb.rejected.connect(self.reject)
+        lay.addWidget(bb)
+        self.setMinimumWidth(560)
+
+    def save(self):
+        import transfers as TR
+        import store_orders as SO
+        so = settings.setdefault("store_orders", {})
+        so["transfer"] = dict(TR.config(so.get("transfer")), enabled=self.on.isChecked(),
+                              mode=self.mode.currentData(), min_value=self.minv.value())
+        so["fill"] = dict(dict(SO.DEFAULT_FILL, **(so.get("fill") or {})),
+                          far_stores=[k for k, cb in self.far.items() if cb.isChecked()])
+        save_settings(settings)
+        self.accept()
+
+
 class ManualDialog(QDialog):
     """手动调整每个商品的供应商。确认后返回 self.result（{行号: 供应商}）"""
 
@@ -3197,6 +3272,10 @@ class MainWindow(QMainWindow):
         b_scen = QPushButton(tr("管理方案"))
         b_scen.clicked.connect(self.edit_scenarios)
         opts.addWidget(b_scen)
+        b_tr = QPushButton(tr("门店间调货…"))
+        b_tr.setToolTip(tr("要的件数远小于一箱时，从别的门店调多出来的货，少订一箱（和门店配货同一套设置）"))
+        b_tr.clicked.connect(self.edit_transfers)
+        opts.addWidget(b_tr)
         b_names = QPushButton(tr("供应商名称"))
         b_names.setToolTip(tr("给供应商文件起名字（比如 formattato_… 叫 MEGA CASH），方案排除和起订规则都按名字认"))
         b_names.clicked.connect(self.edit_supplier_names)
@@ -4056,6 +4135,31 @@ class MainWindow(QMainWindow):
                 save_settings(settings)
                 self.refresh_rule_line()
 
+    def edit_transfers(self):
+        if TransferSettingsDialog(self).exec():
+            self.refresh_rule_line()
+            sp = getattr(self, "store_orders", None)
+            if sp is not None and getattr(sp, "calc", None):
+                try:                      # 门店配货已经算过：按新设置重算调货
+                    sp.apply_transfers()
+                    sp._refresh_matrix()
+                except Exception:
+                    pass
+            self.show_toast(tr("调货设置已保存"))
+
+    def _transfer_line(self):
+        """现在的主订单会不会算门店间调货（显示在比价分配那一栏）"""
+        import reorder_service as RS
+        import service as SV
+        name = (self.info or {}).get("ordine")
+        if not name:
+            return ""
+        try:
+            snap = RS.load_snapshot(os.path.join(self.folder_edit.text().strip(), ORDINE_FOLDER, name))
+            return SV.transfer_status(snap, settings)[1]
+        except Exception:
+            return ""
+
     def edit_supplier_names(self):
         heads = (self.info or {}).get("suppliers") or []
         if not heads:
@@ -4075,7 +4179,9 @@ class MainWindow(QMainWindow):
         except Exception:
             snap = None
         if snap:
-            return "\n\n" + tr("门店库存快照：有（{0}），会算门店间调货和够卖天数。", RS.STORES.get(snap.get("store"), ""))
+            import service as SV
+            return "\n\n" + tr("门店库存：{0}（会算够卖天数）", RS.STORES.get(snap.get("store"), "")) + "\n" + \
+                SV.transfer_status(snap, settings)[1]
         return ""
 
     def _scenario_line(self):
@@ -4089,9 +4195,9 @@ class MainWindow(QMainWindow):
 
     def refresh_rule_line(self):
         self._refresh_rule_line()
-        extra = self._scenario_line()
-        if extra:
-            self.rule_line.setText(self.rule_line.text() + "\n" + extra)
+        for extra in (self._scenario_line(), self._transfer_line()):
+            if extra:
+                self.rule_line.setText(self.rule_line.text() + "\n" + extra)
 
     def _refresh_rule_line(self):
         if not self.t_min.isChecked():
@@ -4663,6 +4769,8 @@ class MainWindow(QMainWindow):
         msgs.append(tr("{0} 已处理：eliminare 删除 {1} 行、更新 {2} 行。", s.get('main_file'), d, u))
         if s.get("scenario"):
             msgs.append(tr("选用方案：{0}（几种方案的对比在下面「方案对比」）", tr(s["scenario"])))
+        if s.get("transfer_note") and current:
+            msgs.append(s["transfer_note"])
         if s.get("transfers"):
             ts = s["transfers"]
             msgs.append(tr("门店间调货：{0} 个商品，少订 {1} 箱（货值 €{2:,.2f}），调货单在总文件夹里：{3}",

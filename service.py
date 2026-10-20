@@ -110,6 +110,30 @@ def attach_stock(rows_data, snapshot):
     return n
 
 
+def transfer_status(snapshot, settings):
+    """
+    批发商比价这次会不会算门店间调货：(状态, 说明)
+      "no_snapshot" 主订单没有门店库存快照 / "off" 调货关了 / "far" 这家门店离得远，不参与 / "on" 会算
+    """
+    import transfers as TR
+    import store_orders as SO
+    so = (settings or {}).get("store_orders") or {}
+    cfg = TR.config(so.get("transfer"))
+    if not snapshot:
+        return "no_snapshot", tr("门店间调货：主订单没有门店库存数据，不算调货")
+    if not cfg.get("enabled"):
+        return "off", tr("门店间调货：已关闭（点「门店间调货…」打开）")
+    own = snapshot.get("store")
+    far = (dict(SO.DEFAULT_FILL, **(so.get("fill") or {}))).get("far_stores") or []
+    name = SO.STORE_SHEETS.get(own, str(own))
+    if own in far:
+        return "far", tr("门店间调货：{0} 设成「离得远」，不参与调货（点「门店间调货…」可以改）", name)
+    when = tr("整箱会多出一半以上时才调") if cfg.get("mode") == "waste" else tr("所有要订的商品都先看能不能调")
+    others = tr("、").join(SO.STORE_SHEETS[k] for k in SO.STORE_SHEETS if k != own and k not in far)
+    return "on", tr("门店间调货：开启，{0} 从 {1} 调；{2}，每家调出门店货值至少 €{3:g}",
+                    name, others or "—", when, float(cfg.get("min_value") or 0))
+
+
 def wholesale_transfers(rows_data, supplier_headers, snapshot, settings, labels=None):
     """
     批发商比价的门店间调货（规则和门店配货一样，transfers.py）：
@@ -834,6 +858,11 @@ def run_process(ordine_file, eliminare_path, distribuire_path, log, progress=Non
         if summary["transfers"]:
             log(tr("门店间调货：{0} 个商品，少订 {1} 箱", len(summary["transfers"]),
                    sum(t["colli_before"] - t["colli_after"] for t in summary["transfers"])))
+        else:
+            code, text = transfer_status(snapshot, settings)
+            summary["transfer_note"] = text if code != "on" else \
+                tr("门店间调货：这次没有可调的商品（其他门店没有多出来的货，或者一家调出的货值不到门槛）")
+            log(summary["transfer_note"])
     transfer_rows = {t["row"]: t for t in summary["transfers"]}
     assignment = _select_suppliers(rows_data, supplier_headers, ws_main, log, settings, summary, decide, choose)
     if assignment is None:
