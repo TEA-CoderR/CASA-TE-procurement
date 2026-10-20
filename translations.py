@@ -2104,4 +2104,10 @@ TRANSLATIONS = {
     '鼠标停在数字上看是哪几家': ('Hover the number to see which ones', 'Passa il mouse sul numero per vedere quali'),
     '✔ 是选用的方案。点「缺失商品」的数字看缺了哪些商品。': ('✔ = scenario used. Click the "Missing items" number to see which items.', '✔ = scenario usato. Clicca il numero «Articoli mancanti» per vederli.'),
     '在上面的卡片里选方案。鼠标停在左边的项目或格子上看说明。': ('Pick a scenario in the cards above. Hover a label or cell for an explanation.', 'Scegli uno scenario nelle schede sopra. Passa il mouse su voci o celle per la spiegazione.'),
+    '{0}（{1} 个）': ('{0} ({1} items)', '{0} ({1} articoli)'),
+    '✔ 是选用的方案。点「缺失商品」的数字看缺了哪些商品；鼠标停在左边的项目上看说明。': ('✔ = scenario used. Click the "Missing items" number to see them; hover a label for an explanation.', '✔ = scenario usato. Clicca il numero «Articoli mancanti» per vederli; passa il mouse sulle voci per la spiegazione.'),
+    '少买的商品': ('Items not bought', 'Articoli non acquistati'),
+    'A 里买得到、这个方案买不到的商品，在 A 里要花多少钱。总额低常常是因为少买了货，不是更便宜': ("Items A can buy but this scenario can't, valued at A's prices. A lower total often means fewer items, not cheaper prices", 'Articoli che A compra e questo scenario no, ai prezzi di A. Un totale più basso spesso significa meno articoli, non prezzi migliori'),
+    '补上少买的商品，总共': ('Total incl. items not bought', 'Totale con articoli non acquistati'),
+    '买和 A 一样多的商品要花多少（采购总额 + 少买的商品）；括号里是比 A 多花（+）还是少花（−）：这才是真正的差价': ('Cost of buying the same items as A (purchase total + items not bought); in brackets how much more (+) or less (−) than A: the real price difference', 'Costo per comprare gli stessi articoli di A (totale + articoli non acquistati); tra parentesi quanto in più (+) o in meno (−) rispetto ad A: la vera differenza di prezzo'),
 }

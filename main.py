@@ -1991,8 +1991,8 @@ def scen_letter(i):
 
 def fill_scenario_table(t, results, chosen=None, recommended=None, compact=False):
     """
-    compact=True（默认显示）：只放做决定要看的几行——采购总额、比 A 多花 / 少花、缺失商品、其中不够卖一周的、
-    起订量没达标的；其余（价差拆分、箱数、各供应商金额、每条起订规则…）点「显示全部明细」才看
+    （2026-10-20 按用户要求精简）金额只看真正能比的：采购总额、少买的商品、补上少买的商品后总共多少（括号里是和 A 差多少）；
+    商品看缺失和不够卖一周的；各供应商金额占比、起订量达标全留着。compact 参数不用了（保留兼容）
     方案对比明细表：每个方案一列（表头「A 全部供应商」），格子里只放数字，说明放在鼠标提示里。
     分四段：金额 / 商品 / 各供应商金额 / 起订量。
     和第一个方案（A，基准）比的差额 = 同样商品的价差 − 少买的商品 + 多买到的商品。
@@ -2030,35 +2030,31 @@ def fill_scenario_table(t, results, chosen=None, recommended=None, compact=False
     L = [("sec", tr("金额 €"))]
     L.append(("total", tr("采购总额"), [_money_txt(r["total"]) for r in results],
               tr("这个方案买到的所有商品：箱数 × 每箱件数 × 件价")))
-    L.append(("vs", tr("比 A 多花 / 少花"),
-              base_only(lambda r: _money_txt(r.get("vs_first", r["total"] - results[0]["total"]), True)),
-              tr("和「{0}」比。= 同样商品的价差 + 少买的商品 + 多买到的商品", first)))
     if new:
-        L.append(("price", tr("　同样商品的价差"), base_only(lambda r: _money_txt(r["price_diff"], True)),
-                  tr("两个方案都买得到的商品，换了供应商以后贵了（+）还是便宜了（−）。这才是真正的价格差。")))
-        L.append(("lost", tr("　少买的商品"), base_only(lambda r: _money_txt(-r["lost_value"], True)),
-                  tr("A 里买得到、这个方案买不到的商品，在 A 里要花的钱。总额变低常常是因为少买了货，不是更便宜。")))
-        if any(r.get("gained_rows") for r in results):
-            L.append(("gained", tr("　多买到的商品"), base_only(lambda r: _money_txt(r["gained_value"], True)), ""))
+        def lost_txt(r):
+            if not r.get("lost_rows"):
+                return "0"
+            return tr("{0}（{1} 个）", _money_txt(r["lost_value"]), r["lost_rows"])
+        L.append(("lost", tr("少买的商品"), base_only(lost_txt),
+                  tr("A 里买得到、这个方案买不到的商品，在 A 里要花多少钱。总额低常常是因为少买了货，不是更便宜")))
+
+        def same_txt(r):
+            v = r["total"] + r.get("lost_value", 0) - r.get("gained_value", 0)
+            d = v - results[0]["total"]
+            return f"{_money_txt(v)}  ({_money_txt(d, True)})"
+        L.append(("same", tr("补上少买的商品，总共"),
+                  [_money_txt(r["total"]) if i == 0 else same_txt(r) for i, r in enumerate(results)],
+                  tr("买和 A 一样多的商品要花多少（采购总额 + 少买的商品）；括号里是比 A 多花（+）还是少花（−）：这才是真正的差价")))
     L.append(("extra", tr("凑单多花"), [_money_txt(r.get("extra_cost", 0)) for r in results],
               tr("为了达到起订量，比全部按最低价多花的钱")))
 
     L.append(("sec", tr("商品")))
-    L.append(("priced", tr("买得到 / 要订"),
-              [(f"{r['priced']:,} / {r['need']:,}" if r.get("need") else f"{r['priced']:,}") for r in results], ""))
     L.append(("missing", tr("缺失商品（点数字看列表）"), [f"{len(r['missing']):,}" for r in results],
               tr("点数字看缺了哪些商品")))
     import scenarios as _SC
     if any(m.get("daily") is not None for r in results for m in r["missing"]):
         L.append(("urgent", tr("　其中店里不够卖一周的"), [f"{_SC.urgent_count(r['missing']):,}" for r in results],
                   tr("买不到、店里库存又不够卖 {0} 天的商品：这次不订很可能断货（推荐方案先看这个）", _SC.URGENT_DAYS)))
-    if new:
-        L.append(("lost_rows", tr("　比 A 少买的"), base_only(lambda r: f"{r.get('lost_rows', 0):,}"), ""))
-        L.append(("switched", tr("比 A 换了供应商的"), base_only(lambda r: f"{r.get('switched', 0):,}"), ""))
-        L.append(("colli", tr("采购箱数"), [f"{r.get('colli', 0):,.0f}" for r in results], ""))
-        L.append(("mqty", tr("缺失箱数"), [f"{r.get('missing_qty', 0):,.0f}" for r in results], ""))
-    L.append(("changes", tr("凑单换供应商的"), [f"{r.get('changes', 0):,}" for r in results],
-              tr("为了起订量，没有分给最低价供应商的商品")))
 
     L.append(("sec", tr("各供应商金额 €（占比）")))
     sup_tips = {}
@@ -2094,21 +2090,6 @@ def fill_scenario_table(t, results, chosen=None, recommended=None, compact=False
             rule_tips[len(L)] = tips
             L.append(("rule", ru.get("name") or "", vals, tr("起订条件：{0}", _rule_cond(ru))))
 
-    if compact:
-        keep = ("total", "vs", "missing", "urgent")
-        L = [ln for ln in L if ln[0] in keep]
-        if rules:
-            vals, tips = [], []
-            for r in results:
-                bad = [x.get("name") for x in r.get("rules") or [] if x.get("status") == "未达标"]
-                vals.append(f"{len(bad)}" if bad else "0")
-                tips.append("、".join(bad))
-            rule_tips = {len(L): tips}
-            L.append(("unmet", tr("起订量没达标的供应商"), vals, tr("鼠标停在数字上看是哪几家")))
-        else:
-            rule_tips = {}
-        sup_tips = {}
-
     t.setRowCount(len(L))
     links = {}
     for row, ln in enumerate(L):
@@ -2127,15 +2108,15 @@ def fill_scenario_table(t, results, chosen=None, recommended=None, compact=False
             t.setRowHeight(row, 30)
             continue
         _, label, vals, tip = ln
-        table_set_row(t, row, [label] + list(vals), bold=kind in ("total", "vs"))
-        t.item(row, 0).setForeground(QColor(T("text") if kind in ("total", "vs") else T("muted")))
+        table_set_row(t, row, [label] + list(vals), bold=kind in ("total", "same"))
+        t.item(row, 0).setForeground(QColor(T("text") if kind in ("total", "same") else T("muted")))
         if tip:
             t.item(row, 0).setToolTip(tip)
         for c in range(1, n + 1):
             it = t.item(row, c)
             it.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
             f = QFont(NUM_FONT, 10)
-            f.setBold(kind in ("total", "vs"))
+            f.setBold(kind in ("total", "same"))
             it.setFont(f)
             r = results[c - 1]
             txt = it.text()
@@ -2150,7 +2131,13 @@ def fill_scenario_table(t, results, chosen=None, recommended=None, compact=False
                     it.setForeground(QColor(T("warn")))
                     f.setUnderline(True)
                     it.setFont(f)
-            elif kind in ("vs", "price", "lost", "gained") and c > 1 and txt not in ("—", "0.00"):
+            elif kind == "same" and c > 1 and txt != "—":
+                d = (r["total"] + r.get("lost_value", 0) - r.get("gained_value", 0)) - results[0]["total"]
+                if abs(d) > 0.005:
+                    it.setForeground(QColor(T("err") if d > 0 else T("ok")))
+            elif kind == "lost" and c > 1 and txt not in ("—", "0"):
+                it.setForeground(QColor(T("warn")))
+            elif kind in ("vs", "price", "gained") and c > 1 and txt not in ("—", "0.00"):
                 good = txt.startswith("-") if kind in ("vs", "price") else False
                 if kind == "lost":
                     it.setForeground(QColor(T("warn")))
@@ -2158,7 +2145,7 @@ def fill_scenario_table(t, results, chosen=None, recommended=None, compact=False
                     it.setForeground(QColor(T("ok")))
                 else:
                     it.setForeground(QColor(T("ok") if good else T("err")))
-            elif kind in ("urgent", "unmet") and txt != "0":
+            elif kind == "urgent" and txt != "0":
                 it.setForeground(QColor(T("err")))
                 f.setBold(True)
                 it.setFont(f)
@@ -2546,16 +2533,9 @@ class ScenarioDialog(QDialog):
         self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.table.cellClicked.connect(self._clicked)
         lay.addWidget(self.table, 1)
-        hr = QHBoxLayout()
         hint = QLabel(tr("在上面的卡片里选方案。鼠标停在左边的项目或格子上看说明。"))
         hint.setObjectName("Faint")
-        hr.addWidget(hint, 1)
-        self.full = False
-        self.b_full = QPushButton(tr("显示全部明细"))
-        self.b_full.setObjectName("Link")
-        self.b_full.clicked.connect(self._toggle_full)
-        hr.addWidget(self.b_full)
-        lay.addLayout(hr)
+        lay.addWidget(hint)
         btns = QHBoxLayout()
         exp = QPushButton(tr("导出对比"))
         exp.clicked.connect(self.export)
@@ -2592,13 +2572,8 @@ class ScenarioDialog(QDialog):
         self.chosen = i
         for c in self.cards:
             c.set_selected(c.i == i)
-        self.links = fill_scenario_table(self.table, self.results, i, self.rec, compact=not self.full)
+        self.links = fill_scenario_table(self.table, self.results, i, self.rec)
         self.ok.setText(tr("用 {0}「{1}」写入", scen_letter(i), tr(self.results[i]["name"])))
-
-    def _toggle_full(self):
-        self.full = not self.full
-        self.b_full.setText(tr("只看要点") if self.full else tr("显示全部明细"))
-        self.links = fill_scenario_table(self.table, self.results, self.chosen, self.rec, compact=not self.full)
 
     def _clicked(self, row, col):
         if (row, col) in self.links:
@@ -2614,11 +2589,9 @@ class ScenarioDialog(QDialog):
         ws = wb.active
         ws.title = "方案对比"
         t = self.table
-        fill_scenario_table(t, self.results, self.chosen, self.rec)          # 导出的是全部明细
         ws.append([t.horizontalHeaderItem(c).text() for c in range(t.columnCount())])
         for r in range(t.rowCount()):
             ws.append([(t.item(r, c).text() if t.item(r, c) else "") for c in range(t.columnCount())])
-        self.links = fill_scenario_table(t, self.results, self.chosen, self.rec, compact=not self.full)
         for c in ws[1]:
             c.font = Font(bold=True)
         diff = (self.results[0].get("diff") if self.results else None) or []
@@ -3494,16 +3467,9 @@ class MainWindow(QMainWindow):
         self.k_missing.mousePressEvent = lambda _e: self.show_missing()
 
         self.scen_panel = Panel(tr("方案对比"))
-        shr = QHBoxLayout()
-        sh = QLabel(tr("✔ 是选用的方案。点「缺失商品」的数字看缺了哪些商品。"))
+        sh = QLabel(tr("✔ 是选用的方案。点「缺失商品」的数字看缺了哪些商品；鼠标停在左边的项目上看说明。"))
         sh.setObjectName("Faint")
-        shr.addWidget(sh, 1)
-        self.scen_full = False
-        self.btn_scen_full = QPushButton(tr("显示全部明细"))
-        self.btn_scen_full.setObjectName("Link")
-        self.btn_scen_full.clicked.connect(self._toggle_scen_full)
-        shr.addWidget(self.btn_scen_full)
-        self.scen_panel.lay.addLayout(shr)
+        self.scen_panel.lay.addWidget(sh)
         self.scen_table = make_table([""], stretch_col=None)
         self.scen_table.setSelectionBehavior(QAbstractItemView.SelectItems)
         self.scen_table.setSelectionMode(QAbstractItemView.ExtendedSelection)
@@ -5301,11 +5267,6 @@ class MainWindow(QMainWindow):
 
         threading.Thread(target=work, daemon=True).start()
 
-    def _toggle_scen_full(self):
-        self.scen_full = not self.scen_full
-        if self.last_summary:
-            self.show_summary(self.last_summary)
-
     def _scen_clicked(self, row, col):
         res = (self.last_summary or {}).get("scenarios") or []
         i = getattr(self, "_scen_links", {}).get((row, col))
@@ -5318,9 +5279,8 @@ class MainWindow(QMainWindow):
         self.scen_panel.setVisible(bool(res))
         if res:
             chosen = next((i for i, r in enumerate(res) if r.get("chosen")), None)
-            self._scen_links = fill_scenario_table(self.scen_table, res, chosen, compact=not self.scen_full)
-            self.scen_table.setFixedHeight(min(520, 44 + 36 * self.scen_table.rowCount()))
-            self.btn_scen_full.setText(tr("只看要点") if self.scen_full else tr("显示全部明细"))
+            self._scen_links = fill_scenario_table(self.scen_table, res, chosen)
+            self.scen_table.setFixedHeight(min(620, 44 + 36 * self.scen_table.rowCount()))
         self._fill_scen_switch(s, res)
         self.btn_missing.setText(tr("缺失商品 ({0})", len(s.get("missing_items") or [])) if s.get("missing_items") is not None
                                  else tr("缺失商品"))
