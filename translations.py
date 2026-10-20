@@ -2110,4 +2110,11 @@ TRANSLATIONS = {
     'A 里买得到、这个方案买不到的商品，在 A 里要花多少钱。总额低常常是因为少买了货，不是更便宜': ("Items A can buy but this scenario can't, valued at A's prices. A lower total often means fewer items, not cheaper prices", 'Articoli che A compra e questo scenario no, ai prezzi di A. Un totale più basso spesso significa meno articoli, non prezzi migliori'),
     '补上少买的商品，总共': ('Total incl. items not bought', 'Totale con articoli non acquistati'),
     '买和 A 一样多的商品要花多少（采购总额 + 少买的商品）；括号里是比 A 多花（+）还是少花（−）：这才是真正的差价': ('Cost of buying the same items as A (purchase total + items not bought); in brackets how much more (+) or less (−) than A: the real price difference', 'Costo per comprare gli stessi articoli di A (totale + articoli non acquistati); tra parentesi quanto in più (+) o in meno (−) rispetto ad A: la vera differenza di prezzo'),
+    'A 的采购总额': ("A's purchase total", 'Totale acquisti di A'),
+    '基准：「{0}」的采购总额': ('Baseline: purchase total of "{0}"', 'Base: totale acquisti di «{0}»'),
+    '＝ 采购总额': ('= Purchase total', '= Totale acquisti'),
+    '同样商品 {0}': ('Same items {0}', 'Stessi articoli {0}'),
+    '，少买 {0} 个（€{1:,.2f}）': (', {0} fewer items (€{1:,.2f})', ', {0} articoli in meno (€{1:,.2f})'),
+    '同样商品的价差': ('Price difference on the same items', 'Differenza di prezzo sugli stessi articoli'),
+    '多买到的商品': ('Extra items bought', 'Articoli in più acquistati'),
 }

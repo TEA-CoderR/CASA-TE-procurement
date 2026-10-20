@@ -1991,8 +1991,8 @@ def scen_letter(i):
 
 def fill_scenario_table(t, results, chosen=None, recommended=None, compact=False):
     """
-    （2026-10-20 按用户要求精简）金额只看真正能比的：采购总额、少买的商品、补上少买的商品后总共多少（括号里是和 A 差多少）；
-    商品看缺失和不够卖一周的；各供应商金额占比、起订量达标全留着。compact 参数不用了（保留兼容）
+    金额一段是一道算式（用户要一眼看出关系）：A 的采购总额 ＋ 同样商品的价差 － 少买的商品（＋ 多买到的）＝ 这个方案的采购总额。
+    不放：比 A 多花 / 少花、凑单多花、买得到 / 要订、比 A 换了供应商的（用户说没用）。compact 参数不用了（保留兼容）
     方案对比明细表：每个方案一列（表头「A 全部供应商」），格子里只放数字，说明放在鼠标提示里。
     分四段：金额 / 商品 / 各供应商金额 / 起订量。
     和第一个方案（A，基准）比的差额 = 同样商品的价差 − 少买的商品 + 多买到的商品。
@@ -2027,26 +2027,22 @@ def fill_scenario_table(t, results, chosen=None, recommended=None, compact=False
         return ["—" if i == 0 else f(r) for i, r in enumerate(results)]
 
     # (种类, 名称, 值, 鼠标提示)
+    # 金额：一道算式，A 的采购总额 ＋ 同样商品的价差 － 少买的商品（＋ 多买到的）＝ 这个方案的采购总额
     L = [("sec", tr("金额 €"))]
-    L.append(("total", tr("采购总额"), [_money_txt(r["total"]) for r in results],
-              tr("这个方案买到的所有商品：箱数 × 每箱件数 × 件价")))
-    if new:
-        def lost_txt(r):
-            if not r.get("lost_rows"):
-                return "0"
-            return tr("{0}（{1} 个）", _money_txt(r["lost_value"]), r["lost_rows"])
-        L.append(("lost", tr("少买的商品"), base_only(lost_txt),
-                  tr("A 里买得到、这个方案买不到的商品，在 A 里要花多少钱。总额低常常是因为少买了货，不是更便宜")))
-
-        def same_txt(r):
-            v = r["total"] + r.get("lost_value", 0) - r.get("gained_value", 0)
-            d = v - results[0]["total"]
-            return f"{_money_txt(v)}  ({_money_txt(d, True)})"
-        L.append(("same", tr("补上少买的商品，总共"),
-                  [_money_txt(r["total"]) if i == 0 else same_txt(r) for i, r in enumerate(results)],
-                  tr("买和 A 一样多的商品要花多少（采购总额 + 少买的商品）；括号里是比 A 多花（+）还是少花（−）：这才是真正的差价")))
-    L.append(("extra", tr("凑单多花"), [_money_txt(r.get("extra_cost", 0)) for r in results],
-              tr("为了达到起订量，比全部按最低价多花的钱")))
+    if new and n > 1:
+        L.append(("base", tr("A 的采购总额"), [_money_txt(results[0]["total"])] * n,
+                  tr("基准：「{0}」的采购总额", first)))
+        L.append(("price", tr("同样商品的价差"), base_only(lambda r: _money_txt(r["price_diff"], True)),
+                  tr("两个方案都买得到的商品，换了供应商以后贵了（+）还是便宜了（−）。这才是真正的价格差。")))
+        L.append(("lost", tr("少买的商品"), base_only(lambda r: _money_txt(-r["lost_value"], True)),
+                  tr("A 里买得到、这个方案买不到的商品，在 A 里要花的钱。总额变低常常是因为少买了货，不是更便宜。")))
+        if any(r.get("gained_rows") for r in results):
+            L.append(("gained", tr("多买到的商品"), base_only(lambda r: _money_txt(r["gained_value"], True)), ""))
+        L.append(("total", tr("＝ 采购总额"), [_money_txt(r["total"]) for r in results],
+                  tr("这个方案买到的所有商品：箱数 × 每箱件数 × 件价")))
+    else:
+        L.append(("total", tr("采购总额"), [_money_txt(r["total"]) for r in results],
+                  tr("这个方案买到的所有商品：箱数 × 每箱件数 × 件价")))
 
     L.append(("sec", tr("商品")))
     L.append(("missing", tr("缺失商品（点数字看列表）"), [f"{len(r['missing']):,}" for r in results],
@@ -2055,6 +2051,12 @@ def fill_scenario_table(t, results, chosen=None, recommended=None, compact=False
     if any(m.get("daily") is not None for r in results for m in r["missing"]):
         L.append(("urgent", tr("　其中店里不够卖一周的"), [f"{_SC.urgent_count(r['missing']):,}" for r in results],
                   tr("买不到、店里库存又不够卖 {0} 天的商品：这次不订很可能断货（推荐方案先看这个）", _SC.URGENT_DAYS)))
+    if new:
+        L.append(("lost_rows", tr("　比 A 少买的"), base_only(lambda r: f"{r.get('lost_rows', 0):,}"), ""))
+        L.append(("colli", tr("采购箱数"), [f"{r.get('colli', 0):,.0f}" for r in results], ""))
+        L.append(("mqty", tr("缺失箱数"), [f"{r.get('missing_qty', 0):,.0f}" for r in results], ""))
+    L.append(("changes", tr("凑单换供应商的"), [f"{r.get('changes', 0):,}" for r in results],
+              tr("为了起订量，没有分给最低价供应商的商品")))
 
     L.append(("sec", tr("各供应商金额 €（占比）")))
     sup_tips = {}
@@ -2108,15 +2110,15 @@ def fill_scenario_table(t, results, chosen=None, recommended=None, compact=False
             t.setRowHeight(row, 30)
             continue
         _, label, vals, tip = ln
-        table_set_row(t, row, [label] + list(vals), bold=kind in ("total", "same"))
-        t.item(row, 0).setForeground(QColor(T("text") if kind in ("total", "same") else T("muted")))
+        table_set_row(t, row, [label] + list(vals), bold=kind == "total")
+        t.item(row, 0).setForeground(QColor(T("text") if kind in ("total", "base") else T("muted")))
         if tip:
             t.item(row, 0).setToolTip(tip)
         for c in range(1, n + 1):
             it = t.item(row, c)
             it.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
             f = QFont(NUM_FONT, 10)
-            f.setBold(kind in ("total", "same"))
+            f.setBold(kind == "total")
             it.setFont(f)
             r = results[c - 1]
             txt = it.text()
@@ -2131,13 +2133,7 @@ def fill_scenario_table(t, results, chosen=None, recommended=None, compact=False
                     it.setForeground(QColor(T("warn")))
                     f.setUnderline(True)
                     it.setFont(f)
-            elif kind == "same" and c > 1 and txt != "—":
-                d = (r["total"] + r.get("lost_value", 0) - r.get("gained_value", 0)) - results[0]["total"]
-                if abs(d) > 0.005:
-                    it.setForeground(QColor(T("err") if d > 0 else T("ok")))
-            elif kind == "lost" and c > 1 and txt not in ("—", "0"):
-                it.setForeground(QColor(T("warn")))
-            elif kind in ("vs", "price", "gained") and c > 1 and txt not in ("—", "0.00"):
+            elif kind in ("vs", "price", "lost", "gained") and c > 1 and txt not in ("—", "0.00"):
                 good = txt.startswith("-") if kind in ("vs", "price") else False
                 if kind == "lost":
                     it.setForeground(QColor(T("warn")))
@@ -2228,11 +2224,16 @@ class ScenarioCard(QFrame):
         if i == 0:
             d_txt, d_col = tr("基准方案"), T("faint")
         else:
-            d = r.get("vs_first", 0)
-            d_txt = tr("比 A {0}", (f"+€{d:,.2f}" if d > 0.005 else (f"−€{-d:,.2f}" if d < -0.005 else tr("一样"))))
+            # 和表格的算式一样：同样商品的价差 + 少买的商品（不显示「比 A 多花」，那个数含了少买的货）
+            if "price_diff" in r:
+                d = r["price_diff"]
+                d_txt = tr("同样商品 {0}", (f"+€{d:,.2f}" if d > 0.005 else (f"−€{-d:,.2f}" if d < -0.005 else tr("一样"))))
+            else:
+                d = r.get("vs_first", 0)
+                d_txt = tr("比 A {0}", (f"+€{d:,.2f}" if d > 0.005 else (f"−€{-d:,.2f}" if d < -0.005 else tr("一样"))))
             d_col = T("err") if d > 0.005 else (T("ok") if d < -0.005 else T("faint"))
             if r.get("lost_rows"):
-                d_txt += tr("（少买 {0} 个）", r["lost_rows"])
+                d_txt += tr("，少买 {0} 个（€{1:,.2f}）", r["lost_rows"], r.get("lost_value") or 0)
         dl = QLabel(d_txt)
         dl.setStyleSheet(f"color:{d_col}; background:transparent;")
         v.addWidget(dl)
