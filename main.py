@@ -1087,20 +1087,29 @@ class ManualDialog(QDialog):
                            "; ".join(notes)), "warn")
             lay.addWidget(nb)
 
-        # 起订情况 + 总额
-        self.status_box = QHBoxLayout()
-        self.status_box.setSpacing(10)
+        # 起订情况 + 总额：每行最多 3 个，文字太长自动换行（供应商多的时候窗口不会被撑得比屏幕还宽）
+        self.status_box = QGridLayout()
+        self.status_box.setHorizontalSpacing(10)
+        self.status_box.setVerticalSpacing(8)
         self.status_labels = []
-        for ru in rules:
+        per_row = 3
+        for k, ru in enumerate(rules):
             lb = QLabel()
             lb.setObjectName("Banner")
             lb.setTextFormat(Qt.RichText)
+            lb.setWordWrap(True)
             self.status_labels.append((ru, lb))
-            self.status_box.addWidget(lb)
+            self.status_box.addWidget(lb, k // per_row, k % per_row)
         self.total_lbl = QLabel()
         self.total_lbl.setObjectName("Banner")
-        self.status_box.addWidget(self.total_lbl)
-        self.status_box.addStretch()
+        self.total_lbl.setWordWrap(True)
+        n = len(rules)
+        if n % per_row:                               # 最后一行还有空位：总额放在后面
+            self.status_box.addWidget(self.total_lbl, n // per_row, n % per_row, 1, per_row - n % per_row)
+        else:
+            self.status_box.addWidget(self.total_lbl, n // per_row, 0, 1, per_row)
+        for c in range(per_row):
+            self.status_box.setColumnStretch(c, 1)
         lay.addLayout(self.status_box)
 
         bar = QHBoxLayout()
@@ -4803,6 +4812,9 @@ def main():
     from erp_widgets import CopyHelper
     app._copy_helper = CopyHelper(app)          # 程序里的文字都可以选中复制，表格 Ctrl+C / 右键复制
     app.installEventFilter(app._copy_helper)
+    from erp_widgets import ScreenFit
+    app._screen_fit = ScreenFit(app)            # 窗口打开时不会比屏幕大、不会跑出屏幕
+    app.installEventFilter(app._screen_fit)
     f = QFont(UI_FONT, 10)
     app.setFont(f)
     win = MainWindow()

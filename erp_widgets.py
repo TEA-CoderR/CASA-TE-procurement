@@ -1188,6 +1188,46 @@ def remember_columns(table, cfg, key, fields, save, ver=1):
     return reset
 
 
+def fit_to_screen(w, margin=12):
+    """窗口比屏幕（可用区域，去掉任务栏）大、或者跑到屏幕外面时：缩小并挪回屏幕里"""
+    from PySide6.QtGui import QGuiApplication
+    try:
+        scr = w.screen() or QGuiApplication.primaryScreen()
+    except RuntimeError:
+        return
+    if scr is None:
+        return
+    av = scr.availableGeometry()
+    g, fg = w.geometry(), w.frameGeometry()
+    ew, eh = fg.width() - g.width(), fg.height() - g.height()        # 标题栏、边框
+    max_w, max_h = av.width() - ew - 2 * margin, av.height() - eh - 2 * margin
+    if g.width() > max_w or g.height() > max_h:
+        w.resize(min(g.width(), max_w), min(g.height(), max_h))
+        fg = w.frameGeometry()
+    x = min(max(fg.x(), av.x()), av.x() + av.width() - fg.width())
+    y = min(max(fg.y(), av.y()), av.y() + av.height() - fg.height())
+    if (x, y) != (fg.x(), fg.y()):
+        w.move(max(x, av.x()), max(y, av.y()))
+
+
+class ScreenFit(QObject):
+    """全程序：每个对话框 / 小窗口打开时都检查一次，不会比屏幕大、不会跑出屏幕（按钮被挡住就点不到了）"""
+
+    def eventFilter(self, obj, ev):
+        from PySide6.QtCore import QEvent
+        from PySide6.QtWidgets import QMainWindow
+        if ev.type() == QEvent.Show and isinstance(obj, (QDialog, QMainWindow)) and obj.isWindow() \
+                and not obj.isMaximized() and not obj.isFullScreen():
+            def later(o=obj):
+                try:
+                    if o.isVisible():
+                        fit_to_screen(o)
+                except RuntimeError:          # 窗口已经关掉了
+                    pass
+            QTimer.singleShot(0, later)
+        return False
+
+
 class RowSorter(QObject):
     """
     给「一次填好的表格」加点表头排序（点一下升序，再点一下降序）。
