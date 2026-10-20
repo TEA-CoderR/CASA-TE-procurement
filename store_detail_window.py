@@ -597,7 +597,7 @@ class DetailWindow(ToolWindow):
         self.table.horizontalHeaderItem(EDIT_COL).setText(tr("订货箱数") + " ✎")
         self.table.horizontalHeaderItem(EDIT_COL).setToolTip(tr("双击修改箱数，0 = 不订"))
         self.table.horizontalHeaderItem(_col(18)).setToolTip(tr("销量等级：A 卖得快，B 一般，C 卖得慢"))
-        self.table.horizontalHeaderItem(_col(11)).setToolTip(tr("库存够卖 = 现在的库存按日均还能卖几天（算法给的库存天数）"))
+        self.table.horizontalHeaderItem(_col(11)).setToolTip(tr("库存够卖 = 本店库存 ÷ 日均（账面库存是负数时按 0 算）。门店配货、检查订货清单、批发商比价都是这个算法"))
         self.table.horizontalHeaderItem(AFTER_COL).setToolTip(
             tr("订后够卖 =（库存 + 订货箱数 × 每箱件数）÷ 日均：这次的货到了以后能卖几天；超过凑单天数标黄，可能压货"))
         for k, tip in ((22, tr("月均 = 最长周期销量 ÷ 月数（默认 180 天 ÷ 6）")),
@@ -943,11 +943,8 @@ class DetailWindow(ToolWindow):
         sc, it, sid = self.detail[i]
         x = calc["demand"].get(sid, {}).get(it.get("db_code") or it["code"])
         sug_c = calc["base"][sc["path"]].get(sid, {}).get(it["row"], 0)
-        inv_days = x["inv_days"] if x else None
-        if isinstance(inv_days, float) and math.isinf(inv_days):
-            inv_days = "∞"
-        elif isinstance(inv_days, (int, float)):
-            inv_days = f"{inv_days:,.1f}"
+        # 库存够卖 = 库存 ÷ 日均（负库存按 0 算），和「订后够卖」、检查订货清单同一个算法
+        inv_days = S.days_text(S.cover_days(x)) if x else ""
         vals = _perm([
             sc["name"], S.STORE_SHEETS[sid], short_decision(x["decision"]) if x else tr("数据库没有"),
             it.get("db_code") or it["code"], it["ean"], it["desc"],
@@ -1010,7 +1007,7 @@ class DetailWindow(ToolWindow):
     def _sort_keys(self, i, x, sug_c):
         sc, it, sid = self.detail[i]
         k0 = (self.sup_index[sc["path"]], it["row"], sid)        # 默认顺序：供应商 → SCHEDA 行 → 门店
-        inv_days = x["inv_days"] if x else None
+        inv_days = S.cover_days(x) if x else None
         if isinstance(inv_days, (int, float)) and math.isinf(inv_days):
             inv_days = 1e12
         num = lambda v: float(v) if isinstance(v, (int, float)) else None

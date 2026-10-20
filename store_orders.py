@@ -1547,7 +1547,7 @@ def export_summary(results, path, demand=None, base=None, edited=None, days_list
                         note.append("并入帮其他店凑起订量")
                     ws2.append([day, sc["name"], STORE_SHEETS[sid], dest, it.get("db_code") or it["code"], it["ean"],
                                 it["desc"], it["pack"], it["price"], x.get("inv_raw", x["inv"]) if x else None,
-                                *((x["sales"] if x else [None] * 4)), _fmt_days(x["inv_days"]) if x else None, after,
+                                *((x["sales"] if x else [None] * 4)), _fmt_days(cover_days(x)) if x else None, after,
                                 x["decision"] if x else "数据库没有", x["sugg"] if x else None, sg or None, n or None,
                                 round(n * it["pack"] * it["price"], 2) if n else None, "、".join(note)])
                     ws2.cell(ws2.max_row, 6).number_format = "@"

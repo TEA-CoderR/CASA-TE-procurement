@@ -21,7 +21,8 @@ import reorder_service as R
 from reorder_page import short_decision, store_label, algo_widgets
 
 # 表格列（逻辑顺序）→ 显示顺序：要核对、要改的列放前面
-_ORDER = [0, 16, 3, 11, 12, 13, 14, 15, 4, 18, 19, 5, 6, 7, 8, 9, 17, 10, 1, 2]
+# 判断 等级 名称 | 清单 → 建议 → 确定 | 订后够卖 | 本店库存 库存够卖 日均 目标库存 | 各周期销量 | 周期 箱规 编号 条码
+_ORDER = [0, 16, 3, 11, 12, 13, 14, 15, 20, 4, 9, 18, 19, 5, 6, 7, 8, 17, 10, 1, 2]
 
 
 def _col(k):
@@ -34,6 +35,23 @@ def _perm(vals):
 
 EDIT_COL = _col(14)
 BOX_COL = _col(15)
+AFTER_COL = _col(20)
+
+
+def _cover(x, pieces=0):
+    """
+    够卖几天（和门店配货同一个算法 store_orders.cover_days）：(库存 + pieces) ÷ 日均。
+    账面库存是负数时按 0 算（负库存不代表欠了多少天的货）；数据库里没有的商品返回 None
+    """
+    if not x.get("in_db") or x.get("daily0") is None:
+        return None
+    import store_orders as SO
+    return SO.cover_days({"inv": x.get("inv0") or 0, "daily": x["daily0"]}, pieces)
+
+
+def _days(v):
+    import store_orders as SO
+    return SO.days_text(v)
 VERDICT_COLOR = {"增加": "accent", "减少": "warn", "不订": "err", "不变": "muted", "数据库没有": "err"}
 
 
@@ -161,8 +179,8 @@ class OrderCheck:
         self.table = ui.make_table(_perm([tr("判断"), tr("商品编号"), tr("条码"), tr("名称"), tr("本店库存"),
                                           "30", "60", "90", "180", tr("库存够卖（天）"), tr("箱规"), tr("清单数量"),
                                           tr("清单件数"), tr("建议件数"), tr("确定件数"), tr("确定箱数"), tr("等级"), tr("周期"), tr("日均"),
-                                          tr("目标库存")]),
-                                   numeric_cols=[_col(k) for k in list(range(4, 16)) + [17, 18, 19]])
+                                          tr("目标库存"), tr("订后够卖（天）")]),
+                                   numeric_cols=[_col(k) for k in list(range(4, 16)) + [17, 18, 19, 20]])
         self.table.setMinimumHeight(380)
         self.table.setEditTriggers(QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed |
                                    QAbstractItemView.AnyKeyPressed)
@@ -170,14 +188,20 @@ class OrderCheck:
         hh = self.table.horizontalHeader()
         hh.setSectionResizeMode(QHeaderView.Interactive)
         hh.setStretchLastSection(False)
-        for c, wd in enumerate(_perm((80, 80, 120, 300, 70, 52, 52, 52, 52, 70, 52, 70, 70, 70, 76, 70, 50, 50, 60, 70))):
+        for c, wd in enumerate(_perm((80, 80, 120, 300, 70, 52, 52, 52, 52, 90, 52, 70, 70, 70, 76, 70, 50, 50, 60, 70, 90))):
             self.table.setColumnWidth(c, wd)
         self.table.horizontalHeaderItem(EDIT_COL).setToolTip(tr("双击修改，0 = 不订"))
+        self.table.horizontalHeaderItem(_col(9)).setToolTip(
+            tr("库存够卖 = 本店库存 ÷ 日均（账面库存是负数时按 0 算）。门店配货、检查订货清单、批发商比价都是这个算法"))
+        self.table.horizontalHeaderItem(AFTER_COL).setToolTip(
+            tr("订后够卖 =（本店库存 + 确定件数）÷ 日均，改确定件数时跟着变；超过凑单天数标黄（可能压货）"))
+        self.table.horizontalHeaderItem(_col(18)).setToolTip(
+            tr("新算法：加权日均（含季节）；原程序算法：最近一个周期的销量 ÷ 天数"))
         self.table.itemChanged.connect(self._edited)
         # 点表头排序、右键表头按列筛选；上面「判断」「等级」两个下拉框快速筛选
         from erp_widgets import TableSortFilter, ColumnFilterBox
         self.ctl = TableSortFilter(self.table, lambda: len(self.rows), self._text, self._fill_row,
-                                   hide=self._hidden, numeric=tuple(_col(k) for k in list(range(4, 16)) + [17, 18, 19]))
+                                   hide=self._hidden, numeric=tuple(_col(k) for k in list(range(4, 16)) + [17, 18, 19, 20]))
         self.ctl.rendered.connect(lambda n, tot: self.count_lbl.setText(
             tr("显示 {0} / {1} 个 · 点表头排序，右键表头筛选", n, tot)))
         tb.insertWidget(1, ColumnFilterBox(self.ctl, _col(0), tr("判断")))
@@ -337,7 +361,7 @@ class OrderCheck:
                 if codes:
                     df = R.compute_suggestions(db, store, codes, days, cycle, None, use_supplier_cycles=use_cfg,
                                                algo=algo)
-                    result = R.to_rows(df, file_rows)
+                    result = R.to_rows(df, file_rows, days)
                 dlg.post_step(1, "done", "", "")
                 # 其他门店同一批商品的库存和日均：批发商比价时算门店间调货、够卖天数（查不到不影响检查）
                 dlg.post_step(2, "running", "", "")
@@ -397,23 +421,20 @@ class OrderCheck:
     def _vals(self, i):
         """数据行 i 每一列显示的文字（按屏幕上的列顺序）"""
         x = self.rows[i]
-        inv_days = x["inv_days"]
-        if isinstance(inv_days, float) and math.isinf(inv_days):
-            inv_days = "∞"
-        elif isinstance(inv_days, (int, float)):
-            inv_days = f"{inv_days:,.1f}"
         sales = [f"{v:g}" if isinstance(v, (int, float)) else "" for v in x["sales"]]
         pack = x["pack"] or 0
+        daily = x.get("daily") if x.get("daily") is not None else x.get("daily0")
         return _perm([tr(x["verdict"]), x["code"], x["ean"], x["name"],
                       f"{x['store_inv']:g}" if isinstance(x["store_inv"], (int, float)) else "",
-                      *sales, inv_days or "", f"{x['pack']:g}" if x["pack"] else "",
+                      *sales, _days(_cover(x)), f"{x['pack']:g}" if x["pack"] else "",
                       f"{x['file_qty']:g}", f"{x['file_pcs']:g}",
                       f"{x['suggested']:,}" if x["in_db"] else "", f"{x['final']:,}",
                       f"{math.ceil(x['final'] / pack):,}" if pack > 0 and x["final"] > 0 else "",
                       x.get("tier") or "",
                       f"{x['cycle']:g}" if isinstance(x.get("cycle"), (int, float)) else "",
-                      f"{x['daily']:.2f}" if x.get("daily") else "",
-                      f"{x['target']:.0f}" if isinstance(x.get("target"), (int, float)) else ""])
+                      f"{daily:.2f}" if daily else "",
+                      f"{x['target']:.0f}" if isinstance(x.get("target"), (int, float)) else "",
+                      _days(_cover(x, x["final"])) if x["final"] > 0 else ""])
 
     def _text(self, i, c):
         return self._vals(i)[c]
@@ -444,6 +465,10 @@ class OrderCheck:
         t.item(k, 0).setToolTip(tip)
         t.item(k, 0).setData(Qt.UserRole, i)
         t.item(k, _col(3)).setToolTip(f"{x['name']}\nEAN {x['ean'] or '—'}")
+        if isinstance(x.get("store_inv"), (int, float)) and x["store_inv"] < 0:
+            for c_ in (_col(4), _col(9)):
+                t.item(k, c_).setForeground(QColor(T("warn")))
+                t.item(k, c_).setToolTip(tr("账面库存是负数（{0:g}），通常是卖了还没入库。算够卖天数时按 0 算", x["store_inv"]))
         self._style_edit(i, k)
 
     def _style_edit(self, i, k):
@@ -460,6 +485,14 @@ class OrderCheck:
         pack = x["pack"] or 0
         self.table.item(k, BOX_COL).setText(
             f"{math.ceil(x['final'] / pack):,}" if pack > 0 and x["final"] > 0 else "")
+        # 订后够卖：跟着确定件数变；超过凑单天数标黄
+        a = self.table.item(k, AFTER_COL)
+        v = _cover(x, x["final"]) if x["final"] > 0 else None
+        a.setText(_days(v))
+        limit = float((self.settings.get("store_orders") or {}).get("fill", {}).get("max_stock_days") or 60)
+        over = v is not None and v > limit
+        a.setForeground(QColor(T("warn") if over else T("text")))
+        a.setToolTip(tr("订完要很久才卖得完（超过 {0} 天），可能压货", int(limit)) if over else "")
 
     def _show(self, i):
         k = self.ctl.pos.get(i)
@@ -545,15 +578,17 @@ class OrderCheck:
         wb = Workbook()
         ws = wb.active
         ws.title = "清单检查"
-        ws.append(["判断", "商品编号", "条码", "名称", "本店库存", *[f"{x}天销量" for x in d], "库存天数", "箱规",
-                   "清单数量", "清单件数", "建议件数", "确定件数", "系统说明"])
+        ws.append(["判断", "商品编号", "条码", "名称", "本店库存", *[f"{x}天销量" for x in d], "库存够卖（天）", "箱规",
+                   "清单数量", "清单件数", "建议件数", "确定件数", "订后够卖（天）", "系统说明"])
         for c in ws[1]:
             c.font = Font(bold=True)
+        def num(v):
+            return None if v is None else ("∞" if math.isinf(v) else round(v))
+
         for x in self.rows:
-            inv = x["inv_days"]
-            inv = "∞" if isinstance(inv, float) and math.isinf(inv) else (round(inv, 1) if isinstance(inv, float) else inv)
-            ws.append([x["verdict"], x["code"], x["ean"], x["name"], x["store_inv"], *x["sales"], inv, x["pack"] or None,
-                       x["file_qty"], x["file_pcs"], x["suggested"] if x["in_db"] else None, x["final"], x["decision"]])
+            ws.append([x["verdict"], x["code"], x["ean"], x["name"], x["store_inv"], *x["sales"], num(_cover(x)),
+                       x["pack"] or None, x["file_qty"], x["file_pcs"], x["suggested"] if x["in_db"] else None, x["final"],
+                       num(_cover(x, x["final"])) if x["final"] > 0 else None, x["decision"]])
             ws.cell(ws.max_row, 3).number_format = "@"
         ws.freeze_panes = "A2"
         try:

@@ -430,8 +430,13 @@ def _val(row, key, default=None):
     return v
 
 
-def to_rows(result_df, file_rows=None):
-    """把计算结果整理成界面 / 导出 / 主订单用的行；file_rows 是订货清单（用来带上原数量）"""
+def to_rows(result_df, file_rows=None, days_list=None):
+    """
+    把计算结果整理成界面 / 导出 / 主订单用的行；file_rows 是订货清单（用来带上原数量）。
+    inv0 / daily0：算「库存够卖」「订后够卖」用的库存（负数当 0）和日均（新算法的加权日均；
+    原程序算法没有日均，用最近一个周期的销量 ÷ 天数），和门店配货的够卖天数同一个算法。
+    """
+    days_list = list(days_list or DEFAULT_SALES_DAYS)
     by_code = {}
     for x in file_rows or []:
         if x.get("code"):
@@ -470,6 +475,8 @@ def to_rows(result_df, file_rows=None):
             "safety": _val(r, "safety_stock"),
             "daily": _val(r, "daily_rate"),
             "target": _val(r, "target_stock"),
+            "inv0": max(0.0, float(_val(r, "store_inventory", 0) or 0)),
+            "daily0": daily_of(r, days_list),
         })
     out.sort(key=lambda x: (-(x["priority"] or 0), x["code"]))
     return out
