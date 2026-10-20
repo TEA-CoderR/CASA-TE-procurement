@@ -883,6 +883,36 @@ def reason_text(inv, daily, cycle, sugg, target=None, in_db=True):
         return tr("库存够卖 {0:.0f} 天{1}，周期 {2:g} 天约卖 {3:.0f} 件 → 订 {4:g} 件", days, neg, cycle, daily * cycle, sugg)
     return tr("库存够卖 {0:.0f} 天{1} → 订 {2:g} 件", days, neg, sugg)
 
+VERDICT_RANK = {"transfer": 0, "more": 1, "less": 2, "none": 3, "same": 4, "nodb": 5}
+
+
+def review_verdict(before, after, moved=False, in_db=True, pack=None, same_text=None):
+    """
+    审核表格的「判断」：一眼看出这一行怎么处理（订货明细、检查门店订货清单共用）。
+      before 改之前的数量（系统原建议 / 门店清单），after 现在要订的；
+      pack=None 时两个数都是箱数，给了 pack 就是件数（差额正好是整箱写「箱」，否则写「件」）。
+      moved 有门店间调货（调进或调出）。
+    返回 (类别, 文字)：transfer 建议调货 / more 多订 N 箱 / less 少订 N 箱 / none 不订 / same 照建议订 / nodb 数据库没有
+    """
+    from i18n import tr
+    if not in_db:
+        return "nodb", tr("数据库没有")
+    if moved:
+        return "transfer", tr("建议调货")
+    before, after = float(before or 0), float(after or 0)
+    if after <= 0:
+        return "none", tr("不订")
+    d = after - before
+    if not d:
+        return "same", same_text or tr("照建议订")
+    n = abs(d)
+    if pack and pack > 0:
+        q = tr("{0:g} 箱", n / pack) if abs(n / pack - round(n / pack)) < 1e-9 else tr("{0:g} 件", n)
+    else:
+        q = tr("{0:g} 箱", n)
+    return ("more", tr("多订 {0}", q)) if d > 0 else ("less", tr("少订 {0}", q))
+
+
 
 def checked_main_orders(ordine_folder):
     """

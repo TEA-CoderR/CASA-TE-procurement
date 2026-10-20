@@ -218,3 +218,18 @@ def test_reason_text():
     assert "目标库存 40" in R.reason_text(4, 1, 30, 36, target=40)
     assert "没有销量" in R.reason_text(10, 0, 30, 0)
     assert "数据库里没有" in R.reason_text(0, 0, 30, 0, in_db=False)
+
+
+def test_review_verdict():
+    v = R.review_verdict
+    assert v(2, 2) == ("same", "照建议订")
+    assert v(0, 0) == ("none", "不订")
+    assert v(2, 0) == ("none", "不订")
+    assert v(2, 3) == ("more", "多订 1 箱")
+    assert v(3, 1) == ("less", "少订 2 箱")
+    assert v(2, 1, moved=True)[0] == "transfer"
+    assert v(2, 1, in_db=False)[0] == "nodb"
+    # 件数：差额整箱写箱，不是整箱写件
+    assert v(12, 24, pack=12)[1] == "多订 1 箱"
+    assert v(12, 17, pack=12)[1] == "多订 5 件"
+    assert v(12, 12, pack=12, same_text="照清单订") == ("same", "照清单订")

@@ -29,11 +29,15 @@ from reorder_page import short_decision, store_label, algo_widgets
 #   系统建议：建议件数 | 最后订多少：确定件数 变化（比清单多 / 少几件）确定箱数 确定订后够卖 | 调货 | 原因 |
 #   （默认藏起来，「显示哪些列」里可以打开）目标库存 各周期销量 周期 箱规 编号 条码
 # 23 = 变化，24 = 调货，25 = 原因（列可以拖动换位置，会记住）
-_ORDER = [22, 0, 16, 3, 4, 9, 18, 11, 12, 21, 13, 14, 23, 15, 20, 24, 25, 19, 5, 6, 7, 8, 17, 10, 1, 2]
-_LAYOUT_VER = 3           # 改了默认顺序就加 1
-# 默认只显示审核要看的：门店 判断 名称 | 本店库存 库存够卖 | 清单箱数 清单件数 → 确定件数 变化 确定订后够卖 | 调货
-# （等级、日均、建议件数、原因等放在鼠标提示里或「显示哪些列」里打开）
-_DEFAULT_HIDDEN = [19, 5, 6, 7, 8, 17, 10, 1, 2, 16, 18, 21, 13, 15, 25]
+# 2026-10-20 第二版（用户：要简洁、改前改后一眼看出）：
+#   「判断」只写结论：不订 / 照清单订 / 多订 N 箱 / 少订 N 箱 / 建议调货（和门店清单比；为什么建议放在鼠标提示里）
+#   紧接着「清单 → 确定 → 调货」对比改前改后和调货件数：
+#     清单按箱：清单箱数 | 确定箱数 | 确定件数 ✎；清单按件：清单件数 | 确定件数 ✎（箱数列自动藏起来）
+_ORDER = [22, 0, 3, 4, 9, 11, 15, 12, 14, 24, 20, 23, 21, 16, 18, 13, 25, 19, 5, 6, 7, 8, 17, 10, 1, 2]
+_LAYOUT_VER = 4           # 改了默认顺序就加 1
+# 默认只显示审核要看的：门店 判断 名称 | 本店库存 库存够卖 | 清单 → 确定 | 调货 | 确定订后够卖
+# （等级、日均、建议件数、变化、原因等在「显示哪些列」里打开）
+_DEFAULT_HIDDEN = [12, 23, 21, 16, 18, 13, 25, 19, 5, 6, 7, 8, 17, 10, 1, 2]
 CHANGE_COL, TRANSFER_COL, REASON_COL = 23, 24, 25
 
 
@@ -65,7 +69,10 @@ def _cover(x, pieces=0):
 def _days(v):
     import store_orders as SO
     return SO.days_text(v)
-VERDICT_COLOR = {"增加": "accent", "减少": "warn", "不订": "err", "不变": "muted", "数据库没有": "err"}
+VERDICT_TOKEN = {"transfer": "ok", "more": "accent", "less": "warn", "none": "err", "same": "muted", "nodb": "err"}
+# 「看哪些」下拉框
+VIEWS = (("all", "全部商品"), ("changed", "只看有变化的"), ("transfer", "只看调货"), ("more", "只看多订"),
+         ("less", "只看少订"), ("none", "只看不订"))
 
 
 class _Sig(QObject):
@@ -182,9 +189,13 @@ class OrderCheck:
         bl.setContentsMargins(16, 12, 16, 12)
         bl.setSpacing(8)
         tb = QHBoxLayout()
-        self.only = ui.Toggle(tr("只看有变化的"), False)
-        self.only.toggled.connect(self._filter)
-        tb.addWidget(self.only)
+        tb.setSpacing(8)
+        self.view = QComboBox()
+        for key, text in VIEWS:
+            self.view.addItem(tr(text), key)
+        self.view.setToolTip(tr("有变化 = 判断是多订、少订、不订或建议调货"))
+        self.view.currentIndexChanged.connect(self._filter)
+        tb.addWidget(self.view)
         tb.addStretch()
         self.flt = QLineEdit()
         self.flt.setPlaceholderText(tr("筛选编号、条码或名称"))
@@ -242,7 +253,7 @@ class OrderCheck:
         from erp_widgets import ColumnChooser
         self._forced = set()
         self.cols = ColumnChooser(self.table, self.cfg, "check_cols", _ORDER, lambda: save_settings(self.settings),
-                                  _DEFAULT_HIDDEN, ver=2, forced=lambda: self._forced)
+                                  _DEFAULT_HIDDEN, ver=3, forced=lambda: self._forced)
         self._moves_in, self._moves_out = {}, {}
         self._plan_timer = QTimer()
         self._plan_timer.setSingleShot(True)
@@ -250,9 +261,7 @@ class OrderCheck:
         self._plan_timer.timeout.connect(self._replan)
         self.ctl.rendered.connect(lambda n, tot: self.count_lbl.setText(
             tr("显示 {0} / {1} 个 · 点表头排序，右键表头筛选，拖动表头换列的位置", n, tot)))
-        tb.insertWidget(1, ColumnFilterBox(self.ctl, _col(22), tr("门店")))
-        tb.insertWidget(2, ColumnFilterBox(self.ctl, _col(0), tr("判断")))
-        tb.insertSpacing(1, 12)
+        tb.insertWidget(0, ColumnFilterBox(self.ctl, _col(22), tr("门店")))
         tb.insertWidget(tb.count() - 2, self.cols.button())
         bl.addWidget(self.table)
         self.count_lbl = QLabel("")
@@ -541,8 +550,9 @@ class OrderCheck:
         units = set(meta["units"].values())
         pieces = units == {"pcs"}
         self.ctl.set_title(_col(11), tr("清单件数") if pieces else (tr("清单箱数") if units == {"colli"} else tr("清单数量")))
-        # 清单本来就是件数：不显示重复的「清单件数」；只有一家门店：不显示门店列
-        self._forced = ({12} if pieces else set()) | ({22} if len(meta["stores"]) < 2 else set())
+        # 清单本来就是件数：不显示重复的「清单件数」，也不显示「确定箱数」（清单件数 ↔ 确定件数 直接对比）；
+        # 只有一家门店：不显示门店列
+        self._forced = ({12, 15} if pieces else set()) | ({22} if len(meta["stores"]) < 2 else set())
         self.cols.apply()
         self.ctl.filters = {}
         self._replan(render=False)
@@ -560,7 +570,7 @@ class OrderCheck:
         sales = [f"{v:g}" if isinstance(v, (int, float)) else "" for v in x["sales"]]
         pack = x["pack"] or 0
         daily = x.get("daily") if x.get("daily") is not None else x.get("daily0")
-        return _perm([tr(x["verdict"]), x["code"], x["ean"], x["name"],
+        return _perm([self._verdict(x)[1], x["code"], x["ean"], x["name"],
                       f"{x['store_inv']:g}" if isinstance(x["store_inv"], (int, float)) else "",
                       *sales, _days(_cover(x)), f"{x['pack']:g}" if x["pack"] else "",
                       f"{x['file_qty']:g}", f"{x['file_pcs']:g}",
@@ -575,6 +585,13 @@ class OrderCheck:
                       R.STORES.get(x.get("store"), ""), self._change_text(x), self._transfer_text(x),
                       R.reason_text(x.get("inv0"), x.get("daily0"), x.get("cycle"), x.get("suggested"), x.get("target"),
                                     x.get("in_db", True))])
+
+    def _verdict(self, x):
+        """(类别, 文字)：确定件数和门店清单比，不订 / 照清单订 / 多订 / 少订 / 建议调货"""
+        key = (x.get("store"), str(x.get("code")))
+        moved = key in self._moves_in or key in self._moves_out
+        return R.review_verdict(math.ceil(x.get("file_pcs") or 0), x["final"], moved, x.get("in_db", True),
+                                x.get("pack") or None, tr("照清单订"))
 
     def _change_text(self, x):
         """确定件数比门店清单多 / 少几件（一样就空着，表格干净）"""
@@ -625,7 +642,11 @@ class OrderCheck:
     def _hidden(self, i):
         x = self.rows[i]
         text = self.flt.text().strip().lower()
-        return (self.only.isChecked() and x["verdict"] == "不变" and x["final"] == x["suggested"]) or \
+        view = self.view.currentData()
+        kind = self._verdict(x)[0]
+        hide = (view == "changed" and kind not in ("transfer", "more", "less", "none")) or \
+            (view in ("transfer", "more", "less", "none") and kind != view)
+        return hide or \
                (bool(text) and text not in f"{x['code']} {x['ean']} {x['name']}".lower())
 
     def _fill(self):
@@ -643,7 +664,6 @@ class OrderCheck:
                 it.setFlags(it.flags() | Qt.ItemIsEditable)
             else:
                 it.setFlags(it.flags() & ~Qt.ItemIsEditable)
-        t.item(k, 0).setForeground(QColor(T(VERDICT_COLOR.get(x["verdict"], "text"))))
         tip = short_decision(x["decision"]) if x["in_db"] else tr("数据库里找不到这个商品，箱规未知；确定件数默认 = 清单数量，请核对")
         t.item(k, 0).setToolTip(tip)
         t.item(k, 0).setData(Qt.UserRole, i)
@@ -681,6 +701,14 @@ class OrderCheck:
     def _style_edit(self, i, k):
         x = self.rows[i]
         T = self.ui.T
+        # 判断：跟着确定件数变
+        kind, vt = self._verdict(x)
+        vc = self.table.item(k, 0)
+        vc.setText(vt)
+        vc.setForeground(QColor(T(VERDICT_TOKEN.get(kind, "text"))))
+        f = vc.font()
+        f.setBold(kind in ("transfer", "more", "less", "none"))
+        vc.setFont(f)
         c = self.table.item(k, EDIT_COL)
         c.setText(f"{x['final']:,}")
         f = c.font()
@@ -750,13 +778,13 @@ class OrderCheck:
         self._summary()
 
     def _summary(self):
-        cnt = {v: 0 for v in R.VERDICTS}
+        cnt = {v: 0 for v in R.VERDICT_RANK}
         for x in self.rows:
-            cnt[x["verdict"]] = cnt.get(x["verdict"], 0) + 1
-        n_final = sum(1 for x in self.rows if x["final"] > 0)
+            k_ = self._verdict(x)[0]
+            cnt[k_] = cnt.get(k_, 0) + 1
         n_edit = sum(1 for x in self.rows if x["in_db"] and x["final"] != x["suggested"])
-        txt = tr("{0} 个商品：增加 {1}，减少 {2}，不订 {3}，不变 {4}，数据库没有 {5}。确定要订 {6} 个，手动改了 {7} 个。",
-                 len(self.rows), cnt["增加"], cnt["减少"], cnt["不订"], cnt["不变"], cnt["数据库没有"], n_final, n_edit)
+        txt = tr("{0} 个商品：照清单订 {1}，多订 {2}，少订 {3}，不订 {4}，建议调货 {5}，数据库没有 {6}。手动改了 {7} 个。",
+                 len(self.rows), cnt["same"], cnt["more"], cnt["less"], cnt["none"], cnt["transfer"], cnt["nodb"], n_edit)
         # 采购金额估算：数据库进价（PrezzoForn，每件）× 件数；实际金额以「开始处理」后各批发商报价为准
         def price(x):
             try:
@@ -804,7 +832,7 @@ class OrderCheck:
             return None if v is None else ("∞" if math.isinf(v) else round(v))
 
         for x in self.rows:
-            ws.append([R.STORES.get(x.get("store"), ""), x["verdict"], x["code"], x["ean"], x["name"], x["store_inv"],
+            ws.append([R.STORES.get(x.get("store"), ""), self._verdict(x)[1], x["code"], x["ean"], x["name"], x["store_inv"],
                        *x["sales"], num(_cover(x)),
                        x["pack"] or None, x["file_qty"], x["file_pcs"],
                        num(_cover(x, x["file_pcs"])) if (x.get("file_pcs") or 0) > 0 else None,
