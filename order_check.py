@@ -674,4 +674,14 @@ class OrderCheck:
         if skipped:
             msg += tr("；{0} 个没条码的没写进去，详见运行日志", len(skipped))
         self.win.banner_folder.show_msg(msg, "ok" if not skipped else "warn")
-        self.win.show_toast(tr("主订单已生成"))
+        # 主订单生成了，检查窗口就用不着了：直接关掉，回到批发商比价，下一步点「开始处理」
+        self.window.close()
+        if self.win.isMinimized():
+            self.win.showNormal()
+        self.win.raise_()
+        self.win.activateWindow()
+        if hasattr(self.win, "go_page"):
+            self.win.go_page("order")
+        if hasattr(self.win, "btn_run"):
+            self.win.btn_run.setFocus()
+        self.win.show_toast(tr("主订单已生成，点「开始处理」做供应商比价"))

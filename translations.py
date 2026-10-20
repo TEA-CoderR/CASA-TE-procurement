@@ -1806,4 +1806,5 @@ TRANSLATIONS = {
     "打不开报价文件：{0}": ("Can't open the price list: {0}", "Impossibile aprire il listino: {0}"),
     "[修改分配] 加商品凑单：新加 {0} 个商品": ("[Edit allocation] Add items to reach minimum: {0} new items", "[Modifica assegnazione] Aggiungi articoli per il minimo: {0} nuovi articoli"),
     "{0} 缺少必要列": ("{0} is missing required columns", "{0}: mancano colonne necessarie"),
+    "主订单已生成，点「开始处理」做供应商比价": ("Main order created. Click \"Start\" for the supplier comparison", "Ordine principale creato. Clicca \"Avvia\" per il confronto fornitori"),
 }
