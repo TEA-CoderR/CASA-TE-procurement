@@ -46,3 +46,17 @@ def test_conclusion_and_export():
     from openpyxl import load_workbook
     wb = load_workbook(path)
     assert wb.sheetnames == ["汇总", "明细"] and wb["明细"].max_row == 6
+
+
+def test_best_and_apply():
+    best = P.best_quotes(FILES)
+    assert best["1"] == {"price": 0.90, "pack": 6.0, "supplier": "MELONI"}
+    assert best["2"]["supplier"] == "MEGA CASH"
+    rows = [{"ean": "1", "pack": 12, "price": 1.02, "in_db": True, "file_pcs": 24},
+            {"ean": "77", "pack": 4, "price": 2.0, "in_db": True},
+            {"ean": "2", "pack": 0, "price": 0, "in_db": False}]
+    assert P.apply_quotes(rows, best) == 1
+    assert rows[0]["pack"] == 6.0 and rows[0]["db_pack"] == 12 and rows[0]["quote_sup"] == "MELONI"
+    assert rows[0]["file_pcs"] == 24                 # 清单件数不动
+    assert rows[1]["pack"] == 4 and "quote_sup" not in rows[1]
+    assert rows[2]["pack"] == 0                      # 数据库没有的不改

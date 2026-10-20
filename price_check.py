@@ -163,3 +163,36 @@ def export(res, path):
     d.freeze_panes = "A2"
     d.auto_filter.ref = d.dimensions
     wb.save(path)
+
+
+def best_quotes(files):
+    """
+    几份报价表 → 每个条码最便宜那家：{条码: {"price", "pack", "supplier"}}
+    （检查门店订货清单时还没比价，按最便宜那家估：比价默认就挑它）
+    """
+    best = {}
+    for label, items in files.items():
+        for ean, q in items.items():
+            p = q.get("price")
+            if not p or p <= 0:
+                continue
+            if ean not in best or p < best[ean]["price"]:
+                best[ean] = {"price": float(p), "pack": float(q.get("pack") or 1), "supplier": label}
+    return best
+
+
+def apply_quotes(rows, quotes):
+    """
+    检查清单的行改用报价的件价和每箱件数（调货门槛、箱数显示、估算金额用）；报价里没有的保留数据库的。
+    原来数据库的记在 db_pack / db_price，报价是哪家记在 quote_sup。清单件数（file_pcs）已经按数据库箱规折好，不动。
+    返回改了几行
+    """
+    n = 0
+    for x in rows:
+        q = quotes.get(str(x.get("ean") or "").strip()) if x.get("in_db", True) else None
+        if not q:
+            continue
+        x["db_pack"], x["db_price"] = x.get("pack"), x.get("price")
+        x["pack"], x["price"], x["quote_sup"] = q["pack"], q["price"], q["supplier"]
+        n += 1
+    return n

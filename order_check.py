@@ -228,6 +228,8 @@ class OrderCheck:
                                       76, 200, 380))):
             self.table.setColumnWidth(c, wd)
         self.table.horizontalHeaderItem(EDIT_COL).setToolTip(tr("双击修改，0 = 不订"))
+        self.table.horizontalHeaderItem(_col(10)).setToolTip(
+            tr("每箱件数：按 distribuire 里最便宜那家报价的箱规（比价默认挑它）；报价里没有的用数据库箱规。蓝色 = 和数据库不一样"))
         self.table.horizontalHeaderItem(_col(9)).setToolTip(
             tr("库存够卖 = 本店库存 ÷ 日均（账面库存是负数时按 0 算）。门店配货、检查订货清单、批发商比价都是这个算法"))
         self.table.horizontalHeaderItem(AFTER_COL).setToolTip(
@@ -463,6 +465,7 @@ class OrderCheck:
                   "rows": [dict(r) for r in x["info"]["rows"]]} for x in self.lists]
         dbs = self.settings.get("db") or None
         log = self.win.log
+        price_dir = self._price_dir()
         self.running = True
         self.btn_run.setEnabled(False)
         self.msg.setText(tr("正在连接数据库并计算，商品多时要几十秒…"))
@@ -471,7 +474,7 @@ class OrderCheck:
         dlg = TaskDialog(self.win, tr("正在检查订货清单"),
                          tr("{0} · {1} 个商品", names, sum(len(x["rows"]) for x in lists)),
                          [tr("读取清单、对上商品编号"), tr("查询门店销量与库存"), tr("查询五家门店库存（调货用）"),
-                          tr("对比清单数量")], cancellable=False)
+                          tr("读取供应商报价（箱规、件价）"), tr("对比清单数量")], cancellable=False)
         dlg.went_background.connect(lambda: self.win.show_toast(tr("清单在后台检查，完成后会提醒")))
         dlg.show()
 
@@ -524,17 +527,23 @@ class OrderCheck:
                 else:
                     dlg.post_step(2, "done", "", "")
                 db.engine.dispose()
-                dlg.post_step(3, "running", "", "")
-                dlg.post_progress(90)
                 rows = []
                 for x in lists:
                     for r in R.check_rows(x["rows"], x["result"], x["unit"]):
                         r["store"] = x["store"]
                         rows.append(r)
+                # 箱规、件价用 distribuire 里最便宜那家的报价（比价默认挑它）；报价里没有的才用数据库的
+                dlg.post_step(3, "running", "", "")
+                dlg.post_progress(86)
+                n_q, n_files = self._apply_quotes(rows, price_dir, log)
+                dlg.post_step(3, "done", tr("{0} 份报价", n_files) if n_files else tr("没有报价，用数据库"), "")
+                dlg.post_step(4, "running", "", "")
+                dlg.post_progress(95)
                 dlg.post_finished(True, tr("完成：{0} 个商品", len(rows)))
                 self.sig.done.emit((rows, None, dict(stores=[x["store"] for x in lists], days=days, cycle=cycle,
                                                      units={x["store"]: x["unit"] for x in lists},
                                                      files={x["store"]: x["path"] for x in lists}, snap=snap,
+                                                     quoted=n_q, quote_files=n_files,
                                                      store=lists[0]["store"])))
             except Exception as e:
                 import traceback
@@ -739,7 +748,8 @@ class OrderCheck:
             price = price if price == price else 0
         except (TypeError, ValueError):
             price = 0
-        self.d_codes.setText(" · ".join(p for p in (x.get("ean") or "", tr("{0:g} 件/箱", pack) if pack else "",
+        src = tr("（{0} 报价）", x["quote_sup"]) if x.get("quote_sup") else (tr("（数据库）") if pack else "")
+        self.d_codes.setText(" · ".join(p for p in (x.get("ean") or "", tr("{0:g} 件/箱", pack) + src if pack else "",
                                                      f"€{price:.3f}/" + tr("件") if price else "") if p))
         (a1, a2), (b1, b2), (c1, c2), (d1, d2) = self.minis
         inv = x.get("store_inv")
@@ -840,6 +850,15 @@ class OrderCheck:
             for c_ in (_col(4), _col(9)):
                 t.item(k, c_).setForeground(QColor(T("warn")))
                 t.item(k, c_).setToolTip(tr("账面库存是负数（{0:g}），通常是卖了还没入库。算够卖天数时按 0 算", x["store_inv"]))
+        pk = t.item(k, _col(10))
+        if x.get("quote_sup"):
+            same = not x.get("db_pack") or abs(x["pack"] - x["db_pack"]) < 1e-9
+            pk.setToolTip(tr("{0} 的报价：每箱 {1:g} 件", x["quote_sup"], x["pack"]) +
+                          ("" if same else "\n" + tr("数据库箱规是每箱 {0:g} 件", x["db_pack"])))
+            if not same:
+                pk.setForeground(QColor(T("accent")))
+        elif x.get("pack"):
+            pk.setToolTip(tr("报价里没有这个商品，用数据库箱规"))
         ch = t.item(k, _col(CHANGE_COL))
         d = int(x["final"]) - int(math.ceil(x.get("file_pcs") or 0))
         ch.setForeground(QColor(T("accent") if d > 0 else T("warn") if d < 0 else T("faint")))
@@ -954,7 +973,7 @@ class OrderCheck:
         n_edit = sum(1 for x in self.rows if x["in_db"] and x["final"] != x["suggested"])
         txt = tr("{0} 个商品：照清单订 {1}，多订 {2}，少订 {3}，不订 {4}，建议调货 {5}，数据库没有 {6}。手动改了 {7} 个。",
                  len(self.rows), cnt["same"], cnt["more"], cnt["less"], cnt["none"], cnt["transfer"], cnt["nodb"], n_edit)
-        # 采购金额估算：数据库进价（PrezzoForn，每件）× 件数；实际金额以「开始处理」后各批发商报价为准
+        # 采购金额估算：最便宜那家报价的件价（没有报价的用数据库进价 PrezzoForn）× 件数；实际金额以「开始处理」后的比价为准
         def price(x):
             try:
                 v = float(x.get("price") or 0)
@@ -965,7 +984,8 @@ class OrderCheck:
         amt_final = sum(price(x) * x["final"] for x in self.rows)
         no_price = sum(1 for x in self.rows if x["final"] > 0 and not price(x))
         if amt_file or amt_final:
-            txt += "\n" + tr("按数据库进价估算采购金额：清单 €{0:,.2f} → 确定 €{1:,.2f}", amt_file, amt_final)
+            txt += "\n" + tr("估算采购金额（有报价的按最便宜那家，没有的按数据库进价）：清单 €{0:,.2f} → 确定 €{1:,.2f}",
+                             amt_file, amt_final)
             if no_price:
                 txt += tr("（{0} 个商品没有进价，没算进去）", no_price)
         mv = getattr(self, "_moves", None) or []
@@ -1016,6 +1036,39 @@ class OrderCheck:
             self.win.show_toast(tr("已导出"))
         except Exception as e:
             QMessageBox.critical(self.win, tr("导出"), tr("导出失败：{0}", e))
+
+    def _price_dir(self):
+        """共用的供应商报价文件夹：比价根目录（或现在的总文件夹）下面的 distribuire"""
+        from config import DISTRIBUTUIRE_FOLDER
+        root = self.win._price_root() if hasattr(self.win, "_price_root") else self.batch_root()
+        return os.path.join(root, DISTRIBUTUIRE_FOLDER) if root else ""
+
+    def _apply_quotes(self, rows, price_dir, log):
+        """读 price_dir 里的报价，检查清单的行改用最便宜那家的每箱件数和件价：(改了几行, 读了几份报价)"""
+        if not price_dir or not os.path.isdir(price_dir):
+            log(tr("[检查清单] 没找到供应商报价文件夹，箱规和件价用数据库的"))
+            return 0, 0
+        import service as SV
+        import price_check as PC
+        import supplier_names as SN
+        files = {}
+        for f in sorted(os.listdir(price_dir)):
+            low = f.lower()
+            if not low.endswith((".xlsx", ".xls")) or f.startswith(("~", "$")) or ".calc." in low:
+                continue
+            try:
+                name = SN.label_of(f, self.settings)
+                files[name if name not in files else f"{name} ({SN.stem(f)})"] = SV.read_price_file(os.path.join(price_dir, f))
+            except Exception as e:
+                log(tr("⚠ 报价文件读不了，跳过：{0}（{1}）", f, e))
+        if not files:
+            log(tr("[检查清单] 供应商报价文件夹里没有报价，箱规和件价用数据库的"))
+            return 0, 0
+        n = PC.apply_quotes(rows, PC.best_quotes(files))
+        diff = sum(1 for x in rows if x.get("quote_sup") and x.get("db_pack") and abs(x["pack"] - x["db_pack"]) > 1e-9)
+        log(tr("[检查清单] {0} 份报价：{1} 个商品改用最便宜那家的箱规和件价，其中 {2} 个箱规和数据库不一样",
+               len(files), n, diff))
+        return n, len(files)
 
     def batch_root(self):
         """
