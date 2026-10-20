@@ -3973,8 +3973,40 @@ class MainWindow(QMainWindow):
 
         self.zone_elim.set_files(items(ELIMINARE_FOLDER, info["eliminare"] or []),
                                  tr("把已处理 / 已下单的文件拖到这里，可以一次拖好几个"))
-        self.zone_sup.set_files(items(DISTRIBUTUIRE_FOLDER, info["suppliers"] or [], True),
-                                tr("每周拖新的报价文件进来，自动替换同一家的旧报价"))
+        pr = self._price_root(path)
+        if pr != path:                        # 这一批的门店文件夹：显示共用的那套报价
+            shared = scan_folder(pr).get("suppliers") or []
+            out = []
+            for n in shared:
+                t, tip = self._file_tip(os.path.join(pr, DISTRIBUTUIRE_FOLDER), n)
+                out.append((f"{n}  ({t:%d/%m})" if t else n, tip))
+            self.zone_sup.set_files(out, tr("所有门店共用 {0}：每周拖新的报价进来，自动替换同一家的旧报价",
+                                            os.path.join(pr, DISTRIBUTUIRE_FOLDER)))
+        else:
+            self.zone_sup.set_files(items(DISTRIBUTUIRE_FOLDER, info["suppliers"] or [], True),
+                                    tr("每周拖新的报价文件进来，自动替换同一家的旧报价"))
+
+    def _price_root(self, path=None):
+        """供应商报价放在哪：这一批的门店文件夹（根目录\\批发商比价\\日期\\门店）→ 共用的根目录；否则就是这个总文件夹"""
+        import reorder_service as RS
+        path = self.folder_edit.text().strip() if path is None else path
+        return RS.batch_root_of(path) or path
+
+    def sync_prices(self, path):
+        """门店文件夹的报价副本跟共用的报价同步（共用的更新了就复制过来）"""
+        import reorder_service as RS
+        import file_inbox as FI
+        r = RS.batch_root_of(path) if path else None
+        if not r or not os.path.isdir(path):
+            return
+        try:
+            os.makedirs(os.path.join(r, DISTRIBUTUIRE_FOLDER), exist_ok=True)
+            c, a = FI.sync_shared_prices(os.path.join(r, DISTRIBUTUIRE_FOLDER), os.path.join(path, DISTRIBUTUIRE_FOLDER),
+                                         os.path.join(path, "_备份", "报价来源.json"))
+            if c or a:
+                self.log(tr("[文件] {0}：从共用报价复制 {1} 个、挪走 {2} 个", os.path.basename(path), len(c), len(a)))
+        except Exception as e:
+            self.log(tr("⚠ 共用报价没同步过来：{0}", e))
 
     def _zone_name(self, w, name):
         """× 按钮发来的名字带着「(日期)」，还原成文件名"""
@@ -4047,6 +4079,7 @@ class MainWindow(QMainWindow):
         root = self._ensure_root()
         if not root:
             return
+        root = self._price_root(root)             # 门店文件夹：放进共用的报价（所有门店一起更新）
         try:
             plan = FI.plan_suppliers(root, files, [r.get("keyword") for r in settings.get("rules", [])])
         except Exception as e:
@@ -4082,6 +4115,8 @@ class MainWindow(QMainWindow):
         if self._busy_drop():
             return
         root = self.folder_edit.text().strip()
+        if sub == DISTRIBUTUIRE_FOLDER:
+            root = self._price_root(root)
         name = self._zone_name(None, name)
         if not root or not os.path.exists(os.path.join(root, sub, name)):
             self.refresh_folder()
@@ -4098,6 +4133,8 @@ class MainWindow(QMainWindow):
 
     def _open_sub(self, sub):
         root = self.folder_edit.text().strip()
+        if sub == DISTRIBUTUIRE_FOLDER:
+            root = self._price_root(root)
         p = os.path.join(root, sub) if root else ""
         if p and os.path.isdir(p):
             open_path(p)
@@ -4164,6 +4201,8 @@ class MainWindow(QMainWindow):
 
     def refresh_folder(self):
         path = self.folder_edit.text().strip()
+        if not self.running:
+            self.sync_prices(path)
         self.info = info = scan_folder(path)
         self._fill_zones(path, info)
         if hasattr(self, "batch_box"):

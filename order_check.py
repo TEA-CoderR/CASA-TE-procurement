@@ -763,6 +763,7 @@ class OrderCheck:
         tag = datetime.now().strftime("%Y%m%d_%H%M")
         day_dir = R.batch_folder(root_dir)
         os.makedirs(day_dir, exist_ok=True)
+        os.makedirs(os.path.join(root_dir, "distribuire"), exist_ok=True)     # 几家门店共用的供应商报价
         all_tf = None
         if moves:                                  # 整批的调货单放在这一天的文件夹里（每家店的也放一份在它自己的文件夹）
             try:
@@ -774,6 +775,8 @@ class OrderCheck:
             if sid not in folders:                 # 没有要订的：不建文件夹、不生成主订单
                 continue
             root = R.make_store_folder(folders[sid])
+            if hasattr(self.win, "sync_prices"):
+                self.win.sync_prices(root)             # 共用的供应商报价（根目录\\distribuire）复制一份过来
             rows = [dict(x, final=new_final.get((sid, str(x.get("code"))), x["final"]))
                     for x in self.rows if x.get("store") == sid]
             mine = [m for m in moves if sid in (m["from"], m["to"])]
@@ -824,7 +827,7 @@ class OrderCheck:
                             sum(m["colli_before"] - m["colli_after"] for m in moves), day_dir)
         if len(made) > 1:
             msg += "。" + tr("现在显示 {0}，比完价在上面切换到下一家", R.STORES.get(made[0][0]))
-        msg += "。" + tr("每家门店的供应商报价拖进它自己的「供应商报价 · distribuire」")
+        msg += "。" + tr("供应商报价用 {0}（所有门店共用，每家店自动复制一份写自己的订单）", os.path.join(root_dir, "distribuire"))
         if problems:
             msg += "\n⚠ " + "；".join(problems)
         self.win.banner_folder.show_msg(msg, "warn" if problems else "ok")
@@ -916,7 +919,7 @@ class BatchConfirmDialog(QDialog):
             w = QLabel(tr("⚠ 其中 {0} 个商品数据库里没有，件数按清单数量，请确认无误。", unknown))
             w.setStyleSheet(f"color:{T('warn')};")
             lay.addWidget(w)
-        h = QLabel(tr("每家门店一个文件夹，里面自动建 ORDINE（主订单）、eliminare（扣减文件）、distribuire（供应商报价）；整批的调货单放在日期文件夹里。同一天再确认一次会用同一个文件夹，原来的主订单挪进 ORDINE\\_旧订单。"))
+        h = QLabel(tr("每家门店一个文件夹，里面自动建 ORDINE（主订单）、eliminare（扣减文件）、distribuire（从根目录的共用报价复制一份，写这家店的订单）；整批的调货单放在日期文件夹里。同一天再确认一次会用同一个文件夹，原来的主订单挪进 ORDINE\\_旧订单。"))
         h.setObjectName("Faint")
         h.setWordWrap(True)
         lay.addWidget(h)

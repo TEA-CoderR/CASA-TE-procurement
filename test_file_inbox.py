@@ -71,3 +71,29 @@ def test_suppliers_user_choice_and_same_name(tmp_path):
     assert open(os.path.join(dist, "PETRILLO.xlsx")).read() == "new"
     assert sorted(FI.excel_files(dist)) == ["PETRILLO.xlsx", "listino settimana 42.xlsx"]
     assert sorted(os.listdir(os.path.join(dist, "_旧文件"))) == ["MELONI.xlsx", "PETRILLO.xlsx"]
+
+
+def test_sync_shared_prices(tmp_path):
+    """几家门店共用 总文件夹\\distribuire：同步到门店文件夹（新的 / 更新的复制，共用里没有了的挪走，门店副本写过订单不算更新）"""
+    import time
+    shared = str(tmp_path / "root" / "distribuire")
+    store = str(tmp_path / "root" / "批发商比价" / "2026-10-20" / "MARLIA" / "distribuire")
+    rec = str(tmp_path / "root" / "批发商比价" / "2026-10-20" / "MARLIA" / "_备份" / "报价来源.json")
+    _mk(shared, "MEGA.xlsx", "v1")
+    _mk(shared, "MELONI.xlsx", "m1")
+    _mk(shared, "~$MEGA.xlsx", "lock")
+    c, a = FI.sync_shared_prices(shared, store, rec)
+    assert sorted(c) == ["MEGA.xlsx", "MELONI.xlsx"] and not a
+    with open(os.path.join(store, "MEGA.xlsx"), "w") as f:     # 比价时写了订单
+        f.write("v1 + ordine")
+    _mk(store, "缺失报告.xlsx")
+    assert FI.sync_shared_prices(shared, store, rec) == ([], [])
+    assert open(os.path.join(store, "MEGA.xlsx")).read() == "v1 + ordine"
+    time.sleep(0.01)
+    os.remove(os.path.join(shared, "MELONI.xlsx"))
+    _mk(shared, "MEGA.xlsx", "v2 nuovo")                       # 每周更新
+    c, a = FI.sync_shared_prices(shared, store, rec)
+    assert c == ["MEGA.xlsx"] and len(a) == 1
+    assert open(os.path.join(store, "MEGA.xlsx")).read() == "v2 nuovo"
+    assert sorted(FI.excel_files(store)) == ["MEGA.xlsx", "缺失报告.xlsx"]
+    assert FI.sync_shared_prices(str(tmp_path / "nope"), store, rec) == ([], [])

@@ -1879,4 +1879,9 @@ TRANSLATIONS = {
     "✔ 调货单（全部门店）：{0}": ("✔ Transfer list (all stores): {0}", "✔ Lista trasferimenti (tutti i negozi): {0}"),
     "没有要订的，不生成": ("nothing to order, not created", "niente da ordinare, non creata"),
     "调货单没写上：{0}": ("Transfer list not written: {0}", "Lista trasferimenti non scritta: {0}"),
+    "所有门店共用 {0}：每周拖新的报价进来，自动替换同一家的旧报价": ("Shared by all stores {0}: drop the new price lists here each week, they replace the same supplier's old ones", "Condivisi da tutti i negozi {0}: trascina qui i nuovi listini ogni settimana, sostituiscono quelli vecchi dello stesso fornitore"),
+    "[文件] {0}：从共用报价复制 {1} 个、挪走 {2} 个": ("[Files] {0}: copied {1} from the shared price lists, moved away {2}", "[File] {0}: copiati {1} dai listini condivisi, spostati {2}"),
+    "⚠ 共用报价没同步过来：{0}": ("⚠ Shared price lists were not synchronized: {0}", "⚠ Listini condivisi non sincronizzati: {0}"),
+    "供应商报价用 {0}（所有门店共用，每家店自动复制一份写自己的订单）": ("price lists from {0} (shared by all stores; each store gets its own copy for its order)", "listini da {0} (condivisi; ogni negozio ne riceve una copia per il proprio ordine)"),
+    "每家门店一个文件夹，里面自动建 ORDINE（主订单）、eliminare（扣减文件）、distribuire（从根目录的共用报价复制一份，写这家店的订单）；整批的调货单放在日期文件夹里。同一天再确认一次会用同一个文件夹，原来的主订单挪进 ORDINE\\_旧订单。": ("One folder per store, with ORDINE (main order), eliminare (deductions) and distribuire (a copy of the shared price lists in the root folder, for this store's order) created automatically; the batch transfer list goes in the date folder. Confirming again on the same day reuses the folder and moves the old main order to ORDINE\\_旧订单.", "Una cartella per negozio, con ORDINE (ordine principale), eliminare (detrazioni) e distribuire (copia dei listini condivisi della radice, per l'ordine del negozio) create automaticamente; la lista trasferimenti del lotto va nella cartella della data. Confermando di nuovo lo stesso giorno si riusa la cartella e il vecchio ordine va in ORDINE\\_旧订单."),
 }
