@@ -1926,4 +1926,5 @@ TRANSLATIONS = {
     "变化（箱）": ("Change (cases)", "Variazione (colli)"),
     "数据库里没有这个商品": ("Item not in the database", "Articolo non nel database"),
     "调进": ("In", "Entrata"),
+    "手动改过：系统建议 {0:,} 件": ("Edited by hand: system suggested {0:,} pcs", "Modificato a mano: il sistema suggeriva {0:,} pz"),
 }

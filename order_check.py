@@ -31,7 +31,9 @@ from reorder_page import short_decision, store_label, algo_widgets
 # 23 = 变化，24 = 调货，25 = 原因（列可以拖动换位置，会记住）
 _ORDER = [22, 0, 16, 3, 4, 9, 18, 11, 12, 21, 13, 14, 23, 15, 20, 24, 25, 19, 5, 6, 7, 8, 17, 10, 1, 2]
 _LAYOUT_VER = 3           # 改了默认顺序就加 1
-_DEFAULT_HIDDEN = [19, 5, 6, 7, 8, 17, 10, 1, 2]       # 默认不显示的列（逻辑编号）
+# 默认只显示审核要看的：门店 判断 名称 | 本店库存 库存够卖 | 清单箱数 清单件数 → 确定件数 变化 确定订后够卖 | 调货
+# （等级、日均、建议件数、原因等放在鼠标提示里或「显示哪些列」里打开）
+_DEFAULT_HIDDEN = [19, 5, 6, 7, 8, 17, 10, 1, 2, 16, 18, 21, 13, 15, 25]
 CHANGE_COL, TRANSFER_COL, REASON_COL = 23, 24, 25
 
 
@@ -240,7 +242,7 @@ class OrderCheck:
         from erp_widgets import ColumnChooser
         self._forced = set()
         self.cols = ColumnChooser(self.table, self.cfg, "check_cols", _ORDER, lambda: save_settings(self.settings),
-                                  _DEFAULT_HIDDEN, ver=1, forced=lambda: self._forced)
+                                  _DEFAULT_HIDDEN, ver=2, forced=lambda: self._forced)
         self._moves_in, self._moves_out = {}, {}
         self._plan_timer = QTimer()
         self._plan_timer.setSingleShot(True)
@@ -250,7 +252,6 @@ class OrderCheck:
             tr("显示 {0} / {1} 个 · 点表头排序，右键表头筛选，拖动表头换列的位置", n, tot)))
         tb.insertWidget(1, ColumnFilterBox(self.ctl, _col(22), tr("门店")))
         tb.insertWidget(2, ColumnFilterBox(self.ctl, _col(0), tr("判断")))
-        tb.insertWidget(3, ColumnFilterBox(self.ctl, _col(16), tr("等级")))
         tb.insertSpacing(1, 12)
         tb.insertWidget(tb.count() - 2, self.cols.button())
         bl.addWidget(self.table)
@@ -576,11 +577,21 @@ class OrderCheck:
                                     x.get("in_db", True))])
 
     def _change_text(self, x):
-        """确定件数比门店清单多 / 少几件"""
+        """确定件数比门店清单多 / 少几件（一样就空着，表格干净）"""
         d = int(x["final"]) - int(math.ceil(x.get("file_pcs") or 0))
-        return f"{d:+,}" if d else "0"
+        return f"{d:+,}" if d else ""
 
     def _transfer_text(self, x):
+        key = (x.get("store"), str(x.get("code")))
+        m = self._moves_in.get(key)
+        if m:                                          # 短：← 从哪家 几件（详细的在鼠标提示里）
+            return f"← {R.STORES.get(m['from'], m['from'])} {m['pieces']}" + tr("件")
+        out = self._moves_out.get(key)
+        if out:
+            return f"→ {'、'.join(R.STORES.get(t['to'], t['to']) for t in out)} {sum(t['pieces'] for t in out)}" + tr("件")
+        return ""
+
+    def _transfer_tip(self, x):
         key = (x.get("store"), str(x.get("code")))
         m = self._moves_in.get(key)
         if m:
@@ -651,8 +662,12 @@ class OrderCheck:
         tri = t.item(k, _col(TRANSFER_COL))
         if tri.text():
             tri.setForeground(QColor(T("ok") if (x.get("store"), str(x.get("code"))) in self._moves_in else T("accent")))
-        t.item(k, _col(REASON_COL)).setToolTip(t.item(k, _col(REASON_COL)).text())
+            tri.setToolTip(self._transfer_tip(x))
+        reason = t.item(k, _col(REASON_COL)).text()
+        t.item(k, _col(REASON_COL)).setToolTip(reason)
         t.item(k, _col(REASON_COL)).setForeground(QColor(T("muted")))
+        # 为什么这么建议：鼠标停在「判断」上看（表格里不放长句子）
+        t.item(k, 0).setToolTip(reason)
         v = _cover(x, x["file_pcs"]) if (x.get("file_pcs") or 0) > 0 else None
         if v is not None and v > self._limit():
             t.item(k, LIST_AFTER_COL).setForeground(QColor(T("warn")))
@@ -674,6 +689,7 @@ class OrderCheck:
         changed = x["in_db"] and x["final"] != x["suggested"]
         c.setForeground(QColor(T("warn") if changed else T("accent") if x["final"] > 0 else T("faint")))
         c.setBackground(QColor(T("warn_soft")) if changed else QColor(0, 0, 0, 0))
+        c.setToolTip(tr("手动改过：系统建议 {0:,} 件", x["suggested"]) if changed else tr("双击修改，0 = 不订"))
         pack = x["pack"] or 0
         self.table.item(k, BOX_COL).setText(
             f"{math.ceil(x['final'] / pack):,}" if pack > 0 and x["final"] > 0 else "")
@@ -793,7 +809,7 @@ class OrderCheck:
                        x["pack"] or None, x["file_qty"], x["file_pcs"],
                        num(_cover(x, x["file_pcs"])) if (x.get("file_pcs") or 0) > 0 else None,
                        x["suggested"] if x["in_db"] else None, x["final"], self._change_text(x),
-                       num(_cover(x, x["final"])) if x["final"] > 0 else None, self._transfer_text(x),
+                       num(_cover(x, x["final"])) if x["final"] > 0 else None, self._transfer_tip(x),
                        R.reason_text(x.get("inv0"), x.get("daily0"), x.get("cycle"), x.get("suggested"), x.get("target"),
                                      x.get("in_db", True)), x["decision"]])
             ws.cell(ws.max_row, 4).number_format = "@"
