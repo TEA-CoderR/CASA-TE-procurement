@@ -265,7 +265,16 @@ class OrderCheck:
             tr("显示 {0} / {1} 个 · 点表头排序，右键表头筛选，拖动表头换列的位置", n, tot)))
         tb.insertWidget(0, ColumnFilterBox(self.ctl, _col(22), tr("门店")))
         tb.insertWidget(tb.count() - 2, self.cols.button())
-        bl.addWidget(self.table)
+        # 表格 + 右边详情栏（和门店配货的订货明细一样：选中一行看为什么）
+        mid = QHBoxLayout()
+        mid.setContentsMargins(0, 0, 0, 0)
+        mid.setSpacing(0)
+        mid.addWidget(self.table, 1)
+        mid.addWidget(self._build_drawer())
+        bl.addLayout(mid, 1)
+        self._cur_i = None
+        self._by_key = {}
+        self.table.currentCellChanged.connect(lambda r, c, pr, pc: self._select(r))
         self.count_lbl = QLabel("")
         self.count_lbl.setObjectName("Faint")
         crow = QHBoxLayout()
@@ -545,6 +554,8 @@ class OrderCheck:
             self.win.notify(tr("检查清单失败：{0}", err))
             return
         self.rows, self.meta = rows, meta
+        self._by_key = {(x.get("store"), str(x.get("code"))): x for x in rows}
+        self._cur_i = None
         d = meta["days"]
         for i in range(4):
             self.ctl.set_title(_col(5 + i), tr("{0}天", d[i]), tr("最近 {0} 天销量", d[i]))
@@ -585,8 +596,7 @@ class OrderCheck:
                       _days(self._arrive_days(x)),
                       _days(_cover(x, x["file_pcs"])) if (x.get("file_pcs") or 0) > 0 else "",
                       R.STORES.get(x.get("store"), ""), self._change_text(x), self._transfer_text(x),
-                      R.reason_text(x.get("inv0"), x.get("daily0"), x.get("cycle"), x.get("suggested"), x.get("target"),
-                                    x.get("in_db", True))])
+                      "；".join(self._reason_lines(x))])
 
     def _verdict(self, x):
         """(类别, 文字)：确定件数和门店清单比，不订 / 照清单订 / 多订 / 少订 / 建议调货"""
@@ -594,6 +604,29 @@ class OrderCheck:
         moved = key in self._moves_in                  # 只算调进来的
         return R.review_verdict(math.ceil(x.get("file_pcs") or 0), x["final"], moved, x.get("in_db", True),
                                 x.get("pack") or None, tr("照清单订"))
+
+    def _reason_lines(self, x):
+        """为什么：直白的几句话（「原因」列、鼠标提示、右边详情栏共用，和订货明细同一个写法）"""
+        code = str(x.get("code"))
+        tin = None
+        m = self._moves_in.get((x.get("store"), code))
+        if m:
+            d = ((self.meta.get("snap") or {}).get(m["from"]) or {}).get(code) or {}
+            tin = {"name": R.STORES.get(m["from"], m["from"]), "pieces": m["pieces"],
+                   "inv": max(0.0, float(d.get("inv") or 0)), "days": _cover({"in_db": True, "inv0": d.get("inv"),
+                                                                              "daily0": d.get("daily")}) if d else None,
+                   "saved": (m.get("colli_before") or 0) - (m.get("colli_after") or 0)}
+        pack = x.get("pack") or 0
+        sugg = x.get("suggested") or 0
+        lines = R.plain_reason(x.get("inv0"), x.get("daily0"), x.get("cycle"), sugg,
+                               boxes=math.ceil(sugg / pack) if pack > 0 and sugg > 0 else None, target=x.get("target"),
+                               in_db=x.get("in_db", True), transfer=tin)
+        listed = math.ceil(x.get("file_pcs") or 0)
+        if x.get("in_db", True) and listed != sugg:
+            lines.append(tr("门店清单报了 {0:,} 件", listed))
+        if x.get("in_db", True) and x["final"] != sugg:
+            lines.append(tr("现在确定 {0:,} 件（手动改过）", x["final"]))
+        return lines
 
     def _arrive_days(self, x):
         """到货后够卖：(库存 + 确定件数 − 调给别的店的) ÷ 日均（调进来的已经算在确定件数里）；不订也不调出 → None"""
@@ -622,6 +655,137 @@ class OrderCheck:
                       max(0, int(x["final"]) - int(m["pieces"])))
         return ""
 
+    # ---------- 右边详情栏（和订货明细一致）----------
+    def _build_drawer(self):
+        from PySide6.QtWidgets import QScrollArea, QGridLayout
+        sa = QScrollArea()
+        sa.setWidgetResizable(True)
+        sa.setFixedWidth(330)
+        sa.setFrameShape(QFrame.NoFrame)
+        d = QWidget()
+        d.setObjectName("Drawer")
+        v = QVBoxLayout(d)
+        v.setContentsMargins(14, 14, 14, 14)
+        v.setSpacing(10)
+        self.d_over = QLabel("")
+        self.d_over.setObjectName("Faint")
+        self.d_title = QLabel(tr("选中一行查看详情"))
+        self.d_title.setStyleSheet("font-size:16px; font-weight:700;")
+        self.d_title.setWordWrap(True)
+        self.d_codes = QLabel("")
+        self.d_codes.setObjectName("Faint")
+        self.d_codes.setWordWrap(True)
+        for w in (self.d_over, self.d_title, self.d_codes):
+            v.addWidget(w)
+        g = QGridLayout()
+        g.setSpacing(8)
+        self.minis = []
+        for i, lab in enumerate((tr("本店库存"), tr("日均"), tr("门店清单"), tr("确定"))):
+            f = QFrame()
+            f.setObjectName("MiniCard")
+            fv = QVBoxLayout(f)
+            fv.setContentsMargins(10, 8, 10, 8)
+            fv.setSpacing(1)
+            a = QLabel(lab)
+            a.setObjectName("MiniLabel")
+            b = QLabel("—")
+            b.setObjectName("MiniValue")
+            c = QLabel("")
+            c.setObjectName("MiniLabel")
+            for w in (a, b, c):
+                fv.addWidget(w)
+            g.addWidget(f, i // 2, i % 2)
+            self.minis.append((b, c))
+        v.addLayout(g)
+
+        def card(title):
+            f = QFrame()
+            f.setObjectName("MiniCard")
+            fv = QVBoxLayout(f)
+            fv.setContentsMargins(12, 10, 12, 10)
+            t = QLabel(title)
+            t.setStyleSheet("font-weight:600; font-size:12px;")
+            body = QLabel("")
+            body.setWordWrap(True)
+            fv.addWidget(t)
+            fv.addWidget(body)
+            v.addWidget(f)
+            return t, body
+        _t, self.d_sales = card(tr("最近销量"))
+        self.why_t, self.why = card(tr("为什么这么建议"))
+        _t, self.d_others = card(tr("其他门店"))
+        v.addStretch()
+        sa.setWidget(d)
+        return sa
+
+    def _select(self, r):
+        i = self.ctl.row_at(r) if r is not None and r >= 0 else None
+        if i is None:
+            return
+        self._cur_i = i
+        self._show_drawer(i)
+
+    def _show_drawer(self, i):
+        if not (0 <= i < len(self.rows)):
+            return
+        x = self.rows[i]
+        code = str(x.get("code"))
+        sid = x.get("store")
+        self.d_over.setText(f"{R.STORES.get(sid, '')} · {code}")
+        self.d_title.setText(x.get("name") or "")
+        pack = x.get("pack") or 0
+        try:
+            price = float(x.get("price") or 0)
+            price = price if price == price else 0
+        except (TypeError, ValueError):
+            price = 0
+        self.d_codes.setText(" · ".join(p for p in (x.get("ean") or "", tr("{0:g} 件/箱", pack) if pack else "",
+                                                     f"€{price:.3f}/" + tr("件") if price else "") if p))
+        (a1, a2), (b1, b2), (c1, c2), (d1, d2) = self.minis
+        inv = x.get("store_inv")
+        if isinstance(inv, (int, float)):
+            a1.setText(f"{inv:g}")
+            a1.setStyleSheet(f"color:{self.ui.T('err')};" if inv < 0 else "")
+            a2.setText(tr("计算时按 0") if inv < 0 else tr("够卖 {0} 天", _days(_cover(x))))
+        else:
+            a1.setText("—")
+            a2.setText("")
+        daily = x.get("daily0")
+        b1.setText(f"{daily:.2f}" if isinstance(daily, (int, float)) else "—")
+        b2.setText(tr("件 / 天"))
+        listed = math.ceil(x.get("file_pcs") or 0)
+        c1.setText(f"{listed:,}")
+        c2.setText(tr("件") + (f" · {listed / pack:g} " + tr("箱") if pack else ""))
+        d1.setText(f"{x['final']:,}")
+        d2.setText(tr("件") + (f" · {math.ceil(x['final'] / pack):g} " + tr("箱") if pack and x["final"] else ""))
+        days = self.meta.get("days") or []
+        self.d_sales.setText("\n".join(tr("最近 {0} 天卖了 {1:g} 件", dd, v) for dd, v in zip(days, x.get("sales") or [])
+                                       if isinstance(v, (int, float))) or tr("没有销量数据"))
+        sugg = x.get("suggested") or 0
+        if not x.get("in_db", True):
+            self.why_t.setText(tr("为什么这么建议"))
+        elif sugg > 0:
+            self.why_t.setText(tr("为什么建议 {0:,} 件", sugg))
+        else:
+            self.why_t.setText(tr("为什么不用订"))
+        self.why.setText("\n".join("· " + l for l in self._reason_lines(x)))
+        # 其他门店：库存、够卖几天、这次清单里定了多少
+        lines = []
+        snap = self.meta.get("snap") or {}
+        for osid, items in snap.items():
+            if osid == sid:
+                continue
+            d = (items or {}).get(code)
+            if not d:
+                continue
+            ox = self._by_key.get((osid, code))
+            v = _cover({"in_db": True, "inv0": d.get("inv"), "daily0": d.get("daily")})
+            line = tr("{0}　库存 {1:g} · 够卖 {2} 天", R.STORES.get(osid, osid), float(d.get("inv") or 0), _days(v) or "—")
+            if ox:
+                line += tr(" · 定 {0:,} 件", ox["final"])
+            lines.append(line)
+        self.d_others.setText("\n".join(lines) or tr("没有其他门店的数据"))
+
     def _replan(self, render=True):
         """按现在的确定件数重新算门店间调货（改了确定件数以后稍等一下再算，不卡）"""
         self._moves_in, self._moves_out = {}, {}
@@ -637,6 +801,8 @@ class OrderCheck:
         if render:
             self.ctl.render()
             self._summary()
+            if self._cur_i is not None:
+                self._show_drawer(self._cur_i)
 
     def _text(self, i, c):
         return self._vals(i)[c]
@@ -685,11 +851,10 @@ class OrderCheck:
         if tri.text():
             tri.setForeground(QColor(T("ok") if (x.get("store"), str(x.get("code"))) in self._moves_in else T("accent")))
             tri.setToolTip(self._transfer_tip(x))
-        reason = t.item(k, _col(REASON_COL)).text()
+        reason = "\n".join(self._reason_lines(x))
         t.item(k, _col(REASON_COL)).setToolTip(reason)
         t.item(k, _col(REASON_COL)).setForeground(QColor(T("muted")))
-        # 为什么这么建议：鼠标停在「判断」上看（表格里不放长句子）
-        t.item(k, 0).setToolTip(reason)
+        t.item(k, 0).setToolTip(reason)          # 鼠标停在「判断」上也能看为什么
         v = _cover(x, x["file_pcs"]) if (x.get("file_pcs") or 0) > 0 else None
         if v is not None and v > self._limit():
             t.item(k, LIST_AFTER_COL).setForeground(QColor(T("warn")))
@@ -747,6 +912,8 @@ class OrderCheck:
         self._style_edit(i, k)
         self.table.blockSignals(False)
         self._filling = was
+        if i == self._cur_i:
+            self._show_drawer(i)
 
     def _edited(self, item):
         if self._filling or item.column() != EDIT_COL:

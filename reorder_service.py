@@ -883,6 +883,55 @@ def reason_text(inv, daily, cycle, sugg, target=None, in_db=True):
         return tr("库存够卖 {0:.0f} 天{1}，周期 {2:g} 天约卖 {3:.0f} 件 → 订 {4:g} 件", days, neg, cycle, daily * cycle, sugg)
     return tr("库存够卖 {0:.0f} 天{1} → 订 {2:g} 件", days, neg, sugg)
 
+def plain_reason(inv, daily, cycle, sugg, boxes=None, target=None, in_db=True, transfer=None):
+    """
+    给采购员看的「为什么」：用直白的话，一行一句（订货明细、检查门店订货清单的「原因」列和右边详情栏共用）。
+      inv 库存（可以是负数）、daily 每天卖几件、cycle 订货周期（天）、sugg 系统建议件数、boxes 折成几箱（None = 只说件数）
+      transfer：从别的门店调进来 {"name", "inv", "days", "pieces", "saved"(少订几箱，可以没有)}
+    """
+    from i18n import tr
+    if not in_db:
+        return [tr("数据库里找不到这个商品，没有销量和库存可以参考")]
+    try:
+        inv, daily, cycle, sugg = float(inv or 0), float(daily or 0), float(cycle or 0), float(sugg or 0)
+    except (TypeError, ValueError):
+        return []
+    inv0 = max(0.0, inv)
+    lines = []
+    if daily <= 0:
+        lines.append(tr("最近没有卖出去过，还有 {0:g} 件库存", inv0) if inv0 else tr("最近没有卖出去过，也没有库存"))
+    else:
+        days = inv0 / daily
+        if days < 7:
+            lines.append(tr("现在库存 {0:g} 件，每天卖 {1:.1f} 件左右，只够卖 {2:.0f} 天，快断货了", inv0, daily, days))
+        else:
+            lines.append(tr("现在库存 {0:g} 件，每天卖 {1:.1f} 件左右，够卖 {2:.0f} 天", inv0, daily, days))
+    if inv < 0:
+        lines[-1] += tr("（系统里库存是 {0:g}，按 0 算）", inv)
+    q = tr("{0:g} 箱（{1:g} 件）", boxes, sugg) if boxes else tr("{0:g} 件", sugg)
+    if sugg <= 0:
+        lines.append(tr("够卖到下次订货，不用订") if daily > 0 else tr("不用订"))
+    elif daily <= 0:
+        lines.append(tr("虽然没有销量，按原来的规则还是建议订 {0}", q))
+    elif isinstance(target, (int, float)) and target == target and target > 0:
+        lines.append(tr("要备 {0:.0f} 件才够卖到下一批货到，现在不够 → 建议订 {1}", target, q))
+    elif cycle > 0:
+        lines.append(tr("接下来 {0:g} 天大约要卖 {1:.0f} 件，库存不够 → 建议订 {2}", cycle, daily * cycle, q))
+    else:
+        lines.append(tr("库存不够 → 建议订 {0}", q))
+    if transfer:
+        d = transfer.get("days")
+        if d is None or d == float("inf"):
+            have = tr("{0} 有 {1:g} 件卖不动", transfer["name"], transfer.get("inv") or 0)
+        else:
+            have = tr("{0} 库存多：有 {1:g} 件，够卖 {2:.0f} 天", transfer["name"], transfer.get("inv") or 0, d)
+        line = have + tr("，卖不完 → 调 {0:g} 件过来", transfer["pieces"])
+        if transfer.get("saved"):
+            line += tr("，这边少订 {0:g} 箱", transfer["saved"])
+        lines.append(line)
+    return lines
+
+
 VERDICT_RANK = {"transfer": 0, "more": 1, "less": 2, "none": 3, "same": 4, "nodb": 5}
 
 

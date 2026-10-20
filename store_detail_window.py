@@ -76,12 +76,6 @@ VIEWS = (("order", "只看要订的"), ("all", "全部商品"), ("changed", "只
          ("edited", "只看手动改过的"), ("urgent", "只看紧急"))
 
 
-def S_reason(x):
-    """「原因」列：一句话说清楚为什么建议订 / 不订、订多少"""
-    import reorder_service as R
-    return R.reason_text(x.get("inv_raw", x.get("inv")), x.get("daily"), x.get("cycle"), x.get("sugg"), x.get("target"))
-
-
 class _SortItem(QTableWidgetItem):
     def __lt__(self, other):
         a, b = self.data(KEY_ROLE), other.data(KEY_ROLE)
@@ -100,47 +94,16 @@ def _dec_rank(text):
     return 4
 
 
-def explain(x, it, algo):
-    """「为什么建议这么多箱」的说明文字（数据库箱规和 SCHEDA 每箱件数不一样时，后面加一句提醒）"""
-    txt = _explain(x, it, algo)
+def pack_warning(x, it):
+    """数据库箱规和 SCHEDA 每箱件数不一样时的提醒（没问题返回空字符串）"""
     dbp = (x or {}).get("db_pack")
     try:
         dbp = float(dbp or 0)
     except (TypeError, ValueError):
         dbp = 0
     if x and dbp > 1 and abs(dbp - float(it["pack"] or 1)) > 1e-9:
-        txt += "\n" + tr("注意：数据库箱规是每箱 {0:g} 件，SCHEDA 是每箱 {1:g} 件，不一样，请核对。", dbp, it["pack"] or 1)
-    return txt
-
-
-def _explain(x, it, algo):
-    if not x:
-        return tr("数据库里找不到这个商品，没有建议量；需要的话手动填箱数。")
-    pack = it["pack"] or 1
-    if x.get("target") is None:       # 原程序算法：完全按原程序算，这里只说明换成 SCHEDA 箱数
-        inv_raw = x.get("inv_raw", x["inv"])
-        return tr("原程序算法（严格按原程序计算）：日均 {0:.2f} 件 × 订货周期 {1} 天 × 系数，减去本店库存 {2:g} 件{3}，"
-                  "按数据库箱规取整，得到建议 {4} 件；按 SCHEDA 每箱 {5:g} 件换成箱数（向上取整）。",
-                  x.get("daily") or 0, x.get("cycle") or "?", max(0.0, inv_raw),
-                  tr("（负数按 0 算）") if inv_raw < 0 else "", x["sugg"], pack)
-    R = (algo or {}).get("review_days", 7)
-    L = (algo or {}).get("lead_days", 5)
-    inv = max(0.0, x["inv"])
-    mu = (x.get("daily") or 0) * (R + L)
-    need = x["sugg"]
-    boxes = S.colli_for(x, pack, algo)
-    txt = tr("下次到货前（下单间隔 {0} 天 + 到货 {1} 天）预计卖 {2:.1f} 件，加安全库存 {3:.1f} 件，目标库存 {4:.0f} 件；",
-             R, L, mu, x.get("safety") or 0, x["target"])
-    txt += tr("现有库存 {0:g} 件", x.get("inv_raw", x["inv"]))
-    if x.get("inv_raw", 0) < 0:
-        txt += tr("（负数按 0 算）")
-    txt += tr("，缺 {0} 件。", need) if need > 0 else tr("，够用，不用订。")
-    if need > 0:
-        full, rem = divmod(need, pack)
-        txt += tr("每箱 {0:g} 件 → {1:g} 箱（零头 {2:g} 件", pack, boxes, rem)
-        thr = (algo or {}).get("pack_threshold", 0.3)
-        txt += tr("，≥ 一箱的 {0:.0%} 才多订一箱）。", thr)
-    return txt
+        return tr("注意：数据库箱规是每箱 {0:g} 件，SCHEDA 是每箱 {1:g} 件，不一样，请核对。", dbp, it["pack"] or 1)
+    return ""
 
 
 class AddItemsDialog(QDialog):
@@ -853,7 +816,6 @@ class DetailWindow(ToolWindow):
         sc, it, sid = self.detail[di]
         calc = self.page.calc
         x = calc["demand"].get(sid, {}).get(it.get("db_code") or it["code"])
-        algo = calc["demand"].get("_algo") if isinstance(calc["demand"], dict) else None
         self.d_over.setText(f"{S.STORE_SHEETS[sid]} · {sc['name']}")
         self.d_title.setText(it["desc"])
         self.d_codes.setText(f"{it.get('db_code') or it['code']} · {it['ean']} · {it['pack']:g} {tr('件/箱')} · €{it['price']:.3f}/{tr('件')}")
@@ -888,10 +850,13 @@ class DetailWindow(ToolWindow):
             self.spark.set_values([])
             self.spark_note.setText("")
         n = self._cur(sc, sid, it["row"])
-        self.why_t.setText(tr("为什么建议 {0:g} 箱", self._orig(sc, sid, it["row"])))
-        tt = self._transfer_tip(sc, it, sid)
-        self.why.setText(explain(x, it, algo) + (("\n" + tt) if tt else "") +
-                         ("\n" + tr("现在订 {0:g} 箱（手动改过）", n) if (sc["path"], sid, it["row"]) in self.page.edited else ""))
+        orig = self._orig(sc, sid, it["row"])
+        self.why_t.setText(tr("为什么建议 {0:g} 箱", orig) if orig else tr("为什么不用订"))
+        lines = self._reason_lines(sc, it, sid)
+        if (sc["path"], sid, it["row"]) in self.page.edited:
+            lines.append(tr("你手动改成了 {0:g} 箱", n))
+        warn = pack_warning(x, it)
+        self.why.setText("\n".join("· " + l for l in lines) + (("\n" + warn) if warn else ""))
         while self.others.count():
             w = self.others.takeAt(0).widget()
             if w:
@@ -1008,9 +973,9 @@ class DetailWindow(ToolWindow):
             f"{x['daily']:.2f}" if x and x.get("daily") else "",
             f"{x['target']:.0f}" if x and isinstance(x.get("target"), (int, float)) else ""] +
             self._extra_texts(x, sug_c, d) + ["", self._transfer_text(sc, it, sid), "",
-                                              S_reason(x) if x else tr("数据库里没有这个商品")])
+                                              "；".join(self._reason_lines(sc, it, sid))])
         keys = _perm(self._sort_keys(i, x, sug_c) + self._extra_keys(x, sug_c, d) +
-                     [0.0, self._transfer_key(sc, it, sid), 0.0, (S_reason(x) if x else "").lower()])
+                     [0.0, self._transfer_key(sc, it, sid), 0.0, vals[REASON_COL].lower()])
         num_cols, nf = self._num_cols, self._num_font
         ro = Qt.ItemIsSelectable | Qt.ItemIsEnabled
         for c in range(len(vals)):
@@ -1041,9 +1006,9 @@ class DetailWindow(ToolWindow):
             ti.setToolTip(self._transfer_tip(sc, it, sid))
         ri = t.item(i, REASON_COL)
         ri.setForeground(QColor(T("muted")))
-        ri.setToolTip(ri.text())
-        # 为什么这么建议：鼠标停在「判断」上看（表格里不放长句子）
-        t.item(i, DEC_COL).setToolTip(ri.text() + (("\n" + short_decision(x["decision"] or "")) if x else ""))
+        why = "\n".join(self._reason_lines(sc, it, sid))
+        ri.setToolTip(why)
+        t.item(i, DEC_COL).setToolTip(why)          # 鼠标停在「判断」上也能看为什么
 
     # ---------- 调货 / 变化 ----------
     def _orig(self, sc, sid, row):
@@ -1069,6 +1034,24 @@ class DetailWindow(ToolWindow):
         if t:                                     # 短：← 从哪家 几件（详细的在鼠标提示里）
             return f"← {S.STORE_SHEETS.get(t['from'], t['from'])} {t['pieces']}" + tr("件")
         return ""                                 # 调出去的不显示（审核只要知道从哪调进来）
+
+    def _reason_lines(self, sc, it, sid):
+        """为什么：直白的几句话（「原因」列、鼠标提示、右边详情栏共用）"""
+        calc = self.page.calc
+        code = it.get("db_code") or it["code"]
+        x = calc["demand"].get(sid, {}).get(code)
+        if not x:
+            return [tr("数据库里找不到这个商品，没有建议量；需要的话手动填箱数")]
+        tin = None
+        t = self._moves()[0].get((sc["path"], sid, it["row"]))
+        if t:
+            dx = calc["demand"].get(t["from"], {}).get(code)
+            have = max(0.0, dx.get("inv_raw", dx["inv"])) if dx else 0
+            tin = {"name": S.STORE_SHEETS.get(t["from"], t["from"]), "pieces": t["pieces"], "inv": have,
+                   "days": S.cover_days({"inv": have, "daily": dx.get("daily")}) if dx else None,
+                   "saved": t["colli_before"] - t["colli_after"]}
+        return R.plain_reason(x.get("inv_raw", x.get("inv")), x.get("daily"), x.get("cycle"), x.get("sugg"),
+                              boxes=self._orig(sc, sid, it["row"]) or None, target=x.get("target"), transfer=tin)
 
     def _transfer_tip(self, sc, it, sid):
         mi, mo = self._moves()

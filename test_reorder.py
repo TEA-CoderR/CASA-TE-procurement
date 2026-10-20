@@ -233,3 +233,15 @@ def test_review_verdict():
     assert v(12, 24, pack=12)[1] == "多订 1 箱"
     assert v(12, 17, pack=12)[1] == "多订 5 件"
     assert v(12, 12, pack=12, same_text="照清单订") == ("same", "照清单订")
+
+
+def test_plain_reason():
+    p = R.plain_reason
+    assert p(31, 0.6, 60, 0) == ["现在库存 31 件，每天卖 0.6 件左右，够卖 52 天", "够卖到下次订货，不用订"]
+    got = p(2, 0.5, 60, 24, boxes=2)
+    assert "快断货了" in got[0] and got[1] == "接下来 60 天大约要卖 30 件，库存不够 → 建议订 2 箱（24 件）"
+    assert "按 0 算" in p(-3, 1, 30, 30)[0]
+    got = p(2, 0.13, 60, 12, boxes=1, transfer={"name": "S.FILIPPO", "inv": 24, "days": 240, "pieces": 6, "saved": 1})
+    assert got[-1] == "S.FILIPPO 库存多：有 24 件，够卖 240 天，卖不完 → 调 6 件过来，这边少订 1 箱"
+    assert "卖不动" in p(0, 0, 60, 0, transfer={"name": "A", "inv": 5, "days": float("inf"), "pieces": 5})[-1]
+    assert p(1, 1, 30, 0, in_db=False) == ["数据库里找不到这个商品，没有销量和库存可以参考"]
