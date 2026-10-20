@@ -1135,6 +1135,59 @@ def header_text(table, c):
     return (it.text() if it else "").replace(" ⏷", "").replace(" ↑", "").replace(" ↓", "")
 
 
+def remember_columns(table, cfg, key, fields, save, ver=1):
+    """
+    表格的列可以拖动换位置、拖宽度；顺序和宽度记在 cfg[key + "_columns" / "_widths"]，下次打开照旧。
+      fields[c] = 第 c 列（逻辑列）的固定编号（存设置用；以后加列、改默认顺序不会认错列）
+      save()    = 保存设置；ver = 默认顺序版本，改了默认顺序就加 1（用户拖过的顺序作废一次，列宽保留）
+    返回 reset()：恢复默认顺序
+    """
+    hh = table.horizontalHeader()
+    hh.setSectionsMovable(True)
+    hh.setFirstSectionMovable(True)
+    col_of = {f: c for c, f in enumerate(fields)}
+    if cfg.get(key + "_columns_ver") != ver:
+        cfg.pop(key + "_columns", None)
+        cfg[key + "_columns_ver"] = ver
+        save()
+    hh.blockSignals(True)
+    for f, wd in (cfg.get(key + "_widths") or {}).items():
+        c = col_of.get(int(f)) if str(f).lstrip("-").isdigit() else None
+        if c is not None and wd and wd > 20:
+            table.setColumnWidth(c, int(wd))
+    order = [int(f) for f in (cfg.get(key + "_columns") or []) if str(f).lstrip("-").isdigit() and int(f) in col_of]
+    for v, f in enumerate(order):
+        cur = hh.visualIndex(col_of[f])
+        if cur != v and cur >= 0:
+            hh.moveSection(cur, v)
+    hh.blockSignals(False)
+    timer = QTimer(table)
+    timer.setSingleShot(True)
+    timer.setInterval(400)
+
+    def store():
+        n = table.columnCount()
+        cfg[key + "_columns"] = [fields[hh.logicalIndex(v)] for v in range(n)]
+        cfg[key + "_widths"] = {str(fields[c]): table.columnWidth(c) for c in range(n)}
+        save()
+
+    timer.timeout.connect(store)
+    hh.sectionMoved.connect(lambda *_: timer.start())
+    hh.sectionResized.connect(lambda *_: timer.start())
+
+    def reset():
+        hh.blockSignals(True)
+        for c in range(table.columnCount()):
+            cur = hh.visualIndex(c)
+            if cur != c:
+                hh.moveSection(cur, c)
+        hh.blockSignals(False)
+        cfg.pop(key + "_columns", None)
+        save()
+
+    return reset
+
+
 class RowSorter(QObject):
     """
     给「一次填好的表格」加点表头排序（点一下升序，再点一下降序）。
