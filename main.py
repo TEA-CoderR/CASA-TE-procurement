@@ -526,6 +526,7 @@ class Bridge(QObject):
     web_done = Signal(object)
     rewrite_done = Signal(object)
     db_state = Signal(bool)
+    price_check_done = Signal(object)
 
 
 # =====================================================================
@@ -1821,6 +1822,73 @@ class ManualDialog(QDialog):
 MISSING_REASONS = ("没有任何报价", "只有被排除的供应商有报价", "起订量放弃了有报价的供应商")
 
 
+class PriceCheckDialog(QDialog):
+    """报价表和数据库对比的结果：一句话结论 + 每份报价表一行 + 导出明细"""
+    COLS = ("报价表", "条码数", "数据库有", "供应商对得上", "进价接近（±5%）", "进价差得多", "数据库没进价", "箱规一样",
+            "箱规不一样", "数据库登记最多的供应商")
+
+    def __init__(self, parent, res):
+        super().__init__(parent)
+        import price_check as PC
+        self.res = res
+        self.setWindowTitle(tr("报价表和数据库对比"))
+        self.resize(1080, 560)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(22, 18, 22, 16)
+        lay.setSpacing(10)
+        t = QLabel(tr("报价表和数据库对比"))
+        t.setObjectName("PageTitle")
+        t.setStyleSheet("font-size:18px;")
+        lay.addWidget(t)
+        b = Banner()
+        b.setText("<br>".join("· " + x for x in PC.conclusion(res)))
+        lay.addWidget(b)
+        tb = make_table([tr(c) for c in self.COLS], stretch_col=9, numeric_cols=tuple(range(1, 9)))
+        tb.horizontalHeaderItem(3).setToolTip(tr("数据库里这个商品登记的供应商名称，和这份报价表的供应商名称对得上（按名称里的词粗略对）"))
+        tb.horizontalHeaderItem(4).setToolTip(tr("数据库进价（每件）和报价表件价差 5% 以内"))
+        tb.setRowCount(len(res["files"]))
+        for r, f in enumerate(res["files"]):
+            pct = (lambda n: f"{n:,}（{n / f['in_db']:.0%}）" if f["in_db"] else f"{n:,}")
+            table_set_row(tb, r, [f["name"], f"{f['items']:,}",
+                                  f"{f['in_db']:,}（{f['in_db'] / f['items']:.0%}）" if f["items"] else "0",
+                                  pct(f["same_sup"]), pct(f["price_close"]), pct(f["price_far"]), pct(f["no_db_price"]),
+                                  f"{f['pack_same']:,}", f"{f['pack_diff']:,}",
+                                  "、".join(f"{n} {c}" for n, c in f["top_suppliers"])])
+        lay.addWidget(tb, 1)
+        if res.get("bad"):
+            w = QLabel(tr("这些文件读不了，没算进去：") + "\n" + "\n".join(res["bad"]))
+            w.setObjectName("Faint")
+            w.setWordWrap(True)
+            lay.addWidget(w)
+        note = QLabel(tr("只读检查，不改数据库也不改报价表。百分比按「数据库有」的商品算。导出的明细里每个条码一行，可以在 Excel 里筛选。"))
+        note.setObjectName("Faint")
+        note.setWordWrap(True)
+        lay.addWidget(note)
+        bb = QHBoxLayout()
+        bb.addStretch()
+        exp = QPushButton(tr("导出明细 Excel"))
+        exp.clicked.connect(self.export)
+        bb.addWidget(exp)
+        ok = QPushButton(tr("关闭"))
+        ok.setObjectName("Primary")
+        ok.clicked.connect(self.accept)
+        bb.addWidget(ok)
+        lay.addLayout(bb)
+
+    def export(self):
+        import price_check as PC
+        path, _ = QFileDialog.getSaveFileName(self, tr("导出 Excel"), os.path.join(
+            os.path.dirname(self.res.get("folder") or ""), f"报价和数据库对比_{datetime.now():%Y%m%d_%H%M}.xlsx"),
+            tr("Excel 文件 (*.xlsx)"))
+        if not path:
+            return
+        try:
+            PC.export(self.res, path)
+            open_path(path)
+        except Exception as e:
+            QMessageBox.critical(self, tr("导出"), tr("导出失败：{0}", e))
+
+
 class MissingDialog(QDialog):
     """没有分到供应商（买不到）的商品：按列排序、右键表头筛选、导出 Excel"""
 
@@ -2677,6 +2745,7 @@ class MainWindow(QMainWindow):
         self.bridge.decide.connect(self._on_decide)
         self.bridge.choose.connect(self._on_choose)
         self.bridge.rewrite_done.connect(self._on_rewrite_done)
+        self.bridge.price_check_done.connect(lambda res: PriceCheckDialog(self, res).exec())
         self.bridge.db_state.connect(self._on_db_state)
 
         self.log_entries = []      # [(level, text)]
@@ -3255,6 +3324,14 @@ class MainWindow(QMainWindow):
         self.zone_elim.remove_requested.connect(lambda n: self._remove_file(ELIMINARE_FOLDER, n))
         self.zone_sup.remove_requested.connect(lambda n: self._remove_file(DISTRIBUTUIRE_FOLDER, n))
         p1.lay.addLayout(zones)
+        zr = QHBoxLayout()
+        zr.addStretch()
+        b_chk = QPushButton(tr("报价表和数据库对比…"))
+        b_chk.setObjectName("Link")
+        b_chk.setToolTip(tr("只读检查：报价表里的商品数据库有没有、登记的供应商对不对、进价和箱规一样不一样"))
+        b_chk.clicked.connect(self.check_prices_vs_db)
+        zr.addWidget(b_chk)
+        p1.lay.addLayout(zr)
         # 这一批（检查清单时几家门店一起生成的主订单）：一家一家切换过去比价
         self.batch_box = QWidget()
         self.batch_lay = QHBoxLayout(self.batch_box)
@@ -4276,6 +4353,59 @@ class MainWindow(QMainWindow):
             return SV.transfer_status(snap, settings)[1]
         except Exception:
             return ""
+
+    def check_prices_vs_db(self):
+        """报价表和数据库对比（只读）：distribuire 里的每份报价表 ↔ 数据库商品表"""
+        root = self._price_root()
+        d = os.path.join(root, DISTRIBUTUIRE_FOLDER) if root else ""
+        files = sorted(f for f in os.listdir(d) if f.lower().endswith((".xlsx", ".xls")) and not f.startswith(("~", "$"))
+                       and ".calc." not in f.lower()) if d and os.path.isdir(d) else []
+        if not files:
+            QMessageBox.information(self, tr("报价表和数据库对比"), tr("distribuire 里还没有供应商文件。先选总文件夹或拖入供应商报价。"))
+            return
+        from erp_widgets import TaskDialog
+        dlg = TaskDialog(self, tr("报价表和数据库对比"), tr("{0} 份报价表", len(files)),
+                         [tr("读取报价表"), tr("查询数据库"), tr("对比")], cancellable=False)
+        dlg.show()
+        log = self.log
+
+        def work():
+            try:
+                import service as SV
+                import price_check as PC
+                import reorder_service as RS
+                import supplier_names as SN
+                dlg.post_step(0, "running", "", "")
+                data, bad = {}, []
+                for k, f in enumerate(files):
+                    try:
+                        name = SN.label_of(f, settings)
+                        data[name if name not in data else f"{name} ({SN.stem(f)})"] = SV.read_price_file(os.path.join(d, f))
+                    except Exception as e:
+                        bad.append(f"{f}：{e}")
+                    dlg.post_progress(5 + 45 * (k + 1) / len(files))
+                dlg.post_step(0, "done", str(len(data)), "")
+                dlg.post_step(1, "running", "", "")
+                db = RS.make_db(settings.get("db") or None)
+                items = PC.db_items_for_eans(db, {e for v in data.values() for e in v})
+                db.engine.dispose()
+                dlg.post_step(1, "done", str(len(items)), "")
+                dlg.post_progress(90)
+                dlg.post_step(2, "running", "", "")
+                res = PC.compare(data, items)
+                res["bad"], res["folder"] = bad, d
+                dlg.post_step(2, "done", "", "")
+                dlg.post_progress(100)
+                dlg.post_finished(True, tr("完成"))
+                log(tr("[报价对比] {0} 份报价表，{1} 个条码", len(data), res["total"]["eans"]))
+                self.bridge.price_check_done.emit(res)
+            except Exception as e:
+                import traceback
+                log(tr("❌ 报价表和数据库对比失败：{0}", e))
+                log(traceback.format_exc())
+                dlg.post_finished(False, tr("{0}\n\n数据库连不上的话，到「系统设置」检查地址和密码。", e))
+
+        threading.Thread(target=work, daemon=True).start()
 
     def edit_supplier_names(self):
         heads = (self.info or {}).get("suppliers") or []
