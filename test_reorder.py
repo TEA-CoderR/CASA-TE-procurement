@@ -214,7 +214,7 @@ def test_reason_text():
     assert "不用订" in R.reason_text(60, 1, 30, 0)
     assert "够卖 60 天" in R.reason_text(60, 1, 30, 0)
     t = R.reason_text(-5, 1, 30, 36)
-    assert "按 0 算" in t and "订 36 件" in t and "约卖 30 件" in t
+    assert "按 0 算" not in t and "订 36 件" in t and "约卖 30 件" in t      # 负库存一律当 0，不另外说明
     assert "目标库存 40" in R.reason_text(4, 1, 30, 36, target=40)
     assert "没有销量" in R.reason_text(10, 0, 30, 0)
     assert "数据库里没有" in R.reason_text(0, 0, 30, 0, in_db=False)
@@ -240,7 +240,7 @@ def test_plain_reason():
     assert p(31, 0.6, 60, 0) == ["现在库存 31 件，每天卖 0.6 件左右，够卖 52 天", "够卖到下次订货，不用订"]
     got = p(2, 0.5, 60, 24, boxes=2)
     assert "快断货了" in got[0] and got[1] == "接下来 60 天大约要卖 30 件，库存不够 → 建议订 2 箱（24 件）"
-    assert "按 0 算" in p(-3, 1, 30, 30)[0]
+    assert "库存 0 件" in p(-3, 1, 30, 30)[0] and "按 0 算" not in p(-3, 1, 30, 30)[0]
     got = p(2, 0.13, 60, 12, boxes=1, transfer={"name": "S.FILIPPO", "inv": 24, "days": 240, "pieces": 6, "saved": 1})
     assert got[-1] == "S.FILIPPO 库存多：有 24 件，够卖 240 天，卖不完 → 调 6 件过来，这边少订 1 箱"
     assert "卖不动" in p(0, 0, 60, 0, transfer={"name": "A", "inv": 5, "days": float("inf"), "pieces": 5})[-1]
@@ -262,7 +262,7 @@ def test_codes_from_eans_raises_when_db_fails():
 
 def test_review_marks_and_pack_text():
     m = R.review_marks(True, True, 950, -5)
-    assert [k for k, _, _ in m] == ["slow", "neg"] and "950" in m[0][2]
+    assert [k for k, _, _ in m] == ["slow"] and "950" in m[0][2]          # 负库存不再提醒「库存不准」
     assert R.review_marks(False, True, 950, 3) == []          # 原程序算法不标慢销
     assert R.review_marks(True, False, 950, 3) == []          # 没订不标
     assert R.review_marks(True, True, 120, 0) == []

@@ -830,10 +830,8 @@ class DetailWindow(ToolWindow):
         self.d_codes.setText(f"{it.get('db_code') or it['code']} · {it['ean']}{fc}\n{it['pack']:g} {tr('件/箱')} · €{it['price']:.3f}/{tr('件')}")
         (a1, a2), (b1, b2), (c1, c2), (d1, d2) = self.minis
         if x:
-            inv_raw = x.get("inv_raw", x["inv"])
-            a1.setText(f"{inv_raw:g}")
-            a1.setStyleSheet(f"color:{T('err')};" if inv_raw < 0 else "")
-            a2.setText(tr("计算时按 0") if inv_raw < 0 else tr("件"))      # 新算法、原程序算法都按 0 算
+            a1.setText(f"{max(0.0, x.get('inv_raw', x['inv'])):g}")      # 负库存一律当 0 显示
+            a2.setText(tr("件"))
             b1.setText(f"{(x.get('daily') or 0):.2f}")
             b2.setText(tr("季节系数 {0:.2f}", x.get("season") or 1) if x.get("season") else tr("件 / 天"))
             c1.setText(f"{x['target']:.0f}" if isinstance(x.get("target"), (int, float)) else "—")
@@ -878,7 +876,7 @@ class DetailWindow(ToolWindow):
             on = self._cur(sc, osid, it["row"])
             if ox:
                 dv = S.cover_days(ox)
-                body = tr("库存 {0:g} · 够卖 {1} 天 · 订 {2:g} 箱", ox.get("inv_raw", ox["inv"]), S.days_text(dv) or "—", on)
+                body = tr("库存 {0:g} · 够卖 {1} 天 · 订 {2:g} 箱", max(0.0, ox.get("inv_raw", ox["inv"])), S.days_text(dv) or "—", on)
             else:
                 body = tr("数据库没有")
             l = QLabel(f"{S.STORE_SHEETS[osid]}    " + body)
@@ -975,7 +973,7 @@ class DetailWindow(ToolWindow):
         vals = _perm([
             sc["name"], S.STORE_SHEETS[sid], short_decision(x["decision"]) if x else tr("数据库没有"),
             it.get("db_code") or it["code"], it["ean"], it["desc"],
-            f"{x.get('inv_raw', x['inv']):g}" if x else "", *([f"{v:g}" for v in x["sales"]] if x else [""] * 4),
+            f"{max(0.0, x.get('inv_raw', x['inv'])):g}" if x else "", *([f"{v:g}" for v in x["sales"]] if x else [""] * 4),
             inv_days or "", f"{it['pack']:g}", f"{it['price']:.3f}".rstrip("0").rstrip("."),
             f"{x['sugg']:,}" if x else "", f"{sug_c:g}" if sug_c else "", "", "",
             (x["tier"] or "") if x else "",
@@ -1001,8 +999,6 @@ class DetailWindow(ToolWindow):
             else:
                 item.setFlags(ro)
             t.setItem(i, c, item)
-        if x and x.get("inv_raw", x["inv"]) < 0:
-            t.item(i, _col(6)).setForeground(QColor(T("err")))
         tier = (x["tier"] or "") if x else ""
         if tier:
             tc = t.item(i, _col(18))
@@ -1077,7 +1073,7 @@ class DetailWindow(ToolWindow):
                 notes.append(tr("不参与调货"))
             if src.get(sc["path"], {}).get(s_, {}).get(it["row"], 0) > 0:
                 notes.append(tr("自己也要订"))
-            stores.append({"sid": s_, "name": S.STORE_SHEETS.get(s_, str(s_)), "inv": x.get("inv_raw", x.get("inv")),
+            stores.append({"sid": s_, "name": S.STORE_SHEETS.get(s_, str(s_)), "inv": max(0.0, float(x.get("inv") or 0)),
                            "daily": x.get("daily"), "surplus": TR.surplus(x, cfg.get("keep_cycles")),
                            "note": "、".join(notes)})
         if not stores:
@@ -1258,7 +1254,7 @@ class DetailWindow(ToolWindow):
         num = lambda v: float(v) if isinstance(v, (int, float)) else None
         return [k0, (sid,) + k0, (_dec_rank(x["decision"]) if x else 9, -(x["sugg"] if x else 0)) + k0,
                 it.get("db_code") or it["code"], it["ean"], it["desc"].lower(),
-                num(x.get("inv_raw", x["inv"])) if x else None, *([num(v) for v in x["sales"]] if x else [None] * 4),
+                max(0.0, num(x.get("inv_raw", x["inv"])) or 0) if x else None, *([num(v) for v in x["sales"]] if x else [None] * 4),
                 num(inv_days), float(it["pack"]), float(it["price"]),
                 float(x["sugg"]) if x else None, float(sug_c), 0.0, 0.0,
                 (_TIER_RANK.get(x["tier"], 9),) + k0 if x else (9,) + k0,

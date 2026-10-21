@@ -921,7 +921,7 @@ def reason_text(inv, daily, cycle, sugg, target=None, in_db=True):
     except (TypeError, ValueError):
         return ""
     inv0 = max(0.0, inv)
-    neg = tr("（账面库存 {0:g}，按 0 算）", inv) if inv < 0 else ""
+    neg = ""                                     # 负库存一律当 0，不另外说明
     if daily <= 0:
         if sugg > 0:
             return tr("没有销量{0}，原程序仍建议订 {1:g} 件", neg, sugg)
@@ -960,8 +960,6 @@ def plain_reason(inv, daily, cycle, sugg, boxes=None, target=None, in_db=True, t
             lines.append(tr("现在库存 {0:g} 件，每天卖 {1:.1f} 件左右，只够卖 {2:.0f} 天，快断货了", inv0, daily, days))
         else:
             lines.append(tr("现在库存 {0:g} 件，每天卖 {1:.1f} 件左右，够卖 {2:.0f} 天", inv0, daily, days))
-    if inv < 0:
-        lines[-1] += tr("（系统里库存是 {0:g}，按 0 算）", inv)
     if boxes and pack and pack > 1:
         q = tr("{0:g} 箱（要 {1:g} 件，一箱 {2:g} 件）", boxes, sugg, pack)
     elif boxes:
@@ -1004,12 +1002,7 @@ def review_marks(new_algo, ordered, after_days, inv_raw, slow_days=SLOW_DAYS):
     out = []
     if new_algo and ordered and after_days is not None and after_days != float("inf") and after_days > slow_days:
         out.append(("slow", tr("慢销"), tr("到货后要卖 {0:.0f} 天才卖完，卖得很慢：要不要订你决定（订货数量改成 0 就不订）", after_days)))
-    try:
-        neg = inv_raw is not None and float(inv_raw) < 0
-    except (TypeError, ValueError):
-        neg = False
-    if neg:
-        out.append(("neg", tr("库存不准"), tr("系统里库存是 {0:g}（负数），多半是货到了没入库；计算时按 0 算，订之前先核对", float(inv_raw))))
+    # 库存是负数：先一律当 0（不提醒；库存准不准以后再处理），inv_raw 参数留着不用
     return out
 
 

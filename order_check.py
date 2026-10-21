@@ -649,7 +649,7 @@ class OrderCheck:
         pack = x["pack"] or 0
         daily = x.get("daily") if x.get("daily") is not None else x.get("daily0")
         return _perm([" · ".join([self._verdict(x)[1]] + [m[1] for m in self._marks(x)]), x["code"], x["ean"], x["name"],
-                      f"{x['store_inv']:g}" if isinstance(x["store_inv"], (int, float)) else "",
+                      f"{max(0.0, x['store_inv']):g}" if isinstance(x["store_inv"], (int, float)) else "",
                       *sales, _days(_cover(x)), f"{x['pack']:g}" if x["pack"] else "",
                       f"{x['file_qty']:g}", f"{x['file_pcs']:g}",
                       f"{x['suggested']:,}" if x["in_db"] else "", f"{x['final']:,}",
@@ -923,10 +923,9 @@ class OrderCheck:
         (a1, a2), (b1, b2), (c1, c2), (d1, d2) = self.minis
         if x.get("in_db", True):
             inv = x.get("store_inv")
-            inv = float(inv) if isinstance(inv, (int, float)) else 0.0
+            inv = max(0.0, float(inv)) if isinstance(inv, (int, float)) else 0.0     # 负库存一律当 0
             a1.setText(f"{inv:g}")
-            a1.setStyleSheet(f"color:{T('err')};" if inv < 0 else "")
-            a2.setText(tr("计算时按 0") if inv < 0 else tr("件"))
+            a2.setText(tr("件"))
             daily = x.get("daily") if x.get("daily") is not None else x.get("daily0")
             b1.setText(f"{(daily or 0):.2f}")
             b2.setText(tr("季节系数 {0:.2f}", x.get("season") or 1) if x.get("season") else tr("件 / 天"))
@@ -976,7 +975,7 @@ class OrderCheck:
             on = math.ceil(ox["final"] / pack) if ox and pack and ox["final"] > 0 else 0
             v = _cover({"in_db": True, "inv0": d.get("inv"), "daily0": d.get("daily")})
             l = QLabel(f"{R.STORES.get(osid, osid)}    " +
-                       tr("库存 {0:g} · 够卖 {1} 天 · 订 {2:g} 箱", float(d.get("inv") or 0), _days(v) or "—", on))
+                       tr("库存 {0:g} · 够卖 {1} 天 · 订 {2:g} 箱", max(0.0, float(d.get("inv") or 0)), _days(v) or "—", on))
             l.setObjectName("Faint" if not on else "")
             self.others.addWidget(l)
         if not self.others.count():
@@ -1140,10 +1139,6 @@ class OrderCheck:
         t.item(k, 0).setToolTip(tip)
         t.item(k, 0).setData(Qt.UserRole, i)
         t.item(k, _col(3)).setToolTip(f"{x['name']}\nEAN {x['ean'] or '—'}")
-        if isinstance(x.get("store_inv"), (int, float)) and x["store_inv"] < 0:
-            for c_ in (_col(4), _col(9)):
-                t.item(k, c_).setForeground(QColor(T("warn")))
-                t.item(k, c_).setToolTip(tr("账面库存是负数（{0:g}），通常是卖了还没入库。算够卖天数时按 0 算", x["store_inv"]))
         pk = t.item(k, _col(10))
         if x.get("quote_sup"):
             same = not x.get("db_pack") or abs(x["pack"] - x["db_pack"]) < 1e-9
@@ -1344,7 +1339,7 @@ class OrderCheck:
             return None if v is None else ("∞" if math.isinf(v) else round(v))
 
         for x in self.rows:
-            ws.append([R.STORES.get(x.get("store"), ""), self._verdict(x)[1], x["code"], x["ean"], x["name"], x["store_inv"],
+            ws.append([R.STORES.get(x.get("store"), ""), self._verdict(x)[1], x["code"], x["ean"], x["name"], max(0.0, x["store_inv"]) if isinstance(x["store_inv"], (int, float)) else x["store_inv"],
                        *x["sales"], num(_cover(x)),
                        x["pack"] or None, x["file_qty"], x["file_pcs"],
                        num(_cover(x, x["file_pcs"])) if (x.get("file_pcs") or 0) > 0 else None,
