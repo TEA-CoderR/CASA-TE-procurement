@@ -41,11 +41,13 @@ from reorder_page import short_decision, store_label, algo_widgets
 # 2026-10-21 第五版：按箱审核（用户：件数看着乱，少订几件不改变订的箱数没意义）：清单箱数 → 判断 → 确定箱数 ✎ → 调货；
 #   件数列（清单件数、建议件数、确定件数）默认收起来；数据库没有 / 没有箱规的商品放在单独的标签页
 # 2026-10-21 加了 28 月均（最长周期销量 ÷ 月数，和订货明细一样），放在日均后面
-_ORDER = [22, 2, 26, 3, 27, 16, 17, 4, 18, 28, 9, 10, 11, 0, 15, 24, 20, 25, 12, 14, 13, 19, 23, 21, 5, 6, 7, 8, 1]
+# 2026-10-21 第六版：用户自己排好的顺序做默认：条码 供应商 Codice 名称 等级 周期 本店库存 日均 月均 够卖 30/60/90/180 天
+#   每箱件数 清单箱数 判断 确定箱数 ✎ 确定件数 调货 到货后够卖（其余收起来）
+_ORDER = [22, 2, 27, 26, 3, 16, 17, 4, 18, 28, 9, 5, 6, 7, 8, 10, 11, 0, 15, 14, 24, 20, 25, 12, 13, 19, 23, 21, 1]
 # 2026-10-21 第四版：窗口和订货明细一个样子（门店按钮、一行工具条、状态栏），名称显示、供应商和原因收起来（详情栏里有）：
 #   门店 条码 Codice 名称 等级 周期 本店库存 日均 库存够卖 每箱件数 | 清单 判断 确定箱数 确定件数 ✎ 调货 ✎ | 到货后够卖
 _LAYOUT_VER = 8           # 改了默认顺序就加 1
-_DEFAULT_HIDDEN = [12, 13, 14, 19, 23, 21, 5, 6, 7, 8, 1, 27, 25]
+_DEFAULT_HIDDEN = [1, 12, 13, 19, 21, 23, 25]
 _HIDDEN_VER = 6           # 改了默认藏哪些列就加 1（settings.COMPANY_DEFAULTS 里的 check_cols_hidden 一起改）
 CHANGE_COL, TRANSFER_COL, REASON_COL = 23, 24, 25
 
@@ -740,13 +742,14 @@ class OrderCheck:
         daily = x.get("daily") if x.get("daily") is not None else x.get("daily0")
         return _perm([" · ".join([self._verdict(x)[1]] + [m[1] for m in self._marks(x)]), x["code"], x["ean"], x["name"],
                       f"{x['store_inv']:g}" if isinstance(x["store_inv"], (int, float)) else "",
-                      *sales, _days(_cover(x)), f"{x['pack']:g}" if x["pack"] else "",
+                      *sales, (_days(_cover(x)) or "0") if x.get("in_db", True) else "",    # 没销量也没库存 → 0
+                      f"{x['pack']:g}" if x["pack"] else "",
                       f"{x['lbox']:,}", f"{x['file_pcs']:g}",
                       f"{x['suggested']:,}" if x["in_db"] else "", f"{x['final']:,}" if pack > 0 else "",
                       f"{x['fbox']:,}",
                       x.get("tier") or "",
                       f"{x['cycle']:g}" if isinstance(x.get("cycle"), (int, float)) else "",
-                      f"{daily:.2f}" if daily else "",
+                      (f"{daily:.2f}" if daily else "0") if x.get("in_db", True) else "",
                       f"{x['target']:.0f}" if isinstance(x.get("target"), (int, float)) else "",
                       _days(self._arrive_days(x)),
                       _days(_cover(x, x["file_pcs"])) if (x.get("file_pcs") or 0) > 0 else "",
