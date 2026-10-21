@@ -698,8 +698,9 @@ class OrderCheck:
         ov = self.transfer_ov.get(key)
         if ov is not None and not TR.norm_override(ov)["auto"]:     # 人工改过：不调 / 调出门店不够
             p = TR.norm_override(ov)["pieces"]
-            return tr("不调") if not p else tr("调不了 {0} 件", p)
-        return ""                                      # 调出去的不显示（审核只要知道从哪调进来）
+            return tr("不调") + "  ✎" if not p else tr("调不了 {0} 件", p)
+        # 要订、没调货的写「不调」（不订的行空着；调出去的不显示，审核只要知道从哪调进来）
+        return tr("不调") if x.get("in_db", True) and int(x.get("final") or 0) > 0 else ""
 
     def freeze_transfers(self):
         """第一次人工改（调货或确定件数）：把现在系统建议的调货冻结下来，以后改一行别的行不跟着变"""
@@ -784,6 +785,7 @@ class OrderCheck:
         sa = QScrollArea()
         sa.setWidgetResizable(True)
         sa.setFixedWidth(330)
+        sa.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)     # 详情栏只上下滚，内容自动换行
         sa.setFrameShape(QFrame.NoFrame)
         d = QWidget()
         d.setObjectName("Drawer")
@@ -991,6 +993,7 @@ class OrderCheck:
             tri.setForeground(QColor(T("faint")))
             tri.setToolTip(tr("人工改过：双击重新选调出门店和件数；「全部用建议量」恢复系统算的调货"))
         elif x["final"] > 0:
+            tri.setForeground(QColor(T("faint")))
             tri.setToolTip(tr("双击：这个商品改成从别的门店调货"))
         reason = "\n".join(self._reason_lines(x) + ["⚠ " + m[2] for m in self._marks(x)])
         t.item(k, _col(REASON_COL)).setToolTip(reason)

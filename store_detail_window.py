@@ -727,6 +727,7 @@ class DetailWindow(ToolWindow):
         sa = QScrollArea()
         sa.setWidgetResizable(True)
         sa.setFixedWidth(350)
+        sa.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)     # 详情栏只上下滚，内容自动换行
         sa.setFrameShape(QFrame.NoFrame)
         d = QWidget()
         d.setObjectName("Drawer")
@@ -741,6 +742,8 @@ class DetailWindow(ToolWindow):
         self.d_codes = QLabel("")
         self.d_codes.setObjectName("Faint")
         self.d_codes.setFont(num_font(9))
+        self.d_codes.setWordWrap(True)            # 编号一行放不下就换行（不然把详情栏撑宽，右边被切掉）
+        self.d_over.setWordWrap(True)
         v.addWidget(self.d_over)
         v.addWidget(self.d_title)
         v.addWidget(self.d_codes)
@@ -824,7 +827,7 @@ class DetailWindow(ToolWindow):
         self.d_over.setText(f"{S.STORE_SHEETS[sid]} · {sc['name']}")
         self.d_title.setText(it["desc"])
         fc = f" · Cod.Forn. {it['sup_code']}" if it.get("sup_code") else ""
-        self.d_codes.setText(f"{it.get('db_code') or it['code']} · {it['ean']}{fc} · {it['pack']:g} {tr('件/箱')} · €{it['price']:.3f}/{tr('件')}")
+        self.d_codes.setText(f"{it.get('db_code') or it['code']} · {it['ean']}{fc}\n{it['pack']:g} {tr('件/箱')} · €{it['price']:.3f}/{tr('件')}")
         (a1, a2), (b1, b2), (c1, c2), (d1, d2) = self.minis
         if x:
             inv_raw = x.get("inv_raw", x["inv"])
@@ -1026,12 +1029,14 @@ class DetailWindow(ToolWindow):
             ti.setToolTip(self._transfer_tip(sc, it, sid) + "\n" + tr("双击修改：换调出门店、改件数或者不调"))
         elif ov is not None and not TR.norm_override(ov)["auto"]:   # 人工改成不调了（或者调出门店不够）
             o = TR.norm_override(ov)
-            ti.setText(tr("不调") if not o["pieces"] else tr("调不了 {0} 件", o["pieces"]))
+            ti.setText(tr("不调") + "  ✎" if not o["pieces"] else tr("调不了 {0} 件", o["pieces"]))
             ti.setForeground(QColor(T("faint")))
             ti.setToolTip(tr("人工改过：双击重新选调出门店和件数；「恢复建议值」恢复系统算的调货"))
-        else:
-            ti.setText("")
-            ti.setToolTip(tr("双击：这个商品改成从别的门店调货") if self._orig(sc, sid, it["row"]) else "")
+        else:                                   # 要订、没调货的写「不调」（不订的行空着）
+            ordered = bool(self._orig(sc, sid, it["row"]))
+            ti.setText(tr("不调") if ordered else "")
+            ti.setForeground(QColor(T("faint")))
+            ti.setToolTip(tr("双击：这个商品改成从别的门店调货") if ordered else "")
         ti.setFlags(ro)
         ti.setData(KEY_ROLE, self._transfer_key(sc, it, sid))
         ri = t.item(r, REASON_COL)
