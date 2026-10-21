@@ -548,19 +548,51 @@ class StoreOrderPage:
         import transfers as TR
         return TR.excluded_stores(self.cfg.get("transfer"), self.fill_cfg().get("far_stores"))
 
-    def set_transfer(self, key, pieces):
-        """订货明细里改了调货件数：{(SCHEDA, 调入门店, 行): 件数}，0 = 不调；重算调货（手动改的箱数保留）"""
+    def set_transfer(self, key, value):
+        """
+        订货明细里改了调货：key = (SCHEDA, 调入门店, 行)，value = {"from", "pieces"} 或 0（不调）。
+        第一次改的时候把系统建议的调货都冻结下来：以后只按人工定的调，改一行别的行不跟着变。手动改的箱数保留
+        """
+        import transfers as TR
         if not self.calc:
             return
-        self.calc.setdefault("transfer_overrides", {})[key] = int(pieces)
+        c = self.calc
+        if not c.get("transfer_frozen"):
+            key_of = lambda m: (m["path"], m["to"], m["row"])
+            c["transfer_overrides"] = TR.freeze(c.get("transfers"), c.get("transfer_overrides"), key_of)
+            c["transfer_auto_plan"] = {key_of(m): {"from": m["from"], "pieces": int(m["pieces"]), "auto": True}
+                                       for m in c.get("transfers") or []}
+            c["transfer_frozen"] = True
+        c["transfer_overrides"][key] = value if isinstance(value, dict) else int(value or 0)
         self.apply_transfers()
-        self._refresh_matrix()
+        self._refresh_matrix(only_path=key[0])
         self._update_state()
 
-    def apply_transfers(self, keep_edits=True):
-        """按现在的调货设置重算调货；手动改过的箱数保留"""
+    def reset_transfers(self, keys):
+        """「恢复建议值」：这几行的调货恢复成系统建议的；人工改的全恢复了就解冻（以后又按设置自动建议）"""
+        import transfers as TR
+        c = self.calc or {}
+        ov = c.get("transfer_overrides") or {}
+        auto = c.get("transfer_auto_plan") or {}
+        for k in keys:
+            if k in auto:
+                ov[k] = dict(auto[k])
+            else:
+                ov.pop(k, None)
+        if not TR.unfreeze(ov):
+            c["transfer_overrides"], c["transfer_frozen"] = {}, False
+            c.pop("transfer_auto_plan", None)
+        self.apply_transfers()
+
+    def apply_transfers(self, keep_edits=True, refresh_auto=False):
+        """按现在的调货设置重算调货；手动改过的箱数保留。refresh_auto：调货设置改了 → 解冻，按新设置重新建议（人工改的保留）"""
         if not self.calc:
             return
+        if refresh_auto and self.calc.get("transfer_frozen"):
+            import transfers as TR
+            self.calc["transfer_overrides"] = TR.unfreeze(self.calc.get("transfer_overrides"))
+            self.calc["transfer_frozen"] = False
+            self.calc.pop("transfer_auto_plan", None)
         S.apply_transfers(self.calc, self.transfer_cfg(), self.transfer_far())
         new = copy.deepcopy(self.calc["base"])
         if keep_edits:
@@ -1263,7 +1295,7 @@ class StoreOrderPage:
 
     def edit_fill(self):
         if FillDialog(self).exec():
-            self.apply_transfers()
+            self.apply_transfers(refresh_auto=True)
             self._refresh_matrix()
             self._update_state()
             if self.detail_win is not None:
@@ -1429,9 +1461,22 @@ class StoreOrderPage:
         return c, a, "far"
 
     def _preview(self, sc):
-        """按现在的箱数和配货设置模拟一次配货（和真正配货同一套规则），起订量检查着色用"""
-        return S.plan_supplier(sc, self.calc["demand"], self.fill_cfg(), self.calc["stores"],
-                               self.colli.get(sc["path"], {}))
+        """
+        按现在的箱数和配货设置模拟一次配货（和真正配货同一套规则），起订量检查着色用。
+        箱数和设置没变的供应商用上次的结果（改一个调货 / 箱数时不用把几十家全部重算一遍）
+        """
+        import json
+        lines = self.colli.get(sc["path"], {})
+        fill = self.fill_cfg()
+        key = (sc["path"], id(self.calc["demand"]), tuple(self.calc["stores"]),
+               json.dumps(fill, sort_keys=True, default=str),
+               tuple(sorted((sid, tuple(sorted(ln.items()))) for sid, ln in lines.items())), json.dumps(S.sc_moq(sc), default=str))
+        cache = self.__dict__.setdefault("_pv_cache", {})
+        if key not in cache:
+            if len(cache) > 400:
+                cache.clear()
+            cache[key] = S.plan_supplier(sc, self.calc["demand"], fill, self.calc["stores"], lines)
+        return cache[key]
 
     @staticmethod
     def _orderable(plan):

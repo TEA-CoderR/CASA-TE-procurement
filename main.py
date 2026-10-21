@@ -4560,7 +4560,7 @@ class MainWindow(QMainWindow):
             sp = getattr(self, "store_orders", None)
             if sp is not None and getattr(sp, "calc", None):
                 try:                      # 门店配货已经算过：按新设置重算调货
-                    sp.apply_transfers()
+                    sp.apply_transfers(refresh_auto=True)
                     sp._refresh_matrix()
                 except Exception:
                     pass

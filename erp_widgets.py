@@ -1730,3 +1730,149 @@ class ColumnFilterBox(QWidget):
         if v == "__multi__":
             return
         self.ctl.set_filter(self.col, None if v is None else {v})
+
+
+class TransferEditDialog(QDialog):
+    """
+    人工改一个商品的调货：从哪家门店调、调几件（门店配货的订货明细、检查门店订货清单共用）。
+      title    商品名；info 一句话（哪家店、要几件、一箱几件）
+      stores   [{"sid", "name", "inv"(库存), "daily", "surplus"(留够自己后多出来的), "note"}]（不含调入门店本身）
+      cur      现在的调货 (调出门店, 件数) 或 None；need 要的件数；pack 每箱件数；colli 系统建议的箱数
+    确定后 self.value = (调出门店, 件数)；点「不调」= (None, 0)
+    """
+
+    def __init__(self, parent, title, info, stores, cur=None, need=0, pack=1, colli=0):
+        from PySide6.QtWidgets import QTableWidget, QTableWidgetItem, QSpinBox, QAbstractItemView, QHeaderView
+        super().__init__(parent)
+        self.setWindowTitle(tr("调货"))
+        self.value = None
+        self.need, self.pack, self.colli = float(need or 0), float(pack or 1) or 1.0, int(colli or 0)
+        self.stores = sorted(stores, key=lambda s: (-(s.get("surplus") or 0), -(s.get("inv") or 0), s["sid"]))
+        v = QVBoxLayout(self)
+        v.setContentsMargins(20, 16, 20, 14)
+        v.setSpacing(10)
+        h = QLabel(title)
+        h.setObjectName("PageTitle")
+        h.setStyleSheet("font-size:16px;")
+        h.setWordWrap(True)
+        v.addWidget(h)
+        lb = QLabel(info)
+        lb.setObjectName("Muted")
+        lb.setWordWrap(True)
+        v.addWidget(lb)
+        v.addWidget(QLabel(tr("① 从哪家门店调（多出来 = 库存 − 留够自己一个周期的销量）")))
+        t = QTableWidget(len(self.stores), 5)
+        t.setHorizontalHeaderLabels([tr("门店"), tr("库存"), tr("日均"), tr("多出来"), ""])
+        t.verticalHeader().hide()
+        t.setSelectionBehavior(QAbstractItemView.SelectRows)
+        t.setSelectionMode(QAbstractItemView.SingleSelection)
+        t.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        hh = t.horizontalHeader()
+        hh.setSectionResizeMode(QHeaderView.ResizeToContents)
+        hh.setSectionResizeMode(4, QHeaderView.Stretch)
+        for r, s in enumerate(self.stores):
+            vals = [s["name"], f"{float(s.get('inv') or 0):g}", f"{float(s.get('daily') or 0):.2f}",
+                    f"{int(s.get('surplus') or 0)}", s.get("note") or ""]
+            for c, x in enumerate(vals):
+                it = QTableWidgetItem(x)
+                if c in (1, 2, 3):
+                    it.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                if c == 4 or not s.get("surplus"):
+                    it.setForeground(QColor(T("muted")))
+                t.setItem(r, c, it)
+        t.setMinimumHeight(min(260, 34 + 32 * max(1, len(self.stores))))
+        t.setMinimumWidth(460)
+        self.t = t
+        v.addWidget(t)
+        row = QHBoxLayout()
+        row.addWidget(QLabel(tr("② 调几件")))
+        self.sb = QSpinBox()
+        self.sb.setRange(0, 99999)
+        self.sb.setSuffix(tr(" 件"))
+        self.sb.setMinimumWidth(120)
+        self.sb.setMinimumHeight(30)
+        row.addWidget(self.sb)
+        self.after = QLabel("")
+        self.after.setObjectName("Muted")
+        row.addWidget(self.after, 1)
+        v.addLayout(row)
+        self.warn = QLabel("")
+        self.warn.setWordWrap(True)
+        self.warn.setStyleSheet(f"color:{T('warn')};")
+        v.addWidget(self.warn)
+        bb = QHBoxLayout()
+        b_none = QPushButton(tr("不调"))
+        b_none.setToolTip(tr("这个商品不调货，照常订（比如过季品）"))
+        bb.addWidget(b_none)
+        bb.addStretch()
+        b_cancel = QPushButton(tr("取消"))
+        b_ok = QPushButton(tr("确定"))
+        b_ok.setObjectName("Primary")
+        b_ok.setDefault(True)
+        bb.addWidget(b_cancel)
+        bb.addWidget(b_ok)
+        v.addLayout(bb)
+        b_none.clicked.connect(lambda: self._done(None, 0))
+        b_cancel.clicked.connect(self.reject)
+        b_ok.clicked.connect(self._ok)
+        t.itemSelectionChanged.connect(self._picked)
+        self.sb.valueChanged.connect(lambda _: self._hint())
+        t.itemDoubleClicked.connect(lambda _: self._ok())
+        start = 0
+        if cur and cur[0] is not None:
+            start = next((i for i, s in enumerate(self.stores) if s["sid"] == cur[0]), 0)
+        if self.stores:
+            t.setCurrentCell(start, 0)
+        if cur and cur[1]:
+            self.sb.setValue(int(cur[1]))
+        self._hint()
+        self.sb.setFocus()
+        self.sb.selectAll()
+
+    def _store(self):
+        r = self.t.currentRow()
+        return self.stores[r] if 0 <= r < len(self.stores) else None
+
+    def _picked(self):
+        s = self._store()
+        if not s:
+            return
+        default = int(min(math_ceil(self.need), int(s.get("surplus") or 0)))
+        self.sb.setValue(max(0, default))
+        self._hint()
+
+    def _hint(self):
+        s = self._store()
+        p = self.sb.value()
+        left = max(0.0, self.need - p)
+        c2 = min(self.colli, math_ceil(left / self.pack)) if self.colli else math_ceil(left / self.pack)
+        self.after.setText(tr("调完还要订 {0} 箱（原来 {1} 箱）", c2, self.colli))
+        msg = ""
+        if s and p > float(s.get("inv") or 0):
+            msg = tr("{0} 只有 {1:g} 件库存，最多调这么多", s["name"], float(s.get("inv") or 0))
+        elif s and p > int(s.get("surplus") or 0):
+            msg = tr("超过 {0} 多出来的件数：调完它自己可能不够卖一个周期", s["name"])
+        self.warn.setText(msg)
+        self.warn.setVisible(bool(msg))
+
+    def _ok(self):
+        s = self._store()
+        p = self.sb.value()
+        if not s or p <= 0:
+            self._done(None, 0)
+            return
+        inv = int(float(s.get("inv") or 0))
+        if inv <= 0:
+            self.warn.setText(tr("{0} 没有库存，调不了", s["name"]))
+            self.warn.setVisible(True)
+            return
+        self._done(s["sid"], min(p, inv))
+
+    def _done(self, sid, pieces):
+        self.value = (sid if pieces else None, int(pieces))
+        self.accept()
+
+
+def math_ceil(x):
+    import math
+    return int(math.ceil(float(x) - 1e-9))

@@ -842,13 +842,14 @@ def stock_for_eans(db, store_id, eans, days_list=None, reorder_cycle=30, algo=No
     return out
 
 
-def plan_batch_transfers(store_rows, snap, cfg=None, far=(), overrides=None):
+def plan_batch_transfers(store_rows, snap, cfg=None, far=(), overrides=None, auto=True):
     """
     几家门店的清单一起检查以后，先算门店间调货、再订剩下的（和门店配货同一个规则，见 transfers.py）：
       store_rows: {门店号: 检查清单的行}（用 final 确定件数、pack 数据库箱规、price 进价、code、ean、name）
       snap:       {门店号: {商品编号: {inv, daily, cycle}}}：五家店这批商品的库存和日均
     调出门店留够自己一个订货周期；这次自己也要订这个商品的门店不调出；离得远的门店（far）不调出也不调进。
-    overrides {(门店, 商品编号): 人工定的调货件数}：0 = 不调；>0 = 就调这么多
+    overrides {(门店, 商品编号): 人工定的调货}（件数，或 {"from", "pieces", "auto"}）：0 = 不调；>0 = 就调这么多
+    auto=False：审核时人工改过调货 → 只按 overrides 调，别的行不跟着变
     返回 (moves, new_final)：moves 是调货单的行；new_final {(门店, 商品编号): 调货以后还要订的件数}
     """
     import transfers as TR
@@ -869,9 +870,10 @@ def plan_batch_transfers(store_rows, snap, cfg=None, far=(), overrides=None):
             needs.append({"id": k, "store": sid, "key": str(x["code"]), "need": final, "pack": pack,
                           "colli": int(math.ceil(final / pack)), "price": float(x.get("price") or 0)})
             info[k] = (sid, x)
-    avail = {}
+    avail, stock = {}, {}
     for sid, d in (snap or {}).items():
         for code, v in d.items():
+            stock[(sid, str(code))] = max(0.0, float((v or {}).get("inv") or 0))
             if (sid, str(code)) in ordering:
                 continue
             sp = TR.surplus(v, cfg.get("keep_cycles"))
@@ -882,7 +884,7 @@ def plan_batch_transfers(store_rows, snap, cfg=None, far=(), overrides=None):
         key = (sid, str(x["code"]))
         if overrides and key in overrides:
             ov[k] = overrides[key]
-    moves, _ = TR.plan(needs, avail, cfg, far, ov)
+    moves, _ = TR.plan(needs, avail, cfg, far, ov, stock=stock, auto=auto)
     new_final, out = {}, []
     for m in moves:
         sid, x = info[m["need_id"]]

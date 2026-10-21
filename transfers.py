@@ -15,8 +15,9 @@
     一个 €0.10 的纸杯调 5 个才 €0.50，不值得；调 100 个 €10 就值得
   · 可选：一家门店调出去的货合计 ≥ min_value 才调（默认 0 = 不限；以前的版本只有这一条，默认 €50）
   · 不参与调货的门店（transfer.exclude_stores；没设过时沿用借货的 far_stores）不调出、也不往那里调
-算法：同一家调出门店的货尽量凑在一起（人工一次拣完）——每轮算每家门店能调出的总货值，
-     先定货值最高的那家；它够门槛就把这些商品定给它，再算下一家，直到没有门店够门槛。
+算法（2026-10-21 起）：每个商品从多出来最多的那家门店调（货值大的商品先分）；
+     一家调出门店合计不够 min_value 的整批不从它调，再看别的门店。
+审核时人工改了调货（门店 + 件数）以后，所有调货冻结（freeze）：只按人工定的和冻结的建议调，改一行不会影响别的行。
 """
 import math
 
@@ -78,80 +79,132 @@ def options(need, pack, colli, mode="waste", ratio=0.5):
     return [(int(math.ceil(t - 1e-9)), colli - 1)]
 
 
-def plan(needs, avail, cfg=None, far=(), overrides=None):
+def norm_override(v):
+    """人工改的调货：旧格式只有件数（int）；新格式 {"from": 调出门店或 None, "pieces": 件数, "auto": 是不是系统建议冻结下来的}"""
+    if isinstance(v, dict):
+        return {"from": v.get("from"), "pieces": int(v.get("pieces") or 0), "auto": bool(v.get("auto"))}
+    return {"from": None, "pieces": int(v or 0), "auto": False}
+
+
+def plan(needs, avail, cfg=None, far=(), overrides=None, stock=None, auto=True):
     """
     needs: [{"id", "store", "key"(商品), "need", "pack", "colli", "price"(件价), ...}]
-    avail: {(门店, 商品): 可调出件数}
-    overrides: {need id: 人工定的调货件数}（审核时改的）：0 = 这个商品不调（比如过季品）；
-               >0 = 就调这么多（不看「只占整箱」比例和单品金额门槛，调出门店多出来的够才调）
+    avail: {(门店, 商品): 可调出件数}（多出来的，见 surplus）
+    overrides: {need id: 人工定的调货}（审核时改的，int 或 norm_override 的 dict）：
+               件数 0 = 这个商品不调（比如过季品）；
+               >0 + 指定调出门店 = 就从这家调这么多（不看比例、门槛；只要那家店有这么多库存 stock）；
+               >0 没指定门店 = 从多出来最多的那家调（多出来的不够就调不了）
+    stock: {(门店, 商品): 库存件数}：人工指定门店时最多调这么多（None = 不限）
+    auto:  True = 没人工定的商品由系统建议；False = 只按人工定的调（审核时改过以后，别的行不再跟着变）
+    系统建议：每个商品从「多出来最多」的那家门店调（同一个商品别的门店也要的，按货值大的先分）；
+             单个商品货值 ≥ item_min_value；一家调出门店合计 ≥ min_value（默认 0 = 不限），
+             不够的那家整批不调，它的商品再看别的门店能不能调
     返回 (transfers, new_colli)
-      transfers: [{"need_id", "from", "to", "key", "pieces", "value", "colli_before", "colli_after"}]
+      transfers: [{"need_id", "from", "to", "key", "pieces", "value", "colli_before", "colli_after", "manual"}]
       new_colli: {need_id: 调货后要订的箱数}
     """
     cfg = config(cfg)
     far = set(far or ())
     min_value = float(cfg.get("min_value") or 0)
     item_min = float(cfg.get("item_min_value") or 0)
-    left = {k: int(v) for k, v in (avail or {}).items() if v and v > 0}
-    overrides = overrides or {}
-    manual = set()
-    todo = {}
+    left0 = {k: int(v) for k, v in (avail or {}).items() if v and v > 0}
+    overrides = {k: norm_override(v) for k, v in (overrides or {}).items()}
+    transfers, new_colli = [], {}
+
+    def add(n, s, t, c2, manual):
+        new_colli[n["id"]] = c2
+        transfers.append({"need_id": n["id"], "from": s, "to": n["store"], "key": n["key"], "pieces": t,
+                          "value": t * float(n.get("price") or 0), "colli_before": int(n["colli"]),
+                          "colli_after": c2, "pack": n["pack"], "need": n["need"], "manual": manual})
+
+    # 1) 人工定的（包括冻结下来的系统建议）：先占货
+    left = dict(left0)
+    used = {}
     for n in needs:
-        if n["store"] in far:
+        o = overrides.get(n["id"])
+        if o is None or o["pieces"] <= 0:
             continue
-        if n["id"] in overrides:
-            p = int(overrides[n["id"]] or 0)
+        p, s = o["pieces"], o["from"]
+        if o["auto"]:                                    # 冻结下来的建议：要的少了就少调
+            p = min(p, int(math.ceil(float(n["need"] or 0) - 1e-9)))
             if p <= 0:
-                continue                            # 人工定了不调
-            pack = float(n["pack"] or 1)
-            c2 = min(int(n["colli"] or 0), int(math.ceil(max(0.0, float(n["need"] or 0) - p) / pack - 1e-9)))
-            todo[n["id"]] = (n, [(p, max(0, c2))])
-            manual.add(n["id"])
+                continue
+        if s is None:                                    # 只给了件数：从多出来最多的那家
+            cands = [d for (d, k), v in left.items() if k == n["key"] and d != n["store"] and d not in far and v >= p]
+            if not cands:
+                continue
+            s = max(cands, key=lambda d: (left[(d, n["key"])], -d))
+        elif s == n["store"]:
+            continue
+        if stock is not None:
+            have = int(max(0, stock.get((s, n["key"]), 0))) - used.get((s, n["key"]), 0)
+            p = min(p, max(0, have))
+            if p <= 0:
+                continue
+        used[(s, n["key"])] = used.get((s, n["key"]), 0) + p
+        left[(s, n["key"])] = left.get((s, n["key"]), 0) - p
+        pack = float(n["pack"] or 1)
+        c2 = min(int(n["colli"] or 0), int(math.ceil(max(0.0, float(n["need"] or 0) - p) / pack - 1e-9)))
+        add(n, s, p, max(0, c2), not o["auto"])
+    if not auto:
+        return transfers, new_colli
+    # 2) 系统建议：没人工定过的商品
+    todo = []
+    for n in needs:
+        if n["store"] in far or n["id"] in overrides:
             continue
         opts = [o for o in options(n["need"], n["pack"], n["colli"], cfg.get("mode"), float(cfg.get("waste_ratio") or 0.5))
                 if o[0] > 0]
         if opts:
-            todo[n["id"]] = (n, opts)
-    donors = sorted({s for (s, _k) in left if s not in far})
-    transfers, new_colli = [], {}
-
-    def offer(s):
-        """门店 s 这一轮能调出的：[(need, 件数, 新箱数)]，总货值"""
-        stock = {}
-        picks, value = [], 0.0
-        # 货值大的先占库存
-        for nid, (n, opts) in sorted(todo.items(), key=lambda x: -x[1][1][0][0] * float(x[1][0].get("price") or 0)):
-            if n["store"] == s:
-                continue
-            k = (s, n["key"])
-            have = stock.get(k, left.get(k, 0))
-            for t, c2 in opts:                      # 少订得最多、库存够、而且这个商品调的货值够门槛的那个
-                if t <= have and (nid in manual or t * float(n.get("price") or 0) >= item_min - 1e-9):
-                    picks.append((n, t, c2))
-                    stock[k] = have - t
-                    value += t * float(n.get("price") or 0)
+            todo.append((n, opts))
+    todo.sort(key=lambda x: -x[1][0][0] * float(x[0].get("price") or 0))     # 货值大的先分
+    manual_value = {}
+    for m in transfers:
+        manual_value[m["from"]] = manual_value.get(m["from"], 0.0) + m["value"]
+    banned = set()
+    while True:
+        lft = dict(left)
+        picks = []
+        for n, opts in todo:
+            cands = [d for (d, k), v in lft.items() if k == n["key"] and v > 0 and d != n["store"]
+                     and d not in far and d not in banned]
+            for t, c2 in opts:
+                if item_min and t * float(n.get("price") or 0) < item_min - 1e-9:
+                    continue
+                ok = [d for d in cands if lft[(d, n["key"])] >= t]
+                if ok:
+                    s = max(ok, key=lambda d: (lft[(d, n["key"])], -d))   # 多出来最多的那家
+                    lft[(s, n["key"])] -= t
+                    picks.append((n, s, t, c2))
                     break
-        return picks, value
-
-    while todo and donors:
-        best = None
-        for s in donors:
-            picks, value = offer(s)
-            if picks and (best is None or value > best[2] + 1e-9):
-                best = (s, picks, value)
-        if best is None or best[2] < min_value - 1e-9:
+        tot = dict(manual_value)
+        for n, s, t, _ in picks:
+            tot[s] = tot.get(s, 0.0) + t * float(n.get("price") or 0)
+        low = {s for s in {p[1] for p in picks} if tot.get(s, 0.0) < min_value - 1e-9}
+        if not low:
             break
-        s, picks, _ = best
-        for n, t, c2 in picks:
-            left[(s, n["key"])] = left.get((s, n["key"]), 0) - t
-            new_colli[n["id"]] = c2
-            transfers.append({"need_id": n["id"], "from": s, "to": n["store"], "key": n["key"], "pieces": t,
-                              "value": t * float(n.get("price") or 0), "colli_before": int(n["colli"]),
-                              "colli_after": c2, "pack": n["pack"], "need": n["need"],
-                              "manual": n["id"] in manual})
-            todo.pop(n["id"], None)
-        donors.remove(s)                            # 一家门店只算一轮（所有能调的这一轮都定了）
+        banned |= low                                    # 这家合计不够门槛：整批不从它调，再算一遍
+    for n, s, t, c2 in picks:
+        add(n, s, t, c2, False)
     return transfers, new_colli
+
+
+def freeze(transfers, overrides, key_of):
+    """
+    审核时第一次改调货：把现在系统建议的调货都记成「冻结的」人工值（auto=True），以后只按这些调，
+    改一行不会让别的行跟着变。key_of(调货) → overrides 的键。返回新的 overrides
+    """
+    out = dict(overrides or {})
+    for m in transfers or []:
+        k = key_of(m)
+        if k not in out:
+            out[k] = {"from": m["from"], "pieces": int(m["pieces"]), "auto": True}
+    return out
+
+
+def unfreeze(overrides):
+    """调货设置改了：去掉冻结的系统建议（auto），只留人工改过的，其他的重新按设置建议"""
+    return {k: v for k, v in (overrides or {}).items() if not norm_override(v)["auto"]}
 
 
 def by_donor(transfers):

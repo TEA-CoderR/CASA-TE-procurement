@@ -534,7 +534,8 @@ def demand_by_store(db, schede, stores, days_list, reorder_cycle, use_supplier_c
 # 门店之间调货（transfers.py）：要的件数远小于一箱时，从别的门店调多出来的货，少订一箱
 # =====================================================================
 def apply_transfers(calc, cfg=None, far_stores=None):
-    # calc["transfer_overrides"] = {(SCHEDA 路径, 调入门店, 行号): 人工定的调货件数}（订货明细里改的；0 = 不调）
+    # calc["transfer_overrides"] = {(SCHEDA 路径, 调入门店, 行号): 人工定的调货}（订货明细里改的，见 transfers.norm_override；
+    #   件数 0 = 不调）；calc["transfer_frozen"] = True 时只按它调
     """
     在系统建议的箱数上算调货：calc["base_orig"] = 调货前的建议；calc["base"] = 调货后的建议；
     calc["transfers"] = [{from, to, path, supplier, row, code, ean, desc, pieces, value, price, pack,
@@ -569,16 +570,21 @@ def apply_transfers(calc, cfg=None, far_stores=None):
                 needs.append({"id": nid, "store": sid, "key": code, "need": d.get("need", d.get("sugg", 0)),
                               "pack": it["pack"], "colli": n, "price": it.get("price") or 0.0})
                 info[nid] = (sc, it)
-    avail = {}
+    avail, stock = {}, {}
     for sid in stores:
         for code, d in (demand.get(sid) or {}).items():
+            if not isinstance(d, dict):
+                continue
+            stock[(sid, code)] = max(0.0, float(d.get("inv") or 0))
             if (sid, code) in ordering:
                 continue                       # 自己这次也要订的，不调出
             s = TR.surplus(d, cfg.get("keep_cycles"))
             if s > 0:
                 avail[(sid, code)] = s
     far = far_stores if far_stores is not None else DEFAULT_FILL.get("far_stores")
-    moves, new_colli = TR.plan(needs, avail, cfg, far, calc.get("transfer_overrides"))
+    # transfer_frozen：审核时人工改过调货 → 只按 transfer_overrides 调（改一行不影响别的行）
+    moves, new_colli = TR.plan(needs, avail, cfg, far, calc.get("transfer_overrides"), stock=stock,
+                               auto=not calc.get("transfer_frozen"))
     for nid, c2 in new_colli.items():
         path, sid, row = nid
         lines = base.setdefault(path, {}).setdefault(sid, {})

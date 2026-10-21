@@ -231,3 +231,60 @@ def test_manual_override():
     assert new["b"] == 1                      # 只调 2 件，还差 1 件 → 还要订 1 箱
     moves, _ = TR.plan(needs, avail, {"item_min_value": 0}, overrides={"a": 30})
     assert all(m["key"] != "A" for m in moves)  # 调出门店不够 30 件 → 不调
+
+
+def test_auto_picks_store_with_most_surplus():
+    """系统建议：每个商品从多出来最多的那家调（不再按「一家店凑一起」挑）"""
+    needs = [_need("a", 2, "X", 3, 12, 1, 5.0)]
+    moves, _ = TR.plan(needs, {(3, "X"): 4, (4, "X"): 15, (5, "X"): 9}, {"item_min_value": 0})
+    assert [(m["from"], m["pieces"]) for m in moves] == [(4, 3)]
+
+
+def test_manual_store_and_frozen():
+    """人工指定调出门店 + 件数；冻结以后只按人工定的调，别的行不跟着变"""
+    needs = [_need("a", 2, "X", 3, 12, 1, 5.0), _need("b", 5, "X", 3, 12, 1, 5.0)]
+    avail = {(3, "X"): 10}
+    stock = {(3, "X"): 10, (4, "X"): 2}
+    moves, _ = TR.plan(needs, avail, {"item_min_value": 0}, stock=stock)
+    assert sorted(m["to"] for m in moves) == [2, 5]
+    ov = TR.freeze(moves, {}, lambda m: m["need_id"])
+    assert all(v["auto"] for v in ov.values())
+    ov["a"] = 0                                   # a 不调了：3 号店多出来的不会改给别人，b 照旧
+    moves2, new = TR.plan(needs, avail, {"item_min_value": 0}, overrides=ov, stock=stock, auto=False)
+    assert [(m["need_id"], m["from"], m["pieces"]) for m in moves2] == [("b", 3, 3)]
+    ov["a"] = {"from": 4, "pieces": 5}            # 指定 4 号店（多出来的是 0，但有 2 件库存）→ 最多调 2 件
+    moves3, new = TR.plan(needs, avail, {"item_min_value": 0}, overrides=ov, stock=stock, auto=False)
+    got = {m["need_id"]: (m["from"], m["pieces"], m["manual"]) for m in moves3}
+    assert got["a"] == (4, 2, True) and got["b"] == (3, 3, False)
+    assert TR.unfreeze(ov) == {"a": {"from": 4, "pieces": 5}}
+
+
+def test_frozen_auto_capped_by_need():
+    needs = [_need("a", 2, "X", 2, 12, 1, 5.0)]
+    ov = {"a": {"from": 3, "pieces": 5, "auto": True}}
+    moves, _ = TR.plan(needs, {(3, "X"): 10}, {"item_min_value": 0}, overrides=ov, auto=False)
+    assert moves[0]["pieces"] == 2
+
+
+def test_store_orders_frozen_transfers():
+    """门店配货：冻结以后取消一行，另一家店不会因此改成调这批货"""
+    import store_orders as S
+    sc = {"path": "p", "name": "DOPLA", "items": [{"row": 5, "code": "100", "ean": "8", "desc": "PIATTI", "pack": 12,
+                                                   "price": 6.0}], "sheets": {2: "MARLIA", 3: "S.FILIPPO", 4: "S.MARCO"}}
+    demand = {2: {"100": {"sugg": 12, "need": 3, "inv": 0, "daily": 0.1, "cycle": 30}},
+              4: {"100": {"sugg": 12, "need": 3, "inv": 0, "daily": 0.1, "cycle": 30}},
+              3: {"100": {"sugg": 0, "need": 0, "inv": 4, "daily": 0.0, "cycle": 30}}}
+    calc = {"schede": [sc], "demand": demand, "base": {"p": {2: {5: 1}, 4: {5: 1}}}, "stores": [2, 3, 4]}
+    out = S.apply_transfers(calc, {"item_min_value": 0}, far_stores=[])
+    assert len(out) == 1                              # 3 号店只多 4 件，只够一家
+    first = out[0]["to"]
+    other = 4 if first == 2 else 2
+    calc["transfer_overrides"] = TR.freeze(out, {}, lambda m: (m["path"], m["to"], m["row"]))
+    calc["transfer_frozen"] = True
+    calc["transfer_overrides"][("p", first, 5)] = 0
+    out = S.apply_transfers(calc, {"item_min_value": 0}, far_stores=[])
+    assert out == []                                  # 不会自动改给另一家
+    calc["transfer_overrides"][("p", other, 5)] = {"from": 3, "pieces": 3}
+    out = S.apply_transfers(calc, {"item_min_value": 0}, far_stores=[])
+    assert [(t["from"], t["to"], t["pieces"], t["manual"]) for t in out] == [(3, other, 3, True)]
+    assert calc["base"]["p"][other] == {} and calc["base"]["p"][first] == {5: 1}

@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (QWidget, QLabel, QPushButton, QLineEdit, QComboBo
 from i18n import tr
 from settings import save_settings
 import reorder_service as R
+import transfers as TR
 from reorder_page import short_decision, store_label, algo_widgets
 
 # 表格列（逻辑顺序）→ 显示顺序：按审核时看一行的顺序
@@ -76,37 +77,6 @@ VERDICT_TOKEN = {"transfer": "ok", "more": "accent", "less": "warn", "none": "er
 # 「看哪些」下拉框
 VIEWS = (("all", "全部商品"), ("changed", "只看有变化的"), ("transfer", "只看调货"), ("more", "只看多订"),
          ("less", "只看少订"), ("none", "只看不订"))
-
-
-PIECES_ROLE = Qt.UserRole + 4     # 「调货」格：调进来的件数（编辑框里显示它）
-
-
-class _TransferDelegate(QStyledItemDelegate):
-    """「调货」格：双击改调进来的件数，0 = 不调（比如过季品）。等编辑框关掉再更新"""
-
-    def __init__(self, oc):
-        super().__init__(oc.table)
-        self.oc = oc
-
-    def createEditor(self, parent, opt, idx):
-        sb = QSpinBox(parent)
-        sb.setRange(0, 99999)
-        sb.setSuffix(tr(" 件"))
-        sb.setButtonSymbols(QAbstractSpinBox.NoButtons)
-        sb.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        return sb
-
-    def setEditorData(self, sb, idx):
-        v = idx.data(PIECES_ROLE)
-        if v is None:
-            return
-        sb.setValue(int(v))
-        sb.selectAll()
-
-    def setModelData(self, sb, model, idx):
-        sb.interpretText()
-        r, v = idx.row(), sb.value()
-        QTimer.singleShot(0, lambda: self.oc._transfer_edited(r, v))
 
 
 class _Sig(QObject):
@@ -299,7 +269,8 @@ class OrderCheck:
                                   _DEFAULT_HIDDEN, ver=4, forced=lambda: self._forced)
         self._moves_in, self._moves_out = {}, {}
         self.transfer_ov = {}
-        self.table.setItemDelegateForColumn(_col(TRANSFER_COL), _TransferDelegate(self))
+        self.transfer_frozen = False
+        self.table.cellDoubleClicked.connect(self._edit_transfer)     # 双击「调货」：选调出门店、填件数
         self.table.horizontalHeaderItem(_col(TRANSFER_COL)).setText(tr("调货") + " ✎")
         self._plan_timer = QTimer()
         self._plan_timer.setSingleShot(True)
@@ -624,7 +595,9 @@ class OrderCheck:
             self.win.notify(tr("检查清单失败：{0}", err))
             return
         self.rows, self.meta = rows, meta
-        self.transfer_ov = {}                      # 人工改的调货件数 {(门店, 商品编号): 件数}，0 = 不调
+        # 人工改的调货 {(门店, 商品编号): {"from", "pieces", "auto"} 或 0 = 不调}；改过一次就冻结（别的行不再跟着变）
+        self.transfer_ov = {}
+        self.transfer_frozen = False
         self._by_key = {(x.get("store"), str(x.get("code"))): x for x in rows}
         self._cur_i = None
         d = meta["days"]
@@ -723,21 +696,79 @@ class OrderCheck:
         if m:                                          # 短：← 从哪家 几件（详细的在鼠标提示里）
             return f"← {R.STORES.get(m['from'], m['from'])} {m['pieces']}" + tr("件") + ("  ✎" if m.get("manual") else "")
         ov = self.transfer_ov.get(key)
-        if ov is not None:                             # 人工改过：不调 / 调出门店不够
-            return tr("不调") if not ov else tr("调不了 {0} 件", ov)
+        if ov is not None and not TR.norm_override(ov)["auto"]:     # 人工改过：不调 / 调出门店不够
+            p = TR.norm_override(ov)["pieces"]
+            return tr("不调") if not p else tr("调不了 {0} 件", p)
         return ""                                      # 调出去的不显示（审核只要知道从哪调进来）
 
-    def _transfer_edited(self, k, v):
-        """改了调货件数：记下来，重算调货（同一家调出门店的货会重新分）"""
+    def freeze_transfers(self):
+        """第一次人工改（调货或确定件数）：把现在系统建议的调货冻结下来，以后改一行别的行不跟着变"""
+        if self.transfer_frozen:
+            return
+        self.transfer_ov = TR.freeze(self._moves, self.transfer_ov, lambda m: (m["to"], str(m["code"])))
+        self.transfer_frozen = True
+
+    def _edit_transfer(self, k, c):
+        """双击「调货」格：选从哪家门店调、调几件（或者不调）。只改这一行"""
+        if c != _col(TRANSFER_COL):
+            return
         i = self.ctl.row_at(k)
         if i is None:
             return
         x = self.rows[i]
-        key = (x.get("store"), str(x.get("code")))
-        self.transfer_ov[key] = int(v)
-        self._replan()
-        if v and key not in self._moves_in:
-            self.win.show_toast(tr("调出门店多出来的不够 {0} 件，这次调不了", v))
+        snap = self.meta.get("snap") or {}
+        if not snap:
+            self.win.show_toast(tr("没有其他门店的库存数据，不能调货"))
+            return
+        if not x.get("in_db", True) or int(x.get("final") or 0) <= 0:
+            self.win.show_toast(tr("这一行不订货，不用调货"))
+            return
+        import store_orders as SO
+        so = self.settings.get("store_orders") or {}
+        cfg = TR.config(so.get("transfer"))
+        far = set(TR.excluded_stores(so.get("transfer"), (dict(SO.DEFAULT_FILL, **(so.get("fill") or {}))).get("far_stores")))
+        sid, code = x.get("store"), str(x.get("code"))
+        ordering = {(r.get("store"), str(r.get("code"))) for r in self.rows if int(r.get("final") or 0) > 0}
+        stores = []
+        for s_, d in snap.items():
+            v = (d or {}).get(code)
+            if s_ == sid or not v:
+                continue
+            notes = []
+            if s_ in far:
+                notes.append(tr("不参与调货"))
+            if (s_, code) in ordering:
+                notes.append(tr("自己也要订"))
+            stores.append({"sid": s_, "name": R.STORES.get(s_, str(s_)), "inv": v.get("inv"), "daily": v.get("daily"),
+                           "surplus": TR.surplus(v, cfg.get("keep_cycles")), "note": "、".join(notes)})
+        if not stores:
+            self.win.show_toast(tr("其他门店没有这个商品的库存数据"))
+            return
+        key = (sid, code)
+        m = self._moves_in.get(key)
+        pack = float(x.get("pack") or 1) or 1.0
+        need = int(x["final"])
+        colli = int(math.ceil(need / pack))
+        from erp_widgets import TransferEditDialog
+        dlg = TransferEditDialog(self.window, x.get("name") or code,
+                                 tr("{0} 这次要 {1:g} 件，一箱 {2:g} 件，系统建议订 {3:g} 箱",
+                                    R.STORES.get(sid, sid), need, pack, colli),
+                                 stores, (m["from"], m["pieces"]) if m else None, need, pack, colli)
+        if not dlg.exec() or dlg.value is None:
+            return
+        frm, pcs = dlg.value
+        from PySide6.QtWidgets import QApplication
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            self.freeze_transfers()
+            self.transfer_ov[key] = {"from": frm, "pieces": pcs} if pcs else 0
+            self._replan(render=False)
+            self._refresh_rows([j for j, r in enumerate(self.rows) if str(r.get("code")) == code])   # 只刷新这个商品的几行
+            self._summary()
+        finally:
+            QApplication.restoreOverrideCursor()
+        if pcs and key not in self._moves_in:
+            self.win.show_toast(tr("{0} 库存不够，这次调不了", R.STORES.get(frm, frm)))
 
     def _transfer_tip(self, x):
         key = (x.get("store"), str(x.get("code")))
@@ -953,15 +984,14 @@ class OrderCheck:
         tri = t.item(k, _col(TRANSFER_COL))
         tkey = (x.get("store"), str(x.get("code")))
         m_in = self._moves_in.get(tkey)
-        if m_in or tkey in self.transfer_ov:          # 能改调货件数
-            tri.setFlags(tri.flags() | Qt.ItemIsEditable)
-            tri.setData(PIECES_ROLE, int(m_in["pieces"]) if m_in else int(self.transfer_ov[tkey]))
-            if m_in:
-                tri.setForeground(QColor(T("warn") if m_in.get("manual") else T("ok")))
-                tri.setToolTip(self._transfer_tip(x) + "\n" + tr("双击改调货件数，0 = 不调"))
-            else:
-                tri.setForeground(QColor(T("faint")))
-                tri.setToolTip(tr("人工改过：双击填件数重新调；「全部用建议量」恢复系统算的调货"))
+        if m_in:
+            tri.setForeground(QColor(T("warn") if m_in.get("manual") else T("ok")))
+            tri.setToolTip(self._transfer_tip(x) + "\n" + tr("双击修改：换调出门店、改件数或者不调"))
+        elif tkey in self.transfer_ov:
+            tri.setForeground(QColor(T("faint")))
+            tri.setToolTip(tr("人工改过：双击重新选调出门店和件数；「全部用建议量」恢复系统算的调货"))
+        elif x["final"] > 0:
+            tri.setToolTip(tr("双击：这个商品改成从别的门店调货"))
         reason = "\n".join(self._reason_lines(x) + ["⚠ " + m[2] for m in self._marks(x)])
         t.item(k, _col(REASON_COL)).setToolTip(reason)
         t.item(k, _col(REASON_COL)).setForeground(QColor(T("muted")))
@@ -1014,6 +1044,20 @@ class OrderCheck:
             ch.setText(self._change_text(x))
             ch.setForeground(QColor(T("accent") if d > 0 else T("warn") if d < 0 else T("faint")))
 
+    def _refresh_rows(self, idx):
+        """只重画这几行（改一个调货不用整张表重画）"""
+        was = self._filling
+        self._filling = True
+        self.table.blockSignals(True)
+        for i in idx:
+            k = self.ctl.pos.get(i)
+            if k is not None:
+                self._fill_row(i, k)
+        self.table.blockSignals(False)
+        self._filling = was
+        if self._cur_i in idx:
+            self._show_drawer(self._cur_i)
+
     def _show(self, i):
         k = self.ctl.pos.get(i)
         if k is None:
@@ -1040,14 +1084,16 @@ class OrderCheck:
         except ValueError:
             self.win.show_toast(tr("件数要填 0 或正整数"))
             n = None
-        if n is not None:
+        if n is not None and int(n) != self.rows[i]["final"]:
+            self.freeze_transfers()                   # 改了确定件数：别的行的调货不跟着变
             self.rows[i]["final"] = int(n)
         # 等编辑框关掉再更新这一行（编辑中途改格子会让程序卡住）
         QTimer.singleShot(0, lambda: (self._show(i), self._summary(), self._plan_timer.start()))
 
     def _set_all(self, which):
         if which == "sugg":
-            self.transfer_ov = {}                     # 人工改的调货也恢复成系统算的
+            self.transfer_ov = {}                     # 人工改的调货也恢复成系统算的（解冻，按设置重新建议）
+            self.transfer_frozen = False
         for x in self.rows:
             if which == "sugg":
                 x["final"] = x["suggested"] if x["in_db"] else int(math.ceil(x["file_pcs"]))
@@ -1195,7 +1241,8 @@ class OrderCheck:
         snap = self.meta.get("snap")
         if not snap:
             return [], {}
-        return R.plan_batch_transfers(by_store, snap, so.get("transfer"), far, getattr(self, "transfer_ov", None))
+        return R.plan_batch_transfers(by_store, snap, so.get("transfer"), far, getattr(self, "transfer_ov", None),
+                                      auto=not getattr(self, "transfer_frozen", False))
 
     def confirm(self):
         if not self.rows:
