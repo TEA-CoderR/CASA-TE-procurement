@@ -38,12 +38,14 @@ from reorder_page import short_decision, store_label, algo_widgets
 # 2026-10-20 第三版：和门店配货的订货明细同一个样子（调货只显示从哪家调进来）：
 #   门店 条码 名称 等级 周期 本店库存 日均 库存够卖 每箱件数 | 清单 判断 确定箱数 确定件数 ✎ 调货 | 到货后够卖 原因
 # 2026-10-21 加了 26 Codice Fornitore、27 供应商（数据库登记的），默认放在条码后面
-_ORDER = [22, 2, 26, 3, 27, 16, 17, 4, 18, 9, 10, 11, 12, 0, 15, 14, 24, 20, 25, 13, 19, 23, 21, 5, 6, 7, 8, 1]
+# 2026-10-21 第五版：按箱审核（用户：件数看着乱，少订几件不改变订的箱数没意义）：清单箱数 → 判断 → 确定箱数 ✎ → 调货；
+#   件数列（清单件数、建议件数、确定件数）默认收起来；数据库没有 / 没有箱规的商品放在单独的标签页
+_ORDER = [22, 2, 26, 3, 27, 16, 17, 4, 18, 9, 10, 11, 0, 15, 24, 20, 25, 12, 14, 13, 19, 23, 21, 5, 6, 7, 8, 1]
 # 2026-10-21 第四版：窗口和订货明细一个样子（门店按钮、一行工具条、状态栏），名称显示、供应商和原因收起来（详情栏里有）：
 #   门店 条码 Codice 名称 等级 周期 本店库存 日均 库存够卖 每箱件数 | 清单 判断 确定箱数 确定件数 ✎ 调货 ✎ | 到货后够卖
-_LAYOUT_VER = 6           # 改了默认顺序就加 1
-_DEFAULT_HIDDEN = [12, 13, 19, 23, 21, 5, 6, 7, 8, 1, 27, 25]
-_HIDDEN_VER = 5           # 改了默认藏哪些列就加 1（settings.COMPANY_DEFAULTS 里的 check_cols_hidden 一起改）
+_LAYOUT_VER = 7           # 改了默认顺序就加 1
+_DEFAULT_HIDDEN = [12, 13, 14, 19, 23, 21, 5, 6, 7, 8, 1, 27, 25]
+_HIDDEN_VER = 6           # 改了默认藏哪些列就加 1（settings.COMPANY_DEFAULTS 里的 check_cols_hidden 一起改）
 CHANGE_COL, TRANSFER_COL, REASON_COL = 23, 24, 25
 
 
@@ -55,8 +57,45 @@ def _perm(vals):
     return [vals[k] for k in _ORDER]
 
 
-EDIT_COL = _col(14)
-BOX_COL = _col(15)
+EDIT_COL = _col(15)           # 确定箱数 ✎（按箱审核）
+PCS_COL = _col(14)            # 确定件数（= 箱数 × 每箱件数，默认收起来）
+
+
+def _pk(x):
+    try:
+        v = float(x.get("pack") or 0)
+    except (TypeError, ValueError):
+        return 0.0
+    return v if v == v and v > 0 else 0.0
+
+
+def _problem(x):
+    """数据库没有 / 没有箱规的商品：单独一个标签页核对"""
+    return not x.get("in_db", True) or _pk(x) <= 0
+
+
+def _set_box(x, boxes):
+    """确定箱数 → fbox；final = 件数（箱数 × 每箱件数；没有箱规的就是箱数）"""
+    b = max(0, int(boxes or 0))
+    x["fbox"] = b
+    pk = _pk(x)
+    x["final"] = int(round(b * pk)) if pk > 0 else b
+
+
+def init_boxes(rows, units):
+    """
+    检查结果按箱算：lbox 清单箱数、sbox 系统建议箱数、fbox 确定箱数（默认 = 建议；数据库没有 / 没有箱规的 = 清单）。
+    units {门店: "colli" / "pcs"}：清单按箱的直接用清单数量，按件的折成箱（每箱件数用报价的）
+    """
+    for x in rows:
+        pk = _pk(x)
+        q = float(x.get("file_qty") or 0)
+        if (units or {}).get(x.get("store")) == "colli" or pk <= 0:
+            x["lbox"] = int(math.ceil(q - 1e-9))
+        else:
+            x["lbox"] = int(math.ceil(float(x.get("file_pcs") or 0) / pk - 1e-9))
+        x["sbox"] = int(math.ceil((x.get("suggested") or 0) / pk - 1e-9)) if (x.get("in_db", True) and pk > 0) else None
+        _set_box(x, x["sbox"] if x["sbox"] is not None else x["lbox"])
 AFTER_COL = _col(20)          # 确定订后够卖（跟着确定件数变）
 LIST_AFTER_COL = _col(21)     # 清单订后够卖（按门店清单原来的数量订）
 
@@ -246,6 +285,23 @@ class OrderCheck:
         more.clicked.connect(lambda: self._more_menu(more))
         tb.addWidget(more)
         bl.addWidget(bar)
+        # 标签页：清单商品 / 数据库没有、没有箱规（这些要人工核对，单独放，主表格干净）
+        from PySide6.QtWidgets import QTabBar
+        self.tabs = QTabBar()
+        self.tabs.setObjectName("SubTabs")
+        self.tabs.setDrawBase(False)
+        self.tabs.addTab(tr("清单商品"))
+        self.tabs.addTab(tr("数据库没有 / 没有箱规"))
+        self.tabs.setTabToolTip(1, tr("数据库里找不到、或者不知道每箱几件的商品：系统算不了，确定箱数默认 = 门店清单，请核对"))
+        self.tabs.currentChanged.connect(lambda _i: self._filter())
+        tw = QWidget()
+        twl = QHBoxLayout(tw)
+        twl.setContentsMargins(16, 4, 16, 0)
+        twl.addWidget(self.tabs)
+        twl.addStretch()
+        self.tabs_box = tw
+        tw.hide()
+        bl.addWidget(tw)
         self.table = ui.make_table(_perm([tr("判断"), tr("商品编号"), tr("条码"), tr("名称"), tr("本店库存"),
                                           "30", "60", "90", "180", tr("库存够卖（天）"), tr("每箱件数"), tr("清单数量"),
                                           tr("清单件数"), tr("建议件数"), tr("确定件数"), tr("确定箱数"), tr("等级"), tr("周期"), tr("日均"),
@@ -263,7 +319,8 @@ class OrderCheck:
         for c, wd in enumerate(_perm((70, 80, 120, 280, 70, 52, 52, 52, 52, 96, 52, 70, 70, 70, 76, 70, 50, 50, 60, 70, 120, 120, 96,
                                       76, 200, 380, 110, 150))):
             self.table.setColumnWidth(c, wd)
-        self.table.horizontalHeaderItem(EDIT_COL).setToolTip(tr("双击修改，0 = 不订"))
+        self.table.horizontalHeaderItem(EDIT_COL).setToolTip(tr("双击修改箱数，0 = 不订"))
+        self.table.horizontalHeaderItem(EDIT_COL).setText(tr("确定箱数") + " ✎")
         self.table.horizontalHeaderItem(_col(10)).setToolTip(
             tr("每箱件数：按 distribuire 里最便宜那家报价的箱规（比价默认挑它）；报价里没有的用数据库箱规。蓝色 = 和数据库不一样"))
         self.table.horizontalHeaderItem(_col(9)).setToolTip(
@@ -613,6 +670,7 @@ class OrderCheck:
             self.msg.setText(tr("计算失败"))
             self.win.notify(tr("检查清单失败：{0}", err))
             return
+        init_boxes(rows, meta.get("units"))
         self.rows, self.meta = rows, meta
         # 人工改的调货 {(门店, 商品编号): {"from", "pieces", "auto"} 或 0 = 不调}；改过一次就冻结（别的行不再跟着变）
         self.transfer_ov = {}
@@ -622,13 +680,9 @@ class OrderCheck:
         d = meta["days"]
         for i in range(4):
             self.ctl.set_title(_col(5 + i), tr("{0}天", d[i]), tr("最近 {0} 天销量", d[i]))
-        # 清单按箱：「清单箱数」+ 折合的「清单件数」；清单本来就是件数：只留一列「清单件数」；几份清单单位不一样：「清单数量」
-        units = set(meta["units"].values())
-        pieces = units == {"pcs"}
-        self.ctl.set_title(_col(11), tr("清单件数") if pieces else (tr("清单箱数") if units == {"colli"} else tr("清单数量")))
-        # 清单本来就是件数：不显示重复的「清单件数」，也不显示「确定箱数」（清单件数 ↔ 确定件数 直接对比）；
-        # 只有一家门店：不显示门店列
-        self._unit_forced = {12, 15} if pieces else set()
+        # 一律按箱看：清单箱数（清单按件的折成箱）→ 确定箱数
+        self.ctl.set_title(_col(11), tr("清单箱数"))
+        self._update_tabs()
         self._build_chips(meta["stores"])
         self._fill_suppliers()
         self._apply_forced()
@@ -639,7 +693,7 @@ class OrderCheck:
         self.window.setWindowTitle(tr("检查门店订货清单 — {0} · {1} 个商品",
                                       "、".join(store_label(k) for k in meta["stores"]), len(rows)))
         self.window.bring_up()
-        self.msg.setText(tr("✔ 门店 {0}：{1} 个商品，检查完成。在检查窗口核对「确定件数」后点「确认，开始比价」。",
+        self.msg.setText(tr("✔ 门店 {0}：{1} 个商品，检查完成。在检查窗口核对「确定箱数」后点「确认，开始比价」。",
                             "、".join(store_label(k) for k in meta["stores"]), len(rows)))
 
     def _vals(self, i):
@@ -649,11 +703,11 @@ class OrderCheck:
         pack = x["pack"] or 0
         daily = x.get("daily") if x.get("daily") is not None else x.get("daily0")
         return _perm([" · ".join([self._verdict(x)[1]] + [m[1] for m in self._marks(x)]), x["code"], x["ean"], x["name"],
-                      f"{max(0.0, x['store_inv']):g}" if isinstance(x["store_inv"], (int, float)) else "",
+                      f"{x['store_inv']:g}" if isinstance(x["store_inv"], (int, float)) else "",
                       *sales, _days(_cover(x)), f"{x['pack']:g}" if x["pack"] else "",
-                      f"{x['file_qty']:g}", f"{x['file_pcs']:g}",
-                      f"{x['suggested']:,}" if x["in_db"] else "", f"{x['final']:,}",
-                      f"{math.ceil(x['final'] / pack):,}" if pack > 0 and x["final"] > 0 else "",
+                      f"{x['lbox']:,}", f"{x['file_pcs']:g}",
+                      f"{x['suggested']:,}" if x["in_db"] else "", f"{x['final']:,}" if pack > 0 else "",
+                      f"{x['fbox']:,}",
                       x.get("tier") or "",
                       f"{x['cycle']:g}" if isinstance(x.get("cycle"), (int, float)) else "",
                       f"{daily:.2f}" if daily else "",
@@ -667,8 +721,7 @@ class OrderCheck:
         """(类别, 文字)：确定件数和门店清单比，不订 / 照清单订 / 多订 / 少订 / 建议调货"""
         key = (x.get("store"), str(x.get("code")))
         moved = key in self._moves_in                  # 只算调进来的
-        return R.review_verdict(math.ceil(x.get("file_pcs") or 0), x["final"], moved, x.get("in_db", True),
-                                x.get("pack") or None, tr("照清单订"))
+        return R.review_verdict(x["lbox"], x["fbox"], moved, x.get("in_db", True), None, tr("照清单订"))
 
     def _reason_lines(self, x):
         """为什么：直白的几句话（「原因」列、鼠标提示、右边详情栏共用，和订货明细同一个写法）"""
@@ -686,11 +739,10 @@ class OrderCheck:
         lines = R.plain_reason(x.get("inv0"), x.get("daily0"), x.get("cycle"), sugg,
                                boxes=math.ceil(sugg / pack) if pack > 0 and sugg > 0 else None, target=x.get("target"),
                                in_db=x.get("in_db", True), transfer=tin, pack=pack)
-        listed = math.ceil(x.get("file_pcs") or 0)
-        if x.get("in_db", True) and listed != sugg:
-            lines.append(tr("门店清单报了 {0:,} 件", listed))
-        if x.get("in_db", True) and x["final"] != sugg:
-            lines.append(tr("现在确定 {0:,} 件（手动改过）", x["final"]))
+        if x.get("in_db", True) and x.get("sbox") is not None and x["lbox"] != x["sbox"]:
+            lines.append(tr("门店清单报了 {0:,} 箱", x["lbox"]))
+        if x.get("sbox") is not None and x["fbox"] != x["sbox"]:
+            lines.append(tr("现在确定 {0:,} 箱（手动改过）", x["fbox"]))
         return lines
 
     def _marks(self, x):
@@ -700,16 +752,28 @@ class OrderCheck:
         return R.review_marks(x.get("target") is not None, x["final"] > 0, self._arrive_days(x), x.get("store_inv"))
 
     def _arrive_days(self, x):
-        """到货后够卖：(库存 + 确定件数 − 调给别的店的) ÷ 日均（调进来的已经算在确定件数里）；不订也不调出 → None"""
-        out = sum(t["pieces"] for t in self._moves_out.get((x.get("store"), str(x.get("code"))), []))
-        if x["final"] <= 0 and not out:
+        """
+        到货后够卖：(库存 + 订的箱数 × 每箱件数 + 调进来的 − 调给别的店的) ÷ 日均；不订也不调出 → None
+        （有调进来的：订的箱数是调货以后的）
+        """
+        key = (x.get("store"), str(x.get("code")))
+        out = sum(t["pieces"] for t in self._moves_out.get(key, []))
+        m = self._moves_in.get(key)
+        have = (m["colli_after"] * _pk(x) + m["pieces"]) if m else x["final"]
+        if have <= 0 and not out:
             return None
-        return _cover(x, x["final"] - out)
+        return _cover(x, have - out)
 
     def _change_text(self, x):
-        """确定件数比门店清单多 / 少几件（一样就空着，表格干净）"""
-        d = int(x["final"]) - int(math.ceil(x.get("file_pcs") or 0))
+        """确定箱数比门店清单多 / 少几箱（一样就空着，表格干净）"""
+        d = int(x["fbox"]) - int(x["lbox"])
         return f"{d:+,}" if d else ""
+
+    def _need_pcs(self, x):
+        """调货用的「真正要的件数」：确定箱数没改（= 系统建议）就用系统算的件数（零头才能调），改过就按箱数 × 每箱件数"""
+        if x.get("sbox") is not None and x["fbox"] == x["sbox"]:
+            return int(x.get("suggested") or 0)
+        return int(x["final"])
 
     def _transfer_text(self, x):
         key = (x.get("store"), str(x.get("code")))
@@ -721,7 +785,7 @@ class OrderCheck:
             p = TR.norm_override(ov)["pieces"]
             return tr("不调") + "  ✎" if not p else tr("调不了 {0} 件", p)
         # 要订、没调货的写「不调」（不订的行空着；调出去的不显示，审核只要知道从哪调进来）
-        return tr("不调") if x.get("in_db", True) and int(x.get("final") or 0) > 0 else ""
+        return tr("不调") if not _problem(x) and int(x.get("fbox") or 0) > 0 else ""
 
     def freeze_transfers(self):
         """第一次人工改（调货或确定件数）：把现在系统建议的调货冻结下来，以后改一行别的行不跟着变"""
@@ -742,7 +806,7 @@ class OrderCheck:
         if not snap:
             self.win.show_toast(tr("没有其他门店的库存数据，不能调货"))
             return
-        if not x.get("in_db", True) or int(x.get("final") or 0) <= 0:
+        if _problem(x) or int(x.get("fbox") or 0) <= 0:
             self.win.show_toast(tr("这一行不订货，不用调货"))
             return
         import store_orders as SO
@@ -769,11 +833,11 @@ class OrderCheck:
         key = (sid, code)
         m = self._moves_in.get(key)
         pack = float(x.get("pack") or 1) or 1.0
-        need = int(x["final"])
-        colli = int(math.ceil(need / pack))
+        need = self._need_pcs(x)
+        colli = int(x["fbox"])
         from erp_widgets import TransferEditDialog
         dlg = TransferEditDialog(self.window, x.get("name") or code,
-                                 tr("{0} 这次要 {1:g} 件，一箱 {2:g} 件，系统建议订 {3:g} 箱",
+                                 tr("{0} 这次要 {1:g} 件，一箱 {2:g} 件，现在订 {3:g} 箱",
                                     R.STORES.get(sid, sid), need, pack, colli),
                                  stores, (m["from"], m["pieces"]) if m else None, need, pack, colli)
         if not dlg.exec() or dlg.value is None:
@@ -796,8 +860,7 @@ class OrderCheck:
         key = (x.get("store"), str(x.get("code")))
         m = self._moves_in.get(key)
         if m:
-            return tr("调进 {0} 件 ← {1}，还订 {2} 件", m["pieces"], R.STORES.get(m["from"], m["from"]),
-                      max(0, int(x["final"]) - int(m["pieces"])))
+            return tr("调进 {0} 件 ← {1}，还订 {2} 箱", m["pieces"], R.STORES.get(m["from"], m["from"]), m["colli_after"])
         return ""
 
     # ---------- 右边详情栏（和订货明细一致）----------
@@ -923,7 +986,7 @@ class OrderCheck:
         (a1, a2), (b1, b2), (c1, c2), (d1, d2) = self.minis
         if x.get("in_db", True):
             inv = x.get("store_inv")
-            inv = max(0.0, float(inv)) if isinstance(inv, (int, float)) else 0.0     # 负库存一律当 0
+            inv = float(inv) if isinstance(inv, (int, float)) else 0.0     # 显示原值（计算时负数当 0）
             a1.setText(f"{inv:g}")
             a2.setText(tr("件"))
             daily = x.get("daily") if x.get("daily") is not None else x.get("daily0")
@@ -957,7 +1020,7 @@ class OrderCheck:
         if not x.get("in_db", True):
             self.why_t.setText(tr("为什么这么建议"))
         elif sugg > 0:
-            self.why_t.setText(tr("为什么建议 {0:g} 箱", math.ceil(sugg / pack)) if pack else tr("为什么建议 {0:,} 件", sugg))
+            self.why_t.setText(tr("为什么建议 {0:g} 箱", x["sbox"]) if x.get("sbox") is not None else tr("为什么建议 {0:,} 件", sugg))
         else:
             self.why_t.setText(tr("为什么不用订"))
         self.why.setText("\n".join(["· " + l for l in self._reason_lines(x)] + ["⚠ " + m[2] for m in self._marks(x)]))
@@ -972,10 +1035,10 @@ class OrderCheck:
             if not d:
                 continue
             ox = self._by_key.get((osid, code))
-            on = math.ceil(ox["final"] / pack) if ox and pack and ox["final"] > 0 else 0
+            on = int(ox.get("fbox") or 0) if ox else 0
             v = _cover({"in_db": True, "inv0": d.get("inv"), "daily0": d.get("daily")})
             l = QLabel(f"{R.STORES.get(osid, osid)}    " +
-                       tr("库存 {0:g} · 够卖 {1} 天 · 订 {2:g} 箱", max(0.0, float(d.get("inv") or 0)), _days(v) or "—", on))
+                       tr("库存 {0:g} · 够卖 {1} 天 · 订 {2:g} 箱", float(d.get("inv") or 0), _days(v) or "—", on))
             l.setObjectName("Faint" if not on else "")
             self.others.addWidget(l)
         if not self.others.count():
@@ -984,7 +1047,10 @@ class OrderCheck:
             self.others.addWidget(l)
 
     def _replan(self, render=True):
-        """按现在的确定件数重新算门店间调货（改了确定件数以后稍等一下再算，不卡）"""
+        """按现在的确定箱数重新算门店间调货（改了以后稍等一下再算，不卡）"""
+        missing = [x for x in self.rows if "fbox" not in x]
+        if missing:                                    # 还没按箱整理过的行（保险）
+            init_boxes(missing, (self.meta or {}).get("units"))
         self._moves_in, self._moves_out = {}, {}
         self._moves = []
         if self.rows and self.meta.get("snap"):
@@ -1040,6 +1106,17 @@ class OrderCheck:
             self.f_sup.addItem(f"{n}（{cnt[n]}）", n)
         self.f_sup.blockSignals(False)
 
+    def _update_tabs(self):
+        """两个标签页带个数；没有数据库没有 / 没箱规的商品就不显示标签页"""
+        n_bad = sum(1 for x in self.rows if _problem(x))
+        self.tabs.blockSignals(True)
+        self.tabs.setTabText(0, tr("清单商品（{0}）", len(self.rows) - n_bad))
+        self.tabs.setTabText(1, tr("⚠ 数据库没有 / 没有箱规（{0}）", n_bad))
+        if not n_bad:
+            self.tabs.setCurrentIndex(0)
+        self.tabs.blockSignals(False)
+        self.tabs_box.setVisible(bool(n_bad))
+
     def _store_sel(self):
         b = self.store_group.checkedButton() if hasattr(self, "store_group") else None
         v = b.property("sid") if b is not None else -1
@@ -1088,18 +1165,18 @@ class OrderCheck:
         if not self.rows:
             self.count_lbl.setText("")
             return
-        n_edit = sum(1 for x in self.rows if x["in_db"] and x["final"] != x["suggested"])
+        n_edit = sum(1 for x in self.rows if x.get("sbox") is not None and x["fbox"] != x["sbox"])
         boxes = amt = 0.0
         for i in getattr(self.ctl, "visible", None) or []:
             x = self.rows[i]
-            pk = float(x.get("pack") or 0)
-            if x["final"] > 0:
-                boxes += math.ceil(x["final"] / pk) if pk > 0 else 0
-                try:
-                    p = float(x.get("price") or 0)
-                    amt += x["final"] * (p if p == p else 0)
-                except (TypeError, ValueError):
-                    pass
+            m = self._moves_in.get((x.get("store"), str(x.get("code"))))
+            b = m["colli_after"] if m else x["fbox"]          # 有调货的按调货以后的箱数
+            boxes += b
+            try:
+                p = float(x.get("price") or 0)
+                amt += b * _pk(x) * (p if p == p else 0)
+            except (TypeError, ValueError):
+                pass
         self.count_lbl.setText(tr("显示 {0} / {1} 行 · 已改 {2} 处 · 当前筛选合计 {3:g} 箱 · €{4:,.2f}",
                                   shown, total, n_edit, boxes, amt))
         self.count_lbl.setToolTip(getattr(self, "page_sum", None).text() if hasattr(self, "page_sum") else "")
@@ -1112,6 +1189,8 @@ class OrderCheck:
         sup = self.f_sup.currentData()
         if sup and (x.get("sup_name") or "") != sup:
             return True
+        if _problem(x) != (self.tabs.currentIndex() == 1):      # 标签页：清单商品 / 数据库没有、没有箱规
+            return True
         text = self.flt.text().strip().lower()
         view = self.view.currentData()
         kind = self._verdict(x)[0]
@@ -1121,6 +1200,9 @@ class OrderCheck:
                (bool(text) and text not in f"{x['code']} {x['ean']} {x['name']} {x.get('sup_code') or ''} {x.get('sup_name') or ''}".lower())
 
     def _fill(self):
+        missing = [x for x in self.rows if "fbox" not in x]
+        if missing:
+            init_boxes(missing, (self.meta or {}).get("units"))
         self.ctl.render()
         self._summary()
 
@@ -1149,7 +1231,7 @@ class OrderCheck:
         elif x.get("pack"):
             pk.setToolTip(tr("报价里没有这个商品，用数据库箱规"))
         ch = t.item(k, _col(CHANGE_COL))
-        d = int(x["final"]) - int(math.ceil(x.get("file_pcs") or 0))
+        d = int(x["fbox"]) - int(x["lbox"])
         ch.setForeground(QColor(T("accent") if d > 0 else T("warn") if d < 0 else T("faint")))
         if d:
             f = ch.font()
@@ -1164,7 +1246,7 @@ class OrderCheck:
         elif tkey in self.transfer_ov:
             tri.setForeground(QColor(T("faint")))
             tri.setToolTip(tr("人工改过：双击重新选调出门店和件数；「全部用建议量」恢复系统算的调货"))
-        elif x["final"] > 0:
+        elif x["fbox"] > 0 and not _problem(x):
             tri.setForeground(QColor(T("faint")))
             tri.setToolTip(tr("双击：这个商品改成从别的门店调货"))
         reason = "\n".join(self._reason_lines(x) + ["⚠ " + m[2] for m in self._marks(x)])
@@ -1194,17 +1276,15 @@ class OrderCheck:
         f.setBold(kind in ("transfer", "more", "less", "none"))
         vc.setFont(f)
         c = self.table.item(k, EDIT_COL)
-        c.setText(f"{x['final']:,}")
+        c.setText(f"{x['fbox']:,}")
         f = c.font()
-        f.setBold(x["final"] > 0)
+        f.setBold(x["fbox"] > 0)
         c.setFont(f)
-        changed = x["in_db"] and x["final"] != x["suggested"]
-        c.setForeground(QColor(T("warn") if changed else T("accent") if x["final"] > 0 else T("faint")))
+        changed = x.get("sbox") is not None and x["fbox"] != x["sbox"]
+        c.setForeground(QColor(T("warn") if changed else T("accent") if x["fbox"] > 0 else T("faint")))
         c.setBackground(QColor(T("warn_soft")) if changed else QColor(0, 0, 0, 0))
-        c.setToolTip(tr("手动改过：系统建议 {0:,} 件", x["suggested"]) if changed else tr("双击修改，0 = 不订"))
-        pack = x["pack"] or 0
-        self.table.item(k, BOX_COL).setText(
-            f"{math.ceil(x['final'] / pack):,}" if pack > 0 and x["final"] > 0 else "")
+        c.setToolTip(tr("手动改过：系统建议 {0:,} 箱", x["sbox"]) if changed else tr("双击修改箱数，0 = 不订"))
+        self.table.item(k, PCS_COL).setText(f"{x['final']:,}" if _pk(x) > 0 else "")
         # 订后够卖：跟着确定件数变；超过凑单天数标黄
         a = self.table.item(k, AFTER_COL)
         v = self._arrive_days(x)
@@ -1215,7 +1295,7 @@ class OrderCheck:
         a.setToolTip(tr("订完要很久才卖得完（超过 {0} 天），可能压货", int(limit)) if over else "")
         ch = self.table.item(k, _col(CHANGE_COL))
         if ch is not None:
-            d = int(x["final"]) - int(math.ceil(x.get("file_pcs") or 0))
+            d = int(x["fbox"]) - int(x["lbox"])
             ch.setText(self._change_text(x))
             ch.setForeground(QColor(T("accent") if d > 0 else T("warn") if d < 0 else T("faint")))
 
@@ -1257,11 +1337,11 @@ class OrderCheck:
             if n < 0 or n != int(n):
                 raise ValueError
         except ValueError:
-            self.win.show_toast(tr("件数要填 0 或正整数"))
+            self.win.show_toast(tr("箱数要填 0 或正整数"))
             n = None
-        if n is not None and int(n) != self.rows[i]["final"]:
-            self.freeze_transfers()                   # 改了确定件数：别的行的调货不跟着变
-            self.rows[i]["final"] = int(n)
+        if n is not None and int(n) != self.rows[i]["fbox"]:
+            self.freeze_transfers()                   # 改了确定箱数：别的行的调货不跟着变
+            _set_box(self.rows[i], int(n))
         # 等编辑框关掉再更新这一行（编辑中途改格子会让程序卡住）
         QTimer.singleShot(0, lambda: (self._show(i), self._summary(), self._plan_timer.start()))
 
@@ -1270,10 +1350,10 @@ class OrderCheck:
             self.transfer_ov = {}                     # 人工改的调货也恢复成系统算的（解冻，按设置重新建议）
             self.transfer_frozen = False
         for x in self.rows:
-            if which == "sugg":
-                x["final"] = x["suggested"] if x["in_db"] else int(math.ceil(x["file_pcs"]))
+            if which == "sugg" and x.get("sbox") is not None:
+                _set_box(x, x["sbox"])
             else:
-                x["final"] = int(math.ceil(x["file_pcs"]))
+                _set_box(x, x["lbox"])
         self._replan()
 
     def _filter(self, *_):
@@ -1286,7 +1366,7 @@ class OrderCheck:
         for x in self.rows:
             k_ = self._verdict(x)[0]
             cnt[k_] = cnt.get(k_, 0) + 1
-        n_edit = sum(1 for x in self.rows if x["in_db"] and x["final"] != x["suggested"])
+        n_edit = sum(1 for x in self.rows if x.get("sbox") is not None and x["fbox"] != x["sbox"])
         txt = tr("{0} 个商品：照清单订 {1}，多订 {2}，少订 {3}，不订 {4}，建议调货 {5}，数据库没有 {6}。手动改了 {7} 个。",
                  len(self.rows), cnt["same"], cnt["more"], cnt["less"], cnt["none"], cnt["transfer"], cnt["nodb"], n_edit)
         # 采购金额估算：最便宜那家报价的件价（没有报价的用数据库进价 PrezzoForn）× 件数；实际金额以「开始处理」后的比价为准
@@ -1296,9 +1376,9 @@ class OrderCheck:
                 return v if v == v else 0.0
             except (TypeError, ValueError):
                 return 0.0
-        amt_file = sum(price(x) * (x["file_pcs"] or 0) for x in self.rows)
-        amt_final = sum(price(x) * x["final"] for x in self.rows)
-        no_price = sum(1 for x in self.rows if x["final"] > 0 and not price(x))
+        amt_file = sum(price(x) * x["lbox"] * _pk(x) for x in self.rows)
+        amt_final = sum(price(x) * x["fbox"] * _pk(x) for x in self.rows)
+        no_price = sum(1 for x in self.rows if x["fbox"] > 0 and not price(x))
         if amt_file or amt_final:
             txt += "\n" + tr("估算采购金额（有报价的按最便宜那家，没有的按数据库进价）：清单 €{0:,.2f} → 确定 €{1:,.2f}",
                              amt_file, amt_final)
@@ -1331,7 +1411,7 @@ class OrderCheck:
         ws = wb.active
         ws.title = "清单检查"
         ws.append(["门店", "判断", "商品编号", "条码", "名称", "本店库存", *[f"{x}天销量" for x in d], "库存够卖（天）", "箱规",
-                   "清单数量", "清单件数", "清单订后够卖（天）", "建议件数", "确定件数", "变化（件）", "确定订后够卖（天）",
+                   "清单箱数", "清单件数", "清单订后够卖（天）", "建议件数", "确定箱数", "变化（箱）", "确定订后够卖（天）",
                    "调货", "原因", "系统说明"])
         for c in ws[1]:
             c.font = Font(bold=True)
@@ -1339,11 +1419,11 @@ class OrderCheck:
             return None if v is None else ("∞" if math.isinf(v) else round(v))
 
         for x in self.rows:
-            ws.append([R.STORES.get(x.get("store"), ""), self._verdict(x)[1], x["code"], x["ean"], x["name"], max(0.0, x["store_inv"]) if isinstance(x["store_inv"], (int, float)) else x["store_inv"],
+            ws.append([R.STORES.get(x.get("store"), ""), self._verdict(x)[1], x["code"], x["ean"], x["name"], x["store_inv"],
                        *x["sales"], num(_cover(x)),
-                       x["pack"] or None, x["file_qty"], x["file_pcs"],
+                       x["pack"] or None, x["lbox"], x["file_pcs"],
                        num(_cover(x, x["file_pcs"])) if (x.get("file_pcs") or 0) > 0 else None,
-                       x["suggested"] if x["in_db"] else None, x["final"], self._change_text(x),
+                       x["suggested"] if x["in_db"] else None, x["fbox"], self._change_text(x),
                        num(self._arrive_days(x)), self._transfer_tip(x),
                        R.reason_text(x.get("inv0"), x.get("daily0"), x.get("cycle"), x.get("suggested"), x.get("target"),
                                      x.get("in_db", True)), x["decision"]])
@@ -1404,7 +1484,7 @@ class OrderCheck:
         return cur if cur and os.path.isdir(cur) else ""
 
     def _to_order(self, sid):
-        return sum(1 for x in self.rows if x.get("store") == sid and x["final"] > 0)
+        return sum(1 for x in self.rows if x.get("store") == sid and x["fbox"] > 0)
 
     def transfer_plan(self):
         """按现在的确定件数算门店间调货：(调货单, {(门店, 商品编号): 调货后还要订的件数})"""
@@ -1413,8 +1493,9 @@ class OrderCheck:
         so = self.settings.get("store_orders") or {}
         far = TR.excluded_stores(so.get("transfer"), (dict(SO.DEFAULT_FILL, **(so.get("fill") or {}))).get("far_stores"))
         by_store = {}
-        for x in self.rows:
-            by_store.setdefault(x.get("store"), []).append(x)
+        for x in self.rows:                       # 调货按「真正要的件数」算（确定箱数没改就是系统算的件数，零头才能调）
+            by_store.setdefault(x.get("store"), []).append(dict(x, final=self._need_pcs(x)) if not _problem(x) else
+                                                          dict(x, final=0))
         snap = self.meta.get("snap")
         if not snap:
             return [], {}
@@ -1455,8 +1536,15 @@ class OrderCheck:
                     self.win.log(tr("[文件] {0}：扣减文件 {1} 个", R.STORES.get(sid), n_el))
             except Exception as e:
                 problems.append(tr("{0}：扣减文件没复制过去：{1}", R.STORES.get(sid), e))
-            rows = [dict(x, final=new_final.get((sid, str(x.get("code"))), x["final"]))
-                    for x in self.rows if x.get("store") == sid]
+            rows = []
+            for x in self.rows:
+                if x.get("store") != sid:
+                    continue
+                y = dict(x)
+                left = new_final.get((sid, str(x.get("code"))))
+                if left is not None:                       # 调货以后还要订的箱数
+                    _set_box(y, int(math.ceil(left / _pk(x) - 1e-9)) if _pk(x) > 0 else 0)
+                rows.append(y)
             mine = [m for m in moves if sid in (m["from"], m["to"])]
             try:
                 path, written, skipped = R.write_checked_order(rows, root, sid)

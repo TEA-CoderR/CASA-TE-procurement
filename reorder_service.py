@@ -602,11 +602,12 @@ def export_report(rows, path, days_list=None, store_id=None):
 ORDER_HEADERS = ["CODICE EAN", "ARTICOLO", "COLLI", "PEZZI", "CodArticolo", "CASSA_DB", "NEGOZIO"]
 
 
-def write_main_order(rows, root_folder, store_id, from_file=None, prefix="订货建议"):
+def write_main_order(rows, root_folder, store_id, from_file=None, prefix="订货建议", pieces=True):
     """
     生成采购系统主订单：总文件夹/ORDINE/订货建议_门店_时间.xlsx
     只放建议件数 > 0 且有条码的商品；ORDINE 里原来的文件挪进 ORDINE/_旧订单/。
     PEZZI = 建议件数（采购系统按这个和各家每箱件数算箱数），COLLI = 按数据库箱规算的参考箱数。
+    pieces=False：不写 PEZZI 列，比价按 COLLI（箱数）分配供应商（检查门店清单确认的主订单）。
     返回 (路径, 写了几行, 没条码跳过的商品列表)
     """
     from openpyxl import Workbook
@@ -627,7 +628,8 @@ def write_main_order(rows, root_folder, store_id, from_file=None, prefix="订货
     wb = Workbook()
     ws = wb.active
     ws.title = "ORDINE"
-    ws.append(ORDER_HEADERS)
+    heads = ORDER_HEADERS if pieces else [h for h in ORDER_HEADERS if h != "PEZZI"]
+    ws.append(heads)
     n, skipped = 0, []
     for x in rows:
         if x["suggested"] <= 0:
@@ -636,7 +638,9 @@ def write_main_order(rows, root_folder, store_id, from_file=None, prefix="订货
             skipped.append(x)
             continue
         colli = x["ord_colli"] or 1
-        ws.append([x["ean"], x["name"], colli, x["suggested"], x["code"], x["pack"] or None, STORES.get(store_id, store_id)])
+        vals = {"CODICE EAN": x["ean"], "ARTICOLO": x["name"], "COLLI": colli, "PEZZI": x["suggested"],
+                "CodArticolo": x["code"], "CASSA_DB": x["pack"] or None, "NEGOZIO": STORES.get(store_id, store_id)}
+        ws.append([vals[h] for h in heads])
         ws.cell(ws.max_row, 1).number_format = "@"
         n += 1
     ws.freeze_panes = "A2"
@@ -1055,8 +1059,9 @@ def checked_main_orders(ordine_folder):
 
 def write_checked_order(rows, root_folder, store_id, source_name=""):
     """
-    确认后的订货量写成采购主订单（ORDINE 文件夹）：PEZZI = 确定件数，COLLI = 按数据库箱规折合的箱数。
-    确定件数为 0 的不写；没有条码的跳过。原来的文件挪进 ORDINE/_旧订单。返回 (路径, 行数, 跳过列表)
+    确认后的订货量写成采购主订单（ORDINE 文件夹）：COLLI = 确定箱数（final = 箱数 × 每箱件数；没有箱规的 final 就是箱数）。
+    不写 PEZZI：比价按箱数分配供应商（2026-10-21 用户：先按箱数，件数分配以后有问题再说）。
+    确定为 0 的不写；没有条码的跳过。原来的文件挪进 ORDINE/_旧订单。返回 (路径, 行数, 跳过列表)
     """
     conv = []
     for x in rows:
@@ -1064,6 +1069,9 @@ def write_checked_order(rows, root_folder, store_id, source_name=""):
         pack = x.get("pack") or 0
         y = dict(x)
         y["suggested"] = final
-        y["ord_colli"] = math.ceil(final / pack) if pack > 0 and final > 0 else final
+        y["ord_colli"] = math.ceil(final / pack - 1e-9) if pack > 0 and final > 0 else final
+        if x.get("fbox") is not None:                # 检查窗口里定的箱数（调货以后的）
+            y["ord_colli"] = int(x["fbox"])
+            y["suggested"] = y["ord_colli"]
         conv.append(y)
-    return write_main_order(conv, root_folder, store_id, prefix="确认订单")
+    return write_main_order(conv, root_folder, store_id, prefix="确认订单", pieces=False)

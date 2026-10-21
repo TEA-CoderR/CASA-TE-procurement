@@ -66,7 +66,7 @@ COMPANY_DEFAULTS = {
     },
     # 检查门店订货清单：订货周期、销量周期、不按配置文件周期；表格默认藏起来的列（名称也藏，右边详情栏里有）
     "reorder": {"cycle": 30, "days": [30, 60, 90, 180], "use_supplier_cycles": False,
-                "check_cols_hidden": [1, 5, 6, 7, 8, 12, 13, 19, 21, 23, 25, 27], "check_cols_hidden_ver": 5},
+                "check_cols_hidden": [1, 5, 6, 7, 8, 12, 13, 14, 19, 21, 23, 25, 27], "check_cols_hidden_ver": 6},
     # 起订规则：关键词用供应商名字里固定的词（文件名每周变，这样下周也认得出）
     "rules": [
         {"enabled": True, "name": "MEGA CASH", "keyword": "mega", "min_colli": 200.0, "min_amount": 700.0,

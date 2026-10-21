@@ -282,3 +282,19 @@ def test_supplier_info_into_rows_and_snapshot(tmp_path):
     p = R.save_snapshot(str(main), 2, {2: {"7": {"inv": 1, "daily": 0.5, "cycle": 30}}}, rows)
     data = json.load(open(p, encoding="utf-8"))
     assert data["by_ean"]["800"]["sup_code"] == "AM1" and data["by_ean"]["800"]["sup_name"] == "WOLSEN"
+
+
+def test_checked_order_is_by_boxes(tmp_path):
+    """检查清单确认的主订单：COLLI = 确定箱数，不写 PEZZI（比价按箱数分配供应商）"""
+    from openpyxl import load_workbook
+    import reorder_service as R
+    rows = [{"code": "7", "ean": "800", "name": "A", "pack": 12, "final": 24, "fbox": 2},
+            {"code": "8", "ean": "801", "name": "B", "pack": 0, "final": 3, "fbox": 3},
+            {"code": "9", "ean": "802", "name": "C", "pack": 6, "final": 0, "fbox": 0}]
+    path, n, skipped = R.write_checked_order(rows, str(tmp_path), 2)
+    ws = load_workbook(path).active
+    heads = [c.value for c in ws[1]]
+    assert "PEZZI" not in heads and n == 2
+    colli = heads.index("COLLI")
+    assert [r[colli] for r in ws.iter_rows(min_row=2, values_only=True)] == [2, 3]
+
