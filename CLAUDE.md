@@ -16,6 +16,7 @@
 - 用户和同事**共用同一个文件夹**（`procurement_system ok 2.5`）开发。请直接在这个文件夹里改代码、`git commit`、`git push`，不要只推到云端分支却把文件另外写进文件夹（之前这样做过，文件夹和 git 记录对不上，发布前得先同步）。
 
 ## 最近改动（给接手的 AI 的纸条，新的写在最上面）
+- 2026-10-21：检查门店订货清单窗口改成和订货明细一个样子：顶部一行工具条（门店按钮 `_build_chips`、搜索、「看哪些」下拉带个数、恢复建议值、更多 ▾），底部状态栏（显示几个 · 改了几个 · 估算金额 · 调货 + 「确认，开始比价」）。默认列顺序 / 藏哪些列改了（`_LAYOUT_VER` 6、`_HIDDEN_VER` 5，`settings.COMPANY_DEFAULTS` 的 check_cols_hidden 同步）。
 - 2026-10-21：调货改成「系统建议一次 + 人工改」：双击「调货」格弹 `erp_widgets.TransferEditDialog`（选调出门店 + 件数 / 不调），不再用格子里的编辑框。第一次人工改（检查清单里改确定件数也算）就把系统建议冻结（`transfers.freeze`，overrides 里 auto=True），之后只按 overrides 调，改一行别的行不变；调货设置改了 / 恢复建议值才解冻（`unfreeze`）。系统建议改成每个商品从多出来最多的门店调（`transfers.plan`）。门店配货 `_preview` 加了缓存，改一个调货只重算那家供应商。
 - 2026-10-21：配单订单文件：Colli 列只有订了的行留黄底（不订的行借用左边 PZ*COLLI 那一格的格式，`_set_cells(plain_col=)`）；月均 / 采购量 / 箱数 / 需求不写进文件（`store_orders.file_extra`，程序内部的 `extra_fields` 不变）。Codice Fornitore：SCHEDA 读 `sup_code`（订货明细一列）；批发商比价检查清单时从数据库查 `ArticoloForn` + 供应商名（`reorder_service.supplier_info`），存进快照，缺失商品列表 / 缺失报告显示；旧主订单在比价时按条码补查（`service.fill_missing_suppliers`）。
 - 2026-10-20：公司统一默认设置写在 `settings.COMPANY_DEFAULTS`：每台电脑新装 / 更新后第一次打开时套用一次（`company_defaults_ver`），只改业务规则，不动个人设置。要再推一次新的统一设置：改值并把 `COMPANY_DEFAULTS_VER` 加 1。

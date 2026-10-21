@@ -2204,4 +2204,10 @@ TRANSLATIONS = {
     '这一行系统没建议订货，不用调货': ('Nothing suggested on this row, no transfer needed', 'Nessun ordine suggerito in questa riga, nessun trasferimento'),
     '人工改过：双击重新选调出门店和件数；「恢复建议值」恢复系统算的调货': ('Changed by hand: double-click to choose store and pieces again; "Restore suggestion" restores the calculated transfer', 'Modificato a mano: doppio clic per scegliere di nuovo negozio e pezzi; «Ripristina suggerimento» ripristina il trasferimento calcolato'),
     '已改调货：{0} ← {1} {2} 件': ('Transfer changed: {0} ← {1} {2} pcs', 'Trasferimento modificato: {0} ← {1} {2} pz'),
+    '全部商品的确定件数恢复成系统建议的（人工改的调货也恢复）': ('Reset the confirmed pieces of all items to the suggestion (manual transfers too)', 'Riporta i pezzi confermati di tutti gli articoli al suggerimento (anche i trasferimenti manuali)'),
+    '全部用清单数量、显示哪些列、导出 Excel': ('Use all list quantities, choose columns, export Excel', 'Usa tutte le quantità della lista, scegli colonne, esporta Excel'),
+    '双击「确定件数」修改 · 双击「调货」改调货': ('Double-click "Confirmed pcs" to edit · double-click "Transfer" to change the transfer', 'Doppio clic su «Pezzi confermati» per modificare · doppio clic su «Trasferimento» per cambiarlo'),
+    '手动改了 {0} 个': ('{0} changed by hand', '{0} modificati a mano'),
+    '估算 €{0:,.0f}（清单 €{1:,.0f}）': ('Estimate €{0:,.0f} (list €{1:,.0f})', 'Stima €{0:,.0f} (lista €{1:,.0f})'),
+    '调货 {0} 个，少订 {1} 箱': ('{0} transfers, {1} fewer boxes', '{0} trasferimenti, {1} colli in meno'),
 }

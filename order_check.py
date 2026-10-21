@@ -14,10 +14,11 @@ import threading
 from datetime import datetime
 
 from PySide6.QtCore import Qt, QObject, Signal, QTimer
-from PySide6.QtGui import QColor
+from PySide6.QtGui import QColor, QFontMetrics
 from PySide6.QtWidgets import (QWidget, QLabel, QPushButton, QLineEdit, QComboBox, QHBoxLayout, QVBoxLayout,
                                QFileDialog, QMessageBox, QSpinBox, QAbstractItemView, QHeaderView, QDialog,
-                               QGridLayout, QFrame, QStyledItemDelegate, QAbstractSpinBox)
+                               QGridLayout, QFrame, QStyledItemDelegate, QAbstractSpinBox, QButtonGroup, QMenu,
+                               QSizePolicy)
 
 from i18n import tr
 from settings import save_settings
@@ -37,11 +38,12 @@ from reorder_page import short_decision, store_label, algo_widgets
 # 2026-10-20 第三版：和门店配货的订货明细同一个样子（调货只显示从哪家调进来）：
 #   门店 条码 名称 等级 周期 本店库存 日均 库存够卖 每箱件数 | 清单 判断 确定箱数 确定件数 ✎ 调货 | 到货后够卖 原因
 # 2026-10-21 加了 26 Codice Fornitore、27 供应商（数据库登记的），默认放在条码后面
-_ORDER = [22, 2, 26, 27, 3, 16, 17, 4, 18, 9, 10, 11, 12, 0, 15, 14, 24, 20, 25, 13, 19, 23, 21, 5, 6, 7, 8, 1]
-_LAYOUT_VER = 5           # 改了默认顺序就加 1
-# 默认只显示审核要看的：门店 判断 名称 | 本店库存 库存够卖 | 清单 → 确定 | 调货 | 确定订后够卖
-# （等级、日均、建议件数、变化、原因等在「显示哪些列」里打开）
-_DEFAULT_HIDDEN = [12, 13, 19, 23, 21, 5, 6, 7, 8, 1, 3]       # 名称也藏（右边详情栏里有）
+_ORDER = [22, 2, 26, 3, 27, 16, 17, 4, 18, 9, 10, 11, 12, 0, 15, 14, 24, 20, 25, 13, 19, 23, 21, 5, 6, 7, 8, 1]
+# 2026-10-21 第四版：窗口和订货明细一个样子（门店按钮、一行工具条、状态栏），名称显示、供应商和原因收起来（详情栏里有）：
+#   门店 条码 Codice 名称 等级 周期 本店库存 日均 库存够卖 每箱件数 | 清单 判断 确定箱数 确定件数 ✎ 调货 ✎ | 到货后够卖
+_LAYOUT_VER = 6           # 改了默认顺序就加 1
+_DEFAULT_HIDDEN = [12, 13, 19, 23, 21, 5, 6, 7, 8, 1, 27, 25]
+_HIDDEN_VER = 5           # 改了默认藏哪些列就加 1（settings.COMPANY_DEFAULTS 里的 check_cols_hidden 一起改）
 CHANGE_COL, TRANSFER_COL, REASON_COL = 23, 24, 25
 
 
@@ -197,10 +199,28 @@ class OrderCheck:
         self.box = QWidget()
         self.box.setObjectName("Dialog")
         bl = QVBoxLayout(self.box)
-        bl.setContentsMargins(16, 12, 16, 12)
-        bl.setSpacing(8)
-        tb = QHBoxLayout()
+        bl.setContentsMargins(0, 0, 0, 0)
+        bl.setSpacing(0)
+        # ---- 工具条（一行，和门店配货的订货明细一样）----
+        # 门店（按钮）| 搜索 | 看哪些（下拉，带个数）……  恢复建议值 | 更多 ▾（用清单数量、显示哪些列、列顺序、导出）
+        bar = QFrame()
+        bar.setObjectName("TopBar")
+        tb = QHBoxLayout(bar)
+        tb.setContentsMargins(16, 8, 16, 8)
         tb.setSpacing(8)
+        self.chip_lay = QHBoxLayout()          # 门店按钮：检查完按这次的门店建
+        self.chip_lay.setSpacing(8)
+        tb.addLayout(self.chip_lay)
+        self.store_group = QButtonGroup(bar)
+        self.store_group.setExclusive(True)
+        self.store_group.buttonClicked.connect(lambda _b: self._store_changed())
+        tb.addSpacing(6)
+        self.flt = QLineEdit()
+        self.flt.setPlaceholderText(tr("编号、条码或名称"))
+        self.flt.setMinimumWidth(90)
+        self.flt.setMaximumWidth(200)
+        self.flt.textChanged.connect(self._filter)
+        tb.addWidget(self.flt)
         self.view = QComboBox()
         for key, text in VIEWS:
             self.view.addItem(tr(text), key)
@@ -208,18 +228,15 @@ class OrderCheck:
         self.view.currentIndexChanged.connect(self._filter)
         tb.addWidget(self.view)
         tb.addStretch()
-        self.flt = QLineEdit()
-        self.flt.setPlaceholderText(tr("筛选编号、条码或名称"))
-        self.flt.setFixedWidth(200)
-        self.flt.textChanged.connect(self._filter)
-        tb.addWidget(self.flt)
-        b_s = QPushButton(tr("全部用建议量"))
+        b_s = QPushButton(tr("恢复建议值"))
+        b_s.setToolTip(tr("全部商品的确定件数恢复成系统建议的（人工改的调货也恢复）"))
         b_s.clicked.connect(lambda: self._set_all("sugg"))
-        b_f = QPushButton(tr("全部用清单数量"))
-        b_f.clicked.connect(lambda: self._set_all("file"))
         tb.addWidget(b_s)
-        tb.addWidget(b_f)
-        bl.addLayout(tb)
+        more = QPushButton(tr("更多") + " ▾")
+        more.setToolTip(tr("全部用清单数量、显示哪些列、导出 Excel"))
+        more.clicked.connect(lambda: self._more_menu(more))
+        tb.addWidget(more)
+        bl.addWidget(bar)
         self.table = ui.make_table(_perm([tr("判断"), tr("商品编号"), tr("条码"), tr("名称"), tr("本店库存"),
                                           "30", "60", "90", "180", tr("库存够卖（天）"), tr("每箱件数"), tr("清单数量"),
                                           tr("清单件数"), tr("建议件数"), tr("确定件数"), tr("确定箱数"), tr("等级"), tr("周期"), tr("日均"),
@@ -266,7 +283,7 @@ class OrderCheck:
         from erp_widgets import ColumnChooser
         self._forced = set()
         self.cols = ColumnChooser(self.table, self.cfg, "check_cols", _ORDER, lambda: save_settings(self.settings),
-                                  _DEFAULT_HIDDEN, ver=4, forced=lambda: self._forced)
+                                  _DEFAULT_HIDDEN, ver=_HIDDEN_VER, forced=lambda: self._forced)
         self._moves_in, self._moves_out = {}, {}
         self.transfer_ov = {}
         self.transfer_frozen = False
@@ -276,10 +293,7 @@ class OrderCheck:
         self._plan_timer.setSingleShot(True)
         self._plan_timer.setInterval(250)
         self._plan_timer.timeout.connect(self._replan)
-        self.ctl.rendered.connect(lambda n, tot: self.count_lbl.setText(
-            tr("显示 {0} / {1} 个 · 点表头排序，右键表头筛选，拖动表头换列的位置", n, tot)))
-        tb.insertWidget(0, ColumnFilterBox(self.ctl, _col(22), tr("门店")))
-        tb.insertWidget(tb.count() - 2, self.cols.button())
+        self.ctl.rendered.connect(lambda n, tot: self._status(n, tot))
         # 表格 + 右边详情栏（和门店配货的订货明细一样：选中一行看为什么）
         mid = QHBoxLayout()
         mid.setContentsMargins(0, 0, 0, 0)
@@ -290,30 +304,25 @@ class OrderCheck:
         self._cur_i = None
         self._by_key = {}
         self.table.currentCellChanged.connect(lambda r, c, pr, pc: self._select(r))
+        # ---- 状态栏：显示几个 · 改了几个 · 金额 · 调货 ……  确认，开始比价 ----
+        sb = QFrame()
+        sb.setObjectName("StatusBar")
+        sh = QHBoxLayout(sb)
+        sh.setContentsMargins(16, 7, 16, 7)
+        sh.setSpacing(12)
         self.count_lbl = QLabel("")
-        self.count_lbl.setObjectName("Faint")
-        crow = QHBoxLayout()
-        crow.addWidget(self.count_lbl, 1)
-        b_cols = QPushButton(tr("恢复默认列顺序"))
-        b_cols.setObjectName("Link")
-        b_cols.setToolTip(tr("拖动表头可以换列的位置、拖边线改宽度，下次打开保持"))
-        b_cols.clicked.connect(lambda: self._reset_cols())
-        crow.addWidget(b_cols)
-        bl.addLayout(crow)
-        acts = QHBoxLayout()
-        self.sum_msg = QLabel("")
-        self.sum_msg.setObjectName("Faint")
-        self.sum_msg.setWordWrap(True)
-        acts.addWidget(self.sum_msg, 1)
-        self.btn_export = QPushButton(tr("导出 Excel"))
-        self.btn_export.clicked.connect(self.export)
-        acts.addWidget(self.btn_export)
+        self.count_lbl.setObjectName("StatusText")
+        sh.addWidget(self.count_lbl, 1)
+        hint = QLabel(tr("双击「确定件数」修改 · 双击「调货」改调货"))
+        hint.setObjectName("StatusText")
+        sh.addWidget(hint)
         self.btn_confirm = QPushButton(tr("确认，开始比价"))
         self.btn_confirm.setObjectName("Primary")
         self.btn_confirm.setToolTip(tr("按「确定件数」给每家门店生成主订单，然后自动一家一家比价"))
         self.btn_confirm.clicked.connect(self.confirm)
-        acts.addWidget(self.btn_confirm)
-        bl.addLayout(acts)
+        sh.addWidget(self.btn_confirm)
+        bl.addWidget(sb)
+        self._shown = (0, 0)
         self.window.setCentralWidget(self.box)
         # 页面上只放一行摘要 + 打开窗口
         self.summary_row = QWidget()
@@ -609,8 +618,9 @@ class OrderCheck:
         self.ctl.set_title(_col(11), tr("清单件数") if pieces else (tr("清单箱数") if units == {"colli"} else tr("清单数量")))
         # 清单本来就是件数：不显示重复的「清单件数」，也不显示「确定箱数」（清单件数 ↔ 确定件数 直接对比）；
         # 只有一家门店：不显示门店列
-        self._forced = ({12, 15} if pieces else set()) | ({22} if len(meta["stores"]) < 2 else set())
-        self.cols.apply()
+        self._unit_forced = {12, 15} if pieces else set()
+        self._build_chips(meta["stores"])
+        self._apply_forced()
         self.ctl.filters = {}
         self._replan(render=False)
         self._fill()
@@ -784,7 +794,7 @@ class OrderCheck:
         from PySide6.QtWidgets import QScrollArea, QGridLayout
         sa = QScrollArea()
         sa.setWidgetResizable(True)
-        sa.setFixedWidth(330)
+        sa.setFixedWidth(350)
         sa.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)     # 详情栏只上下滚，内容自动换行
         sa.setFrameShape(QFrame.NoFrame)
         d = QWidget()
@@ -934,8 +944,94 @@ class OrderCheck:
     def _text(self, i, c):
         return self._vals(i)[c]
 
+    # ---------- 工具条：门店按钮、看哪些、更多 ----------
+    def _build_chips(self, stores):
+        """这次检查的门店一家一个按钮（「全部门店」+ 各店）；只有一家时不显示"""
+        for b in list(self.store_group.buttons()):
+            self.store_group.removeButton(b)
+            b.deleteLater()
+        stores = list(stores or [])
+        if len(stores) < 2:
+            return
+        for sid, text in [(None, tr("全部门店"))] + [(k, store_label(k)) for k in stores]:
+            b = QPushButton(text)
+            b.setObjectName("Chip")
+            b.setCheckable(True)
+            b.setChecked(sid is None)
+            b.setProperty("sid", -1 if sid is None else int(sid))
+            b.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+            bf = b.font()
+            bf.setBold(True)
+            b.setMinimumWidth(QFontMetrics(bf).horizontalAdvance(text) + 28)
+            self.store_group.addButton(b)
+            self.chip_lay.addWidget(b)
+
+    def _store_sel(self):
+        b = self.store_group.checkedButton() if hasattr(self, "store_group") else None
+        v = b.property("sid") if b is not None else -1
+        return None if v is None or int(v) < 0 else int(v)
+
+    def _apply_forced(self):
+        """程序自己藏的列：清单按件时的箱数列；只有一家门店 / 只看一家门店时的「门店」列"""
+        one = len((self.meta or {}).get("stores") or []) < 2 or self._store_sel() is not None
+        self._forced = set(getattr(self, "_unit_forced", set())) | ({22} if one else set())
+        self.cols.apply()
+
+    def _store_changed(self):
+        self._apply_forced()
+        self._filter()
+
+    def _more_menu(self, btn):
+        m = QMenu(self.window)
+        a_file = m.addAction(tr("全部用清单数量"))
+        m.addSeparator()
+        a_cols = m.addAction(tr("显示哪些列…"))
+        a_order = m.addAction(tr("恢复默认列顺序"))
+        a_exp = m.addAction(tr("导出 Excel"))
+        pos = btn.mapToGlobal(btn.rect().bottomLeft())
+        got = m.exec(pos)
+        if got == a_file:
+            self._set_all("file")
+        elif got == a_cols:
+            self.cols.menu(pos)
+        elif got == a_order:
+            self._reset_cols()
+        elif got == a_exp:
+            self.export()
+
+    def _update_view_counts(self, cnt):
+        """「看哪些」下拉框里带上个数：只看多订（12）"""
+        n = {"all": len(self.rows), "changed": sum(cnt.get(k, 0) for k in ("transfer", "more", "less", "none"))}
+        n.update(cnt)
+        for k in range(self.view.count()):
+            key = self.view.itemData(k)
+            text = tr(dict(VIEWS)[key])
+            self.view.setItemText(k, f"{text}（{n.get(key, 0)}）" if key in n else text)
+
+    def _status(self, shown, total):
+        """状态栏一行：显示几个 · 手动改了几个 · 估算金额 · 调货"""
+        self._shown = (shown, total)
+        if not self.rows:
+            self.count_lbl.setText("")
+            return
+        parts = [tr("显示 {0} / {1} 个", shown, total)]
+        n_edit = sum(1 for x in self.rows if x["in_db"] and x["final"] != x["suggested"])
+        if n_edit:
+            parts.append(tr("手动改了 {0} 个", n_edit))
+        a_file, a_final = getattr(self, "_money", (0, 0))
+        if a_file or a_final:
+            parts.append(tr("估算 €{0:,.0f}（清单 €{1:,.0f}）", a_final, a_file))
+        mv = getattr(self, "_moves", None) or []
+        if mv:
+            parts.append(tr("调货 {0} 个，少订 {1} 箱", len(mv), sum(m["colli_before"] - m["colli_after"] for m in mv)))
+        self.count_lbl.setText(" · ".join(parts))
+        self.count_lbl.setToolTip(getattr(self, "page_sum", None).text() if hasattr(self, "page_sum") else "")
+
     def _hidden(self, i):
         x = self.rows[i]
+        sid = self._store_sel()
+        if sid is not None and x.get("store") != sid:
+            return True
         text = self.flt.text().strip().lower()
         view = self.view.currentData()
         kind = self._verdict(x)[0]
@@ -1136,7 +1232,9 @@ class OrderCheck:
         if mv:
             txt += "\n" + tr("门店间调货（按现在的确定件数）：{0} 个商品，少订 {1} 箱，货值 €{2:,.2f}", len(mv),
                              sum(m["colli_before"] - m["colli_after"] for m in mv), sum(m["value"] for m in mv))
-        self.sum_msg.setText(txt)
+        self._money = (amt_file, amt_final)
+        self._update_view_counts(cnt)
+        self._status(*self._shown)
         if hasattr(self, "page_sum"):
             self.page_sum.setText(txt)
 
