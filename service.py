@@ -178,7 +178,7 @@ def wholesale_transfers(rows_data, supplier_headers, snapshot, settings, labels=
         info[k] = (r, s0)
         for sid, d in (by_ean.get(r["ean"]) or {}).get("stores", {}).items():
             if sid != own:
-                sp = TR.surplus(d)
+                sp = TR.surplus(d, cfg.get("keep_cycles"))
                 if sp > 0:
                     avail[(sid, r["ean"])] = sp
     if not needs:

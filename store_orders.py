@@ -569,7 +569,7 @@ def apply_transfers(calc, cfg=None, far_stores=None):
         for code, d in (demand.get(sid) or {}).items():
             if (sid, code) in ordering:
                 continue                       # 自己这次也要订的，不调出
-            s = TR.surplus(d)
+            s = TR.surplus(d, cfg.get("keep_cycles"))
             if s > 0:
                 avail[(sid, code)] = s
     far = far_stores if far_stores is not None else DEFAULT_FILL.get("far_stores")

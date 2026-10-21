@@ -5,7 +5,7 @@
 多出 20 件 → 从 S.MARCO 调 3 件给 FOIANO，这一箱就不用订了。
 
 规则（设置在 settings.json → store_orders.transfer）：
-  · 调出门店留够自己「一个订货周期」的销量（日均 × 这个商品的订货周期天数），多出来的才能调；
+  · 调出门店留够自己 keep_cycles 个订货周期的销量（日均 × 订货周期天数 × keep_cycles，默认 1），多出来的才能调；
     自己这次也要订这个商品的门店不调出
   · 触发条件 mode：
       "waste" 整箱会多出很多时（默认）：订整箱多出的件数 ≥ 一箱的 waste_ratio（默认一半），
@@ -20,7 +20,8 @@
 """
 import math
 
-DEFAULT = {"enabled": True, "mode": "waste", "waste_ratio": 0.5, "item_min_value": 10.0, "min_value": 0.0}
+DEFAULT = {"enabled": True, "mode": "waste", "waste_ratio": 0.5, "item_min_value": 10.0, "min_value": 0.0,
+           "keep_cycles": 1.0}
 
 
 def config(cfg=None):
@@ -34,14 +35,15 @@ def config(cfg=None):
     return dict(DEFAULT, **cfg)
 
 
-def surplus(d):
-    """这家店多出来、可以调出的件数：库存 − 日均 × 订货周期（留够自己一个周期）。负库存当 0"""
+def surplus(d, keep=1.0):
+    """这家店多出来、可以调出的件数：库存 − 日均 × 订货周期 × keep（留够自己 keep 个周期，默认 1）。负库存当 0"""
     if not d:
         return 0
     inv = max(0.0, float(d.get("inv") or 0))
     daily = max(0.0, float(d.get("daily") or 0))
     cycle = float(d.get("cycle") or 30)
-    return max(0, int(math.floor(inv - daily * cycle + 1e-9)))
+    keep = 1.0 if keep is None else max(0.0, float(keep))
+    return max(0, int(math.floor(inv - daily * cycle * keep + 1e-9)))
 
 
 def options(need, pack, colli, mode="waste", ratio=0.5):

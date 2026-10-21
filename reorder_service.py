@@ -835,7 +835,7 @@ def plan_batch_transfers(store_rows, snap, cfg=None, far=()):
         for code, v in d.items():
             if (sid, str(code)) in ordering:
                 continue
-            sp = TR.surplus(v)
+            sp = TR.surplus(v, cfg.get("keep_cycles"))
             if sp > 0:
                 avail[(sid, str(code))] = sp
     moves, _ = TR.plan(needs, avail, cfg, far)

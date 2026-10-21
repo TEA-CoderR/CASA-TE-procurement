@@ -199,3 +199,15 @@ def test_item_min_value():
     assert TR.config({"min_value": 50, "item_min_value": 5})["min_value"] == 50      # 新设置两个都可以设
     moves, _ = TR.plan(needs, avail, {"item_min_value": 10, "min_value": 30})
     assert moves == []                    # 3 号店合计 €22 不够 €30
+
+
+def test_keep_cycles():
+    """调出门店留几个订货周期的销量：1 = 一个周期（默认），1.5 留得更多、调得更少"""
+    d = {"inv": 40, "daily": 1, "cycle": 20}
+    assert TR.surplus(d) == 20 and TR.surplus(d, 1.5) == 10 and TR.surplus(d, 0.5) == 30 and TR.surplus(d, 3) == 0
+
+
+def test_waste_ratio_option():
+    """整箱多出比例：一箱 12 件只要 4 件 → 多出 8 件 = 67%；比例 70% 不调，60% 调"""
+    assert TR.options(4, 12, 1, "waste", 0.7) == []
+    assert TR.options(4, 12, 1, "waste", 0.6) == [(4, 0)]

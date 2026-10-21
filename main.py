@@ -1285,16 +1285,15 @@ class FillItemsDialog(QDialog):
 
 
 class TransferSettingsDialog(QDialog):
-    """门店间调货设置（门店配货和批发商比价共用：settings.json → store_orders.transfer / fill.far_stores）"""
+    """门店间调货设置（和门店配货「配货设置」里的「③ 门店之间调货」是同一块、存同一个地方）"""
 
     def __init__(self, parent):
         super().__init__(parent)
-        import transfers as TR
         import store_orders as SO
+        from store_order_page import TransferBox
         self.setWindowTitle(tr("门店间调货"))
         so = settings.setdefault("store_orders", {})
-        tc = TR.config(so.get("transfer"))
-        far = set((dict(SO.DEFAULT_FILL, **(so.get("fill") or {}))).get("far_stores") or [])
+        far = (dict(SO.DEFAULT_FILL, **(so.get("fill") or {}))).get("far_stores") or []
         lay = QVBoxLayout(self)
         lay.setContentsMargins(22, 18, 22, 16)
         lay.setSpacing(10)
@@ -1302,72 +1301,19 @@ class TransferSettingsDialog(QDialog):
         t.setObjectName("Section")
         t.setWordWrap(True)
         lay.addWidget(t)
-        self.on = QCheckBox(tr("启用调货"))
-        self.on.setChecked(bool(tc["enabled"]))
-        lay.addWidget(self.on)
-        g = QGridLayout()
-        g.setSpacing(10)
-        self.mode = QComboBox()
-        self.mode.addItem(tr("整箱会多出一半以上时才调"), "waste")
-        self.mode.addItem(tr("所有要订的商品都先看能不能调"), "all")
-        self.mode.setCurrentIndex(max(0, self.mode.findData(tc.get("mode"))))
-        self.itemv = QDoubleSpinBox()
-        self.itemv.setRange(0, 100000)
-        self.itemv.setDecimals(2)
-        self.itemv.setValue(float(tc["item_min_value"]))
-        self.itemv.setFixedWidth(100)
-        self.minv = QDoubleSpinBox()
-        self.minv.setRange(0, 100000)
-        self.minv.setDecimals(0)
-        self.minv.setValue(float(tc["min_value"]))
-        self.minv.setFixedWidth(100)
-        g.addWidget(QLabel(tr("什么时候调")), 0, 0)
-        g.addWidget(self.mode, 0, 1, 1, 2)
-        g.addWidget(QLabel(tr("每个商品调货货值至少 €")), 1, 0)
-        g.addWidget(self.itemv, 1, 1)
-        hh = QLabel(tr("调货件数 × 件价。拣货人工按商品算：纸杯调 5 个才 €0.50 不值得，调 100 个 €10 就值得"))
-        hh.setObjectName("Faint")
-        hh.setWordWrap(True)
-        g.addWidget(hh, 1, 2)
-        g.addWidget(QLabel(tr("每家调出门店合计至少 €")), 2, 0)
-        g.addWidget(self.minv, 2, 1)
-        h0 = QLabel(tr("0 = 不限（一般不用设）"))
-        h0.setObjectName("Faint")
-        g.addWidget(h0, 2, 2)
-        g.setColumnStretch(2, 1)
-        lay.addLayout(g)
-        lf = QLabel(tr("离得远的门店（不调出、也不调进；门店配货借货也不借它的货）"))
-        lf.setObjectName("Section")
-        lf.setWordWrap(True)
-        lay.addWidget(lf)
-        row = QHBoxLayout()
-        self.far = {}
-        for k, name in SO.STORE_SHEETS.items():
-            cb = QCheckBox(name)
-            cb.setChecked(k in far)
-            self.far[k] = cb
-            row.addWidget(cb)
-        row.addStretch()
-        lay.addLayout(row)
-        h = QLabel(tr("调出门店留够自己一个订货周期的销量（日均 × 订货周期），多出来的才调；自己这次也要订的商品不调出。门店配货和批发商比价用同一套设置。"))
-        h.setObjectName("Faint")
-        h.setWordWrap(True)
-        lay.addWidget(h)
+        self.box = TransferBox(so.get("transfer"), far)
+        lay.addWidget(self.box)
         bb = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
         bb.accepted.connect(self.save)
         bb.rejected.connect(self.reject)
         lay.addWidget(bb)
-        self.setMinimumWidth(560)
+        self.setMinimumWidth(620)
 
     def save(self):
-        import transfers as TR
         import store_orders as SO
         so = settings.setdefault("store_orders", {})
-        so["transfer"] = dict(TR.config(so.get("transfer")), enabled=self.on.isChecked(),
-                              mode=self.mode.currentData(), item_min_value=self.itemv.value(),
-                              min_value=self.minv.value())
-        so["fill"] = dict(dict(SO.DEFAULT_FILL, **(so.get("fill") or {})),
-                          far_stores=[k for k, cb in self.far.items() if cb.isChecked()])
+        so["transfer"] = self.box.transfer_values(so.get("transfer"))
+        so["fill"] = dict(dict(SO.DEFAULT_FILL, **(so.get("fill") or {})), far_stores=self.box.far_stores())
         save_settings(settings)
         self.accept()
 

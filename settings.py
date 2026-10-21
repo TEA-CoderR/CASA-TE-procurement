@@ -61,7 +61,8 @@ COMPANY_DEFAULTS = {
         "fill": {"max_amount_gap": 30.0, "max_colli_gap": 3, "max_stock_days": 60, "fill_bms": True,
                  "merge_colocated": True, "borrow": True, "borrow_min_days": 15, "borrow_urgent": True,
                  "merge_direct": True, "far_stores": [1], "colocated_store": 3},
-        "transfer": {"enabled": True, "mode": "waste", "waste_ratio": 0.5, "item_min_value": 10.0, "min_value": 0.0},
+        "transfer": {"enabled": True, "mode": "waste", "waste_ratio": 0.5, "item_min_value": 10.0, "min_value": 0.0,
+                     "keep_cycles": 1.0},
     },
     # 检查门店订货清单：订货周期、销量周期、不按配置文件周期；表格默认藏起来的列（名称也藏，右边详情栏里有）
     "reorder": {"cycle": 30, "days": [30, 60, 90, 180], "use_supplier_cycles": False,
