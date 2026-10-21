@@ -114,6 +114,8 @@ def build_qss():
     #TopBar {{ background: {t['surface']}; border-bottom: 1px solid {t['line']}; }}
     #Crumb {{ color: {t['muted']}; }}
     #CrumbCur {{ font-weight: 600; }}
+    QPushButton#CrumbLink {{ font-weight: 600; background: transparent; border: none; padding: 0; color: {t['text']}; }}
+    QPushButton#CrumbLink:hover {{ color: {t['accent']}; text-decoration: underline; }}
     QLineEdit#Search {{ background: {t['surface2']}; border: 1px solid {t['line']}; border-radius: 8px; padding: 6px 10px 6px 30px; }}
     QPushButton#TopBtn {{ background: {t['surface']}; border: 1px solid {t['line']}; border-radius: 8px; padding: 0;
                           min-width: 34px; max-width: 34px; min-height: 34px; max-height: 34px; }}

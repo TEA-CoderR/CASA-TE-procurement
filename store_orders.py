@@ -372,6 +372,8 @@ def parse_scheda(path, overrides=None):
                     found["colli"] = c
                 elif n == "PREZZONETTO":
                     found["price"] = c
+                elif n.startswith("CODICEFORN") or n in ("COD.FORN.", "CODFORN", "COD.FORNITORE"):
+                    found["sup_code"] = c          # 供应商自己的货号（Codice Fornitore）
             if "colli" in found and ("ean" in found or "code" in found):
                 cols, hdr = found, i
                 break
@@ -394,8 +396,10 @@ def parse_scheda(path, overrides=None):
             if not code and not ean:
                 continue
             pack = _num(g("pack")) or 1
+            sc_ = g("sup_code")
+            sc_ = str(int(sc_)) if isinstance(sc_, float) and sc_ == int(sc_) else str(sc_ or "").strip()
             info["items"].append({"row": r_idx, "code": code, "ean": ean, "desc": str(g("desc") or "").strip(),
-                                  "pack": pack if pack > 0 else 1, "price": _num(g("price")) or 0.0})
+                                  "pack": pack if pack > 0 else 1, "price": _num(g("price")) or 0.0, "sup_code": sc_})
         # 各门店页一般行完全一样；万一不一样，按商品编号 / EAN 对应到各自的行
         info["rowmap"] = {}
         first = next(iter(info["sheets"].values()))
@@ -530,6 +534,8 @@ def demand_by_store(db, schede, stores, days_list, reorder_cycle, use_supplier_c
 # 门店之间调货（transfers.py）：要的件数远小于一箱时，从别的门店调多出来的货，少订一箱
 # =====================================================================
 def apply_transfers(calc, cfg=None, far_stores=None):
+    # calc["transfer_overrides"] = {(SCHEDA 路径, 调入门店, 行号): 人工定的调货}（订货明细里改的，见 transfers.norm_override；
+    #   件数 0 = 不调）；calc["transfer_frozen"] = True 时只按它调
     """
     在系统建议的箱数上算调货：calc["base_orig"] = 调货前的建议；calc["base"] = 调货后的建议；
     calc["transfers"] = [{from, to, path, supplier, row, code, ean, desc, pieces, value, price, pack,
@@ -564,16 +570,21 @@ def apply_transfers(calc, cfg=None, far_stores=None):
                 needs.append({"id": nid, "store": sid, "key": code, "need": d.get("need", d.get("sugg", 0)),
                               "pack": it["pack"], "colli": n, "price": it.get("price") or 0.0})
                 info[nid] = (sc, it)
-    avail = {}
+    avail, stock = {}, {}
     for sid in stores:
         for code, d in (demand.get(sid) or {}).items():
+            if not isinstance(d, dict):
+                continue
+            stock[(sid, code)] = max(0.0, float(d.get("inv") or 0))
             if (sid, code) in ordering:
                 continue                       # 自己这次也要订的，不调出
-            s = TR.surplus(d)
+            s = TR.surplus(d, cfg.get("keep_cycles"))
             if s > 0:
                 avail[(sid, code)] = s
     far = far_stores if far_stores is not None else DEFAULT_FILL.get("far_stores")
-    moves, new_colli = TR.plan(needs, avail, cfg, far)
+    # transfer_frozen：审核时人工改过调货 → 只按 transfer_overrides 调（改一行不影响别的行）
+    moves, new_colli = TR.plan(needs, avail, cfg, far, calc.get("transfer_overrides"), stock=stock,
+                               auto=not calc.get("transfer_frozen"))
     for nid, c2 in new_colli.items():
         path, sid, row = nid
         lines = base.setdefault(path, {}).setdefault(sid, {})
@@ -1118,8 +1129,11 @@ def _sheet_paths(z):
     return out
 
 
-def _set_cells(xml, col_letter, values):
-    """values: {行号: 数字或 None}；None = 清空（保留格式）"""
+def _set_cells(xml, col_letter, values, plain_col=None):
+    """
+    values: {行号: 数字或 None}；None = 清空（保留格式）。
+    plain_col：不订的行（空）改用同一行这一列的格式——模板里 Colli 整列都是黄底，只让订了的那几行留黄色
+    """
     for row, val in values.items():
         ref = f"{col_letter}{row}"
         cell_re = re.compile(r'<c\b[^>]*\br="' + ref + r'"[^>]*?(?:/>|>.*?</c>)', re.S)
@@ -1128,6 +1142,11 @@ def _set_cells(xml, col_letter, values):
         if m:
             s = re.search(r'\bs="(\d+)"', m.group(0).split(">")[0])
             style = f' s="{s.group(1)}"' if s else ""
+        if plain_col and val in (None, 0):
+            pm = re.search(r'<c\b[^>]*\br="' + plain_col + str(row) + r'"[^>]*?(?:/>|>)', xml)
+            ps = re.search(r'\bs="(\d+)"', pm.group(0)) if pm else None
+            if ps:
+                style = f' s="{ps.group(1)}"'
         new = f'<c r="{ref}"{style}><v>{val:g}</v></c>' if val not in (None, 0) else f'<c r="{ref}"{style}/>'
         if m:
             xml = xml[:m.start()] + new + xml[m.end():]
@@ -1263,6 +1282,18 @@ def _set_row_cells(xml, values, styles=None):
     return xml
 
 
+FILE_SKIP_HEADS = ("月均", "采购量", "箱数", "需求")     # 程序内部用，不写进给供应商的订单文件
+
+
+def file_extra(extra, heads):
+    """写进订单文件的附加列：去掉中文名的内部列（月均 / 采购量 / 箱数 / 需求）。返回 (extra, heads)"""
+    if not extra or not heads:
+        return extra, heads
+    keep = [i for i, h in enumerate(heads) if h not in FILE_SKIP_HEADS]
+    out = {sid: {r: ([v[i] for i in keep] if v else v) for r, v in rows.items()} for sid, rows in extra.items()}
+    return out, [heads[i] for i in keep]
+
+
 def _write_extra(xml, scheda, rows_vals, headers, row_map):
     """一家店页：表头 + 每个商品行的附加数据。row_map：SCHEDA 第一页的行号 → 这一页的行号（None = 这一页没有）"""
     hdr = scheda["header_row"]
@@ -1292,6 +1323,8 @@ def write_order_file(scheda, per_store_lines, out_path, extra=None, headers=None
     打开时让 Excel / WPS 重新计算合计。
     """
     colli_col = _col_letter(scheda["cols"]["colli"])
+    pc = scheda["cols"].get("pack") or (scheda["cols"]["colli"] - 1)
+    plain_col = _col_letter(pc) if pc and pc >= 1 and pc != scheda["cols"]["colli"] else None
     rows = [it["row"] for it in scheda["items"]]
     tmp = out_path + ".tmp"
     with zipfile.ZipFile(scheda["path"]) as zin:
@@ -1314,7 +1347,7 @@ def write_order_file(scheda, per_store_lines, out_path, extra=None, headers=None
             for item in zin.infolist():
                 data = zin.read(item.filename)
                 if item.filename in targets:
-                    x = _set_cells(data.decode("utf-8"), colli_col, targets[item.filename])
+                    x = _set_cells(data.decode("utf-8"), colli_col, targets[item.filename], plain_col)
                     if item.filename in extra_by_path:
                         vals, rm = extra_by_path[item.filename]
                         x = _write_extra(x, scheda, vals, headers or extra_headers(), rm)
@@ -1362,6 +1395,7 @@ def write_plans(results, out_root, date_tag=None, on_file=None, calc=None):
         safe = re.sub(r'[\\/:*?"<>|]', "_", sc["name"])
         extra = extra_data(sc, calc.get("demand"), calc.get("base"), calc.get("days")) if calc else None
         heads = extra_headers(calc.get("days")) if calc else None
+        extra, heads = file_extra(extra, heads)
         for sid, st in plan["stores"].items():
             if st["status"] in ("direct", "filled"):
                 p = os.path.join(folder, f"Ordine_{safe}_{STORE_SHEETS[sid]}_{date_tag}.xlsx")

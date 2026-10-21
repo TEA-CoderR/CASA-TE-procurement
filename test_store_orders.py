@@ -250,6 +250,39 @@ class WriteTest(unittest.TestCase):
             ws = wb[sc["sheets"][1]]
             self.assertEqual(str(ws.cell(rows[0], c + 1).value).upper().replace("$", ""), f"=H{rows[0]}*G{rows[0]}")
 
+    def test_colli_yellow_only_on_ordered_rows_and_no_chinese_columns(self):
+        from openpyxl import load_workbook
+        sc = S.parse_scheda(SAMPLES[-1])
+        self.assertIn("sup_code", sc["cols"])                       # Codice Fornitore 读进来了
+        self.assertTrue(any(it["sup_code"] for it in sc["items"]))
+        rows = [it["row"] for it in sc["items"]]
+        heads = S.extra_headers()
+        extra, h2 = S.file_extra({1: {r: list(range(len(heads))) for r in rows}}, heads)
+        self.assertFalse(set(h2) & set(S.FILE_SKIP_HEADS))
+        self.assertEqual(len(extra[1][rows[0]]), len(h2))
+        with tempfile.TemporaryDirectory() as d:
+            out = os.path.join(d, "o.xlsx")
+            S.write_order_file(sc, {1: {rows[0]: 3}}, out, extra, h2)
+            ws = load_workbook(out)[sc["sheets"][1]]
+            c = sc["cols"]["colli"]
+            self.assertEqual(ws.cell(rows[0], c).value, 3)
+            self.assertEqual(ws.cell(rows[1], c).fill.fill_type, ws.cell(rows[1], c - 1).fill.fill_type)
+            heads_in_file = [ws.cell(sc["header_row"], k).value for k in range(1, ws.max_column + 1)]
+            self.assertNotIn("月均", heads_in_file)
+            self.assertIn("GIA", heads_in_file)
+
+
+class FileExtraTest(unittest.TestCase):
+    def test_file_extra_drops_internal_columns(self):
+        heads = S.extra_headers()
+        vals = list(range(len(heads)))
+        extra, h2 = S.file_extra({2: {5: vals, 6: None}}, heads)
+        self.assertEqual(h2[:5], ["GIA", "ROT.30d", "ROT.60d", "ROT.90d", "ROT.180d"])
+        self.assertEqual(h2[5], "Livello")
+        self.assertEqual(extra[2][5][5], heads.index("Livello"))
+        self.assertIsNone(extra[2][6])
+        self.assertEqual(S.file_extra(None, None), (None, None))
+
 
 if __name__ == "__main__":
     unittest.main()

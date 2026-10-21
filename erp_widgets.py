@@ -1231,6 +1231,100 @@ class ScreenFit(QObject):
         return False
 
 
+class ColumnChooser(QObject):
+    """
+    「显示哪些列」：勾选的列才显示，其他的藏起来（数据多的时候表格不乱）。记在 cfg[key + "_hidden"]。
+      fields[c]      第 c 列（逻辑列）的固定编号（存设置用）
+      default_hidden 默认藏起来的列（编号）；ver 改了默认就加 1（用户以前的选择作废一次）
+      forced()       程序自己要藏的列（例如只有一家门店时的「门店」列），用户选了也不显示
+    """
+
+    def __init__(self, table, cfg, key, fields, save, default_hidden=(), ver=1, forced=None):
+        super().__init__(table)
+        self.t, self.cfg, self.key, self.fields, self.save = table, cfg, key, list(fields), save
+        self.default = [f for f in default_hidden if f in self.fields]
+        self.forced = forced or (lambda: set())
+        if cfg.get(key + "_hidden_ver") != ver:
+            cfg[key + "_hidden"] = list(self.default)
+            cfg[key + "_hidden_ver"] = ver
+            save()
+        self.apply()
+
+    def hidden(self):
+        return set(self.cfg.get(self.key + "_hidden") or [])
+
+    def apply(self):
+        h, f2 = self.hidden(), set(self.forced() or ())
+        for c, f in enumerate(self.fields):
+            self.t.setColumnHidden(c, f in h or f in f2)
+
+    def _set(self, hidden):
+        self.cfg[self.key + "_hidden"] = sorted(hidden)
+        self.save()
+        self.apply()
+
+    def button(self, text=None):
+        b = QPushButton(text or tr("显示哪些列…"))
+        b.setToolTip(tr("勾选要在表格里显示的列，其他的藏起来"))
+        b.clicked.connect(lambda: self.menu(b.mapToGlobal(b.rect().bottomLeft())))
+        return b
+
+    def menu(self, gpos):
+        from PySide6.QtWidgets import QMenu, QWidgetAction, QListWidget, QListWidgetItem
+        m = QMenu(self.t)
+        box = QWidget()
+        bv = QVBoxLayout(box)
+        bv.setContentsMargins(8, 6, 8, 6)
+        bv.setSpacing(4)
+        tip = QLabel(tr("勾选要显示的列（拖动表头可以换位置）"))
+        tip.setObjectName("Faint")
+        bv.addWidget(tip)
+        lst = QListWidget()
+        lst.setMinimumWidth(240)
+        lst.setMinimumHeight(min(520, 26 * len(self.fields) + 8))
+        hh = self.t.horizontalHeader()
+        forced = set(self.forced() or ())
+        h = self.hidden()
+        for v in range(len(self.fields)):
+            c = hh.logicalIndex(v)
+            f = self.fields[c]
+            if f in forced:
+                continue
+            it = QListWidgetItem(header_text(self.t, c).replace(" ✎", "") or "—")
+            it.setData(Qt.UserRole, f)
+            it.setFlags(it.flags() | Qt.ItemIsUserCheckable)
+            it.setCheckState(Qt.Unchecked if f in h else Qt.Checked)
+            lst.addItem(it)
+        bv.addWidget(lst)
+        row = QHBoxLayout()
+        b_all, b_def = QPushButton(tr("全部显示")), QPushButton(tr("恢复默认"))
+        for b in (b_all, b_def):
+            b.setObjectName("Link")
+            row.addWidget(b)
+        row.addStretch()
+        bv.addLayout(row)
+
+        def changed(_=None):
+            self._set({lst.item(k).data(Qt.UserRole) for k in range(lst.count())
+                       if lst.item(k).checkState() != Qt.Checked})
+
+        def set_all(hidden):
+            lst.blockSignals(True)
+            for k in range(lst.count()):
+                it = lst.item(k)
+                it.setCheckState(Qt.Unchecked if it.data(Qt.UserRole) in hidden else Qt.Checked)
+            lst.blockSignals(False)
+            self._set(set(hidden))
+
+        lst.itemChanged.connect(changed)
+        b_all.clicked.connect(lambda: set_all(set()))
+        b_def.clicked.connect(lambda: set_all(set(self.default)))
+        wa = QWidgetAction(m)
+        wa.setDefaultWidget(box)
+        m.addAction(wa)
+        m.exec(gpos)
+
+
 class RowSorter(QObject):
     """
     给「一次填好的表格」加点表头排序（点一下升序，再点一下降序）。
@@ -1636,3 +1730,149 @@ class ColumnFilterBox(QWidget):
         if v == "__multi__":
             return
         self.ctl.set_filter(self.col, None if v is None else {v})
+
+
+class TransferEditDialog(QDialog):
+    """
+    人工改一个商品的调货：从哪家门店调、调几件（门店配货的订货明细、检查门店订货清单共用）。
+      title    商品名；info 一句话（哪家店、要几件、一箱几件）
+      stores   [{"sid", "name", "inv"(库存), "daily", "surplus"(留够自己后多出来的), "note"}]（不含调入门店本身）
+      cur      现在的调货 (调出门店, 件数) 或 None；need 要的件数；pack 每箱件数；colli 系统建议的箱数
+    确定后 self.value = (调出门店, 件数)；点「不调」= (None, 0)
+    """
+
+    def __init__(self, parent, title, info, stores, cur=None, need=0, pack=1, colli=0):
+        from PySide6.QtWidgets import QTableWidget, QTableWidgetItem, QSpinBox, QAbstractItemView, QHeaderView
+        super().__init__(parent)
+        self.setWindowTitle(tr("调货"))
+        self.value = None
+        self.need, self.pack, self.colli = float(need or 0), float(pack or 1) or 1.0, int(colli or 0)
+        self.stores = sorted(stores, key=lambda s: (-(s.get("surplus") or 0), -(s.get("inv") or 0), s["sid"]))
+        v = QVBoxLayout(self)
+        v.setContentsMargins(20, 16, 20, 14)
+        v.setSpacing(10)
+        h = QLabel(title)
+        h.setObjectName("PageTitle")
+        h.setStyleSheet("font-size:16px;")
+        h.setWordWrap(True)
+        v.addWidget(h)
+        lb = QLabel(info)
+        lb.setObjectName("Muted")
+        lb.setWordWrap(True)
+        v.addWidget(lb)
+        v.addWidget(QLabel(tr("① 从哪家门店调（多出来 = 库存 − 留够自己一个周期的销量）")))
+        t = QTableWidget(len(self.stores), 5)
+        t.setHorizontalHeaderLabels([tr("门店"), tr("库存"), tr("日均"), tr("多出来"), ""])
+        t.verticalHeader().hide()
+        t.setSelectionBehavior(QAbstractItemView.SelectRows)
+        t.setSelectionMode(QAbstractItemView.SingleSelection)
+        t.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        hh = t.horizontalHeader()
+        hh.setSectionResizeMode(QHeaderView.ResizeToContents)
+        hh.setSectionResizeMode(4, QHeaderView.Stretch)
+        for r, s in enumerate(self.stores):
+            vals = [s["name"], f"{float(s.get('inv') or 0):g}", f"{float(s.get('daily') or 0):.2f}",
+                    f"{int(s.get('surplus') or 0)}", s.get("note") or ""]
+            for c, x in enumerate(vals):
+                it = QTableWidgetItem(x)
+                if c in (1, 2, 3):
+                    it.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                if c == 4 or not s.get("surplus"):
+                    it.setForeground(QColor(T("muted")))
+                t.setItem(r, c, it)
+        t.setMinimumHeight(min(260, 34 + 32 * max(1, len(self.stores))))
+        t.setMinimumWidth(460)
+        self.t = t
+        v.addWidget(t)
+        row = QHBoxLayout()
+        row.addWidget(QLabel(tr("② 调几件")))
+        self.sb = QSpinBox()
+        self.sb.setRange(0, 99999)
+        self.sb.setSuffix(tr(" 件"))
+        self.sb.setMinimumWidth(120)
+        self.sb.setMinimumHeight(30)
+        row.addWidget(self.sb)
+        self.after = QLabel("")
+        self.after.setObjectName("Muted")
+        row.addWidget(self.after, 1)
+        v.addLayout(row)
+        self.warn = QLabel("")
+        self.warn.setWordWrap(True)
+        self.warn.setStyleSheet(f"color:{T('warn')};")
+        v.addWidget(self.warn)
+        bb = QHBoxLayout()
+        b_none = QPushButton(tr("不调"))
+        b_none.setToolTip(tr("这个商品不调货，照常订（比如过季品）"))
+        bb.addWidget(b_none)
+        bb.addStretch()
+        b_cancel = QPushButton(tr("取消"))
+        b_ok = QPushButton(tr("确定"))
+        b_ok.setObjectName("Primary")
+        b_ok.setDefault(True)
+        bb.addWidget(b_cancel)
+        bb.addWidget(b_ok)
+        v.addLayout(bb)
+        b_none.clicked.connect(lambda: self._done(None, 0))
+        b_cancel.clicked.connect(self.reject)
+        b_ok.clicked.connect(self._ok)
+        t.itemSelectionChanged.connect(self._picked)
+        self.sb.valueChanged.connect(lambda _: self._hint())
+        t.itemDoubleClicked.connect(lambda _: self._ok())
+        start = 0
+        if cur and cur[0] is not None:
+            start = next((i for i, s in enumerate(self.stores) if s["sid"] == cur[0]), 0)
+        if self.stores:
+            t.setCurrentCell(start, 0)
+        if cur and cur[1]:
+            self.sb.setValue(int(cur[1]))
+        self._hint()
+        self.sb.setFocus()
+        self.sb.selectAll()
+
+    def _store(self):
+        r = self.t.currentRow()
+        return self.stores[r] if 0 <= r < len(self.stores) else None
+
+    def _picked(self):
+        s = self._store()
+        if not s:
+            return
+        default = int(min(math_ceil(self.need), int(s.get("surplus") or 0)))
+        self.sb.setValue(max(0, default))
+        self._hint()
+
+    def _hint(self):
+        s = self._store()
+        p = self.sb.value()
+        left = max(0.0, self.need - p)
+        c2 = min(self.colli, math_ceil(left / self.pack)) if self.colli else math_ceil(left / self.pack)
+        self.after.setText(tr("调完还要订 {0} 箱（原来 {1} 箱）", c2, self.colli))
+        msg = ""
+        if s and p > float(s.get("inv") or 0):
+            msg = tr("{0} 只有 {1:g} 件库存，最多调这么多", s["name"], float(s.get("inv") or 0))
+        elif s and p > int(s.get("surplus") or 0):
+            msg = tr("超过 {0} 多出来的件数：调完它自己可能不够卖一个周期", s["name"])
+        self.warn.setText(msg)
+        self.warn.setVisible(bool(msg))
+
+    def _ok(self):
+        s = self._store()
+        p = self.sb.value()
+        if not s or p <= 0:
+            self._done(None, 0)
+            return
+        inv = int(float(s.get("inv") or 0))
+        if inv <= 0:
+            self.warn.setText(tr("{0} 没有库存，调不了", s["name"]))
+            self.warn.setVisible(True)
+            return
+        self._done(s["sid"], min(p, inv))
+
+    def _done(self, sid, pieces):
+        self.value = (sid if pieces else None, int(pieces))
+        self.accept()
+
+
+def math_ceil(x):
+    import math
+    return int(math.ceil(float(x) - 1e-9))

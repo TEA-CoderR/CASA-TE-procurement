@@ -79,14 +79,15 @@ def guess_store(filename):
     return None
 
 
-BATCH_DIR = "批发商比价"
+BATCH_DIR = "4 比价结果"          # workspace.RESULTS
+OLD_BATCH_DIRS = ("批发商比价",)  # 以前的结果文件夹名（还认得，不再新建）
 
 
 def batch_folder(root, day=None):
     """
     这一批（检查清单确认时生成主订单）的文件夹，结构固定、一看就懂：
-      根目录\\批发商比价\\2026-10-20\\            ← 这一天的一批（这里放整批的调货单）
-      根目录\\批发商比价\\2026-10-20\\MARLIA\\     ← 每家门店一个，里面 ORDINE / eliminare / distribuire
+      根目录\\4 比价结果\\2026-10-20\\            ← 这一天的一批（这里放整批的调货单）
+      根目录\\4 比价结果\\2026-10-20\\MARLIA\\     ← 每家门店一个，里面 ORDINE / eliminare / distribuire
     同一天再确认一次就用同一个文件夹（主订单替换，原来的挪进 ORDINE\\_旧订单）
     """
     day = day or datetime.now()
@@ -98,12 +99,12 @@ def batch_store_folder(root, store_id, day=None):
 
 
 def batch_root_of(path):
-    """path 是 根目录\\批发商比价\\日期\\门店（或日期）时返回根目录，否则 None"""
+    """path 是 根目录\\4 比价结果\\日期\\门店（或日期；以前的「批发商比价」也认）时返回根目录，否则 None"""
     if not path:
         return None
     parts = os.path.normpath(path).split(os.sep)
     for k in (3, 2):
-        if len(parts) > k and parts[-k] == BATCH_DIR and re.fullmatch(r"\d{4}-\d{2}-\d{2}", parts[-k + 1] or ""):
+        if len(parts) > k and parts[-k] in (BATCH_DIR,) + OLD_BATCH_DIRS and re.fullmatch(r"\d{4}-\d{2}-\d{2}", parts[-k + 1] or ""):
             return os.sep.join(parts[:-k]) or os.sep
     return None
 
@@ -216,24 +217,63 @@ def test_connection(db):
 
 
 def codes_from_eans(db, eans):
-    """条码 → 商品编号：先查 prodotti.CodBarre，再查 codbarre 表（一个商品多个条码）"""
+    """
+    条码 → 商品编号：先查 prodotti.CodBarre，再查 codbarre 表（一个商品多个条码）。
+    商品表查不了（数据库断了等）直接报错——以前悄悄跳过，结果整张清单都变成「数据库没有」
+    """
     import pandas as pd
     eans = sorted({e for e in eans if e})
     out = {}
     for i in range(0, len(eans), 2000):
         chunk = eans[i:i + 2000]
         ph = ", ".join(["%s"] * len(chunk))
-        for q in (f"SELECT CodArticolo, CodBarre FROM prodotti WHERE CodBarre IN ({ph})",
-                  f"SELECT CodArticolo, CodBarre FROM codbarre WHERE CodBarre IN ({ph})"):
+        for k, q in enumerate((f"SELECT CodArticolo, CodBarre FROM prodotti WHERE CodBarre IN ({ph})",
+                               f"SELECT CodArticolo, CodBarre FROM codbarre WHERE CodBarre IN ({ph})")):
             try:
                 df = pd.read_sql(q, db.engine, params=tuple(chunk))
-            except Exception:
-                continue
+            except Exception as e:
+                if k == 0:
+                    raise RuntimeError(f"用条码查商品编号失败（数据库）：{e}") from e
+                continue              # codbarre（多条码表）没有也不要紧
             for _, x in df.iterrows():
                 e = _clean_code(x["CodBarre"])
                 if e and e not in out and x["CodArticolo"]:
                     out[e] = str(int(x["CodArticolo"]))
     return out
+
+
+def supplier_info(db, codes):
+    """
+    商品编号 → (Codice Fornitore 供应商自己的货号, 供应商名称)，来自数据库商品表（只读）。
+    只是显示用：查不到 / 查询失败都返回空的，不影响检查和比价
+    """
+    import pandas as pd
+    codes = sorted({int(c) for c in codes if str(c).strip().isdigit()})
+    out = {}
+    for i in range(0, len(codes), 2000):
+        chunk = codes[i:i + 2000]
+        ph = ", ".join(["%s"] * len(chunk))
+        try:
+            df = pd.read_sql(f"SELECT p.CodArticolo, COALESCE(p.ArticoloForn,'') AS ArticoloForn, "
+                             f"COALESCE(f.Nome,'') AS Nome FROM prodotti p "
+                             f"LEFT JOIN fornitore f ON p.IDFornitore = f.IDFornitore "
+                             f"WHERE p.CodArticolo IN ({ph})", db.engine, params=tuple(chunk))
+        except Exception:
+            return out
+        for _, x in df.iterrows():
+            out.setdefault(str(int(x["CodArticolo"])), (str(x["ArticoloForn"] or "").strip(), str(x["Nome"] or "").strip()))
+    return out
+
+
+def add_supplier_info(rows, info):
+    """检查清单的行加上 sup_code（Codice Fornitore）、sup_name（数据库登记的供应商）。返回加了几行"""
+    n = 0
+    for x in rows:
+        v = info.get(str(x.get("code") or ""))
+        if v:
+            x["sup_code"], x["sup_name"] = v
+            n += 1
+    return n
 
 
 def extract_products(db, store_id, day, query_days, supplier_groups=None):
@@ -508,6 +548,8 @@ def to_rows(result_df, file_rows=None, days_list=None):
             "price": _val(r, "PrezzoForn"),
             "cycle": _val(r, "reorder_cycle_used"),
             "weekly": _val(r, "weekly_26"),
+            "season": _val(r, "season_factor"),
+            "service": _val(r, "service_level"),
             "safety": _val(r, "safety_stock"),
             "daily": _val(r, "daily_rate"),
             "target": _val(r, "target_stock"),
@@ -560,11 +602,12 @@ def export_report(rows, path, days_list=None, store_id=None):
 ORDER_HEADERS = ["CODICE EAN", "ARTICOLO", "COLLI", "PEZZI", "CodArticolo", "CASSA_DB", "NEGOZIO"]
 
 
-def write_main_order(rows, root_folder, store_id, from_file=None, prefix="订货建议"):
+def write_main_order(rows, root_folder, store_id, from_file=None, prefix="订货建议", pieces=True):
     """
     生成采购系统主订单：总文件夹/ORDINE/订货建议_门店_时间.xlsx
     只放建议件数 > 0 且有条码的商品；ORDINE 里原来的文件挪进 ORDINE/_旧订单/。
     PEZZI = 建议件数（采购系统按这个和各家每箱件数算箱数），COLLI = 按数据库箱规算的参考箱数。
+    pieces=False：不写 PEZZI 列，比价按 COLLI（箱数）分配供应商（检查门店清单确认的主订单）。
     返回 (路径, 写了几行, 没条码跳过的商品列表)
     """
     from openpyxl import Workbook
@@ -585,7 +628,8 @@ def write_main_order(rows, root_folder, store_id, from_file=None, prefix="订货
     wb = Workbook()
     ws = wb.active
     ws.title = "ORDINE"
-    ws.append(ORDER_HEADERS)
+    heads = ORDER_HEADERS if pieces else [h for h in ORDER_HEADERS if h != "PEZZI"]
+    ws.append(heads)
     n, skipped = 0, []
     for x in rows:
         if x["suggested"] <= 0:
@@ -594,7 +638,9 @@ def write_main_order(rows, root_folder, store_id, from_file=None, prefix="订货
             skipped.append(x)
             continue
         colli = x["ord_colli"] or 1
-        ws.append([x["ean"], x["name"], colli, x["suggested"], x["code"], x["pack"] or None, STORES.get(store_id, store_id)])
+        vals = {"CODICE EAN": x["ean"], "ARTICOLO": x["name"], "COLLI": colli, "PEZZI": x["suggested"],
+                "CodArticolo": x["code"], "CASSA_DB": x["pack"] or None, "NEGOZIO": STORES.get(store_id, store_id)}
+        ws.append([vals[h] for h in heads])
         ws.cell(ws.max_row, 1).number_format = "@"
         n += 1
     ws.freeze_panes = "A2"
@@ -734,10 +780,12 @@ def save_snapshot(main_order_path, store_id, snap, rows=None, transfers=None, tr
                存了就说明主订单的件数已经减掉了调货，比价时不再重算调货（None = 旧做法，比价时再算）
     """
     import json
-    ean_of = {}
+    ean_of, sup_of = {}, {}
     for x in rows or []:
         if x.get("code") and x.get("ean"):
             ean_of[str(x["code"])] = _clean_code(x["ean"])
+        if x.get("code") and (x.get("sup_code") or x.get("sup_name")):
+            sup_of[str(x["code"])] = (x.get("sup_code") or "", x.get("sup_name") or "")
     by_ean = {}
     for sid, d in snap.items():
         for code, v in d.items():
@@ -745,6 +793,8 @@ def save_snapshot(main_order_path, store_id, snap, rows=None, transfers=None, tr
             if not ean:
                 continue
             e = by_ean.setdefault(ean, {"code": code, "stores": {}})
+            if code in sup_of:
+                e["sup_code"], e["sup_name"] = sup_of[code]
             e["stores"][str(sid)] = {"inv": v["inv"], "daily": v["daily"], "cycle": v["cycle"]}
     path = snapshot_path(main_order_path)
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -798,12 +848,14 @@ def stock_for_eans(db, store_id, eans, days_list=None, reorder_cycle=30, algo=No
     return out
 
 
-def plan_batch_transfers(store_rows, snap, cfg=None, far=()):
+def plan_batch_transfers(store_rows, snap, cfg=None, far=(), overrides=None, auto=True):
     """
     几家门店的清单一起检查以后，先算门店间调货、再订剩下的（和门店配货同一个规则，见 transfers.py）：
       store_rows: {门店号: 检查清单的行}（用 final 确定件数、pack 数据库箱规、price 进价、code、ean、name）
       snap:       {门店号: {商品编号: {inv, daily, cycle}}}：五家店这批商品的库存和日均
     调出门店留够自己一个订货周期；这次自己也要订这个商品的门店不调出；离得远的门店（far）不调出也不调进。
+    overrides {(门店, 商品编号): 人工定的调货}（件数，或 {"from", "pieces", "auto"}）：0 = 不调；>0 = 就调这么多
+    auto=False：审核时人工改过调货 → 只按 overrides 调，别的行不跟着变
     返回 (moves, new_final)：moves 是调货单的行；new_final {(门店, 商品编号): 调货以后还要订的件数}
     """
     import transfers as TR
@@ -824,15 +876,21 @@ def plan_batch_transfers(store_rows, snap, cfg=None, far=()):
             needs.append({"id": k, "store": sid, "key": str(x["code"]), "need": final, "pack": pack,
                           "colli": int(math.ceil(final / pack)), "price": float(x.get("price") or 0)})
             info[k] = (sid, x)
-    avail = {}
+    avail, stock = {}, {}
     for sid, d in (snap or {}).items():
         for code, v in d.items():
+            stock[(sid, str(code))] = max(0.0, float((v or {}).get("inv") or 0))
             if (sid, str(code)) in ordering:
                 continue
-            sp = TR.surplus(v)
+            sp = TR.surplus(v, cfg.get("keep_cycles"))
             if sp > 0:
                 avail[(sid, str(code))] = sp
-    moves, _ = TR.plan(needs, avail, cfg, far)
+    ov = {}
+    for k, (sid, x) in info.items():
+        key = (sid, str(x["code"]))
+        if overrides and key in overrides:
+            ov[k] = overrides[key]
+    moves, _ = TR.plan(needs, avail, cfg, far, ov, stock=stock, auto=auto)
     new_final, out = {}, []
     for m in moves:
         sid, x = info[m["need_id"]]
@@ -844,11 +902,143 @@ def plan_batch_transfers(store_rows, snap, cfg=None, far=()):
         out.append({"from": m["from"], "to": sid, "code": code, "ean": x.get("ean") or "", "desc": x.get("name") or "",
                     "supplier": "", "pieces": int(m["pieces"]), "value": float(m["value"]),
                     "price": float(x.get("price") or 0), "colli_before": m["colli_before"], "colli_after": m["colli_after"],
-                    "need": int(x["final"]), "pack": m["pack"],
+                    "need": int(x["final"]), "pack": m["pack"], "manual": bool(m.get("manual")),
                     "from_days": SO.cover_days(d_from, -m["pieces"]) if d_from else None,
                     "to_days": SO.cover_days(d_to, left + m["pieces"]) if d_to else None})
     out.sort(key=lambda t: (t["from"], t["to"], t["desc"]))
     return out, new_final
+
+
+def reason_text(inv, daily, cycle, sugg, target=None, in_db=True):
+    """
+    一句话说清楚为什么建议订 / 不订、订多少（检查清单、订货明细的「原因」列）：
+      库存够卖几天 和 订货周期比；不够 → 周期里大约卖多少 → 建议订几件
+    """
+    from i18n import tr
+    if not in_db:
+        return tr("数据库里没有这个商品，按清单数量")
+    try:
+        inv = float(inv or 0)
+        daily = float(daily or 0)
+        cycle = float(cycle or 0)
+        sugg = float(sugg or 0)
+    except (TypeError, ValueError):
+        return ""
+    inv0 = max(0.0, inv)
+    neg = ""                                     # 负库存一律当 0，不另外说明
+    if daily <= 0:
+        if sugg > 0:
+            return tr("没有销量{0}，原程序仍建议订 {1:g} 件", neg, sugg)
+        return tr("没有销量，库存 {0:g} 件{1}，不订", inv0, neg) if inv0 else tr("没有销量也没有库存{0}，不订", neg)
+    days = inv0 / daily
+    if sugg <= 0:
+        if cycle > 0:
+            return tr("库存 {0:g} 件够卖 {1:.0f} 天（周期 {2:g} 天）{3}，不用订", inv0, days, cycle, neg)
+        return tr("库存 {0:g} 件够卖 {1:.0f} 天{2}，不用订", inv0, days, neg)
+    if isinstance(target, (int, float)) and target == target and target > 0:
+        return tr("库存够卖 {0:.0f} 天{1}；目标库存 {2:.0f} − 库存 {3:g} → 订 {4:g} 件", days, neg, target, inv0, sugg)
+    if cycle > 0:
+        return tr("库存够卖 {0:.0f} 天{1}，周期 {2:g} 天约卖 {3:.0f} 件 → 订 {4:g} 件", days, neg, cycle, daily * cycle, sugg)
+    return tr("库存够卖 {0:.0f} 天{1} → 订 {2:g} 件", days, neg, sugg)
+
+def plain_reason(inv, daily, cycle, sugg, boxes=None, target=None, in_db=True, transfer=None, pack=None):
+    """
+    给采购员看的「为什么」：用直白的话，一行一句（订货明细、检查门店订货清单的「原因」列和右边详情栏共用）。
+      inv 库存（可以是负数）、daily 每天卖几件、cycle 订货周期（天）、sugg 系统建议件数、boxes 折成几箱（None = 只说件数）
+      transfer：从别的门店调进来 {"name", "inv", "days", "pieces", "saved"(少订几箱，可以没有)}
+    """
+    from i18n import tr
+    if not in_db:
+        return [tr("数据库里找不到这个商品，没有销量和库存可以参考")]
+    try:
+        inv, daily, cycle, sugg = float(inv or 0), float(daily or 0), float(cycle or 0), float(sugg or 0)
+    except (TypeError, ValueError):
+        return []
+    inv0 = max(0.0, inv)
+    lines = []
+    if daily <= 0:
+        lines.append(tr("最近没有卖出去过，还有 {0:g} 件库存", inv0) if inv0 else tr("最近没有卖出去过，也没有库存"))
+    else:
+        days = inv0 / daily
+        if days < 7:
+            lines.append(tr("现在库存 {0:g} 件，每天卖 {1:.1f} 件左右，只够卖 {2:.0f} 天，快断货了", inv0, daily, days))
+        else:
+            lines.append(tr("现在库存 {0:g} 件，每天卖 {1:.1f} 件左右，够卖 {2:.0f} 天", inv0, daily, days))
+    if boxes and pack and pack > 1:
+        q = tr("{0:g} 箱（要 {1:g} 件，一箱 {2:g} 件）", boxes, sugg, pack)
+    elif boxes:
+        q = tr("{0:g} 箱（{1:g} 件）", boxes, sugg)
+    else:
+        q = tr("{0:g} 件", sugg)
+    if sugg <= 0:
+        lines.append(tr("够卖到下次订货，不用订") if daily > 0 else tr("不用订"))
+    elif daily <= 0:
+        lines.append(tr("虽然没有销量，按原来的规则还是建议订 {0}", q))
+    elif isinstance(target, (int, float)) and target == target and target > 0:
+        lines.append(tr("要备 {0:.0f} 件才够卖到下一批货到，现在不够 → 建议订 {1}", target, q))
+    elif cycle > 0:
+        lines.append(tr("接下来 {0:g} 天大约要卖 {1:.0f} 件，库存不够 → 建议订 {2}", cycle, daily * cycle, q))
+    else:
+        lines.append(tr("库存不够 → 建议订 {0}", q))
+    if transfer:
+        d = transfer.get("days")
+        if d is None or d == float("inf"):
+            have = tr("{0} 有 {1:g} 件卖不动", transfer["name"], transfer.get("inv") or 0)
+        else:
+            have = tr("{0} 库存多：有 {1:g} 件，够卖 {2:.0f} 天", transfer["name"], transfer.get("inv") or 0, d)
+        line = have + tr("，卖不完 → 调 {0:g} 件过来", transfer["pieces"])
+        if transfer.get("saved"):
+            line += tr("，这边少订 {0:g} 箱", transfer["saved"])
+        lines.append(line)
+    return lines
+
+
+SLOW_DAYS = 180          # 新算法：一箱到货后要卖超过这么多天 → 标「慢销」（照样订，只提醒）
+
+
+def review_marks(new_algo, ordered, after_days, inv_raw, slow_days=SLOW_DAYS):
+    """
+    审核表格「判断」后面的提醒（只提醒，不改订多少）：[(种类, 短字, 鼠标提示)]
+      slow 慢销：新算法订了、到货后要卖超过 slow_days 天
+      neg  库存不准：系统里库存是负数（多半是货到了没入库），按 0 算
+    """
+    from i18n import tr
+    out = []
+    if new_algo and ordered and after_days is not None and after_days != float("inf") and after_days > slow_days:
+        out.append(("slow", tr("慢销"), tr("到货后要卖 {0:.0f} 天才卖完，卖得很慢：要不要订你决定（订货数量改成 0 就不订）", after_days)))
+    # 库存是负数：先一律当 0（不提醒；库存准不准以后再处理），inv_raw 参数留着不用
+    return out
+
+
+VERDICT_RANK = {"transfer": 0, "more": 1, "less": 2, "none": 3, "same": 4, "nodb": 5}
+
+
+def review_verdict(before, after, moved=False, in_db=True, pack=None, same_text=None):
+    """
+    审核表格的「判断」：一眼看出这一行怎么处理（订货明细、检查门店订货清单共用）。
+      before 改之前的数量（系统原建议 / 门店清单），after 现在要订的；
+      pack=None 时两个数都是箱数，给了 pack 就是件数（差额正好是整箱写「箱」，否则写「件」）。
+      moved 有门店间调货（调进或调出）。
+    返回 (类别, 文字)：transfer 建议调货 / more 多订 N 箱 / less 少订 N 箱 / none 不订 / same 照建议订 / nodb 数据库没有
+    """
+    from i18n import tr
+    if not in_db:
+        return "nodb", tr("数据库没有")
+    if moved:
+        return "transfer", tr("建议调货")
+    before, after = float(before or 0), float(after or 0)
+    if after <= 0:
+        return "none", tr("不订")
+    d = after - before
+    if not d:
+        return "same", same_text or tr("照建议订")
+    n = abs(d)
+    if pack and pack > 0:
+        q = tr("{0:g} 箱", n / pack) if abs(n / pack - round(n / pack)) < 1e-9 else tr("{0:g} 件", n)
+    else:
+        q = tr("{0:g} 箱", n)
+    return ("more", tr("多订 {0}", q)) if d > 0 else ("less", tr("少订 {0}", q))
+
 
 
 def checked_main_orders(ordine_folder):
@@ -869,8 +1059,9 @@ def checked_main_orders(ordine_folder):
 
 def write_checked_order(rows, root_folder, store_id, source_name=""):
     """
-    确认后的订货量写成采购主订单（ORDINE 文件夹）：PEZZI = 确定件数，COLLI = 按数据库箱规折合的箱数。
-    确定件数为 0 的不写；没有条码的跳过。原来的文件挪进 ORDINE/_旧订单。返回 (路径, 行数, 跳过列表)
+    确认后的订货量写成采购主订单（ORDINE 文件夹）：COLLI = 确定箱数（final = 箱数 × 每箱件数；没有箱规的 final 就是箱数）。
+    不写 PEZZI：比价按箱数分配供应商（2026-10-21 用户：先按箱数，件数分配以后有问题再说）。
+    确定为 0 的不写；没有条码的跳过。原来的文件挪进 ORDINE/_旧订单。返回 (路径, 行数, 跳过列表)
     """
     conv = []
     for x in rows:
@@ -878,6 +1069,9 @@ def write_checked_order(rows, root_folder, store_id, source_name=""):
         pack = x.get("pack") or 0
         y = dict(x)
         y["suggested"] = final
-        y["ord_colli"] = math.ceil(final / pack) if pack > 0 and final > 0 else final
+        y["ord_colli"] = math.ceil(final / pack - 1e-9) if pack > 0 and final > 0 else final
+        if x.get("fbox") is not None:                # 检查窗口里定的箱数（调货以后的）
+            y["ord_colli"] = int(x["fbox"])
+            y["suggested"] = y["ord_colli"]
         conv.append(y)
-    return write_main_order(conv, root_folder, store_id, prefix="确认订单")
+    return write_main_order(conv, root_folder, store_id, prefix="确认订单", pieces=False)

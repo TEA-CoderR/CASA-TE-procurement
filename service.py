@@ -95,6 +95,38 @@ def _order_qty(r, s):
     return (r or {}).get("qty")
 
 
+def fill_missing_suppliers(items, settings, log=None):
+    """
+    主订单的行（或缺失商品）还没有 Codice Fornitore / 供应商名的（快照里没有，比如旧版本检查生成的主订单）：
+    按条码去数据库查一次（只读），写进 sup_code / sup_name。查不到 / 数据库连不上不要紧，返回补了几个
+    """
+    need = [m for m in items or [] if not m.get("sup_code") and not m.get("sup_name") and m.get("ean")]
+    if not need:
+        return 0
+    try:
+        import reorder_service as RS
+        db = RS.make_db((settings or {}).get("db") or None)
+        try:
+            codes = RS.codes_from_eans(db, [m["ean"] for m in need])
+            info = RS.supplier_info(db, codes.values())
+        finally:
+            try:
+                db.engine.dispose()
+            except Exception:
+                pass
+    except Exception as e:
+        if log:
+            log(tr("⚠ 缺失商品的供应商没查到（数据库）：{0}", e))
+        return 0
+    n = 0
+    for m in need:
+        v = info.get(codes.get(m["ean"]) or "")
+        if v:
+            m["sup_code"], m["sup_name"] = v
+            n += 1
+    return n
+
+
 def attach_stock(rows_data, snapshot):
     """主订单的每一行加上本店库存、日均、订货周期（来自检查门店清单时的快照），算够卖天数用"""
     if not snapshot:
@@ -103,6 +135,8 @@ def attach_stock(rows_data, snapshot):
     n = 0
     for r in rows_data:
         e = (snapshot.get("by_ean") or {}).get(r.get("ean"))
+        if e and (e.get("sup_code") or e.get("sup_name")):
+            r["sup_code"], r["sup_name"] = e.get("sup_code") or "", e.get("sup_name") or ""
         d = (e or {}).get("stores", {}).get(own) if e else None
         if d:
             r["inv"], r["daily"], r["cycle"] = d["inv"], d["daily"], d["cycle"]
@@ -132,11 +166,13 @@ def transfer_status(snapshot, settings):
     if not cfg.get("enabled"):
         return "off", tr("门店间调货：已关闭（点「门店间调货…」打开）")
     own = snapshot.get("store")
-    far = (dict(SO.DEFAULT_FILL, **(so.get("fill") or {}))).get("far_stores") or []
+    import transfers as TR
+    far = TR.excluded_stores(so.get("transfer"), (dict(SO.DEFAULT_FILL, **(so.get("fill") or {}))).get("far_stores"))
     name = SO.STORE_SHEETS.get(own, str(own))
     if own in far:
-        return "far", tr("门店间调货：{0} 设成「离得远」，不参与调货（点「门店间调货…」可以改）", name)
-    when = tr("整箱会多出一半以上时才调") if cfg.get("mode") == "waste" else tr("所有要订的商品都先看能不能调")
+        return "far", tr("门店间调货：{0} 没勾「参与调货门店」，不参与调货（点「门店间调货…」可以改）", name)
+    share = round((1 - float(cfg.get("waste_ratio") or 0.5)) * 100)
+    when = tr("只占整箱 ≤ {0}% 时调", share) if cfg.get("mode") == "waste" else tr("所有要订商品")
     others = tr("、").join(SO.STORE_SHEETS[k] for k in SO.STORE_SHEETS if k != own and k not in far)
     text = tr("门店间调货：开启，{0} 从 {1} 调；{2}，每个商品调货货值至少 €{3:g}",
               name, others or "—", when, float(cfg.get("item_min_value") or 0))
@@ -160,7 +196,7 @@ def wholesale_transfers(rows_data, supplier_headers, snapshot, settings, labels=
     if not snapshot or not cfg.get("enabled"):
         return []
     own = snapshot.get("store")
-    far = (dict(SO.DEFAULT_FILL, **(so.get("fill") or {}))).get("far_stores") or []
+    far = TR.excluded_stores(cfg, (dict(SO.DEFAULT_FILL, **(so.get("fill") or {}))).get("far_stores"))
     by_ean = snapshot.get("by_ean") or {}
     labels = labels or {}
     needs, info, avail = [], {}, {}
@@ -178,7 +214,7 @@ def wholesale_transfers(rows_data, supplier_headers, snapshot, settings, labels=
         info[k] = (r, s0)
         for sid, d in (by_ean.get(r["ean"]) or {}).get("stores", {}).items():
             if sid != own:
-                sp = TR.surplus(d)
+                sp = TR.surplus(d, cfg.get("keep_cycles"))
                 if sp > 0:
                     avail[(sid, r["ean"])] = sp
     if not needs:
@@ -369,8 +405,9 @@ def safe_save(wb, original_path, calc_path, log):
         # 先保存修改后的 workbook 到临时文件
         wb.save(calc_path)
         
-        # 直接同步到原始文件（避免 Excel COM 的性能问题）
-        shutil.copy2(calc_path, original_path)
+        # 直接同步到原始文件（避免 Excel COM 的性能问题）；没有公式时本来就存在原文件上，不用再复制
+        if os.path.normcase(os.path.abspath(calc_path)) != os.path.normcase(os.path.abspath(original_path)):
+            shutil.copy2(calc_path, original_path)
         log(tr("  ✔ 已保存到 {0}", os.path.basename(original_path)))
         
     except Exception as e:
@@ -580,7 +617,7 @@ def run_process(ordine_file, eliminare_path, distribuire_path, log, progress=Non
     # 主订单只能由「检查门店订货清单」生成（带门店库存快照）；旧系统的文件不再处理，一个文件都不动
     import reorder_service as RS
     if not RS.load_snapshot(ordine_file):
-        summary["error"] = tr("主订单不是「② 检查门店订货清单」生成的，不能比价。请先检查门店清单、生成主订单。")
+        summary["error"] = tr("主订单不是检查门店清单生成的，不能比价。请把门店清单放进「门店清单」，点「开始」。")
         log(tr("❌ {0}", summary["error"]))
         return summary
 
@@ -884,6 +921,10 @@ def run_process(ordine_file, eliminare_path, distribuire_path, log, progress=Non
             summary["transfer_note"] = text if code not in ("on",) else \
                 tr("门店间调货：这次没有可调的商品（其他门店没有多出来的货，或者商品调货货值不到门槛）")
             log(summary["transfer_note"])
+    # 每个商品的 Codice Fornitore、供应商名（缺失商品列表里看是谁家的货）：快照里没有的去数据库查一次
+    n_sup = fill_missing_suppliers([r for r in rows_data if (r.get("qty") or 0) > 0], settings, log)
+    if n_sup:
+        log(tr("从数据库补上 {0} 个商品的 Codice Fornitore / 供应商", n_sup))
     # 比价时才算的调货（旧主订单）要改主订单的件数；检查清单时算好的已经改过了（没有 row）
     transfer_rows = {t["row"]: t for t in summary["transfers"] if "row" in t}
     assignment = _select_suppliers(rows_data, supplier_headers, ws_main, log, settings, summary, decide, choose)
@@ -979,7 +1020,9 @@ def run_process(ordine_file, eliminare_path, distribuire_path, log, progress=Non
         ws_report.append(["生成时间: %s" % datetime.now().strftime("%Y-%m-%d %H:%M:%S")])
         ws_report.append(["总缺失数: %d" % len(missing_items)])
         ws_report.append([])
-        ws_report.append(["序号", "EAN", "ARTICOLO", "数量"])
+        ws_report.append(["序号", "EAN", "ARTICOLO", "出现次数", "Codice Fornitore", "供应商"])
+        sup_by_ean = {m.get("ean"): (m.get("sup_code") or "", m.get("sup_name") or "")
+                      for m in summary.get("missing_items") or []}
 
         # 统计每个 EAN 出现的数量和对应的 ARTICOLO
         ean_info = {}  # {ean: (articolo, count)}
@@ -991,7 +1034,7 @@ def run_process(ordine_file, eliminare_path, distribuire_path, log, progress=Non
                 ean_info[ean] = (articolo, 1)
 
         for idx, (ean, (articolo, count)) in enumerate(ean_info.items(), 1):
-            ws_report.append([idx, ean, articolo, count])
+            ws_report.append([idx, ean, articolo, count, *sup_by_ean.get(ean, ("", ""))])
 
         # 自动调整列宽
         for col in ws_report.columns:
@@ -1449,9 +1492,10 @@ def _write_missing_report(distribuire_path, rows, assignment):
     ws.append(["生成时间: %s" % datetime.now().strftime("%Y-%m-%d %H:%M:%S")])
     ws.append(["总缺失数: %d" % sum(c for _, c in info.values())])
     ws.append([])
-    ws.append(["序号", "EAN", "ARTICOLO", "数量"])
+    ws.append(["序号", "EAN", "ARTICOLO", "出现次数", "Codice Fornitore", "供应商"])
+    sup = {r["ean"]: (r.get("sup_code") or "", r.get("sup_name") or "") for r in rows if r.get("ean")}
     for i, (e, (a, c)) in enumerate(info.items(), 1):
-        ws.append([i, e, a, c])
+        ws.append([i, e, a, c, *sup.get(e, ("", ""))])
     wb.save(path)
     wb.close()
     return path

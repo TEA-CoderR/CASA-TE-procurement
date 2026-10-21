@@ -11,7 +11,8 @@ from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QColor, QFontMetrics, QFont
 from PySide6.QtWidgets import (QSizePolicy, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QPushButton, QComboBox,
                                QLineEdit, QFrame, QTableWidgetItem, QAbstractItemView, QHeaderView, QButtonGroup,
-                               QScrollArea, QFileDialog, QMessageBox, QMenu, QDialog, QCheckBox, QProgressBar)
+                               QScrollArea, QFileDialog, QMessageBox, QMenu, QDialog, QCheckBox, QProgressBar,
+                               QStyledItemDelegate, QSpinBox, QAbstractSpinBox)
 
 from i18n import tr
 from settings import save_settings
@@ -19,6 +20,8 @@ from theme import T, num_font, NUM_FONT
 from erp_widgets import ToolWindow, Sparkline
 import store_orders as S
 from reorder_page import short_decision
+import reorder_service as R
+import transfers as TR
 
 ALL = "__all__"
 # 明细表列（逻辑顺序）→ 显示顺序：常看、要改的列放前面
@@ -33,9 +36,24 @@ ALL = "__all__"
 #   怎么算出来的：建议件数、目标库存、周期、件价
 #   销量：30 / 60 / 90 / 180 天、月均、需求
 #   各店库存：GIA.0 ~ GIA.5、GIA-period、period_sales
-_ORDER = [1, 0, 5, 2, 18, 15, 16, 12, 17, 6, 20, 11, 32, 3, 4, 14, 21, 19, 13, 7, 8, 9, 10] + list(range(22, 32))
-_LAYOUT_VER = 2           # 改了默认顺序就加 1：用户以前拖过的顺序作废一次，换成新的默认顺序
+# 2026-10-20 加了 33 调货、34 变化、35 原因，审核时一眼看出：系统建议多少 → 调货少订多少 → 最后订多少、为什么：
+#   门店 供应商 名称 | 判断 等级 | 建议箱数 调货 订货箱数 ✎ 变化 | 每箱件数 金额 | 本店库存 日均 库存够卖 订后够卖 | 原因
+#   其他列默认藏起来（「显示哪些列」里打开）
+# 2026-10-20 第二版（用户：要简洁、改前改后一眼看出）：
+#   「判断」只写结论：不订 / 照建议订 / 多订 N 箱 / 少订 N 箱 / 建议调货（为什么建议放在鼠标提示里）
+#   紧接着「原建议 → 订货箱数 → 调货」三列对比改前改后和调货件数；「变化」列默认藏起来（判断里已经写了）
+# 2026-10-20 第三版：按用户自己排好的顺序做默认（调货只显示调进来的，从哪家调；调出的不显示）
+#   条码 等级 周期 本店库存 日均 库存够卖 需求 每箱件数 | 建议 判断 订货箱数 调货 | 到货后够卖 件价 金额 原因
+# 2026-10-21 加了 36 Codice Fornitore（供应商自己的货号，SCHEDA 里有这一列才有），默认放在条码后面
+_ORDER = [4, 36, 18, 19, 6, 20, 11, 23, 12, 15, 2, 16, 33, 32, 13, 17, 35,
+          1, 0, 5, 3, 34, 14, 21, 7, 8, 9, 10, 22, 24, 25, 26, 27, 28, 29, 30, 31]
+_LAYOUT_VER = 5           # 改了默认顺序就加 1：用户以前拖过的顺序作废一次，换成新的默认顺序
 _EXTRA = list(range(22, 32))
+TRANSFER_COL_K, CHANGE_COL_K, REASON_COL_K = 33, 34, 35
+# 默认只显示审核要看的：门店 供应商 名称 判断 | 原建议 订货箱数 调货 | 金额 本店库存 库存够卖 订后够卖
+# （原因放在「判断」的鼠标提示里；其他列在「更多 → 显示哪些列」里打开）
+_DEFAULT_HIDDEN = [1, 0, 5, 3, 34, 14, 21, 7, 8, 9, 10, 22, 24, 25, 26, 27, 28, 29, 30, 31]
+VERDICT_TOKEN = {"transfer": "ok", "more": "accent", "less": "warn", "none": "faint", "same": "text", "nodb": "err"}
 
 
 def _col(k):
@@ -47,12 +65,18 @@ def _perm(vals):
 
 
 EDIT_COL = _col(16)
+TRANSFER_COL = _col(33)
+CHANGE_COL = _col(34)
+REASON_COL = _col(35)
 AMOUNT_COL = _col(17)
 AFTER_COL = _col(32)
 DEC_COL = _col(2)
 DI_ROLE = Qt.UserRole + 1       # 第 0 列存 detail 下标（排序后靠它找到行）
 KEY_ROLE = Qt.UserRole + 2      # 排序用的值
 _TIER_RANK = {"A": 0, "B": 1, "C": 2}
+# 「看哪些」下拉框
+VIEWS = (("order", "只看要订的"), ("all", "全部商品"), ("changed", "只看有变化的"), ("transfer", "只看调货"),
+         ("edited", "只看手动改过的"), ("urgent", "只看紧急"))
 
 
 class _SortItem(QTableWidgetItem):
@@ -73,47 +97,16 @@ def _dec_rank(text):
     return 4
 
 
-def explain(x, it, algo):
-    """「为什么建议这么多箱」的说明文字（数据库箱规和 SCHEDA 每箱件数不一样时，后面加一句提醒）"""
-    txt = _explain(x, it, algo)
+def pack_warning(x, it):
+    """数据库箱规和 SCHEDA 每箱件数不一样时的提醒（没问题返回空字符串）"""
     dbp = (x or {}).get("db_pack")
     try:
         dbp = float(dbp or 0)
     except (TypeError, ValueError):
         dbp = 0
     if x and dbp > 1 and abs(dbp - float(it["pack"] or 1)) > 1e-9:
-        txt += "\n" + tr("注意：数据库箱规是每箱 {0:g} 件，SCHEDA 是每箱 {1:g} 件，不一样，请核对。", dbp, it["pack"] or 1)
-    return txt
-
-
-def _explain(x, it, algo):
-    if not x:
-        return tr("数据库里找不到这个商品，没有建议量；需要的话手动填箱数。")
-    pack = it["pack"] or 1
-    if x.get("target") is None:       # 原程序算法：完全按原程序算，这里只说明换成 SCHEDA 箱数
-        inv_raw = x.get("inv_raw", x["inv"])
-        return tr("原程序算法（严格按原程序计算）：日均 {0:.2f} 件 × 订货周期 {1} 天 × 系数，减去本店库存 {2:g} 件{3}，"
-                  "按数据库箱规取整，得到建议 {4} 件；按 SCHEDA 每箱 {5:g} 件换成箱数（向上取整）。",
-                  x.get("daily") or 0, x.get("cycle") or "?", max(0.0, inv_raw),
-                  tr("（负数按 0 算）") if inv_raw < 0 else "", x["sugg"], pack)
-    R = (algo or {}).get("review_days", 7)
-    L = (algo or {}).get("lead_days", 5)
-    inv = max(0.0, x["inv"])
-    mu = (x.get("daily") or 0) * (R + L)
-    need = x["sugg"]
-    boxes = S.colli_for(x, pack, algo)
-    txt = tr("下次到货前（下单间隔 {0} 天 + 到货 {1} 天）预计卖 {2:.1f} 件，加安全库存 {3:.1f} 件，目标库存 {4:.0f} 件；",
-             R, L, mu, x.get("safety") or 0, x["target"])
-    txt += tr("现有库存 {0:g} 件", x.get("inv_raw", x["inv"]))
-    if x.get("inv_raw", 0) < 0:
-        txt += tr("（负数按 0 算）")
-    txt += tr("，缺 {0} 件。", need) if need > 0 else tr("，够用，不用订。")
-    if need > 0:
-        full, rem = divmod(need, pack)
-        txt += tr("每箱 {0:g} 件 → {1:g} 箱（零头 {2:g} 件", pack, boxes, rem)
-        thr = (algo or {}).get("pack_threshold", 0.3)
-        txt += tr("，≥ 一箱的 {0:.0%} 才多订一箱）。", thr)
-    return txt
+        return tr("注意：数据库箱规是每箱 {0:g} 件，SCHEDA 是每箱 {1:g} 件，不一样，请核对。", dbp, it["pack"] or 1)
+    return ""
 
 
 class AddItemsDialog(QDialog):
@@ -498,11 +491,13 @@ class DetailWindow(ToolWindow):
         v.setContentsMargins(0, 0, 0, 0)
         v.setSpacing(0)
 
-        # ---- 工具条 ----
+        # ---- 工具条（一行）----
+        # 门店 | 供应商 | 搜索 | 看哪些（下拉） ……  加商品凑单 | 恢复建议值 | 更多 ▾（显示哪些列、导出 Excel）
+        # 按钮少、筛选收进一个下拉框，一行放得下，窗口不会被撑得比屏幕宽
         bar = QFrame()
         bar.setObjectName("TopBar")
         tb = QHBoxLayout(bar)
-        tb.setContentsMargins(16, 10, 16, 10)
+        tb.setContentsMargins(16, 8, 16, 8)
         tb.setSpacing(8)
         self.store_group = QButtonGroup(self)
         self.store_group.setExclusive(True)
@@ -521,39 +516,45 @@ class DetailWindow(ToolWindow):
             self.store_group.addButton(b)
             tb.addWidget(b)
         self.store_group.buttonClicked.connect(lambda _b: self._filter())
-        tb.addSpacing(8)
-        self.f_sup = QComboBox()
-        self.f_sup.setMinimumWidth(180)
-        self.f_sup.currentIndexChanged.connect(self._filter)
-        tb.addWidget(self.f_sup)
-        self.f_only = self._chip(tr("只看要订的"), True)
-        self.f_edit = self._chip(tr("只看改过的"), False)
-        self.f_urgent = self._chip(tr("只看紧急"), False)
-        for c in (self.f_only, self.f_edit, self.f_urgent):
-            tb.addWidget(c)
-        for c in self.store_group.buttons() + [self.f_only, self.f_edit, self.f_urgent]:
+        for c in self.store_group.buttons():
             c.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)   # 文字长（英文）时不被挤掉
             bf = c.font()
             bf.setBold(True)       # 选中时是粗体，按粗体留宽度
-            c.setMinimumWidth(QFontMetrics(bf).horizontalAdvance(c.text()) + 34)
-        tb.addStretch()
+            c.setMinimumWidth(QFontMetrics(bf).horizontalAdvance(c.text()) + 28)
+        tb.addSpacing(6)
+        self.f_sup = QComboBox()
+        self.f_sup.setMinimumWidth(130)
+        self.f_sup.setMaximumWidth(240)
+        self.f_sup.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self.f_sup.setMinimumContentsLength(10)
+        self.f_sup.currentIndexChanged.connect(self._filter)
+        tb.addWidget(self.f_sup)
         self.f_text = QLineEdit()
         self.f_text.setPlaceholderText(tr("编号、条码或名称"))
-        self.f_text.setMinimumWidth(150)
+        self.f_text.setMinimumWidth(90)
         self.f_text.setMaximumWidth(200)
         self.f_text.textChanged.connect(self._filter)
         tb.addWidget(self.f_text)
-        self.btn_reset = QPushButton(tr("恢复建议值"))
-        self.btn_reset.setToolTip(tr("把当前筛选出来的行恢复成系统建议的箱数"))
-        self.btn_reset.clicked.connect(self.reset_shown)
-        tb.addWidget(self.btn_reset)
+        # 看哪些：一个下拉框代替原来四个开关
+        self.f_view = QComboBox()
+        for key, text in VIEWS:
+            self.f_view.addItem(tr(text), key)
+        self.f_view.setToolTip(tr("只看要订的：要订、系统建议过、改过或有调货的商品"))
+        self.f_view.currentIndexChanged.connect(self._filter)
+        tb.addWidget(self.f_view)
+        tb.addStretch()
         b_add = QPushButton(tr("加商品凑单"))
         b_add.setToolTip(tr("同一个供应商、同一家店：把没被选进来但卖得快的商品加进订单，凑够起订箱数或金额"))
         b_add.clicked.connect(self.add_items)
         tb.addWidget(b_add)
-        exp = QPushButton(tr("导出 Excel"))
-        exp.clicked.connect(self.export)
-        tb.addWidget(exp)
+        self.btn_reset = QPushButton(tr("恢复建议值"))
+        self.btn_reset.setToolTip(tr("把当前筛选出来的行恢复成系统建议的箱数"))
+        self.btn_reset.clicked.connect(self.reset_shown)
+        tb.addWidget(self.btn_reset)
+        more = QPushButton(tr("更多") + " ▾")
+        more.setToolTip(tr("显示哪些列、导出 Excel"))
+        more.clicked.connect(lambda: self._more_menu(more))
+        tb.addWidget(more)
         v.addWidget(bar)
         # 载入进度：上万行分批填，窗口不卡；填完自动隐藏
         lb = QFrame()
@@ -577,11 +578,12 @@ class DetailWindow(ToolWindow):
         mid.setSpacing(0)
         self.table = self.ui.make_table(_perm([tr("供应商"), tr("门店"), tr("判断"), tr("商品编号"), tr("条码"), tr("名称"),
                                                tr("本店库存"), "30", "60", "90", "180", tr("库存够卖（天）"), tr("每箱件数"),
-                                               tr("件价"), tr("建议件数"), tr("建议箱数"), tr("订货箱数"), tr("金额"),
+                                               tr("件价"), tr("建议件数"), tr("建议（箱）"), tr("订货箱数"), tr("金额"),
                                                tr("等级"), tr("周期"), tr("日均"), tr("目标库存"),
-                                               tr("月均"), tr("需求")] + [f"GIA.{i}" for i in range(6)] +
-                                              ["GIA-period", "period_sales", tr("订后够卖（天）")]),
-                                        numeric_cols=[_col(k) for k in list(range(6, 18)) + [19, 20, 21, 32] + _EXTRA])
+                                               tr("月均"), tr("需求（件）")] + [f"GIA.{i}" for i in range(6)] +
+                                              ["GIA-period", "period_sales", tr("到货后够卖（天）"),
+                                               tr("调货"), tr("变化（箱）"), tr("原因"), "Codice Fornitore"]),
+                                        numeric_cols=[_col(k) for k in list(range(6, 18)) + [19, 20, 21, 32, 34] + _EXTRA])
         self.table.setEditTriggers(QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed |
                                    QAbstractItemView.AnyKeyPressed)
         self.table.setFocusPolicy(Qt.StrongFocus)
@@ -590,16 +592,25 @@ class DetailWindow(ToolWindow):
         hh.setSectionResizeMode(QHeaderView.Interactive)
         hh.setStretchLastSection(False)
         for c, wd in enumerate(_perm((130, 92, 84, 80, 120, 270, 70, 50, 50, 50, 50, 70, 66, 62, 70, 66, 76, 80, 46, 46, 60, 70,
-                                      56, 56, 54, 54, 54, 54, 54, 54, 80, 86, 96))):
+                                      56, 56, 54, 54, 54, 54, 54, 54, 80, 86, 96, 190, 110, 380, 110))):
             hdr = self.table.horizontalHeaderItem(c)
             need = hh.fontMetrics().horizontalAdvance(hdr.text() if hdr else "") + 26
             self.table.setColumnWidth(c, max(wd, need))
         self.table.horizontalHeaderItem(EDIT_COL).setText(tr("订货箱数") + " ✎")
         self.table.horizontalHeaderItem(EDIT_COL).setToolTip(tr("双击修改箱数，0 = 不订"))
         self.table.horizontalHeaderItem(_col(18)).setToolTip(tr("销量等级：A 卖得快，B 一般，C 卖得慢"))
+        self.table.horizontalHeaderItem(_col(15)).setToolTip(tr("系统按销量和库存算出来的箱数（调货、手动改之前），和「订货箱数」对比"))
+        self.table.horizontalHeaderItem(DEC_COL).setToolTip(
+            tr("这一行怎么处理：不订 / 照建议订 / 多订 / 少订（和原建议比）/ 建议调货。鼠标停在格子上看为什么"))
+        self.table.horizontalHeaderItem(TRANSFER_COL).setToolTip(
+            tr("门店间调货：从哪家门店调进几件（调进来的就少订）。双击可以改：选调出门店、调几件，或者不调（比如过季品）"))
+        self.table.cellDoubleClicked.connect(self._edit_transfer)     # 双击「调货」：选调出门店、填件数
+        self.table.horizontalHeaderItem(TRANSFER_COL).setText(tr("调货") + " ✎")
+        self.table.horizontalHeaderItem(CHANGE_COL).setToolTip(tr("订货箱数 − 建议箱数，括号里是为什么变：调货 / 手动改"))
+        self.table.horizontalHeaderItem(REASON_COL).setToolTip(tr("系统为什么这么建议：库存够卖几天、订货周期里大约卖多少"))
         self.table.horizontalHeaderItem(_col(11)).setToolTip(tr("库存够卖 = 本店库存 ÷ 日均（账面库存是负数时按 0 算）。门店配货、检查订货清单、批发商比价都是这个算法"))
         self.table.horizontalHeaderItem(AFTER_COL).setToolTip(
-            tr("订后够卖 =（库存 + 订货箱数 × 每箱件数）÷ 日均：这次的货到了以后能卖几天；超过凑单天数标黄，可能压货"))
+            tr("到货后够卖 =（库存 + 订的货 + 调进来的 − 调给别的店的）÷ 日均：这次订的货和调的货都到了以后能卖几天；超过凑单天数标黄，可能压货"))
         for k, tip in ((22, tr("月均 = 最长周期销量 ÷ 月数（默认 180 天 ÷ 6）")),
                        (23, tr("需求 = 第 3 个周期（默认 90 天）的日均 × 订货周期")),
                        (24, tr("GIA.0 = BMS 总仓库存；GIA.1 ~ GIA.5 = 各门店库存")),
@@ -621,7 +632,10 @@ class DetailWindow(ToolWindow):
         hh.sectionResized.connect(lambda *_: self._col_timer.start())
         hh.setContextMenuPolicy(Qt.CustomContextMenu)
         hh.customContextMenuRequested.connect(self._header_menu)
-        hh.setToolTip(tr("拖动表头可以换列的位置，下次打开保持；右键可以恢复默认顺序"))
+        hh.setToolTip(tr("拖动表头可以换列的位置，下次打开保持；右键可以恢复默认顺序、选显示哪些列"))
+        from erp_widgets import ColumnChooser
+        self.cols = ColumnChooser(self.table, self.page.cfg, "detail_cols", _ORDER, lambda: save_settings(self.page.settings),
+                                  _DEFAULT_HIDDEN, ver=4)
         hh.setSectionsClickable(True)
         hh.setSortIndicatorShown(True)
         hh.setSortIndicator(0, Qt.AscendingOrder)
@@ -680,7 +694,12 @@ class DetailWindow(ToolWindow):
     def _header_menu(self, pos):
         m = QMenu(self)
         a = m.addAction(tr("恢复默认列顺序"))
-        if m.exec(self.table.horizontalHeader().mapToGlobal(pos)) == a:
+        b = m.addAction(tr("显示哪些列…"))
+        got = m.exec(self.table.horizontalHeader().mapToGlobal(pos))
+        if got == b:
+            self.cols.menu(self.table.horizontalHeader().mapToGlobal(pos))
+            return
+        if got == a:
             hh = self.table.horizontalHeader()
             hh.blockSignals(True)
             for c in range(self.table.columnCount()):
@@ -708,6 +727,7 @@ class DetailWindow(ToolWindow):
         sa = QScrollArea()
         sa.setWidgetResizable(True)
         sa.setFixedWidth(350)
+        sa.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)     # 详情栏只上下滚，内容自动换行
         sa.setFrameShape(QFrame.NoFrame)
         d = QWidget()
         d.setObjectName("Drawer")
@@ -722,6 +742,8 @@ class DetailWindow(ToolWindow):
         self.d_codes = QLabel("")
         self.d_codes.setObjectName("Faint")
         self.d_codes.setFont(num_font(9))
+        self.d_codes.setWordWrap(True)            # 编号一行放不下就换行（不然把详情栏撑宽，右边被切掉）
+        self.d_over.setWordWrap(True)
         v.addWidget(self.d_over)
         v.addWidget(self.d_title)
         v.addWidget(self.d_codes)
@@ -802,16 +824,14 @@ class DetailWindow(ToolWindow):
         sc, it, sid = self.detail[di]
         calc = self.page.calc
         x = calc["demand"].get(sid, {}).get(it.get("db_code") or it["code"])
-        algo = calc["demand"].get("_algo") if isinstance(calc["demand"], dict) else None
         self.d_over.setText(f"{S.STORE_SHEETS[sid]} · {sc['name']}")
         self.d_title.setText(it["desc"])
-        self.d_codes.setText(f"{it.get('db_code') or it['code']} · {it['ean']} · {it['pack']:g} {tr('件/箱')} · €{it['price']:.3f}/{tr('件')}")
+        fc = f" · Cod.Forn. {it['sup_code']}" if it.get("sup_code") else ""
+        self.d_codes.setText(f"{it.get('db_code') or it['code']} · {it['ean']}{fc}\n{it['pack']:g} {tr('件/箱')} · €{it['price']:.3f}/{tr('件')}")
         (a1, a2), (b1, b2), (c1, c2), (d1, d2) = self.minis
         if x:
-            inv_raw = x.get("inv_raw", x["inv"])
-            a1.setText(f"{inv_raw:g}")
-            a1.setStyleSheet(f"color:{T('err')};" if inv_raw < 0 else "")
-            a2.setText(tr("计算时按 0") if inv_raw < 0 else tr("件"))      # 新算法、原程序算法都按 0 算
+            a1.setText(f"{x.get('inv_raw', x['inv']):g}")      # 显示原值（计算时负数当 0）
+            a2.setText(tr("件"))
             b1.setText(f"{(x.get('daily') or 0):.2f}")
             b2.setText(tr("季节系数 {0:.2f}", x.get("season") or 1) if x.get("season") else tr("件 / 天"))
             c1.setText(f"{x['target']:.0f}" if isinstance(x.get("target"), (int, float)) else "—")
@@ -837,9 +857,14 @@ class DetailWindow(ToolWindow):
             self.spark.set_values([])
             self.spark_note.setText("")
         n = self._cur(sc, sid, it["row"])
-        self.why_t.setText(tr("为什么建议 {0:g} 箱", calc["base"][sc["path"]].get(sid, {}).get(it["row"], 0)))
-        self.why.setText(explain(x, it, algo) + ("\n" + tr("现在订 {0:g} 箱（手动改过）", n)
-                                                 if (sc["path"], sid, it["row"]) in self.page.edited else ""))
+        orig = self._orig(sc, sid, it["row"])
+        self.why_t.setText(tr("为什么建议 {0:g} 箱", orig) if orig else tr("为什么不用订"))
+        lines = self._reason_lines(sc, it, sid)
+        if (sc["path"], sid, it["row"]) in self.page.edited:
+            lines.append(tr("你手动改成了 {0:g} 箱", n))
+        lines += ["⚠ " + m[2] for m in self._marks(sc, it, sid, n)]
+        warn = pack_warning(x, it)
+        self.why.setText("\n".join("· " + l for l in lines) + (("\n" + warn) if warn else ""))
         while self.others.count():
             w = self.others.takeAt(0).widget()
             if w:
@@ -942,7 +967,7 @@ class DetailWindow(ToolWindow):
         t = self.table
         sc, it, sid = self.detail[i]
         x = calc["demand"].get(sid, {}).get(it.get("db_code") or it["code"])
-        sug_c = calc["base"][sc["path"]].get(sid, {}).get(it["row"], 0)
+        sug_c = self._orig(sc, sid, it["row"])          # 系统建议（调货之前）；调货少订的在「调货」「变化」两列
         # 库存够卖 = 库存 ÷ 日均（负库存按 0 算），和「订后够卖」、检查订货清单同一个算法
         inv_days = S.days_text(S.cover_days(x)) if x else ""
         vals = _perm([
@@ -955,8 +980,11 @@ class DetailWindow(ToolWindow):
             f"{x['cycle']:g}" if x and isinstance(x.get("cycle"), (int, float)) else "",
             f"{x['daily']:.2f}" if x and x.get("daily") else "",
             f"{x['target']:.0f}" if x and isinstance(x.get("target"), (int, float)) else ""] +
-            self._extra_texts(x, sug_c, d) + [""])
-        keys = _perm(self._sort_keys(i, x, sug_c) + self._extra_keys(x, sug_c, d) + [0.0])
+            self._extra_texts(x, sug_c, d) + ["", self._transfer_text(sc, it, sid), "",
+                                              "；".join(self._reason_lines(sc, it, sid)), it.get("sup_code") or ""])
+        keys = _perm(self._sort_keys(i, x, sug_c) + self._extra_keys(x, sug_c, d) +
+                     [0.0, self._transfer_key(sc, it, sid), 0.0, vals[REASON_COL].lower(),
+                      str(it.get("sup_code") or "")])
         num_cols, nf = self._num_cols, self._num_font
         ro = Qt.ItemIsSelectable | Qt.ItemIsEnabled
         for c in range(len(vals)):
@@ -971,16 +999,6 @@ class DetailWindow(ToolWindow):
             else:
                 item.setFlags(ro)
             t.setItem(i, c, item)
-        if x:
-            dec = x["decision"] or ""
-            col = T("err") if "🔴" in dec else T("warn") if "🟡" in dec else T("accent") if "🟠" in dec \
-                else T("ok") if "🟢" in dec else T("muted")
-            t.item(i, DEC_COL).setForeground(QColor(col))
-            t.item(i, DEC_COL).setToolTip(dec)
-            if x.get("inv_raw", x["inv"]) < 0:
-                t.item(i, _col(6)).setForeground(QColor(T("err")))
-        else:
-            t.item(i, DEC_COL).setForeground(QColor(T("err")))
         tier = (x["tier"] or "") if x else ""
         if tier:
             tc = t.item(i, _col(18))
@@ -989,6 +1007,229 @@ class DetailWindow(ToolWindow):
             f.setBold(True)
             tc.setFont(f)
         t.item(i, 0).setData(DI_ROLE, i)
+        self._style_transfer(i, i)
+
+    def _style_transfer(self, i, r):
+        """「调货」格（可以改件数）和跟着调货变的「原因」"""
+        t = self.table
+        sc, it, sid = self.detail[i]
+        key = (sc["path"], sid, it["row"])
+        mi = self._moves()[0]
+        ov = (self.page.calc.get("transfer_overrides") or {}).get(key)
+        ti = t.item(r, TRANSFER_COL)
+        m = mi.get(key)
+        ro = Qt.ItemIsSelectable | Qt.ItemIsEnabled
+        if m:
+            ti.setText(self._transfer_text(sc, it, sid) + ("  ✎" if m.get("manual") else ""))
+            ti.setForeground(QColor(T("warn") if m.get("manual") else T("ok")))
+            ti.setToolTip(self._transfer_tip(sc, it, sid) + "\n" + tr("双击修改：换调出门店、改件数或者不调"))
+        elif ov is not None and not TR.norm_override(ov)["auto"]:   # 人工改成不调了（或者调出门店不够）
+            o = TR.norm_override(ov)
+            ti.setText(tr("不调") + "  ✎" if not o["pieces"] else tr("调不了 {0} 件", o["pieces"]))
+            ti.setForeground(QColor(T("faint")))
+            ti.setToolTip(tr("人工改过：双击重新选调出门店和件数；「恢复建议值」恢复系统算的调货"))
+        else:                                   # 没调货的写「不调」
+            ordered = bool(self._orig(sc, sid, it["row"]))
+            ti.setText(tr("不调"))                 # 没调货的一律写「不调」
+            ti.setForeground(QColor(T("faint")))
+            ti.setToolTip(tr("双击：这个商品改成从别的门店调货") if ordered else "")
+        ti.setFlags(ro)
+        ti.setData(KEY_ROLE, self._transfer_key(sc, it, sid))
+        ri = t.item(r, REASON_COL)
+        ri.setForeground(QColor(T("muted")))
+        lines = self._reason_lines(sc, it, sid)
+        ri.setText("；".join(lines))
+        why = "\n".join(lines)
+        ri.setToolTip(why)
+        t.item(r, DEC_COL).setToolTip(why)          # 鼠标停在「判断」上也能看为什么
+        t.item(r, DEC_COL).setData(Qt.UserRole + 3, why)
+
+    def _edit_transfer(self, r, c):
+        """双击「调货」格：选从哪家门店调、调几件（或者不调）。只改这一行，别的行不跟着变"""
+        if c != TRANSFER_COL or not self.page.calc:
+            return
+        item = self.table.item(r, 0)
+        i = item.data(DI_ROLE) if item is not None else None
+        if i is None:
+            return
+        sc, it, sid = self.detail[i]
+        calc = self.page.calc
+        colli = self._orig(sc, sid, it["row"])
+        if not colli:
+            self.flash(tr("这一行系统没建议订货，不用调货"))
+            return
+        code = it.get("db_code") or it["code"]
+        d = calc["demand"].get(sid, {}).get(code) or {}
+        cfg = self.page.transfer_cfg()
+        far = set(self.page.transfer_far())
+        src = calc.get("base_orig") or calc["base"]
+        stores = []
+        for s_ in calc.get("stores") or []:
+            x = calc["demand"].get(s_, {}).get(code)
+            if s_ == sid or not isinstance(x, dict):
+                continue
+            notes = []
+            if s_ in far:
+                notes.append(tr("不参与调货"))
+            if src.get(sc["path"], {}).get(s_, {}).get(it["row"], 0) > 0:
+                notes.append(tr("自己也要订"))
+            stores.append({"sid": s_, "name": S.STORE_SHEETS.get(s_, str(s_)), "inv": x.get("inv_raw", x.get("inv")),
+                           "daily": x.get("daily"), "surplus": TR.surplus(x, cfg.get("keep_cycles")),
+                           "note": "、".join(notes)})
+        if not stores:
+            self.flash(tr("其他门店没有这个商品的库存数据"))
+            return
+        key = (sc["path"], sid, it["row"])
+        m = self._moves()[0].get(key)
+        need = d.get("need", d.get("sugg", 0)) or 0
+        from erp_widgets import TransferEditDialog
+        dlg = TransferEditDialog(self, it["desc"],
+                                 tr("{0} 这次要 {1:g} 件，一箱 {2:g} 件，系统建议订 {3:g} 箱",
+                                    S.STORE_SHEETS.get(sid, sid), float(need), it["pack"], colli),
+                                 stores, (m["from"], m["pieces"]) if m else None, need, it["pack"], colli)
+        if not dlg.exec() or dlg.value is None:
+            return
+        frm, pcs = dlg.value
+        from PySide6.QtWidgets import QApplication
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            self.page.set_transfer(key, {"from": frm, "pieces": pcs} if pcs else 0)
+            self.refresh_transfers(rows={(sc["path"], it["row"])})
+        finally:
+            QApplication.restoreOverrideCursor()
+        m = self._moves()[0].get(key)
+        if pcs and not m:
+            self.flash(tr("{0} 库存不够，这次调不了", S.STORE_SHEETS.get(frm, frm)))
+        elif m:
+            self.flash(tr("已改调货：{0} ← {1} {2} 件", S.STORE_SHEETS.get(sid, sid), S.STORE_SHEETS.get(m["from"], m["from"]),
+                          m["pieces"]))
+        else:
+            self.flash(tr("已改调货：{0} {1}", S.STORE_SHEETS.get(sid, sid), tr("不调")))
+
+    def refresh_transfers(self, rows=None):
+        """调货重算以后：调货、原因、订货箱数刷新。rows = {(SCHEDA, 行号)}：只刷新这几个商品（各门店）的行，快"""
+        if not self.detail or self._loading:
+            return
+        was = self._filling
+        self._filling = True
+        self.table.setUpdatesEnabled(False)
+        for i in range(len(self.detail)):
+            if rows is not None and (self.detail[i][0]["path"], self.detail[i][1]["row"]) not in rows:
+                continue
+            self._style_transfer(i, self.pos[i])
+            self._show_qty(i)
+        self.table.setUpdatesEnabled(True)
+        self._filling = was
+        self._filter()
+        if self.cur_di is not None:
+            self._select_row(self.pos[self.cur_di])
+
+    # ---------- 调货 / 变化 ----------
+    def _orig(self, sc, sid, row):
+        """系统建议的箱数（调货之前）"""
+        calc = self.page.calc
+        src = calc.get("base_orig") or calc["base"]
+        return src.get(sc["path"], {}).get(sid, {}).get(row, 0)
+
+    def _moves(self):
+        """{(SCHEDA, 门店, 行): 调进来的}、{(SCHEDA, 门店, 行): [调出去的]}（按 calc["transfers"] 建一次，调货重算后自动换）"""
+        ts = self.page.calc.get("transfers") or []
+        if getattr(self, "_mv_src", None) is not ts:
+            mi, mo = {}, {}
+            for t in ts:
+                mi[(t["path"], t["to"], t["row"])] = t
+                mo.setdefault((t["path"], t["from"], t["row"]), []).append(t)
+            self._mv_src, self._mv = ts, (mi, mo)
+        return self._mv
+
+    def _transfer_text(self, sc, it, sid):
+        mi, mo = self._moves()
+        t = mi.get((sc["path"], sid, it["row"]))
+        if t:                                     # 短：← 从哪家 几件（详细的在鼠标提示里）
+            return f"← {S.STORE_SHEETS.get(t['from'], t['from'])} {t['pieces']}" + tr("件")
+        return ""                                 # 调出去的不显示（审核只要知道从哪调进来）
+
+    def _reason_lines(self, sc, it, sid):
+        """为什么：直白的几句话（「原因」列、鼠标提示、右边详情栏共用）"""
+        calc = self.page.calc
+        code = it.get("db_code") or it["code"]
+        x = calc["demand"].get(sid, {}).get(code)
+        if not x:
+            return [tr("数据库里找不到这个商品，没有建议量；需要的话手动填箱数")]
+        tin = None
+        t = self._moves()[0].get((sc["path"], sid, it["row"]))
+        if t:
+            dx = calc["demand"].get(t["from"], {}).get(code)
+            have = max(0.0, dx.get("inv_raw", dx["inv"])) if dx else 0
+            tin = {"name": S.STORE_SHEETS.get(t["from"], t["from"]), "pieces": t["pieces"], "inv": have,
+                   "days": S.cover_days({"inv": have, "daily": dx.get("daily")}) if dx else None,
+                   "saved": t["colli_before"] - t["colli_after"]}
+        return R.plain_reason(x.get("inv_raw", x.get("inv")), x.get("daily"), x.get("cycle"), x.get("sugg"),
+                              boxes=self._orig(sc, sid, it["row"]) or None, target=x.get("target"), transfer=tin,
+                              pack=it.get("pack"))
+
+    def _marks(self, sc, it, sid, n=None):
+        """判断后面的提醒（不改订多少）：新算法订了、一箱到货后要卖半年以上 → 慢销；库存是负数 → 库存不准"""
+        x = self.page.calc["demand"].get(sid, {}).get(it.get("db_code") or it["code"])
+        if not x:
+            return []
+        if n is None:
+            n = self._cur(sc, sid, it["row"])
+        mi, mo = self._moves()
+        k_ = (sc["path"], sid, it["row"])
+        moved = (mi[k_]["pieces"] if k_ in mi else 0) - sum(t_["pieces"] for t_ in mo.get(k_, []))
+        v = S.cover_days(x, n * it["pack"] + moved)
+        return R.review_marks(x.get("target") is not None, n > 0, v, x.get("inv_raw", x.get("inv")))
+
+    def _transfer_tip(self, sc, it, sid):
+        mi, mo = self._moves()
+        t = mi.get((sc["path"], sid, it["row"]))
+        if t:
+            return tr("调进 {0} 件 ← {1}，少订 {2} 箱", t["pieces"], S.STORE_SHEETS.get(t["from"], t["from"]),
+                      t["colli_before"] - t["colli_after"])
+        return ""
+
+    def _transfer_key(self, sc, it, sid):
+        mi, mo = self._moves()
+        t = mi.get((sc["path"], sid, it["row"]))
+        return float(t["pieces"]) if t else 0.0          # 只算调进来的
+
+    def _change(self, sc, sid, row, n):
+        """订货箱数比系统建议多 / 少几箱，为什么：(文字, 数字)"""
+        orig = self._orig(sc, sid, row)
+        after_tr = self.page.calc["base"].get(sc["path"], {}).get(sid, {}).get(row, 0)
+        d = n - orig
+        if not d:
+            return "", 0.0, ""
+        parts = []
+        if after_tr != orig:
+            parts.append(tr("调货 {0:+g}", after_tr - orig))
+        if n != after_tr:
+            parts.append(tr("手动 {0:+g}", n - after_tr))
+        kind = "transfer" if n == after_tr else "manual"
+        return f"{d:+g}", float(d), "，".join(parts), kind
+
+    def _verdict(self, sc, it, sid, n=None):
+        """(类别, 文字)：这一行「判断」显示什么"""
+        x = self.page.calc["demand"].get(sid, {}).get(it.get("db_code") or it["code"])
+        if n is None:
+            n = self._cur(sc, sid, it["row"])
+        return R.review_verdict(self._orig(sc, sid, it["row"]), n, bool(self._transfer_key(sc, it, sid)), in_db=bool(x))
+
+    def _k0(self, i):
+        sc, it, sid = self.detail[i]
+        return (self.sup_index[sc["path"]], it["row"], sid)
+
+    def _more_menu(self, btn):
+        m = QMenu(self)
+        a_cols = m.addAction(tr("显示哪些列…"))
+        a_exp = m.addAction(tr("导出 Excel"))
+        pos = btn.mapToGlobal(btn.rect().bottomLeft())
+        got = m.exec(pos)
+        if got == a_cols:
+            self.cols.menu(pos)
+        elif got == a_exp:
+            self.export()
 
     @staticmethod
     def _extra_vals(x, sug_c, days):
@@ -1068,12 +1309,47 @@ class DetailWindow(ToolWindow):
         amt.setData(KEY_ROLE, n * it["pack"] * it["price"])
         # 订后够卖：随订货箱数一起变
         x = self.page.calc["demand"].get(sid, {}).get(it.get("db_code") or it["code"])
-        v = S.cover_days(x, n * it["pack"])
+        mi, mo = self._moves()
+        k_ = (sc["path"], sid, it["row"])
+        moved = (mi[k_]["pieces"] if k_ in mi else 0) - sum(t_["pieces"] for t_ in mo.get(k_, []))
+        v = S.cover_days(x, n * it["pack"] + moved)
         af = self.table.item(r, AFTER_COL)
         af.setText(S.days_text(v))
         af.setData(KEY_ROLE, None if v is None else (1e12 if math.isinf(v) else v))
         limit = float(self.page.fill_cfg().get("max_stock_days") or 60)
-        af.setForeground(QColor(T("warn") if (n and v is not None and v > limit) else T("text") if n else T("muted")))
+        arrive = n or moved > 0
+        af.setForeground(QColor(T("warn") if (arrive and v is not None and v > limit) else T("text") if arrive else T("muted")))
+        # 判断：和原建议比，不订 / 照建议订 / 多订 / 少订 / 建议调货
+        x_ = self.page.calc["demand"].get(sid, {}).get(it.get("db_code") or it["code"])
+        orig = self._orig(sc, sid, it["row"])
+        kind, vt = self._verdict(sc, it, sid, n)
+        marks = self._marks(sc, it, sid, n)
+        dc = self.table.item(r, DEC_COL)
+        dc.setText(" · ".join([vt] + [m[1] for m in marks]))
+        base = dc.data(Qt.UserRole + 3) or ""
+        dc.setToolTip("\n".join([base] + ["⚠ " + m[2] for m in marks]) if marks else base)
+        dc.setData(KEY_ROLE, (R.VERDICT_RANK.get(kind, 9), -abs(n - orig)) + self._k0(i))
+        urgent = bool(x_ and "🔴" in (x_["decision"] or "")) and n > 0 and kind in ("same", "more")
+        dc.setForeground(QColor(T("err") if urgent else T("warn") if (marks and kind in ("same", "more"))
+                                else T(VERDICT_TOKEN.get(kind, "text"))))
+        f = dc.font()
+        f.setBold(kind in ("transfer", "more", "less"))
+        dc.setFont(f)
+        oc = self.table.item(r, _col(15))
+        oc.setText(f"{orig:g}" if orig else ("0" if n else ""))
+        oc.setForeground(QColor(T("muted") if orig == n else T("text")))
+        ch = self.table.item(r, CHANGE_COL)
+        res = self._change(sc, sid, it["row"], n)
+        txt, d = res[0], res[1]
+        ch.setText(txt)
+        ch.setData(KEY_ROLE, d)
+        # 绿 = 调货少订的；蓝 / 橙 = 手动多订 / 少订
+        ch.setForeground(QColor(T("ok") if (d and res[3] == "transfer") else T("accent") if d > 0
+                                else T("warn") if d < 0 else T("faint")))
+        ch.setToolTip(res[2])
+        f = ch.font()
+        f.setBold(bool(d))
+        ch.setFont(f)
         self._filling = was
 
     def _cell_edited(self, item):
@@ -1140,6 +1416,14 @@ class DetailWindow(ToolWindow):
             self.flash(tr("还在载入，稍等一下"))
             return
         n = 0
+        ov = self.page.calc.get("transfer_overrides") or {}
+        undo = [(sc["path"], sid, it["row"]) for i, (sc, it, sid) in enumerate(self.detail)
+                if not self.table.isRowHidden(self.pos[i]) and (sc["path"], sid, it["row"]) in ov
+                and not TR.norm_override(ov[(sc["path"], sid, it["row"])])["auto"]]
+        if undo:                                    # 人工改过的调货也恢复成系统建议的
+            self.page.reset_transfers(undo)
+            self.refresh_transfers()
+            n += len(undo)
         for i, (sc, it, sid) in enumerate(self.detail):
             key = (sc["path"], sid, it["row"])
             if self.table.isRowHidden(self.pos[i]) or key not in self.page.edited:
@@ -1168,9 +1452,7 @@ class DetailWindow(ToolWindow):
         sup = self.f_sup.currentData()
         btn = self.store_group.checkedButton()
         store = btn.property("sid") if btn else ALL
-        only = self.f_only.isChecked()
-        only_edit = self.f_edit.isChecked()
-        urgent = self.f_urgent.isChecked()
+        view = self.f_view.currentData()
         text = self.f_text.text().strip().lower()
         calc = self.page.calc
         shown = 0
@@ -1178,12 +1460,16 @@ class DetailWindow(ToolWindow):
         for i, (sc, it, sid) in enumerate(self.detail):
             key = (sc["path"], sid, it["row"])
             hide = (sup not in (None, ALL) and sc["path"] != sup) or (store not in (None, ALL) and sid != store)
-            if not hide and only:
+            if not hide and view == "order":   # 要订的、改过的、系统建议过的（全部靠调货的也在）
                 hide = self._cur(sc, sid, it["row"]) <= 0 and key not in self.page.edited and \
-                    calc["base"][sc["path"]].get(sid, {}).get(it["row"], 0) <= 0
-            if not hide and only_edit:
+                    self._orig(sc, sid, it["row"]) <= 0 and not self._transfer_key(sc, it, sid)
+            elif not hide and view == "changed":   # 判断是多订 / 少订 / 建议调货的
+                hide = self._verdict(sc, it, sid)[0] not in ("transfer", "more", "less")
+            elif not hide and view == "transfer":
+                hide = not self._transfer_key(sc, it, sid)
+            elif not hide and view == "edited":
                 hide = key not in self.page.edited
-            if not hide and urgent:
+            elif not hide and view == "urgent":
                 x = calc["demand"].get(sid, {}).get(it.get("db_code") or it["code"])
                 hide = not (x and "🔴" in (x["decision"] or ""))
             if not hide and text:
@@ -1220,7 +1506,7 @@ class DetailWindow(ToolWindow):
         wb = Workbook()
         ws = wb.active
         ws.title = "订货明细"
-        cols = self._visual_cols()          # 按现在看到的列顺序导出
+        cols = [c for c in self._visual_cols() if not self.table.isColumnHidden(c)]   # 按现在看到的列导出
         heads = [self.table.horizontalHeaderItem(c).text().replace(" ✎", "") for c in cols]
         ws.append(heads)
         for c in ws[1]:

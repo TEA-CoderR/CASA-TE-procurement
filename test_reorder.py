@@ -207,3 +207,94 @@ def test_to_rows_cover_inputs():
     assert SO.cover_days({"inv": rows["1"]["inv0"], "daily": rows["1"]["daily0"]}) == 0     # 不会是负数
     assert abs(rows["2"]["daily0"] - 45 / 90) < 1e-9
     assert rows["3"]["daily0"] == 2.0
+
+
+def test_reason_text():
+    """「原因」列：一句话说清楚为什么订 / 不订、订多少"""
+    assert "不用订" in R.reason_text(60, 1, 30, 0)
+    assert "够卖 60 天" in R.reason_text(60, 1, 30, 0)
+    t = R.reason_text(-5, 1, 30, 36)
+    assert "按 0 算" not in t and "订 36 件" in t and "约卖 30 件" in t      # 负库存一律当 0，不另外说明
+    assert "目标库存 40" in R.reason_text(4, 1, 30, 36, target=40)
+    assert "没有销量" in R.reason_text(10, 0, 30, 0)
+    assert "数据库里没有" in R.reason_text(0, 0, 30, 0, in_db=False)
+
+
+def test_review_verdict():
+    v = R.review_verdict
+    assert v(2, 2) == ("same", "照建议订")
+    assert v(0, 0) == ("none", "不订")
+    assert v(2, 0) == ("none", "不订")
+    assert v(2, 3) == ("more", "多订 1 箱")
+    assert v(3, 1) == ("less", "少订 2 箱")
+    assert v(2, 1, moved=True)[0] == "transfer"
+    assert v(2, 1, in_db=False)[0] == "nodb"
+    # 件数：差额整箱写箱，不是整箱写件
+    assert v(12, 24, pack=12)[1] == "多订 1 箱"
+    assert v(12, 17, pack=12)[1] == "多订 5 件"
+    assert v(12, 12, pack=12, same_text="照清单订") == ("same", "照清单订")
+
+
+def test_plain_reason():
+    p = R.plain_reason
+    assert p(31, 0.6, 60, 0) == ["现在库存 31 件，每天卖 0.6 件左右，够卖 52 天", "够卖到下次订货，不用订"]
+    got = p(2, 0.5, 60, 24, boxes=2)
+    assert "快断货了" in got[0] and got[1] == "接下来 60 天大约要卖 30 件，库存不够 → 建议订 2 箱（24 件）"
+    assert "库存 0 件" in p(-3, 1, 30, 30)[0] and "按 0 算" not in p(-3, 1, 30, 30)[0]
+    got = p(2, 0.13, 60, 12, boxes=1, transfer={"name": "S.FILIPPO", "inv": 24, "days": 240, "pieces": 6, "saved": 1})
+    assert got[-1] == "S.FILIPPO 库存多：有 24 件，够卖 240 天，卖不完 → 调 6 件过来，这边少订 1 箱"
+    assert "卖不动" in p(0, 0, 60, 0, transfer={"name": "A", "inv": 5, "days": float("inf"), "pieces": 5})[-1]
+    assert p(1, 1, 30, 0, in_db=False) == ["数据库里找不到这个商品，没有销量和库存可以参考"]
+
+
+def test_codes_from_eans_raises_when_db_fails():
+    """数据库查不了要报错（以前悄悄返回空，整张清单都成了「数据库没有」）"""
+    class BadDB:
+        engine = None
+    try:
+        R.codes_from_eans(BadDB(), ["8001"])
+    except RuntimeError as e:
+        assert "数据库" in str(e)
+    else:
+        raise AssertionError("应该报错")
+    assert R.codes_from_eans(BadDB(), []) == {}
+
+
+def test_review_marks_and_pack_text():
+    m = R.review_marks(True, True, 950, -5)
+    assert [k for k, _, _ in m] == ["slow"] and "950" in m[0][2]          # 负库存不再提醒「库存不准」
+    assert R.review_marks(False, True, 950, 3) == []          # 原程序算法不标慢销
+    assert R.review_marks(True, False, 950, 3) == []          # 没订不标
+    assert R.review_marks(True, True, 120, 0) == []
+    got = R.plain_reason(0, 0.5, 30, 1, boxes=1, pack=24)
+    assert got[-1].endswith("建议订 1 箱（要 1 件，一箱 24 件）")
+
+
+def test_supplier_info_into_rows_and_snapshot(tmp_path):
+    import json
+    import reorder_service as R
+    rows = [{"code": "7", "ean": "800"}, {"code": "8", "ean": "801"}]
+    assert R.add_supplier_info(rows, {"7": ("AM1", "WOLSEN")}) == 1
+    assert rows[0]["sup_code"] == "AM1" and "sup_code" not in rows[1]
+    main = tmp_path / "ORDINE" / "o.xlsx"
+    main.parent.mkdir()
+    main.write_bytes(b"")
+    p = R.save_snapshot(str(main), 2, {2: {"7": {"inv": 1, "daily": 0.5, "cycle": 30}}}, rows)
+    data = json.load(open(p, encoding="utf-8"))
+    assert data["by_ean"]["800"]["sup_code"] == "AM1" and data["by_ean"]["800"]["sup_name"] == "WOLSEN"
+
+
+def test_checked_order_is_by_boxes(tmp_path):
+    """检查清单确认的主订单：COLLI = 确定箱数，不写 PEZZI（比价按箱数分配供应商）"""
+    from openpyxl import load_workbook
+    import reorder_service as R
+    rows = [{"code": "7", "ean": "800", "name": "A", "pack": 12, "final": 24, "fbox": 2},
+            {"code": "8", "ean": "801", "name": "B", "pack": 0, "final": 3, "fbox": 3},
+            {"code": "9", "ean": "802", "name": "C", "pack": 6, "final": 0, "fbox": 0}]
+    path, n, skipped = R.write_checked_order(rows, str(tmp_path), 2)
+    ws = load_workbook(path).active
+    heads = [c.value for c in ws[1]]
+    assert "PEZZI" not in heads and n == 2
+    colli = heads.index("COLLI")
+    assert [r[colli] for r in ws.iter_rows(min_row=2, values_only=True)] == [2, 3]
+

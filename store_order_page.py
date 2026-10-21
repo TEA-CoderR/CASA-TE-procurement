@@ -13,7 +13,7 @@ import threading
 from datetime import datetime
 
 from PySide6.QtCore import Qt, QObject, Signal, QTimer
-from PySide6.QtGui import QColor
+from PySide6.QtGui import QColor, QFont, QFontMetrics
 from PySide6.QtWidgets import (QWidget, QLabel, QPushButton, QLineEdit, QComboBox, QHBoxLayout, QVBoxLayout,
                                QGridLayout, QFileDialog, QMessageBox, QSpinBox, QDoubleSpinBox, QTableWidgetItem,
                                QCheckBox, QFrame, QStackedWidget, QScrollArea, QDialog, QDialogButtonBox,
@@ -71,7 +71,7 @@ class ParamDialog(QDialog):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(20, 18, 20, 16)
         lay.setSpacing(12)
-        intro = QLabel(tr("这些参数只在「原程序算法」时使用；新算法按「算法设置」里的下单间隔和到货天数计算。"))
+        intro = QLabel(tr("这些参数只在「原程序算法」时使用；新算法按「算法设置」里的订货周期和到货天数计算。"))
         intro.setObjectName("Faint")
         intro.setWordWrap(True)
         lay.addWidget(intro)
@@ -186,8 +186,130 @@ class TransferDialog(QDialog):
             QMessageBox.critical(self, tr("导出"), tr("导出失败：{0}", e))
 
 
+def _card(title, sub=""):
+    """设置窗口里的一块：带标题的卡片，返回 (卡片, 里面的布局)"""
+    f = QFrame()
+    f.setObjectName("Panel")
+    v = QVBoxLayout(f)
+    v.setContentsMargins(16, 12, 16, 14)
+    v.setSpacing(8)
+    t = QLabel(title)
+    t.setObjectName("PanelTitle")
+    v.addWidget(t)
+    if sub:
+        s = QLabel(sub)
+        s.setObjectName("Faint")
+        s.setWordWrap(True)
+        v.addWidget(s)
+    return f, v
+
+
+def _hint(text):
+    h = QLabel(text)
+    h.setObjectName("Faint")
+    h.setWordWrap(True)
+    return h
+
+
+def _store_checks(checked):
+    """五家门店的勾选框：一行，返回 (布局, {门店号: 勾选框})"""
+    row = QHBoxLayout()
+    row.setSpacing(12)
+    boxes = {}
+    for k, name in S.STORE_SHEETS.items():
+        cb = QCheckBox(name)
+        cb.setChecked(k in checked)
+        boxes[k] = cb
+        row.addWidget(cb)
+    row.addStretch()
+    return row, boxes
+
+
+class TransferBox(QWidget):
+    """
+    门店之间调货的设置（门店配货的「配货设置」和批发商比价的「门店间调货…」共用这一块）：
+    存在 settings → store_orders.transfer；参与调货门店 = 不在 transfer.exclude_stores 里的（和借货分开设）
+    """
+
+    def __init__(self, tc, fallback_far=(), parent=None):
+        super().__init__(parent)
+        import transfers as TR
+        tc_raw = tc
+        tc = TR.config(tc)
+        v = QVBoxLayout(self)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(8)
+        self.on = QCheckBox(tr("启用调货"))
+        self.on.setChecked(bool(tc["enabled"]))
+        v.addWidget(self.on)
+        g = QGridLayout()
+        g.setHorizontalSpacing(12)
+        g.setVerticalSpacing(8)
+        g.setColumnStretch(2, 1)
+
+        def spin(val, lo, hi, dec, suffix=""):
+            w = QDoubleSpinBox()
+            w.setRange(lo, hi)
+            w.setDecimals(dec)
+            w.setValue(float(val))
+            if suffix:
+                w.setSuffix(suffix)
+            w.setFixedWidth(90)
+            return w
+        self.mode = QComboBox()
+        self.mode.addItem(tr("只要整箱一小部分时"), "waste")
+        self.mode.addItem(tr("所有要订商品"), "all")
+        self.mode.setCurrentIndex(max(0, self.mode.findData(tc.get("mode"))))
+        # 界面上说「要的只占整箱 ≤ x%」；内部存的是「整箱多出的比例」waste_ratio = 1 − x
+        self.share = spin(round((1 - float(tc.get("waste_ratio") or 0.5)) * 100), 1, 99, 0, " %")
+        self.keep = spin(tc.get("keep_cycles", 1.0), 0, 10, 1)
+        self.itemv = spin(tc["item_min_value"], 0, 100000, 2)
+        self.minv = spin(tc["min_value"], 0, 100000, 0)
+        rows = [
+            (tr("什么时候调"), self.mode, ""),
+            (tr("只占整箱 ≤"), self.share, tr("例：一箱 12 件只要 3 件 = 25%")),
+            (tr("调出门店留货系数"), self.keep, tr("留够 日均 × 订货周期 × 系数，多的才调")),
+            (tr("每个商品至少 €"), self.itemv, tr("调货件数 × 件价，太少不值得拣货")),
+            (tr("每家调出门店合计至少 €"), self.minv, tr("0 = 不限")),
+        ]
+        self._share_row = []
+        for r, (lab, w, hint) in enumerate(rows):
+            lb = QLabel(lab)
+            g.addWidget(lb, r, 0)
+            if w is self.mode:
+                g.addWidget(w, r, 1, 1, 2)
+                continue
+            hl = _hint(hint)
+            g.addWidget(w, r, 1)
+            g.addWidget(hl, r, 2)
+            if w is self.share:
+                self._share_row = [lb, w, hl]
+        v.addLayout(g)
+        # 「所有要订商品」用不上比例：整行藏起来（只变灰看不出来）
+        self.mode.currentIndexChanged.connect(lambda _: self._show_share())
+        self._show_share()
+        out = set(TR.excluded_stores(tc_raw, fallback_far))
+        lab = QLabel(tr("参与调货门店"))
+        v.addWidget(lab)
+        row, self.stores = _store_checks({k for k in S.STORE_SHEETS if k not in out})
+        v.addLayout(row)
+        v.addWidget(_hint(tr("自己这次也要订的商品不调出。门店配货和批发商比价共用这套设置。")))
+
+    def _show_share(self):
+        on = self.mode.currentData() == "waste"
+        for w in self._share_row:
+            w.setVisible(on)
+
+    def transfer_values(self, tc):
+        import transfers as TR
+        return dict(TR.config(tc), enabled=self.on.isChecked(), mode=self.mode.currentData(),
+                    waste_ratio=round(1 - self.share.value() / 100.0, 4), keep_cycles=self.keep.value(),
+                    item_min_value=self.itemv.value(), min_value=self.minv.value(),
+                    exclude_stores=[k for k, cb in self.stores.items() if not cb.isChecked()])
+
+
 class FillDialog(QDialog):
-    """配货设置：凑单门槛、BMS 补救"""
+    """配货设置：三块——凑单、BMS 不够起订量时、门店之间调货"""
 
     def __init__(self, page):
         super().__init__(page.win)
@@ -197,11 +319,13 @@ class FillDialog(QDialog):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(20, 18, 20, 16)
         lay.setSpacing(12)
-        t = QLabel(tr("凑单：每家店只差一点才凑，差太多就并到 BMS"))
-        t.setObjectName("Section")
-        lay.addWidget(t)
+
+        # ① 凑单
+        c1, v1 = _card(tr("① 凑单"), tr("每家店离起订量只差一点时，加点卖得动的商品凑够；差太多就并到 BMS"))
         g = QGridLayout()
-        g.setSpacing(10)
+        g.setHorizontalSpacing(12)
+        g.setVerticalSpacing(8)
+        g.setColumnStretch(2, 1)
         self.gap_amount = QDoubleSpinBox()
         self.gap_amount.setRange(0, 100000)
         self.gap_amount.setDecimals(2)
@@ -216,93 +340,66 @@ class FillDialog(QDialog):
                                             (tr("箱数差不超过"), self.gap_colli, tr("0 = 不按箱数凑单")),
                                             (tr("凑单后库存最多够卖（天）"), self.max_days, tr("只加卖得动的商品")))):
             g.addWidget(QLabel(lab), r, 0)
-            w.setFixedWidth(100)
+            w.setFixedWidth(90)
             g.addWidget(w, r, 1)
-            h = QLabel(hint)
-            h.setObjectName("Faint")
-            g.addWidget(h, r, 2)
-        lay.addLayout(g)
+            g.addWidget(_hint(hint), r, 2)
+        v1.addLayout(g)
         self.fill_bms = QCheckBox(tr("BMS 不够也凑单"))
         self.fill_bms.setChecked(bool(fc["fill_bms"]))
-        lay.addWidget(self.fill_bms)
-        t2 = QLabel(tr("BMS 不够起订量时（按顺序试，能让 BMS 订得起来才采用）"))
-        t2.setObjectName("Section")
-        lay.addWidget(t2)
+        v1.addWidget(self.fill_bms)
+        cols = QHBoxLayout()                 # 左边：凑单、BMS；右边：调货（竖着排太高，小屏幕放不下）
+        cols.setSpacing(12)
+        left = QVBoxLayout()
+        left.setSpacing(12)
+        left.addWidget(c1)
+
+        # ② BMS 不够起订量
+        c2, v2 = _card(tr("② BMS 不够起订量时"), tr("按顺序试，能让 BMS 订得起来才采用"))
         colo = S.STORE_SHEETS.get(fc.get("colocated_store"), "")
-        far = tr("、").join(S.STORE_SHEETS[x] for x in (fc.get("far_stores") or []) if x in S.STORE_SHEETS)
         self.merge_colo = QCheckBox(tr("① {0} 整单并进 BMS（和 BMS 同一个仓库）", colo))
         self.merge_colo.setChecked(bool(fc["merge_colocated"]))
-        self.borrow = QCheckBox(tr("② 从同城门店借不紧急的货（不动 {0}）", far))
+        v2.addWidget(self.merge_colo)
+        rb = QHBoxLayout()
+        rb.setSpacing(8)
+        self.borrow = QCheckBox(tr("② 从同城门店借不紧急的货，借出门店现有库存至少够卖"))
         self.borrow.setChecked(bool(fc["borrow"]))
-        lay.addWidget(self.merge_colo)
-        lay.addWidget(self.borrow)
-        r = QHBoxLayout()
-        r.addSpacing(24)
-        r.addWidget(QLabel(tr("借货条件：现有库存至少够卖（天）")))
         self.borrow_days = QSpinBox()
         self.borrow_days.setRange(0, 365)
         self.borrow_days.setValue(int(fc["borrow_min_days"]))
-        self.borrow_days.setFixedWidth(70)
-        r.addWidget(self.borrow_days)
-        r.addStretch()
-        lay.addLayout(r)
+        self.borrow_days.setSuffix(tr(" 天"))
+        self.borrow_days.setFixedWidth(80)
+        rb.addWidget(self.borrow)
+        rb.addWidget(self.borrow_days)
+        rb.addStretch()
+        v2.addLayout(rb)
         self.borrow_urgent = QCheckBox(tr("③ 还不够：紧急的货也借（只借借出门店超过自己起订量的部分）"))
         self.borrow_urgent.setChecked(bool(fc.get("borrow_urgent", True)))
-        self.merge_direct = QCheckBox(tr("④ 还不够：把够起订量的门店整单并进 BMS（挑并进去就够、货值最小的那家），让其他门店也订得起来"))
+        self.merge_direct = QCheckBox(tr("④ 还不够：把够起订量的门店整单并进 BMS（挑并进去就够、货值最小的那家）"))
         self.merge_direct.setChecked(bool(fc.get("merge_direct", True)))
-        lay.addWidget(self.borrow_urgent)
-        lay.addWidget(self.merge_direct)
-        h = QLabel(tr("借货不会让借出的门店低于起订量，紧急补货的商品不借，借出去的货由 BMS 订、到货后分回原门店。"))
-        h.setObjectName("Faint")
-        h.setWordWrap(True)
-        lay.addWidget(h)
-        # 门店之间调货
-        tc = page.transfer_cfg()
-        t3 = QLabel(tr("门店之间调货：要的件数远小于一箱时，从别的门店调多出来的货，少订一箱"))
-        t3.setObjectName("Section")
-        lay.addWidget(t3)
-        self.tr_on = QCheckBox(tr("启用调货"))
-        self.tr_on.setChecked(bool(tc["enabled"]))
-        lay.addWidget(self.tr_on)
-        g3 = QGridLayout()
-        g3.setSpacing(10)
-        self.tr_mode = QComboBox()
-        self.tr_mode.addItem(tr("整箱会多出一半以上时才调"), "waste")
-        self.tr_mode.addItem(tr("所有要订的商品都先看能不能调"), "all")
-        self.tr_mode.setCurrentIndex(max(0, self.tr_mode.findData(tc.get("mode"))))
-        self.tr_item = QDoubleSpinBox()
-        self.tr_item.setRange(0, 100000)
-        self.tr_item.setDecimals(2)
-        self.tr_item.setValue(float(tc["item_min_value"]))
-        self.tr_item.setFixedWidth(100)
-        self.tr_min = QDoubleSpinBox()
-        self.tr_min.setRange(0, 100000)
-        self.tr_min.setDecimals(0)
-        self.tr_min.setValue(float(tc["min_value"]))
-        self.tr_min.setFixedWidth(100)
-        g3.addWidget(QLabel(tr("什么时候调")), 0, 0)
-        g3.addWidget(self.tr_mode, 0, 1, 1, 2)
-        g3.addWidget(QLabel(tr("每个商品调货货值至少 €")), 1, 0)
-        g3.addWidget(self.tr_item, 1, 1)
-        hh = QLabel(tr("调货件数 × 件价。拣货人工按商品算：纸杯调 5 个才 €0.50 不值得，调 100 个 €10 就值得"))
-        hh.setObjectName("Faint")
-        hh.setWordWrap(True)
-        g3.addWidget(hh, 1, 2)
-        g3.addWidget(QLabel(tr("每家调出门店合计至少 €")), 2, 0)
-        g3.addWidget(self.tr_min, 2, 1)
-        h0 = QLabel(tr("0 = 不限（一般不用设）"))
-        h0.setObjectName("Faint")
-        g3.addWidget(h0, 2, 2)
-        lay.addLayout(g3)
-        h3 = QLabel(tr("调出门店留够自己一个订货周期的销量（日均 × 订货周期），多出来的才调；自己这次也要订的商品不调出；{0} 离得远，不参与调货。", far))
-        h3.setObjectName("Faint")
-        h3.setWordWrap(True)
-        lay.addWidget(h3)
+        v2.addWidget(self.borrow_urgent)
+        v2.addWidget(self.merge_direct)
+        v2.addWidget(QLabel(tr("可以借货的门店")))
+        far = set(fc.get("far_stores") or [])
+        brow, self.lend = _store_checks({k for k in S.STORE_SHEETS if k not in far})
+        v2.addLayout(brow)
+        v2.addWidget(_hint(tr("借货不会让借出门店低于起订量；紧急补货的商品不借；借出去的货由 BMS 订、到货后分回原门店。")))
+        left.addWidget(c2)
+        left.addStretch()
+        cols.addLayout(left, 1)
+
+        # ③ 门店之间调货
+        c3, v3 = _card(tr("③ 门店之间调货"), tr("要的件数远小于一箱时，从别的门店调多出来的货，少订一箱"))
+        self.tbox = TransferBox(page.transfer_cfg(), fc.get("far_stores") or [])
+        v3.addWidget(self.tbox)
+        v3.addStretch()
+        cols.addWidget(c3, 1)
+        lay.addLayout(cols)
+
         bb = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
         bb.accepted.connect(self.save)
         bb.rejected.connect(self.reject)
         lay.addWidget(bb)
-        self.setMinimumWidth(520)
+        self.setMinimumWidth(1040)
 
     def save(self):
         self.page.cfg["fill"] = dict(self.page.fill_cfg(), max_amount_gap=self.gap_amount.value(),
@@ -310,10 +407,9 @@ class FillDialog(QDialog):
                                      fill_bms=self.fill_bms.isChecked(), merge_colocated=self.merge_colo.isChecked(),
                                      borrow=self.borrow.isChecked(), borrow_min_days=self.borrow_days.value(),
                                      borrow_urgent=self.borrow_urgent.isChecked(),
-                                     merge_direct=self.merge_direct.isChecked())
-        self.page.cfg["transfer"] = dict(self.page.transfer_cfg(), enabled=self.tr_on.isChecked(),
-                                         mode=self.tr_mode.currentData(), item_min_value=self.tr_item.value(),
-                                         min_value=self.tr_min.value())
+                                     merge_direct=self.merge_direct.isChecked(),
+                                     far_stores=[k for k, cb in self.lend.items() if not cb.isChecked()])
+        self.page.cfg["transfer"] = self.tbox.transfer_values(self.page.transfer_cfg())
         save_settings(self.page.settings)
         self.accept()
 
@@ -447,11 +543,57 @@ class StoreOrderPage:
         import transfers as TR
         return TR.config(self.cfg.get("transfer"))
 
-    def apply_transfers(self, keep_edits=True):
-        """按现在的调货设置重算调货；手动改过的箱数保留"""
+    def transfer_far(self):
+        """不参与调货的门店（和借货分开设）"""
+        import transfers as TR
+        return TR.excluded_stores(self.cfg.get("transfer"), self.fill_cfg().get("far_stores"))
+
+    def set_transfer(self, key, value):
+        """
+        订货明细里改了调货：key = (SCHEDA, 调入门店, 行)，value = {"from", "pieces"} 或 0（不调）。
+        第一次改的时候把系统建议的调货都冻结下来：以后只按人工定的调，改一行别的行不跟着变。手动改的箱数保留
+        """
+        import transfers as TR
         if not self.calc:
             return
-        S.apply_transfers(self.calc, self.transfer_cfg(), self.fill_cfg().get("far_stores"))
+        c = self.calc
+        if not c.get("transfer_frozen"):
+            key_of = lambda m: (m["path"], m["to"], m["row"])
+            c["transfer_overrides"] = TR.freeze(c.get("transfers"), c.get("transfer_overrides"), key_of)
+            c["transfer_auto_plan"] = {key_of(m): {"from": m["from"], "pieces": int(m["pieces"]), "auto": True}
+                                       for m in c.get("transfers") or []}
+            c["transfer_frozen"] = True
+        c["transfer_overrides"][key] = value if isinstance(value, dict) else int(value or 0)
+        self.apply_transfers()
+        self._refresh_matrix(only_path=key[0])
+        self._update_state()
+
+    def reset_transfers(self, keys):
+        """「恢复建议值」：这几行的调货恢复成系统建议的；人工改的全恢复了就解冻（以后又按设置自动建议）"""
+        import transfers as TR
+        c = self.calc or {}
+        ov = c.get("transfer_overrides") or {}
+        auto = c.get("transfer_auto_plan") or {}
+        for k in keys:
+            if k in auto:
+                ov[k] = dict(auto[k])
+            else:
+                ov.pop(k, None)
+        if not TR.unfreeze(ov):
+            c["transfer_overrides"], c["transfer_frozen"] = {}, False
+            c.pop("transfer_auto_plan", None)
+        self.apply_transfers()
+
+    def apply_transfers(self, keep_edits=True, refresh_auto=False):
+        """按现在的调货设置重算调货；手动改过的箱数保留。refresh_auto：调货设置改了 → 解冻，按新设置重新建议（人工改的保留）"""
+        if not self.calc:
+            return
+        if refresh_auto and self.calc.get("transfer_frozen"):
+            import transfers as TR
+            self.calc["transfer_overrides"] = TR.unfreeze(self.calc.get("transfer_overrides"))
+            self.calc["transfer_frozen"] = False
+            self.calc.pop("transfer_auto_plan", None)
+        S.apply_transfers(self.calc, self.transfer_cfg(), self.transfer_far())
         new = copy.deepcopy(self.calc["base"])
         if keep_edits:
             for path, sid, row in self.edited:
@@ -1153,7 +1295,7 @@ class StoreOrderPage:
 
     def edit_fill(self):
         if FillDialog(self).exec():
-            self.apply_transfers()
+            self.apply_transfers(refresh_auto=True)
             self._refresh_matrix()
             self._update_state()
             if self.detail_win is not None:
@@ -1235,7 +1377,7 @@ class StoreOrderPage:
         calc.setdefault("date", _dt.date.today())    # 周销量按计算当天往回数
         self.calc = calc
         try:
-            S.apply_transfers(calc, self.transfer_cfg(), self.fill_cfg().get("far_stores"))
+            S.apply_transfers(calc, self.transfer_cfg(), self.transfer_far())
             if calc.get("transfers"):
                 self.win.log(tr("[门店配货] 门店间调货：{0} 个商品", len(calc["transfers"])))
         except Exception as e:
@@ -1319,9 +1461,22 @@ class StoreOrderPage:
         return c, a, "far"
 
     def _preview(self, sc):
-        """按现在的箱数和配货设置模拟一次配货（和真正配货同一套规则），起订量检查着色用"""
-        return S.plan_supplier(sc, self.calc["demand"], self.fill_cfg(), self.calc["stores"],
-                               self.colli.get(sc["path"], {}))
+        """
+        按现在的箱数和配货设置模拟一次配货（和真正配货同一套规则），起订量检查着色用。
+        箱数和设置没变的供应商用上次的结果（改一个调货 / 箱数时不用把几十家全部重算一遍）
+        """
+        import json
+        lines = self.colli.get(sc["path"], {})
+        fill = self.fill_cfg()
+        key = (sc["path"], id(self.calc["demand"]), tuple(self.calc["stores"]),
+               json.dumps(fill, sort_keys=True, default=str),
+               tuple(sorted((sid, tuple(sorted(ln.items()))) for sid, ln in lines.items())), json.dumps(S.sc_moq(sc), default=str))
+        cache = self.__dict__.setdefault("_pv_cache", {})
+        if key not in cache:
+            if len(cache) > 400:
+                cache.clear()
+            cache[key] = S.plan_supplier(sc, self.calc["demand"], fill, self.calc["stores"], lines)
+        return cache[key]
 
     @staticmethod
     def _orderable(plan):
@@ -1787,7 +1942,7 @@ class StoreOrderPage:
             expl.append(tr("所有要订的门店都够起订量，直接送店。"))
         far = [S.STORE_SHEETS[x] for x in (self.fill_cfg().get("far_stores") or []) if x in S.STORE_SHEETS]
         if far:
-            expl.append(tr("{0} 离得远，不借它的货。", tr("、").join(far)))
+            expl.append(tr("{0} 不参与借货。", tr("、").join(far)))
         ex = QLabel("\n".join(expl))
         ex.setWordWrap(True)
         ex.setObjectName("Faint")
@@ -1935,6 +2090,7 @@ class StoreOrderPage:
         t.setRowCount(len(rows))
         kind = {"direct": "ok", "filled": "accent", "bms": "gray", "short": "err", "merged": "gray", "pulled": "gray", "dropped": "gray",
                 "forced": "warn"}
+        chip_w = 0
         for i, (day, sup, moq, dest, st, status, note) in enumerate(rows):
             label = tr(S.status_text(dest, status))
             self.ui.table_set_row(t, i, [day, sup, moq, dest, f"{st['colli']:g}", f"€{st['amount']:,.2f}", label, note],
@@ -1951,11 +2107,21 @@ class StoreOrderPage:
             cw = QWidget()
             ch = QHBoxLayout(cw)
             ch.setContentsMargins(8, 0, 8, 0)
-            ch.addWidget(chip(label, k))
+            cp = chip(label, k)
+            ch.addWidget(cp)
             ch.addStretch()
             t.setCellWidget(i, 6, cw)
             t.item(i, 7).setToolTip(note)
-        t.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeToContents)
+            cf = cp.font()
+            cf.setPixelSize(12)
+            cf.setWeight(QFont.Weight.Medium)
+            need = QFontMetrics(cf).horizontalAdvance(label) + 24      # 左右 padding 9px + 余量
+            cp.setMinimumWidth(need)
+            chip_w = max(chip_w, need + 16)
+        # 状态是小标签（不是格子里的字）：按最宽的标签定列宽，不然「直接送店」这种字被挤掉
+        hh = t.horizontalHeader()
+        hh.setSectionResizeMode(6, QHeaderView.Interactive)
+        t.setColumnWidth(6, max(chip_w, hh.fontMetrics().horizontalAdvance(tr("状态")) + 30, 110))
         t.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
 
     def _open_row(self, row, _col):
