@@ -2157,4 +2157,9 @@ TRANSLATIONS = {
     '{0} 不参与借货。': ('{0} not used for borrowing.', '{0} esclusi dai prestiti.'),
     '门店间调货：{0} 没勾「参与调货门店」，不参与调货（点「门店间调货…」可以改）': ('Store transfers: {0} is not ticked in "Stores in transfers" (change it in "Store transfers…")', 'Trasferimenti: {0} non è spuntato in «Negozi nei trasferimenti» (si cambia in «Trasferimenti tra negozi…»)'),
     '只占整箱 ≤ {0}% 时调': ('when ≤ {0}% of a case is needed', 'quando serve ≤ {0}% del collo'),
+    '{0:g} 箱（要 {1:g} 件，一箱 {2:g} 件）': ('{0:g} cases (need {1:g} pcs, {2:g} per case)', '{0:g} colli (servono {1:g} pz, {2:g} per collo)'),
+    '慢销': ('Slow', 'Lento'),
+    '到货后要卖 {0:.0f} 天才卖完，卖得很慢：要不要订你决定（订货数量改成 0 就不订）': ('Takes {0:.0f} days to sell after delivery, very slow: your call whether to order (set the quantity to 0 to skip)', "Servono {0:.0f} giorni per venderlo dopo l'arrivo, molto lento: decidi tu se ordinarlo (metti 0 per non ordinarlo)"),
+    '库存不准': ('Stock doubtful', 'Giacenza dubbia'),
+    '系统里库存是 {0:g}（负数），多半是货到了没入库；计算时按 0 算，订之前先核对': ('System stock is {0:g} (negative), probably goods received but not booked in; counted as 0, check before ordering', 'La giacenza nel sistema è {0:g} (negativa), probabilmente merce arrivata ma non caricata; contata come 0, verifica prima di ordinare'),
 }

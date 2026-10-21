@@ -258,3 +258,13 @@ def test_codes_from_eans_raises_when_db_fails():
     else:
         raise AssertionError("应该报错")
     assert R.codes_from_eans(BadDB(), []) == {}
+
+
+def test_review_marks_and_pack_text():
+    m = R.review_marks(True, True, 950, -5)
+    assert [k for k, _, _ in m] == ["slow", "neg"] and "950" in m[0][2]
+    assert R.review_marks(False, True, 950, 3) == []          # 原程序算法不标慢销
+    assert R.review_marks(True, False, 950, 3) == []          # 没订不标
+    assert R.review_marks(True, True, 120, 0) == []
+    got = R.plain_reason(0, 0.5, 30, 1, boxes=1, pack=24)
+    assert got[-1].endswith("建议订 1 箱（要 1 件，一箱 24 件）")

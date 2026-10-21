@@ -855,6 +855,7 @@ class DetailWindow(ToolWindow):
         lines = self._reason_lines(sc, it, sid)
         if (sc["path"], sid, it["row"]) in self.page.edited:
             lines.append(tr("你手动改成了 {0:g} 箱", n))
+        lines += ["⚠ " + m[2] for m in self._marks(sc, it, sid, n)]
         warn = pack_warning(x, it)
         self.why.setText("\n".join("· " + l for l in lines) + (("\n" + warn) if warn else ""))
         while self.others.count():
@@ -1009,6 +1010,7 @@ class DetailWindow(ToolWindow):
         why = "\n".join(self._reason_lines(sc, it, sid))
         ri.setToolTip(why)
         t.item(i, DEC_COL).setToolTip(why)          # 鼠标停在「判断」上也能看为什么
+        t.item(i, DEC_COL).setData(Qt.UserRole + 3, why)
 
     # ---------- 调货 / 变化 ----------
     def _orig(self, sc, sid, row):
@@ -1051,7 +1053,21 @@ class DetailWindow(ToolWindow):
                    "days": S.cover_days({"inv": have, "daily": dx.get("daily")}) if dx else None,
                    "saved": t["colli_before"] - t["colli_after"]}
         return R.plain_reason(x.get("inv_raw", x.get("inv")), x.get("daily"), x.get("cycle"), x.get("sugg"),
-                              boxes=self._orig(sc, sid, it["row"]) or None, target=x.get("target"), transfer=tin)
+                              boxes=self._orig(sc, sid, it["row"]) or None, target=x.get("target"), transfer=tin,
+                              pack=it.get("pack"))
+
+    def _marks(self, sc, it, sid, n=None):
+        """判断后面的提醒（不改订多少）：新算法订了、一箱到货后要卖半年以上 → 慢销；库存是负数 → 库存不准"""
+        x = self.page.calc["demand"].get(sid, {}).get(it.get("db_code") or it["code"])
+        if not x:
+            return []
+        if n is None:
+            n = self._cur(sc, sid, it["row"])
+        mi, mo = self._moves()
+        k_ = (sc["path"], sid, it["row"])
+        moved = (mi[k_]["pieces"] if k_ in mi else 0) - sum(t_["pieces"] for t_ in mo.get(k_, []))
+        v = S.cover_days(x, n * it["pack"] + moved)
+        return R.review_marks(x.get("target") is not None, n > 0, v, x.get("inv_raw", x.get("inv")))
 
     def _transfer_tip(self, sc, it, sid):
         mi, mo = self._moves()
@@ -1195,11 +1211,15 @@ class DetailWindow(ToolWindow):
         x_ = self.page.calc["demand"].get(sid, {}).get(it.get("db_code") or it["code"])
         orig = self._orig(sc, sid, it["row"])
         kind, vt = self._verdict(sc, it, sid, n)
+        marks = self._marks(sc, it, sid, n)
         dc = self.table.item(r, DEC_COL)
-        dc.setText(vt)
+        dc.setText(" · ".join([vt] + [m[1] for m in marks]))
+        base = dc.data(Qt.UserRole + 3) or ""
+        dc.setToolTip("\n".join([base] + ["⚠ " + m[2] for m in marks]) if marks else base)
         dc.setData(KEY_ROLE, (R.VERDICT_RANK.get(kind, 9), -abs(n - orig)) + self._k0(i))
         urgent = bool(x_ and "🔴" in (x_["decision"] or "")) and n > 0 and kind in ("same", "more")
-        dc.setForeground(QColor(T("err") if urgent else T(VERDICT_TOKEN.get(kind, "text"))))
+        dc.setForeground(QColor(T("err") if urgent else T("warn") if (marks and kind in ("same", "more"))
+                                else T(VERDICT_TOKEN.get(kind, "text"))))
         f = dc.font()
         f.setBold(kind in ("transfer", "more", "less"))
         dc.setFont(f)

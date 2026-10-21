@@ -889,7 +889,7 @@ def reason_text(inv, daily, cycle, sugg, target=None, in_db=True):
         return tr("库存够卖 {0:.0f} 天{1}，周期 {2:g} 天约卖 {3:.0f} 件 → 订 {4:g} 件", days, neg, cycle, daily * cycle, sugg)
     return tr("库存够卖 {0:.0f} 天{1} → 订 {2:g} 件", days, neg, sugg)
 
-def plain_reason(inv, daily, cycle, sugg, boxes=None, target=None, in_db=True, transfer=None):
+def plain_reason(inv, daily, cycle, sugg, boxes=None, target=None, in_db=True, transfer=None, pack=None):
     """
     给采购员看的「为什么」：用直白的话，一行一句（订货明细、检查门店订货清单的「原因」列和右边详情栏共用）。
       inv 库存（可以是负数）、daily 每天卖几件、cycle 订货周期（天）、sugg 系统建议件数、boxes 折成几箱（None = 只说件数）
@@ -914,7 +914,12 @@ def plain_reason(inv, daily, cycle, sugg, boxes=None, target=None, in_db=True, t
             lines.append(tr("现在库存 {0:g} 件，每天卖 {1:.1f} 件左右，够卖 {2:.0f} 天", inv0, daily, days))
     if inv < 0:
         lines[-1] += tr("（系统里库存是 {0:g}，按 0 算）", inv)
-    q = tr("{0:g} 箱（{1:g} 件）", boxes, sugg) if boxes else tr("{0:g} 件", sugg)
+    if boxes and pack and pack > 1:
+        q = tr("{0:g} 箱（要 {1:g} 件，一箱 {2:g} 件）", boxes, sugg, pack)
+    elif boxes:
+        q = tr("{0:g} 箱（{1:g} 件）", boxes, sugg)
+    else:
+        q = tr("{0:g} 件", sugg)
     if sugg <= 0:
         lines.append(tr("够卖到下次订货，不用订") if daily > 0 else tr("不用订"))
     elif daily <= 0:
@@ -936,6 +941,28 @@ def plain_reason(inv, daily, cycle, sugg, boxes=None, target=None, in_db=True, t
             line += tr("，这边少订 {0:g} 箱", transfer["saved"])
         lines.append(line)
     return lines
+
+
+SLOW_DAYS = 180          # 新算法：一箱到货后要卖超过这么多天 → 标「慢销」（照样订，只提醒）
+
+
+def review_marks(new_algo, ordered, after_days, inv_raw, slow_days=SLOW_DAYS):
+    """
+    审核表格「判断」后面的提醒（只提醒，不改订多少）：[(种类, 短字, 鼠标提示)]
+      slow 慢销：新算法订了、到货后要卖超过 slow_days 天
+      neg  库存不准：系统里库存是负数（多半是货到了没入库），按 0 算
+    """
+    from i18n import tr
+    out = []
+    if new_algo and ordered and after_days is not None and after_days != float("inf") and after_days > slow_days:
+        out.append(("slow", tr("慢销"), tr("到货后要卖 {0:.0f} 天才卖完，卖得很慢：要不要订你决定（订货数量改成 0 就不订）", after_days)))
+    try:
+        neg = inv_raw is not None and float(inv_raw) < 0
+    except (TypeError, ValueError):
+        neg = False
+    if neg:
+        out.append(("neg", tr("库存不准"), tr("系统里库存是 {0:g}（负数），多半是货到了没入库；计算时按 0 算，订之前先核对", float(inv_raw))))
+    return out
 
 
 VERDICT_RANK = {"transfer": 0, "more": 1, "less": 2, "none": 3, "same": 4, "nodb": 5}

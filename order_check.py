@@ -616,7 +616,7 @@ class OrderCheck:
         sales = [f"{v:g}" if isinstance(v, (int, float)) else "" for v in x["sales"]]
         pack = x["pack"] or 0
         daily = x.get("daily") if x.get("daily") is not None else x.get("daily0")
-        return _perm([self._verdict(x)[1], x["code"], x["ean"], x["name"],
+        return _perm([" · ".join([self._verdict(x)[1]] + [m[1] for m in self._marks(x)]), x["code"], x["ean"], x["name"],
                       f"{x['store_inv']:g}" if isinstance(x["store_inv"], (int, float)) else "",
                       *sales, _days(_cover(x)), f"{x['pack']:g}" if x["pack"] else "",
                       f"{x['file_qty']:g}", f"{x['file_pcs']:g}",
@@ -653,13 +653,19 @@ class OrderCheck:
         sugg = x.get("suggested") or 0
         lines = R.plain_reason(x.get("inv0"), x.get("daily0"), x.get("cycle"), sugg,
                                boxes=math.ceil(sugg / pack) if pack > 0 and sugg > 0 else None, target=x.get("target"),
-                               in_db=x.get("in_db", True), transfer=tin)
+                               in_db=x.get("in_db", True), transfer=tin, pack=pack)
         listed = math.ceil(x.get("file_pcs") or 0)
         if x.get("in_db", True) and listed != sugg:
             lines.append(tr("门店清单报了 {0:,} 件", listed))
         if x.get("in_db", True) and x["final"] != sugg:
             lines.append(tr("现在确定 {0:,} 件（手动改过）", x["final"]))
         return lines
+
+    def _marks(self, x):
+        """判断后面的提醒（只提醒）：新算法订了一箱要卖半年以上 → 慢销；库存是负数 → 库存不准"""
+        if not x.get("in_db", True):
+            return []
+        return R.review_marks(x.get("target") is not None, x["final"] > 0, self._arrive_days(x), x.get("store_inv"))
 
     def _arrive_days(self, x):
         """到货后够卖：(库存 + 确定件数 − 调给别的店的) ÷ 日均（调进来的已经算在确定件数里）；不订也不调出 → None"""
@@ -802,7 +808,7 @@ class OrderCheck:
             self.why_t.setText(tr("为什么建议 {0:,} 件", sugg))
         else:
             self.why_t.setText(tr("为什么不用订"))
-        self.why.setText("\n".join("· " + l for l in self._reason_lines(x)))
+        self.why.setText("\n".join(["· " + l for l in self._reason_lines(x)] + ["⚠ " + m[2] for m in self._marks(x)]))
         # 其他门店：库存、够卖几天、这次清单里定了多少
         lines = []
         snap = self.meta.get("snap") or {}
@@ -894,7 +900,7 @@ class OrderCheck:
         if tri.text():
             tri.setForeground(QColor(T("ok") if (x.get("store"), str(x.get("code"))) in self._moves_in else T("accent")))
             tri.setToolTip(self._transfer_tip(x))
-        reason = "\n".join(self._reason_lines(x))
+        reason = "\n".join(self._reason_lines(x) + ["⚠ " + m[2] for m in self._marks(x)])
         t.item(k, _col(REASON_COL)).setToolTip(reason)
         t.item(k, _col(REASON_COL)).setForeground(QColor(T("muted")))
         t.item(k, 0).setToolTip(reason)          # 鼠标停在「判断」上也能看为什么
@@ -913,9 +919,10 @@ class OrderCheck:
         T = self.ui.T
         # 判断：跟着确定件数变
         kind, vt = self._verdict(x)
+        marks = self._marks(x)
         vc = self.table.item(k, 0)
-        vc.setText(vt)
-        vc.setForeground(QColor(T(VERDICT_TOKEN.get(kind, "text"))))
+        vc.setText(" · ".join([vt] + [m[1] for m in marks]))
+        vc.setForeground(QColor(T("warn") if (marks and kind in ("same", "more")) else T(VERDICT_TOKEN.get(kind, "text"))))
         f = vc.font()
         f.setBold(kind in ("transfer", "more", "less", "none"))
         vc.setFont(f)
