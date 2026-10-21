@@ -136,7 +136,7 @@ class AlgoDialog(QDialog):
             g.addWidget(t, row, 2)
             self.w[key] = (sb, scale)
 
-        spin("review_days", tr("下单间隔（天）"), 1, 120, tr("多久下一次单。每周订 = 7；这次订的要卖到下次订的货到为止"), 0)
+        spin("review_days", tr("订货周期（天）"), 1, 120, tr("多久下一次单。每周订 = 7；这次订的要卖到下次订的货到为止"), 0)
         spin("lead_days", tr("到货天数"), 0, 60, tr("下单后几天到货（一般 2–7 天）"), 1)
         spin("service", tr("服务水平 %"), 50, 99.5, tr("不缺货的概率。95 = 100 次里约 5 次可能卖断"), 2, dec=1, scale=100)
         spin("max_stock_days", tr("平均压货最多（天）"), 1, 365, tr("平均库存最多够卖几天（只限制卖得快的商品；卖得慢的按服务水平保证不断货）"), 3)
@@ -178,7 +178,7 @@ class AlgoDialog(QDialog):
 def algo_summary(p):
     if p.get("engine") != "v2":
         return tr("原程序算法：日均 × 订货周期 × 系数，按数据库箱规向上取整")
-    return tr("下单间隔 {0} 天 + 到货 {1} 天，服务水平 {2:.0%}{3}，平均压货最多 {4} 天，零头 ≥ {5:.0%} 一箱才多订",
+    return tr("订货周期 {0} 天 + 到货 {1} 天，服务水平 {2:.0%}{3}，平均压货最多 {4} 天，零头 ≥ {5:.0%} 一箱才多订",
               p["review_days"], p["lead_days"], p["service"], tr("（按 ABC）") if p.get("abc_service") else "",
               p["max_stock_days"], p["pack_threshold"])
 
@@ -217,7 +217,7 @@ def algo_widgets(page, ui):
                 if not hasattr(w, "_tip0"):
                     w._tip0 = w.toolTip()
                 w.setEnabled(v1)
-                w.setToolTip(w._tip0 if v1 else tr("新算法按「算法设置」里的下单间隔和到货天数算，不用订货周期"))
+                w.setToolTip(w._tip0 if v1 else tr("新算法按「算法设置」里的订货周期和到货天数算，这里的不用"))
         # 原程序算法严格按原程序算，「算法设置」里的参数（服务水平、到货天数 …）都用不到
         btn.setEnabled(not v1)
         btn.setToolTip(tr("原程序算法严格按原程序计算，不用填算法设置") if v1 else "")

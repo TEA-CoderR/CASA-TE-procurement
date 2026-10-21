@@ -2223,4 +2223,8 @@ TRANSLATIONS = {
     '门店清单报了 {0:,} 箱': ('The store list asked for {0:,} boxes', 'La lista del negozio chiedeva {0:,} colli'),
     '现在确定 {0:,} 箱（手动改过）': ('Now confirmed {0:,} boxes (changed by hand)', 'Ora confermati {0:,} colli (modificato a mano)'),
     '手动改过：系统建议 {0:,} 箱': ('Changed by hand: suggested {0:,} boxes', 'Modificato a mano: suggeriti {0:,} colli'),
+    '订货周期（天）': ('Order cycle (days)', 'Ciclo ordini (giorni)'),
+    '订货周期 {0} 天 + 到货 {1} 天，服务水平 {2:.0%}{3}，平均压货最多 {4} 天，零头 ≥ {5:.0%} 一箱才多订': ('Order cycle {0} d + delivery {1} d, service level {2:.0%}{3}, average stock at most {4} d, extra case only if remainder ≥ {5:.0%}', 'Ciclo ordini {0} gg + consegna {1} gg, livello di servizio {2:.0%}{3}, scorta media max {4} gg, collo in più solo se resto ≥ {5:.0%}'),
+    '新算法按「算法设置」里的订货周期和到货天数算，这里的不用': ('The new algorithm uses the order cycle and delivery days from "Algorithm settings"; this one is not used', 'Il nuovo algoritmo usa ciclo ordini e giorni di consegna delle «Impostazioni algoritmo»; questo non è usato'),
+    '这些参数只在「原程序算法」时使用；新算法按「算法设置」里的订货周期和到货天数计算。': ('These are only used by the legacy algorithm; the new one uses order cycle and lead time from Algorithm settings.', "Usati solo dall'algoritmo originale; il nuovo usa ciclo ordini e giorni di consegna dalle impostazioni algoritmo."),
 }

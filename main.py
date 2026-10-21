@@ -3978,15 +3978,51 @@ class MainWindow(QMainWindow):
         return f'<span style="color:{color}">{safe}</span>'
 
     def _on_log(self, msg):
-        for line in msg.split("\n"):
-            lvl = log_level(line)
-            self.log_entries.append((lvl, line))
-            if self._log_visible(lvl):
-                self.log_view.append(self._fmt_line(lvl, line))
-            if line.strip() and not set(line.strip()) <= {"="}:
-                self.feed_entries.append((lvl, line))
-                self.feed.append(self._fmt_line(lvl, line))
-        self.feed.moveCursor(QTextCursor.End)
+        """
+        日志先攒起来，每 0.2 秒一次性写进界面（后台计算时一秒几百行，一行一行写会把界面卡住）。
+        日志框最多留最近几千行，越积越多也不会变慢
+        """
+        q = self.__dict__.setdefault("_log_q", [])
+        q.append(msg)
+        t = getattr(self, "_log_timer", None)
+        if t is None:
+            t = QTimer(self)
+            t.setSingleShot(True)
+            t.setInterval(200)
+            t.timeout.connect(self._flush_log)
+            self._log_timer = t
+        if not t.isActive():
+            t.start()
+
+    def _flush_log(self):
+        if not (hasattr(self, "log_view") and hasattr(self, "feed")):      # 界面还没建好：等一下再写
+            self._log_timer.start()
+            return
+        if not getattr(self, "_log_capped", False):
+            self._log_capped = True
+            for v, n in ((self.log_view, 5000), (self.feed, 3000)):
+                v.document().setMaximumBlockCount(n)
+        q, self._log_q = getattr(self, "_log_q", []), []
+        if not q:
+            return
+        log_html, feed_html = [], []
+        for msg in q:
+            for line in msg.split("\n"):
+                lvl = log_level(line)
+                self.log_entries.append((lvl, line))
+                if self._log_visible(lvl):
+                    log_html.append(self._fmt_line(lvl, line))
+                if line.strip() and not set(line.strip()) <= {"="}:
+                    self.feed_entries.append((lvl, line))
+                    feed_html.append(self._fmt_line(lvl, line))
+        for lst, n in ((self.log_entries, 20000), (self.feed_entries, 5000)):
+            if len(lst) > n:
+                del lst[:len(lst) - n]
+        if log_html:
+            self.log_view.append("<br>".join(log_html))
+        if feed_html:
+            self.feed.append("<br>".join(feed_html))
+            self.feed.moveCursor(QTextCursor.End)
 
     def _log_visible(self, lvl):
         return self.log_filter == "all" or (self.log_filter == "warn" and lvl in ("warn", "err")) or \
@@ -5723,6 +5759,9 @@ def main():
             ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("procurement.system.v25")
         except Exception:
             pass
+    # 后台线程（计算、比价）一直占着 Python 时，界面线程要排队等：把轮换间隔从默认 5 毫秒调到 1 毫秒，
+    # 点「后台运行」以后界面还能正常点
+    sys.setswitchinterval(0.001)
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
     # Qt 自带按钮（是 / 否 / 取消 等）的翻译

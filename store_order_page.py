@@ -13,7 +13,7 @@ import threading
 from datetime import datetime
 
 from PySide6.QtCore import Qt, QObject, Signal, QTimer
-from PySide6.QtGui import QColor
+from PySide6.QtGui import QColor, QFont, QFontMetrics
 from PySide6.QtWidgets import (QWidget, QLabel, QPushButton, QLineEdit, QComboBox, QHBoxLayout, QVBoxLayout,
                                QGridLayout, QFileDialog, QMessageBox, QSpinBox, QDoubleSpinBox, QTableWidgetItem,
                                QCheckBox, QFrame, QStackedWidget, QScrollArea, QDialog, QDialogButtonBox,
@@ -71,7 +71,7 @@ class ParamDialog(QDialog):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(20, 18, 20, 16)
         lay.setSpacing(12)
-        intro = QLabel(tr("这些参数只在「原程序算法」时使用；新算法按「算法设置」里的下单间隔和到货天数计算。"))
+        intro = QLabel(tr("这些参数只在「原程序算法」时使用；新算法按「算法设置」里的订货周期和到货天数计算。"))
         intro.setObjectName("Faint")
         intro.setWordWrap(True)
         lay.addWidget(intro)
@@ -2090,6 +2090,7 @@ class StoreOrderPage:
         t.setRowCount(len(rows))
         kind = {"direct": "ok", "filled": "accent", "bms": "gray", "short": "err", "merged": "gray", "pulled": "gray", "dropped": "gray",
                 "forced": "warn"}
+        chip_w = 0
         for i, (day, sup, moq, dest, st, status, note) in enumerate(rows):
             label = tr(S.status_text(dest, status))
             self.ui.table_set_row(t, i, [day, sup, moq, dest, f"{st['colli']:g}", f"€{st['amount']:,.2f}", label, note],
@@ -2106,11 +2107,21 @@ class StoreOrderPage:
             cw = QWidget()
             ch = QHBoxLayout(cw)
             ch.setContentsMargins(8, 0, 8, 0)
-            ch.addWidget(chip(label, k))
+            cp = chip(label, k)
+            ch.addWidget(cp)
             ch.addStretch()
             t.setCellWidget(i, 6, cw)
             t.item(i, 7).setToolTip(note)
-        t.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeToContents)
+            cf = cp.font()
+            cf.setPixelSize(12)
+            cf.setWeight(QFont.Weight.Medium)
+            need = QFontMetrics(cf).horizontalAdvance(label) + 24      # 左右 padding 9px + 余量
+            cp.setMinimumWidth(need)
+            chip_w = max(chip_w, need + 16)
+        # 状态是小标签（不是格子里的字）：按最宽的标签定列宽，不然「直接送店」这种字被挤掉
+        hh = t.horizontalHeader()
+        hh.setSectionResizeMode(6, QHeaderView.Interactive)
+        t.setColumnWidth(6, max(chip_w, hh.fontMetrics().horizontalAdvance(tr("状态")) + 30, 110))
         t.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
 
     def _open_row(self, row, _col):
