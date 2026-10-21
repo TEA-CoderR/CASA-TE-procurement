@@ -211,3 +211,10 @@ def test_waste_ratio_option():
     """整箱多出比例：一箱 12 件只要 4 件 → 多出 8 件 = 67%；比例 70% 不调，60% 调"""
     assert TR.options(4, 12, 1, "waste", 0.7) == []
     assert TR.options(4, 12, 1, "waste", 0.6) == [(4, 0)]
+
+
+def test_excluded_stores_separate_from_borrow():
+    """参与调货门店和借货分开设：调货设置里有 exclude_stores 就用它，没设过沿用借货的远店名单"""
+    assert TR.excluded_stores({}, [1]) == [1]
+    assert TR.excluded_stores({"exclude_stores": []}, [1]) == []
+    assert TR.excluded_stores({"exclude_stores": [3, "5"]}, [1]) == [3, 5]

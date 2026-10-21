@@ -14,7 +14,7 @@
   · 每个商品要调的货值（调货件数 × 件价）≥ item_min_value（默认 €10）才调：拣货的人工是按商品算的，
     一个 €0.10 的纸杯调 5 个才 €0.50，不值得；调 100 个 €10 就值得
   · 可选：一家门店调出去的货合计 ≥ min_value 才调（默认 0 = 不限；以前的版本只有这一条，默认 €50）
-  · 离得远的门店（far_stores）不调出、也不往那里调
+  · 不参与调货的门店（transfer.exclude_stores；没设过时沿用借货的 far_stores）不调出、也不往那里调
 算法：同一家调出门店的货尽量凑在一起（人工一次拣完）——每轮算每家门店能调出的总货值，
      先定货值最高的那家；它够门槛就把这些商品定给它，再算下一家，直到没有门店够门槛。
 """
@@ -33,6 +33,14 @@ def config(cfg=None):
     if "item_min_value" not in cfg:
         cfg.pop("min_value", None)
     return dict(DEFAULT, **cfg)
+
+
+def excluded_stores(cfg, fallback=()):
+    """不参与调货的门店：调货设置里的 exclude_stores（和借货分开设）；以前没设过 → 沿用借货的远店名单"""
+    cfg = cfg or {}
+    if "exclude_stores" in cfg:
+        return [int(x) for x in cfg.get("exclude_stores") or []]
+    return [int(x) for x in fallback or []]
 
 
 def surplus(d, keep=1.0):

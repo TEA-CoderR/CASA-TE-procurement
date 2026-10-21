@@ -211,15 +211,30 @@ def _hint(text):
     return h
 
 
+def _store_checks(checked):
+    """五家门店的勾选框：一行，返回 (布局, {门店号: 勾选框})"""
+    row = QHBoxLayout()
+    row.setSpacing(12)
+    boxes = {}
+    for k, name in S.STORE_SHEETS.items():
+        cb = QCheckBox(name)
+        cb.setChecked(k in checked)
+        boxes[k] = cb
+        row.addWidget(cb)
+    row.addStretch()
+    return row, boxes
+
+
 class TransferBox(QWidget):
     """
-    门店之间调货的设置（门店配货的「配货设置」和批发商比价的「门店间调货…」共用同一块，存同一个地方：
-    settings → store_orders.transfer，参与调货门店 = 没在 store_orders.fill.far_stores 里的门店）
+    门店之间调货的设置（门店配货的「配货设置」和批发商比价的「门店间调货…」共用这一块）：
+    存在 settings → store_orders.transfer；参与调货门店 = 不在 transfer.exclude_stores 里的（和借货分开设）
     """
 
-    def __init__(self, tc, far, parent=None):
+    def __init__(self, tc, fallback_far=(), parent=None):
         super().__init__(parent)
         import transfers as TR
+        tc_raw = tc
         tc = TR.config(tc)
         v = QVBoxLayout(self)
         v.setContentsMargins(0, 0, 0, 0)
@@ -232,32 +247,30 @@ class TransferBox(QWidget):
         g.setVerticalSpacing(8)
         g.setColumnStretch(2, 1)
 
-        def spin(val, lo, hi, dec, suffix="", width=90):
+        def spin(val, lo, hi, dec, suffix=""):
             w = QDoubleSpinBox()
             w.setRange(lo, hi)
             w.setDecimals(dec)
             w.setValue(float(val))
             if suffix:
                 w.setSuffix(suffix)
-            w.setFixedWidth(width)
+            w.setFixedWidth(90)
             return w
         self.mode = QComboBox()
-        self.mode.addItem(tr("订整箱会多出很多时才调"), "waste")
-        self.mode.addItem(tr("所有要订的商品都先看能不能调"), "all")
+        self.mode.addItem(tr("只要整箱一小部分时"), "waste")
+        self.mode.addItem(tr("所有要订商品"), "all")
         self.mode.setCurrentIndex(max(0, self.mode.findData(tc.get("mode"))))
-        self.ratio = spin(float(tc.get("waste_ratio") or 0.5) * 100, 1, 100, 0, " %")
+        # 界面上说「要的只占整箱 ≤ x%」；内部存的是「整箱多出的比例」waste_ratio = 1 − x
+        self.share = spin(round((1 - float(tc.get("waste_ratio") or 0.5)) * 100), 1, 99, 0, " %")
         self.keep = spin(tc.get("keep_cycles", 1.0), 0, 10, 1)
         self.itemv = spin(tc["item_min_value"], 0, 100000, 2)
         self.minv = spin(tc["min_value"], 0, 100000, 0)
         rows = [
             (tr("什么时候调"), self.mode, ""),
-            (tr("整箱多出比例 ≥"), self.ratio,
-             tr("订一整箱会多出几件 ÷ 每箱件数。例：一箱 12 件只要 4 件，多出 8 件 = 67%：设 50% 会调，设 70% 不调")),
-            (tr("调出门店留货系数"), self.keep,
-             tr("调出门店先留够 日均 × 订货周期 × 这个数 的货，多出来的才调。1 = 留一个订货周期；1.5 = 留得多、调得少")),
-            (tr("每个商品调货货值至少 €"), self.itemv,
-             tr("调货件数 × 件价。拣货人工按商品算：纸杯调 5 个才 €0.50 不值得，调 100 个 €10 就值得")),
-            (tr("每家调出门店合计至少 €"), self.minv, tr("0 = 不限（一般不用设）")),
+            (tr("只占整箱 ≤"), self.share, tr("例：一箱 12 件只要 3 件 = 25%")),
+            (tr("调出门店留货系数"), self.keep, tr("留够 日均 × 订货周期 × 系数，多的才调")),
+            (tr("每个商品至少 €"), self.itemv, tr("调货件数 × 件价，太少不值得拣货")),
+            (tr("每家调出门店合计至少 €"), self.minv, tr("0 = 不限")),
         ]
         for r, (lab, w, hint) in enumerate(rows):
             g.addWidget(QLabel(lab), r, 0)
@@ -267,30 +280,21 @@ class TransferBox(QWidget):
             g.addWidget(w, r, 1)
             g.addWidget(_hint(hint), r, 2)
         v.addLayout(g)
-        self.mode.currentIndexChanged.connect(lambda _: self.ratio.setEnabled(self.mode.currentData() == "waste"))
-        self.ratio.setEnabled(self.mode.currentData() == "waste")
-        st = QHBoxLayout()
-        st.setSpacing(12)
-        st.addWidget(QLabel(tr("参与调货门店")))
-        self.stores = {}
-        far = set(far or ())
-        for k, name in S.STORE_SHEETS.items():
-            cb = QCheckBox(name)
-            cb.setChecked(k not in far)
-            self.stores[k] = cb
-            st.addWidget(cb)
-        st.addStretch()
-        v.addLayout(st)
-        v.addWidget(_hint(tr("没勾的门店不调出、也不调进（门店配货借货也不借它的货）。自己这次也要订的商品不调出。门店配货和批发商比价用同一套设置。")))
+        self.mode.currentIndexChanged.connect(lambda _: self.share.setEnabled(self.mode.currentData() == "waste"))
+        self.share.setEnabled(self.mode.currentData() == "waste")
+        out = set(TR.excluded_stores(tc_raw, fallback_far))
+        lab = QLabel(tr("参与调货门店"))
+        v.addWidget(lab)
+        row, self.stores = _store_checks({k for k in S.STORE_SHEETS if k not in out})
+        v.addLayout(row)
+        v.addWidget(_hint(tr("自己这次也要订的商品不调出。门店配货和批发商比价共用这套设置。")))
 
     def transfer_values(self, tc):
         import transfers as TR
         return dict(TR.config(tc), enabled=self.on.isChecked(), mode=self.mode.currentData(),
-                    waste_ratio=round(self.ratio.value() / 100.0, 4), keep_cycles=self.keep.value(),
-                    item_min_value=self.itemv.value(), min_value=self.minv.value())
-
-    def far_stores(self):
-        return [k for k, cb in self.stores.items() if not cb.isChecked()]
+                    waste_ratio=round(1 - self.share.value() / 100.0, 4), keep_cycles=self.keep.value(),
+                    item_min_value=self.itemv.value(), min_value=self.minv.value(),
+                    exclude_stores=[k for k, cb in self.stores.items() if not cb.isChecked()])
 
 
 class FillDialog(QDialog):
@@ -363,7 +367,11 @@ class FillDialog(QDialog):
         self.merge_direct.setChecked(bool(fc.get("merge_direct", True)))
         v2.addWidget(self.borrow_urgent)
         v2.addWidget(self.merge_direct)
-        v2.addWidget(_hint(tr("借货不会让借出门店低于起订量；紧急补货的商品不借；借出去的货由 BMS 订、到货后分回原门店；没参与调货的门店也不借。")))
+        v2.addWidget(QLabel(tr("可以借货的门店")))
+        far = set(fc.get("far_stores") or [])
+        brow, self.lend = _store_checks({k for k in S.STORE_SHEETS if k not in far})
+        v2.addLayout(brow)
+        v2.addWidget(_hint(tr("借货不会让借出门店低于起订量；紧急补货的商品不借；借出去的货由 BMS 订、到货后分回原门店。")))
         left.addWidget(c2)
         left.addStretch()
         cols.addLayout(left, 1)
@@ -389,7 +397,7 @@ class FillDialog(QDialog):
                                      borrow=self.borrow.isChecked(), borrow_min_days=self.borrow_days.value(),
                                      borrow_urgent=self.borrow_urgent.isChecked(),
                                      merge_direct=self.merge_direct.isChecked(),
-                                     far_stores=self.tbox.far_stores())
+                                     far_stores=[k for k, cb in self.lend.items() if not cb.isChecked()])
         self.page.cfg["transfer"] = self.tbox.transfer_values(self.page.transfer_cfg())
         save_settings(self.page.settings)
         self.accept()
@@ -524,11 +532,16 @@ class StoreOrderPage:
         import transfers as TR
         return TR.config(self.cfg.get("transfer"))
 
+    def transfer_far(self):
+        """不参与调货的门店（和借货分开设）"""
+        import transfers as TR
+        return TR.excluded_stores(self.cfg.get("transfer"), self.fill_cfg().get("far_stores"))
+
     def apply_transfers(self, keep_edits=True):
         """按现在的调货设置重算调货；手动改过的箱数保留"""
         if not self.calc:
             return
-        S.apply_transfers(self.calc, self.transfer_cfg(), self.fill_cfg().get("far_stores"))
+        S.apply_transfers(self.calc, self.transfer_cfg(), self.transfer_far())
         new = copy.deepcopy(self.calc["base"])
         if keep_edits:
             for path, sid, row in self.edited:
@@ -1312,7 +1325,7 @@ class StoreOrderPage:
         calc.setdefault("date", _dt.date.today())    # 周销量按计算当天往回数
         self.calc = calc
         try:
-            S.apply_transfers(calc, self.transfer_cfg(), self.fill_cfg().get("far_stores"))
+            S.apply_transfers(calc, self.transfer_cfg(), self.transfer_far())
             if calc.get("transfers"):
                 self.win.log(tr("[门店配货] 门店间调货：{0} 个商品", len(calc["transfers"])))
         except Exception as e:
@@ -1864,7 +1877,7 @@ class StoreOrderPage:
             expl.append(tr("所有要订的门店都够起订量，直接送店。"))
         far = [S.STORE_SHEETS[x] for x in (self.fill_cfg().get("far_stores") or []) if x in S.STORE_SHEETS]
         if far:
-            expl.append(tr("{0} 离得远，不借它的货。", tr("、").join(far)))
+            expl.append(tr("{0} 不参与借货。", tr("、").join(far)))
         ex = QLabel("\n".join(expl))
         ex.setWordWrap(True)
         ex.setObjectName("Faint")

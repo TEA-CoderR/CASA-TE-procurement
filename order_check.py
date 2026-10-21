@@ -1115,8 +1115,9 @@ class OrderCheck:
     def transfer_plan(self):
         """按现在的确定件数算门店间调货：(调货单, {(门店, 商品编号): 调货后还要订的件数})"""
         import store_orders as SO
+        import transfers as TR
         so = self.settings.get("store_orders") or {}
-        far = (dict(SO.DEFAULT_FILL, **(so.get("fill") or {}))).get("far_stores") or []
+        far = TR.excluded_stores(so.get("transfer"), (dict(SO.DEFAULT_FILL, **(so.get("fill") or {}))).get("far_stores"))
         by_store = {}
         for x in self.rows:
             by_store.setdefault(x.get("store"), []).append(x)

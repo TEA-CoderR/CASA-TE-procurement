@@ -1312,8 +1312,7 @@ class TransferSettingsDialog(QDialog):
     def save(self):
         import store_orders as SO
         so = settings.setdefault("store_orders", {})
-        so["transfer"] = self.box.transfer_values(so.get("transfer"))
-        so["fill"] = dict(dict(SO.DEFAULT_FILL, **(so.get("fill") or {})), far_stores=self.box.far_stores())
+        so["transfer"] = self.box.transfer_values(so.get("transfer"))     # 参与调货门店存在调货设置里（和借货分开）
         save_settings(settings)
         self.accept()
 

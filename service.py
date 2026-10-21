@@ -132,11 +132,13 @@ def transfer_status(snapshot, settings):
     if not cfg.get("enabled"):
         return "off", tr("门店间调货：已关闭（点「门店间调货…」打开）")
     own = snapshot.get("store")
-    far = (dict(SO.DEFAULT_FILL, **(so.get("fill") or {}))).get("far_stores") or []
+    import transfers as TR
+    far = TR.excluded_stores(so.get("transfer"), (dict(SO.DEFAULT_FILL, **(so.get("fill") or {}))).get("far_stores"))
     name = SO.STORE_SHEETS.get(own, str(own))
     if own in far:
-        return "far", tr("门店间调货：{0} 设成「离得远」，不参与调货（点「门店间调货…」可以改）", name)
-    when = tr("整箱会多出一半以上时才调") if cfg.get("mode") == "waste" else tr("所有要订的商品都先看能不能调")
+        return "far", tr("门店间调货：{0} 没勾「参与调货门店」，不参与调货（点「门店间调货…」可以改）", name)
+    share = round((1 - float(cfg.get("waste_ratio") or 0.5)) * 100)
+    when = tr("只占整箱 ≤ {0}% 时调", share) if cfg.get("mode") == "waste" else tr("所有要订商品")
     others = tr("、").join(SO.STORE_SHEETS[k] for k in SO.STORE_SHEETS if k != own and k not in far)
     text = tr("门店间调货：开启，{0} 从 {1} 调；{2}，每个商品调货货值至少 €{3:g}",
               name, others or "—", when, float(cfg.get("item_min_value") or 0))
@@ -160,7 +162,7 @@ def wholesale_transfers(rows_data, supplier_headers, snapshot, settings, labels=
     if not snapshot or not cfg.get("enabled"):
         return []
     own = snapshot.get("store")
-    far = (dict(SO.DEFAULT_FILL, **(so.get("fill") or {}))).get("far_stores") or []
+    far = TR.excluded_stores(cfg, (dict(SO.DEFAULT_FILL, **(so.get("fill") or {}))).get("far_stores"))
     by_ean = snapshot.get("by_ean") or {}
     labels = labels or {}
     needs, info, avail = [], {}, {}
