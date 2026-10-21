@@ -16,6 +16,7 @@
 - 用户和同事**共用同一个文件夹**（`procurement_system ok 2.5`）开发。请直接在这个文件夹里改代码、`git commit`、`git push`，不要只推到云端分支却把文件另外写进文件夹（之前这样做过，文件夹和 git 记录对不上，发布前得先同步）。
 
 ## 最近改动（给接手的 AI 的纸条，新的写在最上面）
+- 2026-10-21：检查清单：数据库没有的商品也按条码去供应商报价里补箱规 / 件价（`price_check.apply_quotes`）；还是找不到的分两张小表放在顶上（`_problem` → nodb / nopack，`_fill_prob`），主表格只放能算的；调货列没调的一律写「不调」（订货明细也是）。界面卡住时 `logs/hang.log` 会记下各线程的调用栈（`main._start_hang_watchdog`）。
 - 2026-10-21：检查门店订货清单改成**按箱**审核：`order_check.init_boxes` 给每行 lbox（清单箱数）/ sbox（建议箱数）/ fbox（确定箱数 ✎，`_set_box` 同步 final = 箱数 × 每箱件数）；判断按箱比；调货用 `_need_pcs`（箱数没改用系统件数）。确认生成的主订单不写 PEZZI（`write_main_order(pieces=False)`），比价按 COLLI 分配供应商。数据库没有 / 没箱规的商品在第二个标签页。负库存：显示原值、计算当 0、不提醒。
 - 2026-10-21：检查门店订货清单窗口改成和订货明细一个样子：顶部一行工具条（门店按钮 `_build_chips`、搜索、「看哪些」下拉带个数、恢复建议值、更多 ▾），底部状态栏（显示几个 · 改了几个 · 估算金额 · 调货 + 「确认，开始比价」）。默认列顺序 / 藏哪些列改了（`_LAYOUT_VER` 6、`_HIDDEN_VER` 5，`settings.COMPANY_DEFAULTS` 的 check_cols_hidden 同步）。
 - 2026-10-21：调货改成「系统建议一次 + 人工改」：双击「调货」格弹 `erp_widgets.TransferEditDialog`（选调出门店 + 件数 / 不调），不再用格子里的编辑框。第一次人工改（检查清单里改确定件数也算）就把系统建议冻结（`transfers.freeze`，overrides 里 auto=True），之后只按 overrides 调，改一行别的行不变；调货设置改了 / 恢复建议值才解冻（`unfreeze`）。系统建议改成每个商品从多出来最多的门店调（`transfers.plan`）。门店配货 `_preview` 加了缓存，改一个调货只重算那家供应商。

@@ -1028,9 +1028,9 @@ class DetailWindow(ToolWindow):
             ti.setText(tr("不调") + "  ✎" if not o["pieces"] else tr("调不了 {0} 件", o["pieces"]))
             ti.setForeground(QColor(T("faint")))
             ti.setToolTip(tr("人工改过：双击重新选调出门店和件数；「恢复建议值」恢复系统算的调货"))
-        else:                                   # 要订、没调货的写「不调」（不订的行空着）
+        else:                                   # 没调货的写「不调」
             ordered = bool(self._orig(sc, sid, it["row"]))
-            ti.setText(tr("不调") if ordered else "")
+            ti.setText(tr("不调"))                 # 没调货的一律写「不调」
             ti.setForeground(QColor(T("faint")))
             ti.setToolTip(tr("双击：这个商品改成从别的门店调货") if ordered else "")
         ti.setFlags(ro)

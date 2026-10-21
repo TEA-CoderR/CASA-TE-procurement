@@ -71,8 +71,20 @@ def _pk(x):
 
 
 def _problem(x):
-    """数据库没有 / 没有箱规的商品：单独一个标签页核对"""
-    return not x.get("in_db", True) or _pk(x) <= 0
+    """
+    要单独核对的商品：「nodb」数据库里没有、供应商报价里也找不到；「nopack」数据库有、但数据库和报价里都没有箱规。
+    数据库没有但报价里找得到的（补上了箱规、件价）留在主表格。其他返回 None
+    """
+    if not x.get("in_db", True):
+        return None if (x.get("quote_sup") and _pk(x) > 0) else "nodb"
+    if _pk(x) <= 0:
+        return "nopack"
+    return None
+
+
+def _can_transfer(x):
+    """能算调货的：数据库里有（有其他门店的库存、销量）而且知道每箱几件"""
+    return bool(x.get("in_db", True)) and _pk(x) > 0
 
 
 def _set_box(x, boxes):
@@ -286,23 +298,38 @@ class OrderCheck:
         more.clicked.connect(lambda: self._more_menu(more))
         tb.addWidget(more)
         bl.addWidget(bar)
-        # 标签页：清单商品 / 数据库没有、没有箱规（这些要人工核对，单独放，主表格干净）
-        from PySide6.QtWidgets import QTabBar
-        self.tabs = QTabBar()
-        self.tabs.setObjectName("SubTabs")
-        self.tabs.setDrawBase(False)
-        self.tabs.addTab(tr("清单商品"))
-        self.tabs.addTab(tr("数据库没有 / 没有箱规"))
-        self.tabs.setTabToolTip(1, tr("数据库里找不到、或者不知道每箱几件的商品：系统算不了，确定箱数默认 = 门店清单，请核对"))
-        self.tabs.currentChanged.connect(lambda _i: self._filter())
-        tw = QWidget()
-        twl = QHBoxLayout(tw)
-        twl.setContentsMargins(16, 4, 16, 0)
-        twl.addWidget(self.tabs)
-        twl.addStretch()
-        self.tabs_box = tw
-        tw.hide()
-        bl.addWidget(tw)
+        # 顶上两个小表格：数据库没有 / 没有箱规（供应商报价里也找不到的），要人工核对，不放进主表格
+        self.prob_box = QWidget()
+        ph = QHBoxLayout(self.prob_box)
+        ph.setContentsMargins(16, 8, 16, 4)
+        ph.setSpacing(12)
+        self.prob = {}
+        self._prob_filling = False
+        for kind, title, tip in (("nodb", tr("数据库没有"), tr("数据库里找不到、供应商报价里也没有的商品：系统算不了，确定箱数默认 = 门店清单，请核对")),
+                                 ("nopack", tr("没有箱规"), tr("数据库里有，但数据库和供应商报价里都不知道每箱几件：确定箱数默认 = 门店清单，请核对"))):
+            f = QFrame()
+            f.setObjectName("Panel")
+            fv = QVBoxLayout(f)
+            fv.setContentsMargins(10, 8, 10, 8)
+            fv.setSpacing(4)
+            lb = QLabel(title)
+            lb.setStyleSheet("font-weight:600;")
+            lb.setToolTip(tip)
+            t = ui.make_table([tr("门店"), tr("条码"), tr("名称"), tr("供应商"), tr("清单箱数"), tr("确定箱数") + " ✎"],
+                              stretch_col=2, numeric_cols=(4, 5))
+            t.verticalHeader().setDefaultSectionSize(28)
+            t.setMaximumHeight(28 * 4 + 34)
+            t.setEditTriggers(QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed |
+                              QAbstractItemView.AnyKeyPressed)
+            for c, wd in ((0, 80), (1, 120), (3, 120), (4, 70), (5, 80)):
+                t.setColumnWidth(c, wd)
+            t.itemChanged.connect(lambda it, k=kind: self._prob_edited(k, it))
+            fv.addWidget(lb)
+            fv.addWidget(t)
+            ph.addWidget(f, 1)
+            self.prob[kind] = (f, lb, t)
+        self.prob_box.hide()
+        bl.addWidget(self.prob_box)
         self.table = ui.make_table(_perm([tr("判断"), tr("商品编号"), tr("条码"), tr("名称"), tr("本店库存"),
                                           "30", "60", "90", "180", tr("库存够卖（天）"), tr("每箱件数"), tr("清单数量"),
                                           tr("清单件数"), tr("建议件数"), tr("确定件数"), tr("确定箱数"), tr("等级"), tr("周期"), tr("日均"),
@@ -684,7 +711,7 @@ class OrderCheck:
             self.ctl.set_title(_col(5 + i), tr("{0}天", d[i]), tr("最近 {0} 天销量", d[i]))
         # 一律按箱看：清单箱数（清单按件的折成箱）→ 确定箱数
         self.ctl.set_title(_col(11), tr("清单箱数"))
-        self._update_tabs()
+        self._fill_prob()
         self._build_chips(meta["stores"])
         self._fill_suppliers()
         self._apply_forced()
@@ -795,7 +822,7 @@ class OrderCheck:
             p = TR.norm_override(ov)["pieces"]
             return tr("不调") + "  ✎" if not p else tr("调不了 {0} 件", p)
         # 要订、没调货的写「不调」（不订的行空着；调出去的不显示，审核只要知道从哪调进来）
-        return tr("不调") if not _problem(x) and int(x.get("fbox") or 0) > 0 else ""
+        return tr("不调")                              # 没调货的一律写「不调」
 
     def freeze_transfers(self):
         """第一次人工改（调货或确定件数）：把现在系统建议的调货冻结下来，以后改一行别的行不跟着变"""
@@ -816,7 +843,7 @@ class OrderCheck:
         if not snap:
             self.win.show_toast(tr("没有其他门店的库存数据，不能调货"))
             return
-        if _problem(x) or int(x.get("fbox") or 0) <= 0:
+        if not _can_transfer(x) or int(x.get("fbox") or 0) <= 0:
             self.win.show_toast(tr("这一行不订货，不用调货"))
             return
         import store_orders as SO
@@ -1073,6 +1100,7 @@ class OrderCheck:
             self._moves_out.setdefault((m["from"], str(m["code"])), []).append(m)
         if render:
             self.ctl.render()
+            self._fill_prob()
             self._summary()
             if self._cur_i is not None:
                 self._show_drawer(self._cur_i)
@@ -1116,16 +1144,59 @@ class OrderCheck:
             self.f_sup.addItem(f"{n}（{cnt[n]}）", n)
         self.f_sup.blockSignals(False)
 
-    def _update_tabs(self):
-        """两个标签页带个数；没有数据库没有 / 没箱规的商品就不显示标签页"""
-        n_bad = sum(1 for x in self.rows if _problem(x))
-        self.tabs.blockSignals(True)
-        self.tabs.setTabText(0, tr("清单商品（{0}）", len(self.rows) - n_bad))
-        self.tabs.setTabText(1, tr("⚠ 数据库没有 / 没有箱规（{0}）", n_bad))
-        if not n_bad:
-            self.tabs.setCurrentIndex(0)
-        self.tabs.blockSignals(False)
-        self.tabs_box.setVisible(bool(n_bad))
+    def _fill_prob(self):
+        """顶上两个小表格（数据库没有 / 没有箱规）：跟着门店按钮、搜索框筛选；没有这类商品就不显示"""
+        if not hasattr(self, "prob"):
+            return
+        sid = self._store_sel()
+        text = self.flt.text().strip().lower()
+        any_shown = False
+        self._prob_filling = True
+        for kind, (f, lb, t) in self.prob.items():
+            allk = [i for i, x in enumerate(self.rows) if _problem(x) == kind]
+            idx = [i for i in allk if (sid is None or self.rows[i].get("store") == sid) and
+                   (not text or text in f"{self.rows[i].get('code')} {self.rows[i].get('ean')} {self.rows[i].get('name')}".lower())]
+            lb.setText((tr("⚠ 数据库没有（{0}）", len(allk)) if kind == "nodb" else tr("⚠ 没有箱规（{0}）", len(allk))))
+            f.setVisible(bool(allk))
+            any_shown = any_shown or bool(allk)
+            t.blockSignals(True)
+            t.setRowCount(len(idx))
+            for r, i in enumerate(idx):
+                x = self.rows[i]
+                self.ui.table_set_row(t, r, [R.STORES.get(x.get("store"), ""), x.get("ean") or "", x.get("name") or "",
+                                             x.get("sup_name") or "", f"{x['lbox']:,}", f"{x['fbox']:,}"])
+                t.item(r, 0).setData(Qt.UserRole, i)
+                t.item(r, 2).setToolTip(f"{x.get('name') or ''}\n{x.get('code') or ''} · {x.get('ean') or ''}")
+                for c in range(t.columnCount()):
+                    it = t.item(r, c)
+                    if c == 5:
+                        it.setFlags(it.flags() | Qt.ItemIsEditable)
+                        it.setToolTip(tr("双击修改箱数，0 = 不订"))
+                        it.setForeground(QColor(self.ui.T("accent") if x["fbox"] > 0 else self.ui.T("faint")))
+                    else:
+                        it.setFlags(it.flags() & ~Qt.ItemIsEditable)
+            t.blockSignals(False)
+            t.setColumnHidden(0, len((self.meta or {}).get("stores") or []) < 2)
+        self._prob_filling = False
+        self.prob_box.setVisible(any_shown)
+
+    def _prob_edited(self, kind, item):
+        """顶上小表格里改了确定箱数：等编辑框关掉再刷新（编辑中途重画会卡住）"""
+        if self._prob_filling or item.column() != 5:
+            return
+        t = self.prob[kind][2]
+        first = t.item(item.row(), 0)
+        i = first.data(Qt.UserRole) if first is not None else None
+        if i is None:
+            return
+        try:
+            n = float(item.text().strip().replace(",", "") or 0)
+            if n < 0 or n != int(n):
+                raise ValueError
+            _set_box(self.rows[i], int(n))
+        except ValueError:
+            self.win.show_toast(tr("箱数要填 0 或正整数"))
+        QTimer.singleShot(0, lambda: (self._fill_prob(), self._summary()))
 
     def _store_sel(self):
         b = self.store_group.checkedButton() if hasattr(self, "store_group") else None
@@ -1199,7 +1270,7 @@ class OrderCheck:
         sup = self.f_sup.currentData()
         if sup and (x.get("sup_name") or "") != sup:
             return True
-        if _problem(x) != (self.tabs.currentIndex() == 1):      # 标签页：清单商品 / 数据库没有、没有箱规
+        if _problem(x):                                # 数据库没有 / 没有箱规的在顶上的小表格里
             return True
         text = self.flt.text().strip().lower()
         view = self.view.currentData()
@@ -1256,9 +1327,9 @@ class OrderCheck:
         elif tkey in self.transfer_ov:
             tri.setForeground(QColor(T("faint")))
             tri.setToolTip(tr("人工改过：双击重新选调出门店和件数；「全部用建议量」恢复系统算的调货"))
-        elif x["fbox"] > 0 and not _problem(x):
+        else:
             tri.setForeground(QColor(T("faint")))
-            tri.setToolTip(tr("双击：这个商品改成从别的门店调货"))
+            tri.setToolTip(tr("双击：这个商品改成从别的门店调货") if (x["fbox"] > 0 and _can_transfer(x)) else "")
         reason = "\n".join(self._reason_lines(x) + ["⚠ " + m[2] for m in self._marks(x)])
         t.item(k, _col(REASON_COL)).setToolTip(reason)
         t.item(k, _col(REASON_COL)).setForeground(QColor(T("muted")))
@@ -1369,6 +1440,7 @@ class OrderCheck:
     def _filter(self, *_):
         if hasattr(self, "ctl"):
             self.ctl.render()
+        self._fill_prob()
         self._summary()
 
     def _summary(self):
@@ -1504,7 +1576,7 @@ class OrderCheck:
         far = TR.excluded_stores(so.get("transfer"), (dict(SO.DEFAULT_FILL, **(so.get("fill") or {}))).get("far_stores"))
         by_store = {}
         for x in self.rows:                       # 调货按「真正要的件数」算（确定箱数没改就是系统算的件数，零头才能调）
-            by_store.setdefault(x.get("store"), []).append(dict(x, final=self._need_pcs(x)) if not _problem(x) else
+            by_store.setdefault(x.get("store"), []).append(dict(x, final=self._need_pcs(x)) if _can_transfer(x) else
                                                           dict(x, final=0))
         snap = self.meta.get("snap")
         if not snap:

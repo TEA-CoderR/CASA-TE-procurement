@@ -50,13 +50,13 @@ def test_conclusion_and_export():
 
 def test_best_and_apply():
     best = P.best_quotes(FILES)
-    assert best["1"] == {"price": 0.90, "pack": 6.0, "supplier": "MELONI"}
+    assert {k: best["1"][k] for k in ("price", "pack", "supplier")} == {"price": 0.90, "pack": 6.0, "supplier": "MELONI"}
     assert best["2"]["supplier"] == "MEGA CASH"
     rows = [{"ean": "1", "pack": 12, "price": 1.02, "in_db": True, "file_pcs": 24},
             {"ean": "77", "pack": 4, "price": 2.0, "in_db": True},
             {"ean": "2", "pack": 0, "price": 0, "in_db": False}]
-    assert P.apply_quotes(rows, best) == 1
+    assert P.apply_quotes(rows, best) == 2
     assert rows[0]["pack"] == 6.0 and rows[0]["db_pack"] == 12 and rows[0]["quote_sup"] == "MELONI"
     assert rows[0]["file_pcs"] == 24                 # 清单件数不动
     assert rows[1]["pack"] == 4 and "quote_sup" not in rows[1]
-    assert rows[2]["pack"] == 0                      # 数据库没有的不改
+    assert rows[2]["pack"] == best["2"]["pack"] and rows[2]["quote_sup"] == "MEGA CASH"   # 数据库没有的也去报价里找

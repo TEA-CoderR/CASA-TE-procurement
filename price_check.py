@@ -178,6 +178,8 @@ def best_quotes(files):
                 continue
             if ean not in best or p < best[ean]["price"]:
                 best[ean] = {"price": float(p), "pack": float(q.get("pack") or 1), "supplier": label}
+                if q.get("desc"):
+                    best[ean]["desc"] = str(q["desc"]).strip()
     return best
 
 
@@ -185,14 +187,17 @@ def apply_quotes(rows, quotes):
     """
     检查清单的行改用报价的件价和每箱件数（调货门槛、箱数显示、估算金额用）；报价里没有的保留数据库的。
     原来数据库的记在 db_pack / db_price，报价是哪家记在 quote_sup。清单件数（file_pcs）已经按数据库箱规折好，不动。
+    数据库里没有的商品也按条码去报价里找（补上每箱件数、件价，名称空着的补上报价里的品名）。
     返回改了几行
     """
     n = 0
     for x in rows:
-        q = quotes.get(str(x.get("ean") or "").strip()) if x.get("in_db", True) else None
+        q = quotes.get(str(x.get("ean") or "").strip())
         if not q:
             continue
         x["db_pack"], x["db_price"] = x.get("pack"), x.get("price")
         x["pack"], x["price"], x["quote_sup"] = q["pack"], q["price"], q["supplier"]
+        if not str(x.get("name") or "").strip() and q.get("desc"):
+            x["name"] = q["desc"]
         n += 1
     return n

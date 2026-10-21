@@ -2227,4 +2227,9 @@ TRANSLATIONS = {
     '订货周期 {0} 天 + 到货 {1} 天，服务水平 {2:.0%}{3}，平均压货最多 {4} 天，零头 ≥ {5:.0%} 一箱才多订': ('Order cycle {0} d + delivery {1} d, service level {2:.0%}{3}, average stock at most {4} d, extra case only if remainder ≥ {5:.0%}', 'Ciclo ordini {0} gg + consegna {1} gg, livello di servizio {2:.0%}{3}, scorta media max {4} gg, collo in più solo se resto ≥ {5:.0%}'),
     '新算法按「算法设置」里的订货周期和到货天数算，这里的不用': ('The new algorithm uses the order cycle and delivery days from "Algorithm settings"; this one is not used', 'Il nuovo algoritmo usa ciclo ordini e giorni di consegna delle «Impostazioni algoritmo»; questo non è usato'),
     '这些参数只在「原程序算法」时使用；新算法按「算法设置」里的订货周期和到货天数计算。': ('These are only used by the legacy algorithm; the new one uses order cycle and lead time from Algorithm settings.', "Usati solo dall'algoritmo originale; il nuovo usa ciclo ordini e giorni di consegna dalle impostazioni algoritmo."),
+    '数据库里找不到、供应商报价里也没有的商品：系统算不了，确定箱数默认 = 门店清单，请核对': ('Items not in the database nor in any supplier quote: cannot be calculated, confirmed boxes default to the store list — please check', 'Articoli né nel database né nelle offerte dei fornitori: non calcolabili, i colli confermati sono quelli della lista — verificare'),
+    '没有箱规': ('No box size', 'Senza confezione'),
+    '数据库里有，但数据库和供应商报价里都不知道每箱几件：确定箱数默认 = 门店清单，请核对': ('In the database, but neither the database nor the quotes give the pieces per box: confirmed boxes default to the store list — please check', 'Nel database, ma né il database né le offerte indicano i pezzi per collo: i colli confermati sono quelli della lista — verificare'),
+    '⚠ 数据库没有（{0}）': ('⚠ Not in database ({0})', '⚠ Non nel database ({0})'),
+    '⚠ 没有箱规（{0}）': ('⚠ No box size ({0})', '⚠ Senza confezione ({0})'),
 }
