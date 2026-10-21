@@ -288,6 +288,45 @@ class OrderCheck:
         self.view.setToolTip(tr("有变化 = 判断是多订、少订、不订或建议调货"))
         self.view.currentIndexChanged.connect(self._filter)
         tb.addWidget(self.view)
+        # 「全部商品」右边：数据库没有 / 没有箱规（供应商报价里也找不到的）两个按钮，点开是列表，在里面核对、改箱数
+        self.prob = {}
+        self.prob_btns = {}
+        self._prob_filling = False
+        for kind, title, tip in (("nodb", tr("数据库没有"), tr("数据库里找不到、供应商报价里也没有的商品：系统算不了，确定箱数默认 = 门店清单，请核对")),
+                                 ("nopack", tr("没有箱规"), tr("数据库里有，但数据库和供应商报价里都不知道每箱几件：确定箱数默认 = 门店清单，请核对"))):
+            b = QPushButton("⚠ " + title)
+            b.setToolTip(tip + "\n" + tr("点一下打开列表"))
+            b.setStyleSheet(f"color:{ui.T('warn')};")
+            b.clicked.connect(lambda _=False, k=kind: self._open_prob(k))
+            b.hide()
+            tb.addWidget(b)
+            self.prob_btns[kind] = b
+            dlg = QDialog(self.window)
+            dlg.setWindowTitle(title)
+            dlg.resize(820, 460)
+            dv = QVBoxLayout(dlg)
+            dv.setContentsMargins(16, 14, 16, 12)
+            dv.setSpacing(8)
+            lb = QLabel(tip)
+            lb.setObjectName("Muted")
+            lb.setWordWrap(True)
+            t = ui.make_table([tr("门店"), tr("条码"), tr("名称"), tr("供应商"), tr("清单箱数"), tr("确定箱数") + " ✎"],
+                              stretch_col=2, numeric_cols=(4, 5))
+            t.verticalHeader().setDefaultSectionSize(30)
+            t.setEditTriggers(QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed |
+                              QAbstractItemView.AnyKeyPressed)
+            for c, wd in ((0, 90), (1, 130), (3, 140), (4, 76), (5, 90)):
+                t.setColumnWidth(c, wd)
+            t.itemChanged.connect(lambda it, k=kind: self._prob_edited(k, it))
+            close = QPushButton(tr("关闭"))
+            close.clicked.connect(dlg.accept)
+            bb = QHBoxLayout()
+            bb.addStretch()
+            bb.addWidget(close)
+            dv.addWidget(lb)
+            dv.addWidget(t, 1)
+            dv.addLayout(bb)
+            self.prob[kind] = (dlg, b, t)
         tb.addStretch()
         b_s = QPushButton(tr("恢复建议值"))
         b_s.setToolTip(tr("全部商品的确定件数恢复成系统建议的（人工改的调货也恢复）"))
@@ -298,38 +337,6 @@ class OrderCheck:
         more.clicked.connect(lambda: self._more_menu(more))
         tb.addWidget(more)
         bl.addWidget(bar)
-        # 顶上两个小表格：数据库没有 / 没有箱规（供应商报价里也找不到的），要人工核对，不放进主表格
-        self.prob_box = QWidget()
-        ph = QHBoxLayout(self.prob_box)
-        ph.setContentsMargins(16, 8, 16, 4)
-        ph.setSpacing(12)
-        self.prob = {}
-        self._prob_filling = False
-        for kind, title, tip in (("nodb", tr("数据库没有"), tr("数据库里找不到、供应商报价里也没有的商品：系统算不了，确定箱数默认 = 门店清单，请核对")),
-                                 ("nopack", tr("没有箱规"), tr("数据库里有，但数据库和供应商报价里都不知道每箱几件：确定箱数默认 = 门店清单，请核对"))):
-            f = QFrame()
-            f.setObjectName("Panel")
-            fv = QVBoxLayout(f)
-            fv.setContentsMargins(10, 8, 10, 8)
-            fv.setSpacing(4)
-            lb = QLabel(title)
-            lb.setStyleSheet("font-weight:600;")
-            lb.setToolTip(tip)
-            t = ui.make_table([tr("门店"), tr("条码"), tr("名称"), tr("供应商"), tr("清单箱数"), tr("确定箱数") + " ✎"],
-                              stretch_col=2, numeric_cols=(4, 5))
-            t.verticalHeader().setDefaultSectionSize(28)
-            t.setMaximumHeight(28 * 4 + 34)
-            t.setEditTriggers(QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed |
-                              QAbstractItemView.AnyKeyPressed)
-            for c, wd in ((0, 80), (1, 120), (3, 120), (4, 70), (5, 80)):
-                t.setColumnWidth(c, wd)
-            t.itemChanged.connect(lambda it, k=kind: self._prob_edited(k, it))
-            fv.addWidget(lb)
-            fv.addWidget(t)
-            ph.addWidget(f, 1)
-            self.prob[kind] = (f, lb, t)
-        self.prob_box.hide()
-        bl.addWidget(self.prob_box)
         self.table = ui.make_table(_perm([tr("判断"), tr("商品编号"), tr("条码"), tr("名称"), tr("本店库存"),
                                           "30", "60", "90", "180", tr("库存够卖（天）"), tr("每箱件数"), tr("清单数量"),
                                           tr("清单件数"), tr("建议件数"), tr("确定件数"), tr("确定箱数"), tr("等级"), tr("周期"), tr("日均"),
@@ -1145,20 +1152,18 @@ class OrderCheck:
         self.f_sup.blockSignals(False)
 
     def _fill_prob(self):
-        """顶上两个小表格（数据库没有 / 没有箱规）：跟着门店按钮、搜索框筛选；没有这类商品就不显示"""
+        """「数据库没有 / 没有箱规」两个按钮（带个数）和点开的列表：列表跟着门店按钮、搜索框筛选；没有这类商品就不显示按钮"""
         if not hasattr(self, "prob"):
             return
         sid = self._store_sel()
         text = self.flt.text().strip().lower()
-        any_shown = False
         self._prob_filling = True
-        for kind, (f, lb, t) in self.prob.items():
+        for kind, (dlg, btn, t) in self.prob.items():
             allk = [i for i, x in enumerate(self.rows) if _problem(x) == kind]
             idx = [i for i in allk if (sid is None or self.rows[i].get("store") == sid) and
                    (not text or text in f"{self.rows[i].get('code')} {self.rows[i].get('ean')} {self.rows[i].get('name')}".lower())]
-            lb.setText((tr("⚠ 数据库没有（{0}）", len(allk)) if kind == "nodb" else tr("⚠ 没有箱规（{0}）", len(allk))))
-            f.setVisible(bool(allk))
-            any_shown = any_shown or bool(allk)
+            btn.setText((tr("⚠ 数据库没有（{0}）", len(allk)) if kind == "nodb" else tr("⚠ 没有箱规（{0}）", len(allk))))
+            btn.setVisible(bool(allk))
             t.blockSignals(True)
             t.setRowCount(len(idx))
             for r, i in enumerate(idx):
@@ -1178,7 +1183,14 @@ class OrderCheck:
             t.blockSignals(False)
             t.setColumnHidden(0, len((self.meta or {}).get("stores") or []) < 2)
         self._prob_filling = False
-        self.prob_box.setVisible(any_shown)
+
+    def _open_prob(self, kind):
+        """点「数据库没有 / 没有箱规」按钮：打开列表（不挡住检查窗口，可以一边对照一边改）"""
+        self._fill_prob()
+        dlg = self.prob[kind][0]
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
 
     def _prob_edited(self, kind, item):
         """顶上小表格里改了确定箱数：等编辑框关掉再刷新（编辑中途重画会卡住）"""

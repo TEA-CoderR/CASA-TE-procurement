@@ -2232,4 +2232,5 @@ TRANSLATIONS = {
     '数据库里有，但数据库和供应商报价里都不知道每箱几件：确定箱数默认 = 门店清单，请核对': ('In the database, but neither the database nor the quotes give the pieces per box: confirmed boxes default to the store list — please check', 'Nel database, ma né il database né le offerte indicano i pezzi per collo: i colli confermati sono quelli della lista — verificare'),
     '⚠ 数据库没有（{0}）': ('⚠ Not in database ({0})', '⚠ Non nel database ({0})'),
     '⚠ 没有箱规（{0}）': ('⚠ No box size ({0})', '⚠ Senza confezione ({0})'),
+    '点一下打开列表': ('Click to open the list', "Clicca per aprire l'elenco"),
 }
