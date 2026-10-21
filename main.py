@@ -3998,10 +3998,6 @@ class MainWindow(QMainWindow):
         if not (hasattr(self, "log_view") and hasattr(self, "feed")):      # 界面还没建好：等一下再写
             self._log_timer.start()
             return
-        if not getattr(self, "_log_capped", False):
-            self._log_capped = True
-            for v, n in ((self.log_view, 5000), (self.feed, 3000)):
-                v.document().setMaximumBlockCount(n)
         q, self._log_q = getattr(self, "_log_q", []), []
         if not q:
             return
@@ -5750,6 +5746,34 @@ class WheelGuard(QObject):
         return False
 
 
+def _start_hang_watchdog(app):
+    """
+    界面卡住时自动记下「卡在哪一行代码」：界面每 2 秒报一次平安；超过 15 秒没报（界面卡住了），
+    就把所有线程正在执行的代码写进 logs/hang.log（不会关掉程序）。用来查「点了以后程序卡住」这类问题
+    """
+    try:
+        import faulthandler
+        from datetime import datetime as _dt
+        os.makedirs(LOG_DIR, exist_ok=True)
+        f = open(os.path.join(LOG_DIR, "hang.log"), "a", encoding="utf-8")
+        f.write(f"\n=== {APP_NAME} 启动 {_dt.now():%Y-%m-%d %H:%M:%S}（下面如果出现 Timeout，就是界面卡住时各线程在做什么）\n")
+        f.flush()
+        app._hang_file = f
+
+        def beat():
+            faulthandler.cancel_dump_traceback_later()
+            faulthandler.dump_traceback_later(15, repeat=False, file=f, exit=False)
+
+        t = QTimer(app)
+        t.setInterval(2000)
+        t.timeout.connect(beat)
+        t.start()
+        app._hang_timer = t
+        beat()
+    except Exception as e:
+        file_logger.info(f"卡顿记录没开：{e}")
+
+
 def main():
     if getattr(sys, "frozen", False):
         threading.Thread(target=_cleanup_old_temp, daemon=True).start()
@@ -5764,6 +5788,7 @@ def main():
     sys.setswitchinterval(0.001)
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
+    _start_hang_watchdog(app)
     # Qt 自带按钮（是 / 否 / 取消 等）的翻译
     try:
         from PySide6.QtCore import QTranslator, QLibraryInfo
