@@ -272,22 +272,33 @@ class TransferBox(QWidget):
             (tr("每个商品至少 €"), self.itemv, tr("调货件数 × 件价，太少不值得拣货")),
             (tr("每家调出门店合计至少 €"), self.minv, tr("0 = 不限")),
         ]
+        self._share_row = []
         for r, (lab, w, hint) in enumerate(rows):
-            g.addWidget(QLabel(lab), r, 0)
+            lb = QLabel(lab)
+            g.addWidget(lb, r, 0)
             if w is self.mode:
                 g.addWidget(w, r, 1, 1, 2)
                 continue
+            hl = _hint(hint)
             g.addWidget(w, r, 1)
-            g.addWidget(_hint(hint), r, 2)
+            g.addWidget(hl, r, 2)
+            if w is self.share:
+                self._share_row = [lb, w, hl]
         v.addLayout(g)
-        self.mode.currentIndexChanged.connect(lambda _: self.share.setEnabled(self.mode.currentData() == "waste"))
-        self.share.setEnabled(self.mode.currentData() == "waste")
+        # 「所有要订商品」用不上比例：整行藏起来（只变灰看不出来）
+        self.mode.currentIndexChanged.connect(lambda _: self._show_share())
+        self._show_share()
         out = set(TR.excluded_stores(tc_raw, fallback_far))
         lab = QLabel(tr("参与调货门店"))
         v.addWidget(lab)
         row, self.stores = _store_checks({k for k in S.STORE_SHEETS if k not in out})
         v.addLayout(row)
         v.addWidget(_hint(tr("自己这次也要订的商品不调出。门店配货和批发商比价共用这套设置。")))
+
+    def _show_share(self):
+        on = self.mode.currentData() == "waste"
+        for w in self._share_row:
+            w.setVisible(on)
 
     def transfer_values(self, tc):
         import transfers as TR
