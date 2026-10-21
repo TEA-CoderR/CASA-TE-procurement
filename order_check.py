@@ -17,7 +17,7 @@ from PySide6.QtCore import Qt, QObject, Signal, QTimer
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (QWidget, QLabel, QPushButton, QLineEdit, QComboBox, QHBoxLayout, QVBoxLayout,
                                QFileDialog, QMessageBox, QSpinBox, QAbstractItemView, QHeaderView, QDialog,
-                               QGridLayout, QFrame)
+                               QGridLayout, QFrame, QStyledItemDelegate, QAbstractSpinBox)
 
 from i18n import tr
 from settings import save_settings
@@ -75,6 +75,37 @@ VERDICT_TOKEN = {"transfer": "ok", "more": "accent", "less": "warn", "none": "er
 # 「看哪些」下拉框
 VIEWS = (("all", "全部商品"), ("changed", "只看有变化的"), ("transfer", "只看调货"), ("more", "只看多订"),
          ("less", "只看少订"), ("none", "只看不订"))
+
+
+PIECES_ROLE = Qt.UserRole + 4     # 「调货」格：调进来的件数（编辑框里显示它）
+
+
+class _TransferDelegate(QStyledItemDelegate):
+    """「调货」格：双击改调进来的件数，0 = 不调（比如过季品）。等编辑框关掉再更新"""
+
+    def __init__(self, oc):
+        super().__init__(oc.table)
+        self.oc = oc
+
+    def createEditor(self, parent, opt, idx):
+        sb = QSpinBox(parent)
+        sb.setRange(0, 99999)
+        sb.setSuffix(tr(" 件"))
+        sb.setButtonSymbols(QAbstractSpinBox.NoButtons)
+        sb.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        return sb
+
+    def setEditorData(self, sb, idx):
+        v = idx.data(PIECES_ROLE)
+        if v is None:
+            return
+        sb.setValue(int(v))
+        sb.selectAll()
+
+    def setModelData(self, sb, model, idx):
+        sb.interpretText()
+        r, v = idx.row(), sb.value()
+        QTimer.singleShot(0, lambda: self.oc._transfer_edited(r, v))
 
 
 class _Sig(QObject):
@@ -248,7 +279,7 @@ class OrderCheck:
         self.table.horizontalHeaderItem(_col(CHANGE_COL)).setToolTip(
             tr("确定件数 − 门店清单的件数：+ 是比门店要的多订，− 是少订"))
         self.table.horizontalHeaderItem(_col(TRANSFER_COL)).setToolTip(
-            tr("门店间调货（按现在的确定件数实时算）：从哪家门店调进几件，调进来的就少订"))
+            tr("门店间调货（按现在的确定件数实时算）：从哪家门店调进几件，调进来的就少订。双击改件数，0 = 不调（比如过季品）"))
         self.table.horizontalHeaderItem(_col(REASON_COL)).setToolTip(
             tr("系统为什么这么建议：库存够卖几天、订货周期里大约卖多少"))
         self.table.itemChanged.connect(self._edited)
@@ -266,6 +297,9 @@ class OrderCheck:
         self.cols = ColumnChooser(self.table, self.cfg, "check_cols", _ORDER, lambda: save_settings(self.settings),
                                   _DEFAULT_HIDDEN, ver=4, forced=lambda: self._forced)
         self._moves_in, self._moves_out = {}, {}
+        self.transfer_ov = {}
+        self.table.setItemDelegateForColumn(_col(TRANSFER_COL), _TransferDelegate(self))
+        self.table.horizontalHeaderItem(_col(TRANSFER_COL)).setText(tr("调货") + " ✎")
         self._plan_timer = QTimer()
         self._plan_timer.setSingleShot(True)
         self._plan_timer.setInterval(250)
@@ -587,6 +621,7 @@ class OrderCheck:
             self.win.notify(tr("检查清单失败：{0}", err))
             return
         self.rows, self.meta = rows, meta
+        self.transfer_ov = {}                      # 人工改的调货件数 {(门店, 商品编号): 件数}，0 = 不调
         self._by_key = {(x.get("store"), str(x.get("code"))): x for x in rows}
         self._cur_i = None
         d = meta["days"]
@@ -683,8 +718,23 @@ class OrderCheck:
         key = (x.get("store"), str(x.get("code")))
         m = self._moves_in.get(key)
         if m:                                          # 短：← 从哪家 几件（详细的在鼠标提示里）
-            return f"← {R.STORES.get(m['from'], m['from'])} {m['pieces']}" + tr("件")
+            return f"← {R.STORES.get(m['from'], m['from'])} {m['pieces']}" + tr("件") + ("  ✎" if m.get("manual") else "")
+        ov = self.transfer_ov.get(key)
+        if ov is not None:                             # 人工改过：不调 / 调出门店不够
+            return tr("不调") if not ov else tr("调不了 {0} 件", ov)
         return ""                                      # 调出去的不显示（审核只要知道从哪调进来）
+
+    def _transfer_edited(self, k, v):
+        """改了调货件数：记下来，重算调货（同一家调出门店的货会重新分）"""
+        i = self.ctl.row_at(k)
+        if i is None:
+            return
+        x = self.rows[i]
+        key = (x.get("store"), str(x.get("code")))
+        self.transfer_ov[key] = int(v)
+        self._replan()
+        if v and key not in self._moves_in:
+            self.win.show_toast(tr("调出门店多出来的不够 {0} 件，这次调不了", v))
 
     def _transfer_tip(self, x):
         key = (x.get("store"), str(x.get("code")))
@@ -897,9 +947,17 @@ class OrderCheck:
             f.setBold(True)
             ch.setFont(f)
         tri = t.item(k, _col(TRANSFER_COL))
-        if tri.text():
-            tri.setForeground(QColor(T("ok") if (x.get("store"), str(x.get("code"))) in self._moves_in else T("accent")))
-            tri.setToolTip(self._transfer_tip(x))
+        tkey = (x.get("store"), str(x.get("code")))
+        m_in = self._moves_in.get(tkey)
+        if m_in or tkey in self.transfer_ov:          # 能改调货件数
+            tri.setFlags(tri.flags() | Qt.ItemIsEditable)
+            tri.setData(PIECES_ROLE, int(m_in["pieces"]) if m_in else int(self.transfer_ov[tkey]))
+            if m_in:
+                tri.setForeground(QColor(T("warn") if m_in.get("manual") else T("ok")))
+                tri.setToolTip(self._transfer_tip(x) + "\n" + tr("双击改调货件数，0 = 不调"))
+            else:
+                tri.setForeground(QColor(T("faint")))
+                tri.setToolTip(tr("人工改过：双击填件数重新调；「全部用建议量」恢复系统算的调货"))
         reason = "\n".join(self._reason_lines(x) + ["⚠ " + m[2] for m in self._marks(x)])
         t.item(k, _col(REASON_COL)).setToolTip(reason)
         t.item(k, _col(REASON_COL)).setForeground(QColor(T("muted")))
@@ -984,6 +1042,8 @@ class OrderCheck:
         QTimer.singleShot(0, lambda: (self._show(i), self._summary(), self._plan_timer.start()))
 
     def _set_all(self, which):
+        if which == "sugg":
+            self.transfer_ov = {}                     # 人工改的调货也恢复成系统算的
         for x in self.rows:
             if which == "sugg":
                 x["final"] = x["suggested"] if x["in_db"] else int(math.ceil(x["file_pcs"]))
@@ -1131,7 +1191,7 @@ class OrderCheck:
         snap = self.meta.get("snap")
         if not snap:
             return [], {}
-        return R.plan_batch_transfers(by_store, snap, so.get("transfer"), far)
+        return R.plan_batch_transfers(by_store, snap, so.get("transfer"), far, getattr(self, "transfer_ov", None))
 
     def confirm(self):
         if not self.rows:

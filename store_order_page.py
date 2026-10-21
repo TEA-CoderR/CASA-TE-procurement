@@ -548,6 +548,15 @@ class StoreOrderPage:
         import transfers as TR
         return TR.excluded_stores(self.cfg.get("transfer"), self.fill_cfg().get("far_stores"))
 
+    def set_transfer(self, key, pieces):
+        """订货明细里改了调货件数：{(SCHEDA, 调入门店, 行): 件数}，0 = 不调；重算调货（手动改的箱数保留）"""
+        if not self.calc:
+            return
+        self.calc.setdefault("transfer_overrides", {})[key] = int(pieces)
+        self.apply_transfers()
+        self._refresh_matrix()
+        self._update_state()
+
     def apply_transfers(self, keep_edits=True):
         """按现在的调货设置重算调货；手动改过的箱数保留"""
         if not self.calc:

@@ -11,7 +11,8 @@ from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QColor, QFontMetrics, QFont
 from PySide6.QtWidgets import (QSizePolicy, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QPushButton, QComboBox,
                                QLineEdit, QFrame, QTableWidgetItem, QAbstractItemView, QHeaderView, QButtonGroup,
-                               QScrollArea, QFileDialog, QMessageBox, QMenu, QDialog, QCheckBox, QProgressBar)
+                               QScrollArea, QFileDialog, QMessageBox, QMenu, QDialog, QCheckBox, QProgressBar,
+                               QStyledItemDelegate, QSpinBox, QAbstractSpinBox)
 
 from i18n import tr
 from settings import save_settings
@@ -69,11 +70,40 @@ AMOUNT_COL = _col(17)
 AFTER_COL = _col(32)
 DEC_COL = _col(2)
 DI_ROLE = Qt.UserRole + 1       # 第 0 列存 detail 下标（排序后靠它找到行）
+PIECES_ROLE = Qt.UserRole + 4   # 「调货」格：现在调进来的件数（改的时候编辑框里显示它）
 KEY_ROLE = Qt.UserRole + 2      # 排序用的值
 _TIER_RANK = {"A": 0, "B": 1, "C": 2}
 # 「看哪些」下拉框
 VIEWS = (("order", "只看要订的"), ("all", "全部商品"), ("changed", "只看有变化的"), ("transfer", "只看调货"),
          ("edited", "只看手动改过的"), ("urgent", "只看紧急"))
+
+
+class TransferDelegate(QStyledItemDelegate):
+    """「调货」格：双击改调进来的件数（0 = 不调，比如过季品）。等编辑框关掉再更新（编辑中途重画会卡住闪退）"""
+
+    def __init__(self, win):
+        super().__init__(win.table)
+        self.win = win
+
+    def createEditor(self, parent, opt, idx):
+        sb = QSpinBox(parent)
+        sb.setRange(0, 99999)
+        sb.setSuffix(tr(" 件"))
+        sb.setButtonSymbols(QAbstractSpinBox.NoButtons)
+        sb.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        return sb
+
+    def setEditorData(self, sb, idx):
+        v = idx.data(PIECES_ROLE)
+        if v is None:
+            return
+        sb.setValue(int(v))
+        sb.selectAll()
+
+    def setModelData(self, sb, model, idx):
+        sb.interpretText()
+        r, v = idx.row(), sb.value()
+        QTimer.singleShot(0, lambda: self.win._transfer_edited(r, v))
 
 
 class _SortItem(QTableWidgetItem):
@@ -600,7 +630,9 @@ class DetailWindow(ToolWindow):
         self.table.horizontalHeaderItem(DEC_COL).setToolTip(
             tr("这一行怎么处理：不订 / 照建议订 / 多订 / 少订（和原建议比）/ 建议调货。鼠标停在格子上看为什么"))
         self.table.horizontalHeaderItem(TRANSFER_COL).setToolTip(
-            tr("门店间调货：从哪家门店调进几件（调进来的就少订）"))
+            tr("门店间调货：从哪家门店调进几件（调进来的就少订）。双击改件数，0 = 不调（比如过季品）"))
+        self.table.setItemDelegateForColumn(TRANSFER_COL, TransferDelegate(self))
+        self.table.horizontalHeaderItem(TRANSFER_COL).setText(tr("调货") + " ✎")
         self.table.horizontalHeaderItem(CHANGE_COL).setToolTip(tr("订货箱数 − 建议箱数，括号里是为什么变：调货 / 手动改"))
         self.table.horizontalHeaderItem(REASON_COL).setToolTip(tr("系统为什么这么建议：库存够卖几天、订货周期里大约卖多少"))
         self.table.horizontalHeaderItem(_col(11)).setToolTip(tr("库存够卖 = 本店库存 ÷ 日均（账面库存是负数时按 0 算）。门店配货、检查订货清单、批发商比价都是这个算法"))
@@ -1001,16 +1033,75 @@ class DetailWindow(ToolWindow):
             f.setBold(True)
             tc.setFont(f)
         t.item(i, 0).setData(DI_ROLE, i)
-        ti = t.item(i, TRANSFER_COL)
-        if ti.text():
-            ti.setForeground(QColor(T("ok") if ti.text().startswith("←") else T("accent")))
-            ti.setToolTip(self._transfer_tip(sc, it, sid))
-        ri = t.item(i, REASON_COL)
+        self._style_transfer(i, i)
+
+    def _style_transfer(self, i, r):
+        """「调货」格（可以改件数）和跟着调货变的「原因」"""
+        t = self.table
+        sc, it, sid = self.detail[i]
+        key = (sc["path"], sid, it["row"])
+        mi = self._moves()[0]
+        ov = (self.page.calc.get("transfer_overrides") or {}).get(key)
+        ti = t.item(r, TRANSFER_COL)
+        m = mi.get(key)
+        ro = Qt.ItemIsSelectable | Qt.ItemIsEnabled
+        if m:
+            ti.setText(self._transfer_text(sc, it, sid) + ("  ✎" if m.get("manual") else ""))
+            ti.setForeground(QColor(T("warn") if m.get("manual") else T("ok")))
+            ti.setToolTip(self._transfer_tip(sc, it, sid) + "\n" + tr("双击改调货件数，0 = 不调"))
+            ti.setData(PIECES_ROLE, int(m["pieces"]))
+            ti.setFlags(ro | Qt.ItemIsEditable)
+        elif ov is not None:                    # 人工改成不调了（或者调出门店不够）：还能再改回来
+            ti.setText(tr("不调") if not ov else tr("调不了 {0} 件", ov))
+            ti.setForeground(QColor(T("faint")))
+            ti.setToolTip(tr("人工改过：双击填件数重新调；「恢复建议值」恢复系统算的调货"))
+            ti.setData(PIECES_ROLE, int(ov))
+            ti.setFlags(ro | Qt.ItemIsEditable)
+        else:
+            ti.setText("")
+            ti.setToolTip("")
+            ti.setData(PIECES_ROLE, None)
+            ti.setFlags(ro)
+        ti.setData(KEY_ROLE, self._transfer_key(sc, it, sid))
+        ri = t.item(r, REASON_COL)
         ri.setForeground(QColor(T("muted")))
-        why = "\n".join(self._reason_lines(sc, it, sid))
+        lines = self._reason_lines(sc, it, sid)
+        ri.setText("；".join(lines))
+        why = "\n".join(lines)
         ri.setToolTip(why)
-        t.item(i, DEC_COL).setToolTip(why)          # 鼠标停在「判断」上也能看为什么
-        t.item(i, DEC_COL).setData(Qt.UserRole + 3, why)
+        t.item(r, DEC_COL).setToolTip(why)          # 鼠标停在「判断」上也能看为什么
+        t.item(r, DEC_COL).setData(Qt.UserRole + 3, why)
+
+    def _transfer_edited(self, r, v):
+        """改了调货件数：记下来，按它重算调货（同一家调出门店的货会重新分），刷新表格"""
+        item = self.table.item(r, 0)
+        i = item.data(DI_ROLE) if item is not None else None
+        if i is None:
+            return
+        sc, it, sid = self.detail[i]
+        self.page.set_transfer((sc["path"], sid, it["row"]), int(v))
+        self.refresh_transfers()
+        m = self._moves()[0].get((sc["path"], sid, it["row"]))
+        if v and not m:
+            self.flash(tr("调出门店多出来的不够 {0} 件，这次调不了", v))
+        else:
+            self.flash(tr("已改调货：{0} {1}", S.STORE_SHEETS.get(sid, sid), tr("不调") if not v else tr("{0} 件", v)))
+
+    def refresh_transfers(self):
+        """调货重算以后：每一行的调货、原因、订货箱数都刷新"""
+        if not self.detail or self._loading:
+            return
+        was = self._filling
+        self._filling = True
+        self.table.setUpdatesEnabled(False)
+        for i in range(len(self.detail)):
+            self._style_transfer(i, self.pos[i])
+            self._show_qty(i)
+        self.table.setUpdatesEnabled(True)
+        self._filling = was
+        self._filter()
+        if self.cur_di is not None:
+            self._select_row(self.pos[self.cur_di])
 
     # ---------- 调货 / 变化 ----------
     def _orig(self, sc, sid, row):
@@ -1304,6 +1395,15 @@ class DetailWindow(ToolWindow):
             self.flash(tr("还在载入，稍等一下"))
             return
         n = 0
+        ov = self.page.calc.get("transfer_overrides") or {}
+        undo = [(sc["path"], sid, it["row"]) for i, (sc, it, sid) in enumerate(self.detail)
+                if not self.table.isRowHidden(self.pos[i]) and (sc["path"], sid, it["row"]) in ov]
+        if undo:                                    # 人工改过的调货也恢复成系统算的
+            for k in undo:
+                ov.pop(k, None)
+            self.page.apply_transfers()
+            self.refresh_transfers()
+            n += len(undo)
         for i, (sc, it, sid) in enumerate(self.detail):
             key = (sc["path"], sid, it["row"])
             if self.table.isRowHidden(self.pos[i]) or key not in self.page.edited:

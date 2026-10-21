@@ -530,6 +530,7 @@ def demand_by_store(db, schede, stores, days_list, reorder_cycle, use_supplier_c
 # 门店之间调货（transfers.py）：要的件数远小于一箱时，从别的门店调多出来的货，少订一箱
 # =====================================================================
 def apply_transfers(calc, cfg=None, far_stores=None):
+    # calc["transfer_overrides"] = {(SCHEDA 路径, 调入门店, 行号): 人工定的调货件数}（订货明细里改的；0 = 不调）
     """
     在系统建议的箱数上算调货：calc["base_orig"] = 调货前的建议；calc["base"] = 调货后的建议；
     calc["transfers"] = [{from, to, path, supplier, row, code, ean, desc, pieces, value, price, pack,
@@ -573,7 +574,7 @@ def apply_transfers(calc, cfg=None, far_stores=None):
             if s > 0:
                 avail[(sid, code)] = s
     far = far_stores if far_stores is not None else DEFAULT_FILL.get("far_stores")
-    moves, new_colli = TR.plan(needs, avail, cfg, far)
+    moves, new_colli = TR.plan(needs, avail, cfg, far, calc.get("transfer_overrides"))
     for nid, c2 in new_colli.items():
         path, sid, row = nid
         lines = base.setdefault(path, {}).setdefault(sid, {})

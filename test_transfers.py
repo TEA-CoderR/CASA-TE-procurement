@@ -218,3 +218,16 @@ def test_excluded_stores_separate_from_borrow():
     assert TR.excluded_stores({}, [1]) == [1]
     assert TR.excluded_stores({"exclude_stores": []}, [1]) == []
     assert TR.excluded_stores({"exclude_stores": [3, "5"]}, [1]) == [3, 5]
+
+
+def test_manual_override():
+    """审核时人工改调货件数：0 = 不调（过季品）；>0 = 就调这么多（不看比例和单品金额门槛）"""
+    needs = [_need("a", 2, "A", 3, 12, 1, 1.0), _need("b", 2, "B", 3, 12, 1, 1.0)]
+    avail = {(3, "A"): 20, (3, "B"): 20}
+    moves, new = TR.plan(needs, avail, {"item_min_value": 0})
+    assert sorted(m["key"] for m in moves) == ["A", "B"]
+    moves, new = TR.plan(needs, avail, {"item_min_value": 0}, overrides={"a": 0, "b": 2})
+    assert [(m["key"], m["pieces"], m["manual"]) for m in moves] == [("B", 2, True)]
+    assert new["b"] == 1                      # 只调 2 件，还差 1 件 → 还要订 1 箱
+    moves, _ = TR.plan(needs, avail, {"item_min_value": 0}, overrides={"a": 30})
+    assert all(m["key"] != "A" for m in moves)  # 调出门店不够 30 件 → 不调

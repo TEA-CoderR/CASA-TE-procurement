@@ -78,10 +78,12 @@ def options(need, pack, colli, mode="waste", ratio=0.5):
     return [(int(math.ceil(t - 1e-9)), colli - 1)]
 
 
-def plan(needs, avail, cfg=None, far=()):
+def plan(needs, avail, cfg=None, far=(), overrides=None):
     """
     needs: [{"id", "store", "key"(商品), "need", "pack", "colli", "price"(件价), ...}]
     avail: {(门店, 商品): 可调出件数}
+    overrides: {need id: 人工定的调货件数}（审核时改的）：0 = 这个商品不调（比如过季品）；
+               >0 = 就调这么多（不看「只占整箱」比例和单品金额门槛，调出门店多出来的够才调）
     返回 (transfers, new_colli)
       transfers: [{"need_id", "from", "to", "key", "pieces", "value", "colli_before", "colli_after"}]
       new_colli: {need_id: 调货后要订的箱数}
@@ -91,9 +93,20 @@ def plan(needs, avail, cfg=None, far=()):
     min_value = float(cfg.get("min_value") or 0)
     item_min = float(cfg.get("item_min_value") or 0)
     left = {k: int(v) for k, v in (avail or {}).items() if v and v > 0}
+    overrides = overrides or {}
+    manual = set()
     todo = {}
     for n in needs:
         if n["store"] in far:
+            continue
+        if n["id"] in overrides:
+            p = int(overrides[n["id"]] or 0)
+            if p <= 0:
+                continue                            # 人工定了不调
+            pack = float(n["pack"] or 1)
+            c2 = min(int(n["colli"] or 0), int(math.ceil(max(0.0, float(n["need"] or 0) - p) / pack - 1e-9)))
+            todo[n["id"]] = (n, [(p, max(0, c2))])
+            manual.add(n["id"])
             continue
         opts = [o for o in options(n["need"], n["pack"], n["colli"], cfg.get("mode"), float(cfg.get("waste_ratio") or 0.5))
                 if o[0] > 0]
@@ -113,7 +126,7 @@ def plan(needs, avail, cfg=None, far=()):
             k = (s, n["key"])
             have = stock.get(k, left.get(k, 0))
             for t, c2 in opts:                      # 少订得最多、库存够、而且这个商品调的货值够门槛的那个
-                if t <= have and t * float(n.get("price") or 0) >= item_min - 1e-9:
+                if t <= have and (nid in manual or t * float(n.get("price") or 0) >= item_min - 1e-9):
                     picks.append((n, t, c2))
                     stock[k] = have - t
                     value += t * float(n.get("price") or 0)
@@ -134,7 +147,8 @@ def plan(needs, avail, cfg=None, far=()):
             new_colli[n["id"]] = c2
             transfers.append({"need_id": n["id"], "from": s, "to": n["store"], "key": n["key"], "pieces": t,
                               "value": t * float(n.get("price") or 0), "colli_before": int(n["colli"]),
-                              "colli_after": c2, "pack": n["pack"], "need": n["need"]})
+                              "colli_after": c2, "pack": n["pack"], "need": n["need"],
+                              "manual": n["id"] in manual})
             todo.pop(n["id"], None)
         donors.remove(s)                            # 一家门店只算一轮（所有能调的这一轮都定了）
     return transfers, new_colli

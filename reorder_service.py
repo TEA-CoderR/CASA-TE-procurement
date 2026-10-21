@@ -804,12 +804,13 @@ def stock_for_eans(db, store_id, eans, days_list=None, reorder_cycle=30, algo=No
     return out
 
 
-def plan_batch_transfers(store_rows, snap, cfg=None, far=()):
+def plan_batch_transfers(store_rows, snap, cfg=None, far=(), overrides=None):
     """
     几家门店的清单一起检查以后，先算门店间调货、再订剩下的（和门店配货同一个规则，见 transfers.py）：
       store_rows: {门店号: 检查清单的行}（用 final 确定件数、pack 数据库箱规、price 进价、code、ean、name）
       snap:       {门店号: {商品编号: {inv, daily, cycle}}}：五家店这批商品的库存和日均
     调出门店留够自己一个订货周期；这次自己也要订这个商品的门店不调出；离得远的门店（far）不调出也不调进。
+    overrides {(门店, 商品编号): 人工定的调货件数}：0 = 不调；>0 = 就调这么多
     返回 (moves, new_final)：moves 是调货单的行；new_final {(门店, 商品编号): 调货以后还要订的件数}
     """
     import transfers as TR
@@ -838,7 +839,12 @@ def plan_batch_transfers(store_rows, snap, cfg=None, far=()):
             sp = TR.surplus(v, cfg.get("keep_cycles"))
             if sp > 0:
                 avail[(sid, str(code))] = sp
-    moves, _ = TR.plan(needs, avail, cfg, far)
+    ov = {}
+    for k, (sid, x) in info.items():
+        key = (sid, str(x["code"]))
+        if overrides and key in overrides:
+            ov[k] = overrides[key]
+    moves, _ = TR.plan(needs, avail, cfg, far, ov)
     new_final, out = {}, []
     for m in moves:
         sid, x = info[m["need_id"]]
@@ -850,7 +856,7 @@ def plan_batch_transfers(store_rows, snap, cfg=None, far=()):
         out.append({"from": m["from"], "to": sid, "code": code, "ean": x.get("ean") or "", "desc": x.get("name") or "",
                     "supplier": "", "pieces": int(m["pieces"]), "value": float(m["value"]),
                     "price": float(x.get("price") or 0), "colli_before": m["colli_before"], "colli_after": m["colli_after"],
-                    "need": int(x["final"]), "pack": m["pack"],
+                    "need": int(x["final"]), "pack": m["pack"], "manual": bool(m.get("manual")),
                     "from_days": SO.cover_days(d_from, -m["pieces"]) if d_from else None,
                     "to_days": SO.cover_days(d_to, left + m["pieces"]) if d_to else None})
     out.sort(key=lambda t: (t["from"], t["to"], t["desc"]))
