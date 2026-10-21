@@ -1851,7 +1851,7 @@ class MissingDialog(QDialog):
         lay.addWidget(t)
         bar = QHBoxLayout()
         self.search = QLineEdit()
-        self.search.setPlaceholderText(tr("搜索 EAN 或品名"))
+        self.search.setPlaceholderText(tr("搜索 EAN、品名、Codice Fornitore 或供应商"))
         self.search.setFixedWidth(280)
         bar.addWidget(self.search)
         bar.addStretch()
@@ -1861,22 +1861,34 @@ class MissingDialog(QDialog):
         exp = QPushButton(tr("导出 Excel"))
         bar.addWidget(exp)
         lay.addLayout(bar)
-        self.table = make_table([tr("行"), "EAN", "ARTICOLO", tr("数量"), tr("原因"), tr("有报价的供应商"),
-                                 tr("库存够卖（天）")],
-                                stretch_col=2, numeric_cols=(0, 3, 6))
-        self.table.horizontalHeaderItem(6).setToolTip(tr("这个商品店里现在的库存还能卖几天（买不到时还能撑多久）"))
-        self.table.setColumnHidden(6, not any(m.get("daily") is not None for m in self.items))
+        # 要订数量 = 主订单里这个商品要订多少（COLLI 箱数；主订单按件数订货时是件数），不是库存
+        units = {m.get("unit") or "colli" for m in self.items}
+        self._mixed = len(units) > 1
+        qh = tr("要订（件）") if units == {"pcs"} else tr("要订（箱）") if units == {"colli"} else tr("要订数量")
+        self.table = make_table([tr("行"), "EAN", "ARTICOLO", "Codice Fornitore", tr("供应商"), qh, tr("原因"),
+                                 tr("有报价的供应商"), tr("库存够卖（天）")],
+                                stretch_col=2, numeric_cols=(0, 5, 8))
+        self.table.horizontalHeaderItem(5).setToolTip(
+            tr("主订单里这个商品要订的数量（箱数；主订单按件数订货时是件数）——就是这次买不到的量，不是库存"))
+        self.table.horizontalHeaderItem(3).setToolTip(tr("供应商自己的货号（数据库商品表里登记的）"))
+        self.table.horizontalHeaderItem(4).setToolTip(tr("数据库里登记的这个商品的供应商：缺货时找谁"))
+        self.table.horizontalHeaderItem(8).setToolTip(tr("这个商品店里现在的库存还能卖几天（买不到时还能撑多久）"))
+        self.table.setColumnHidden(8, not any(m.get("daily") is not None for m in self.items))
+        for c, wd in ((3, 120), (4, 160)):
+            self.table.setColumnWidth(c, wd)
         self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
         lay.addWidget(self.table, 1)
         from erp_widgets import TableSortFilter
         self.ctl = TableSortFilter(self.table, lambda: len(self.items), self._text, self._fill,
-                                   hide=self._hidden, numeric=(0, 3))
+                                   hide=self._hidden, numeric=(0, 5, 8))
         self.ctl.rendered.connect(lambda n, tot: self.count.setText(
             tr("显示 {0} / {1} 个 · 点表头排序，右键表头筛选", n, tot)))
         self.search.textChanged.connect(lambda _: self.ctl.render())
         from erp_widgets import ColumnFilterBox
         bar.insertSpacing(1, 14)
-        bar.insertWidget(2, ColumnFilterBox(self.ctl, 4, tr("原因")))
+        bar.insertWidget(2, ColumnFilterBox(self.ctl, 6, tr("原因")))
+        bar.insertSpacing(3, 8)
+        bar.insertWidget(4, ColumnFilterBox(self.ctl, 4, tr("供应商")))
         exp.clicked.connect(lambda: self.ctl.export(self, "缺失商品.xlsx", tr("缺失商品")))
         bb = QHBoxLayout()
         bb.addStretch()
@@ -1888,25 +1900,29 @@ class MissingDialog(QDialog):
 
     def _text(self, i, c):
         m = self.items[i]
-        if c == 6:
+        if c == 8:
             if m.get("daily") is None:
                 return ""
             import store_orders as SO
             return SO.days_text(SO.cover_days({"inv": m.get("inv") or 0, "daily": m.get("daily") or 0}))
+        q = f"{float(m.get('qty') or 0):g}"
+        if self._mixed:
+            q += " " + (tr("件") if m.get("unit") == "pcs" else tr("箱"))
         return [str(m.get("row", "")), m.get("ean", "") or "", str(m.get("articolo") or ""),
-                f"{float(m.get('qty') or 0):g}", tr(m.get("reason") or ""),
+                str(m.get("sup_code") or ""), str(m.get("sup_name") or ""), q, tr(m.get("reason") or ""),
                 tr("、").join(short(x) for x in (m.get("offers") or []))][c]
 
     def _fill(self, i, k):
-        table_set_row(self.table, k, [self._text(i, c) for c in range(7)])
+        table_set_row(self.table, k, [self._text(i, c) for c in range(9)])
         self.table.item(k, 2).setToolTip(str(self.items[i].get("articolo") or ""))
         if self.items[i].get("reason") == MISSING_REASONS[1]:
-            self.table.item(k, 4).setForeground(QColor(T("warn")))
+            self.table.item(k, 6).setForeground(QColor(T("warn")))
 
     def _hidden(self, i):
         text = self.search.text().strip().lower()
         m = self.items[i]
-        return bool(text) and text not in f"{m.get('ean', '')} {m.get('articolo', '')}".lower()
+        return bool(text) and text not in (f"{m.get('ean', '')} {m.get('articolo', '')} {m.get('sup_code') or ''} "
+                                           f"{m.get('sup_name') or ''}").lower()
 
 
 def _money_txt(v, sign=False):

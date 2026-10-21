@@ -268,3 +268,17 @@ def test_review_marks_and_pack_text():
     assert R.review_marks(True, True, 120, 0) == []
     got = R.plain_reason(0, 0.5, 30, 1, boxes=1, pack=24)
     assert got[-1].endswith("建议订 1 箱（要 1 件，一箱 24 件）")
+
+
+def test_supplier_info_into_rows_and_snapshot(tmp_path):
+    import json
+    import reorder_service as R
+    rows = [{"code": "7", "ean": "800"}, {"code": "8", "ean": "801"}]
+    assert R.add_supplier_info(rows, {"7": ("AM1", "WOLSEN")}) == 1
+    assert rows[0]["sup_code"] == "AM1" and "sup_code" not in rows[1]
+    main = tmp_path / "ORDINE" / "o.xlsx"
+    main.parent.mkdir()
+    main.write_bytes(b"")
+    p = R.save_snapshot(str(main), 2, {2: {"7": {"inv": 1, "daily": 0.5, "cycle": 30}}}, rows)
+    data = json.load(open(p, encoding="utf-8"))
+    assert data["by_ean"]["800"]["sup_code"] == "AM1" and data["by_ean"]["800"]["sup_name"] == "WOLSEN"

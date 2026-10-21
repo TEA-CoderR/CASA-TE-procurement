@@ -2173,4 +2173,13 @@ TRANSLATIONS = {
     '已改调货：{0} {1}': ('Transfer changed: {0} {1}', 'Trasferimento modificato: {0} {1}'),
     '人工改过：双击填件数重新调；「恢复建议值」恢复系统算的调货': ('Changed by hand: double-click to enter pieces again; "Restore suggestion" restores the calculated transfer', 'Modificato a mano: doppio clic per inserire i pezzi; «Ripristina suggerimento» ripristina il trasferimento calcolato'),
     '{0} 件': ('{0} pcs', '{0} pz'),
+    '搜索 EAN、品名、Codice Fornitore 或供应商': ('Search EAN, description, Codice Fornitore or supplier', 'Cerca EAN, descrizione, Codice Fornitore o fornitore'),
+    '从数据库补上 {0} 个商品的 Codice Fornitore / 供应商': ('Codice Fornitore / supplier filled in from the database for {0} items', 'Codice Fornitore / fornitore recuperati dal database per {0} articoli'),
+    '⚠ 缺失商品的供应商没查到（数据库）：{0}': ('⚠ Could not look up suppliers of missing items (database): {0}', '⚠ Fornitori degli articoli mancanti non trovati (database): {0}'),
+    '要订（件）': ('To order (pcs)', 'Da ordinare (pz)'),
+    '要订（箱）': ('To order (boxes)', 'Da ordinare (colli)'),
+    '要订数量': ('Qty to order', 'Q.tà da ordinare'),
+    '主订单里这个商品要订的数量（箱数；主订单按件数订货时是件数）——就是这次买不到的量，不是库存': ('Quantity of this item in the main order (boxes; pieces when the main order is by pieces) — the amount that cannot be bought this time, not stock', "Quantità dell'articolo nell'ordine principale (colli; pezzi se l'ordine è a pezzi) — la quantità che stavolta non si può comprare, non la giacenza"),
+    '供应商自己的货号（数据库商品表里登记的）': ("Supplier's own item code (as registered in the product table)", "Codice articolo del fornitore (come registrato nell'anagrafica prodotti)"),
+    '数据库里登记的这个商品的供应商：缺货时找谁': ('Supplier registered for this item in the database: who to contact when it is missing', "Fornitore registrato per l'articolo nel database: a chi rivolgersi se manca"),
 }

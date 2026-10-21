@@ -242,6 +242,40 @@ def codes_from_eans(db, eans):
     return out
 
 
+def supplier_info(db, codes):
+    """
+    商品编号 → (Codice Fornitore 供应商自己的货号, 供应商名称)，来自数据库商品表（只读）。
+    只是显示用：查不到 / 查询失败都返回空的，不影响检查和比价
+    """
+    import pandas as pd
+    codes = sorted({int(c) for c in codes if str(c).strip().isdigit()})
+    out = {}
+    for i in range(0, len(codes), 2000):
+        chunk = codes[i:i + 2000]
+        ph = ", ".join(["%s"] * len(chunk))
+        try:
+            df = pd.read_sql(f"SELECT p.CodArticolo, COALESCE(p.ArticoloForn,'') AS ArticoloForn, "
+                             f"COALESCE(f.Nome,'') AS Nome FROM prodotti p "
+                             f"LEFT JOIN fornitore f ON p.IDFornitore = f.IDFornitore "
+                             f"WHERE p.CodArticolo IN ({ph})", db.engine, params=tuple(chunk))
+        except Exception:
+            return out
+        for _, x in df.iterrows():
+            out.setdefault(str(int(x["CodArticolo"])), (str(x["ArticoloForn"] or "").strip(), str(x["Nome"] or "").strip()))
+    return out
+
+
+def add_supplier_info(rows, info):
+    """检查清单的行加上 sup_code（Codice Fornitore）、sup_name（数据库登记的供应商）。返回加了几行"""
+    n = 0
+    for x in rows:
+        v = info.get(str(x.get("code") or ""))
+        if v:
+            x["sup_code"], x["sup_name"] = v
+            n += 1
+    return n
+
+
 def extract_products(db, store_id, day, query_days, supplier_groups=None):
     """
     不导入文件时（原程序的 Estrazione Prodotti）：这家门店最近 query_days 天里，
@@ -740,10 +774,12 @@ def save_snapshot(main_order_path, store_id, snap, rows=None, transfers=None, tr
                存了就说明主订单的件数已经减掉了调货，比价时不再重算调货（None = 旧做法，比价时再算）
     """
     import json
-    ean_of = {}
+    ean_of, sup_of = {}, {}
     for x in rows or []:
         if x.get("code") and x.get("ean"):
             ean_of[str(x["code"])] = _clean_code(x["ean"])
+        if x.get("code") and (x.get("sup_code") or x.get("sup_name")):
+            sup_of[str(x["code"])] = (x.get("sup_code") or "", x.get("sup_name") or "")
     by_ean = {}
     for sid, d in snap.items():
         for code, v in d.items():
@@ -751,6 +787,8 @@ def save_snapshot(main_order_path, store_id, snap, rows=None, transfers=None, tr
             if not ean:
                 continue
             e = by_ean.setdefault(ean, {"code": code, "stores": {}})
+            if code in sup_of:
+                e["sup_code"], e["sup_name"] = sup_of[code]
             e["stores"][str(sid)] = {"inv": v["inv"], "daily": v["daily"], "cycle": v["cycle"]}
     path = snapshot_path(main_order_path)
     os.makedirs(os.path.dirname(path), exist_ok=True)

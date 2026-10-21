@@ -81,7 +81,8 @@ def _priced(r, s):
 
 def missing_items(rows_all, assign, excluded=()):
     """
-    没有分到供应商的商品（要订的量 > 0）：[{row, ean, articolo, qty, reason, offers}]
+    没有分到供应商的商品（要订的量 > 0）：[{row, ean, articolo, qty, reason, offers, (sup_code, sup_name)}]
+      qty = 主订单里要订的数量（COLLI 箱数；主订单按件数订货时是件数），不是库存
       reason：没有任何报价 / 只有被排除的供应商有报价 / 起订量放弃了有报价的供应商
     """
     ex = set(excluded)
@@ -97,7 +98,10 @@ def missing_items(rows_all, assign, excluded=()):
         else:
             reason = "起订量放弃了有报价的供应商"
         m = {"row": r["row"], "ean": r.get("ean", ""), "articolo": r.get("articolo", ""),
-             "qty": _qty(r), "reason": reason, "offers": offers}
+             "qty": _qty(r), "unit": "pcs" if r.get("pieces") is not None else "colli", "reason": reason, "offers": offers}
+        for k in ("sup_code", "sup_name"):              # Codice Fornitore、数据库登记的供应商：一看就知道是谁家的货
+            if r.get(k):
+                m[k] = r[k]
         if r.get("daily") is not None:                  # 有门店库存快照：这个商品店里还能撑几天
             m["inv"], m["daily"] = r.get("inv") or 0, r.get("daily") or 0
         out.append(m)

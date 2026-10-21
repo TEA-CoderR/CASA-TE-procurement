@@ -35,7 +35,8 @@ from reorder_page import short_decision, store_label, algo_widgets
 #     清单按箱：清单箱数 | 确定箱数 | 确定件数 ✎；清单按件：清单件数 | 确定件数 ✎（箱数列自动藏起来）
 # 2026-10-20 第三版：和门店配货的订货明细同一个样子（调货只显示从哪家调进来）：
 #   门店 条码 名称 等级 周期 本店库存 日均 库存够卖 每箱件数 | 清单 判断 确定箱数 确定件数 ✎ 调货 | 到货后够卖 原因
-_ORDER = [22, 2, 3, 16, 17, 4, 18, 9, 10, 11, 12, 0, 15, 14, 24, 20, 25, 13, 19, 23, 21, 5, 6, 7, 8, 1]
+# 2026-10-21 加了 26 Codice Fornitore、27 供应商（数据库登记的），默认放在条码后面
+_ORDER = [22, 2, 26, 27, 3, 16, 17, 4, 18, 9, 10, 11, 12, 0, 15, 14, 24, 20, 25, 13, 19, 23, 21, 5, 6, 7, 8, 1]
 _LAYOUT_VER = 5           # 改了默认顺序就加 1
 # 默认只显示审核要看的：门店 判断 名称 | 本店库存 库存够卖 | 清单 → 确定 | 调货 | 确定订后够卖
 # （等级、日均、建议件数、变化、原因等在「显示哪些列」里打开）
@@ -253,7 +254,7 @@ class OrderCheck:
                                           "30", "60", "90", "180", tr("库存够卖（天）"), tr("每箱件数"), tr("清单数量"),
                                           tr("清单件数"), tr("建议件数"), tr("确定件数"), tr("确定箱数"), tr("等级"), tr("周期"), tr("日均"),
                                           tr("目标库存"), tr("到货后够卖（天）"), tr("清单订后够卖（天）"), tr("门店"),
-                                          tr("变化（件）"), tr("调货"), tr("原因")]),
+                                          tr("变化（件）"), tr("调货"), tr("原因"), "Codice Fornitore", tr("供应商")]),
                                    numeric_cols=[_col(k) for k in list(range(4, 16)) + [17, 18, 19, 20, 21, 23]])
         self.table.setMinimumHeight(380)
         self.table.setEditTriggers(QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed |
@@ -263,7 +264,7 @@ class OrderCheck:
         hh.setSectionResizeMode(QHeaderView.Interactive)
         hh.setStretchLastSection(False)
         for c, wd in enumerate(_perm((70, 80, 120, 280, 70, 52, 52, 52, 52, 96, 52, 70, 70, 70, 76, 70, 50, 50, 60, 70, 120, 120, 96,
-                                      76, 200, 380))):
+                                      76, 200, 380, 110, 150))):
             self.table.setColumnWidth(c, wd)
         self.table.horizontalHeaderItem(EDIT_COL).setToolTip(tr("双击修改，0 = 不订"))
         self.table.horizontalHeaderItem(_col(10)).setToolTip(
@@ -580,12 +581,14 @@ class OrderCheck:
                         dlg.post_step(2, "error", "", str(e))
                 else:
                     dlg.post_step(2, "done", "", "")
+                sup_info = R.supplier_info(db, union) if union else {}     # Codice Fornitore + 供应商名（只显示用）
                 db.engine.dispose()
                 rows = []
                 for x in lists:
                     for r in R.check_rows(x["rows"], x["result"], x["unit"]):
                         r["store"] = x["store"]
                         rows.append(r)
+                R.add_supplier_info(rows, sup_info)
                 if rows and not any(r.get("in_db") for r in rows):
                     # 一个都没在数据库里找到：几乎一定是数据库刚才没连上或者清单不对，不能拿这个结果去生成主订单
                     raise RuntimeError(tr("清单里的 {0} 个商品在数据库里一个都没找到：可能是数据库刚才没连上，或者清单里的条码 / 商品编号不对。请检查数据库连接后再点一次「开始」。",
@@ -664,7 +667,7 @@ class OrderCheck:
                       _days(self._arrive_days(x)),
                       _days(_cover(x, x["file_pcs"])) if (x.get("file_pcs") or 0) > 0 else "",
                       R.STORES.get(x.get("store"), ""), self._change_text(x), self._transfer_text(x),
-                      "；".join(self._reason_lines(x))])
+                      "；".join(self._reason_lines(x)), x.get("sup_code") or "", x.get("sup_name") or ""])
 
     def _verdict(self, x):
         """(类别, 文字)：确定件数和门店清单比，不订 / 照清单订 / 多订 / 少订 / 建议调货"""
@@ -829,7 +832,8 @@ class OrderCheck:
         except (TypeError, ValueError):
             price = 0
         src = tr("（{0} 报价）", x["quote_sup"]) if x.get("quote_sup") else (tr("（数据库）") if pack else "")
-        self.d_codes.setText(" · ".join(p for p in (x.get("ean") or "", tr("{0:g} 件/箱", pack) + src if pack else "",
+        fc = " ".join(p for p in (x.get("sup_name") or "", f"Cod.Forn. {x['sup_code']}" if x.get("sup_code") else "") if p)
+        self.d_codes.setText(" · ".join(p for p in (x.get("ean") or "", fc, tr("{0:g} 件/箱", pack) + src if pack else "",
                                                      f"€{price:.3f}/" + tr("件") if price else "") if p))
         (a1, a2), (b1, b2), (c1, c2), (d1, d2) = self.minis
         inv = x.get("store_inv")
@@ -905,7 +909,7 @@ class OrderCheck:
         hide = (view == "changed" and kind not in ("transfer", "more", "less", "none")) or \
             (view in ("transfer", "more", "less", "none") and kind != view)
         return hide or \
-               (bool(text) and text not in f"{x['code']} {x['ean']} {x['name']}".lower())
+               (bool(text) and text not in f"{x['code']} {x['ean']} {x['name']} {x.get('sup_code') or ''} {x.get('sup_name') or ''}".lower())
 
     def _fill(self):
         self.ctl.render()

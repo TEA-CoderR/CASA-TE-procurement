@@ -147,3 +147,12 @@ def test_urgent_missing():
     items = [{"inv": 2, "daily": 1}, {"inv": 20, "daily": 1}, {"inv": 0, "daily": 0}, {"qty": 3}, {"inv": -5, "daily": 0.5}]
     assert [SC.urgent(m) for m in items] == [True, False, False, False, True]
     assert SC.urgent_count(items) == 2
+
+
+def test_missing_items_carry_supplier_and_unit():
+    import scenarios as SC
+    rows = [{"row": 2, "ean": "1", "articolo": "A", "qty": 3, "prices": {}, "sup_code": "AM1", "sup_name": "WOLSEN"},
+            {"row": 3, "ean": "2", "articolo": "B", "qty": 12, "pieces": 12, "prices": {}}]
+    m = SC.missing_items(rows, {}, ())
+    assert m[0]["sup_code"] == "AM1" and m[0]["sup_name"] == "WOLSEN" and m[0]["unit"] == "colli"
+    assert "sup_code" not in m[1] and m[1]["unit"] == "pcs"

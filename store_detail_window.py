@@ -43,7 +43,8 @@ ALL = "__all__"
 #   紧接着「原建议 → 订货箱数 → 调货」三列对比改前改后和调货件数；「变化」列默认藏起来（判断里已经写了）
 # 2026-10-20 第三版：按用户自己排好的顺序做默认（调货只显示调进来的，从哪家调；调出的不显示）
 #   条码 等级 周期 本店库存 日均 库存够卖 需求 每箱件数 | 建议 判断 订货箱数 调货 | 到货后够卖 件价 金额 原因
-_ORDER = [4, 18, 19, 6, 20, 11, 23, 12, 15, 2, 16, 33, 32, 13, 17, 35,
+# 2026-10-21 加了 36 Codice Fornitore（供应商自己的货号，SCHEDA 里有这一列才有），默认放在条码后面
+_ORDER = [4, 36, 18, 19, 6, 20, 11, 23, 12, 15, 2, 16, 33, 32, 13, 17, 35,
           1, 0, 5, 3, 34, 14, 21, 7, 8, 9, 10, 22, 24, 25, 26, 27, 28, 29, 30, 31]
 _LAYOUT_VER = 5           # 改了默认顺序就加 1：用户以前拖过的顺序作废一次，换成新的默认顺序
 _EXTRA = list(range(22, 32))
@@ -609,7 +610,7 @@ class DetailWindow(ToolWindow):
                                                tr("等级"), tr("周期"), tr("日均"), tr("目标库存"),
                                                tr("月均"), tr("需求（件）")] + [f"GIA.{i}" for i in range(6)] +
                                               ["GIA-period", "period_sales", tr("到货后够卖（天）"),
-                                               tr("调货"), tr("变化（箱）"), tr("原因")]),
+                                               tr("调货"), tr("变化（箱）"), tr("原因"), "Codice Fornitore"]),
                                         numeric_cols=[_col(k) for k in list(range(6, 18)) + [19, 20, 21, 32, 34] + _EXTRA])
         self.table.setEditTriggers(QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed |
                                    QAbstractItemView.AnyKeyPressed)
@@ -619,7 +620,7 @@ class DetailWindow(ToolWindow):
         hh.setSectionResizeMode(QHeaderView.Interactive)
         hh.setStretchLastSection(False)
         for c, wd in enumerate(_perm((130, 92, 84, 80, 120, 270, 70, 50, 50, 50, 50, 70, 66, 62, 70, 66, 76, 80, 46, 46, 60, 70,
-                                      56, 56, 54, 54, 54, 54, 54, 54, 80, 86, 96, 190, 110, 380))):
+                                      56, 56, 54, 54, 54, 54, 54, 54, 80, 86, 96, 190, 110, 380, 110))):
             hdr = self.table.horizontalHeaderItem(c)
             need = hh.fontMetrics().horizontalAdvance(hdr.text() if hdr else "") + 26
             self.table.setColumnWidth(c, max(wd, need))
@@ -850,7 +851,8 @@ class DetailWindow(ToolWindow):
         x = calc["demand"].get(sid, {}).get(it.get("db_code") or it["code"])
         self.d_over.setText(f"{S.STORE_SHEETS[sid]} · {sc['name']}")
         self.d_title.setText(it["desc"])
-        self.d_codes.setText(f"{it.get('db_code') or it['code']} · {it['ean']} · {it['pack']:g} {tr('件/箱')} · €{it['price']:.3f}/{tr('件')}")
+        fc = f" · Cod.Forn. {it['sup_code']}" if it.get("sup_code") else ""
+        self.d_codes.setText(f"{it.get('db_code') or it['code']} · {it['ean']}{fc} · {it['pack']:g} {tr('件/箱')} · €{it['price']:.3f}/{tr('件')}")
         (a1, a2), (b1, b2), (c1, c2), (d1, d2) = self.minis
         if x:
             inv_raw = x.get("inv_raw", x["inv"])
@@ -1006,9 +1008,10 @@ class DetailWindow(ToolWindow):
             f"{x['daily']:.2f}" if x and x.get("daily") else "",
             f"{x['target']:.0f}" if x and isinstance(x.get("target"), (int, float)) else ""] +
             self._extra_texts(x, sug_c, d) + ["", self._transfer_text(sc, it, sid), "",
-                                              "；".join(self._reason_lines(sc, it, sid))])
+                                              "；".join(self._reason_lines(sc, it, sid)), it.get("sup_code") or ""])
         keys = _perm(self._sort_keys(i, x, sug_c) + self._extra_keys(x, sug_c, d) +
-                     [0.0, self._transfer_key(sc, it, sid), 0.0, vals[REASON_COL].lower()])
+                     [0.0, self._transfer_key(sc, it, sid), 0.0, vals[REASON_COL].lower(),
+                      str(it.get("sup_code") or "")])
         num_cols, nf = self._num_cols, self._num_font
         ro = Qt.ItemIsSelectable | Qt.ItemIsEnabled
         for c in range(len(vals)):
