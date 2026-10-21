@@ -548,6 +548,8 @@ def to_rows(result_df, file_rows=None, days_list=None):
             "price": _val(r, "PrezzoForn"),
             "cycle": _val(r, "reorder_cycle_used"),
             "weekly": _val(r, "weekly_26"),
+            "season": _val(r, "season_factor"),
+            "service": _val(r, "service_level"),
             "safety": _val(r, "safety_stock"),
             "daily": _val(r, "daily_rate"),
             "target": _val(r, "target_stock"),

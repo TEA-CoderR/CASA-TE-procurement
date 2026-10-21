@@ -2210,4 +2210,6 @@ TRANSLATIONS = {
     '手动改了 {0} 个': ('{0} changed by hand', '{0} modificati a mano'),
     '估算 €{0:,.0f}（清单 €{1:,.0f}）': ('Estimate €{0:,.0f} (list €{1:,.0f})', 'Stima €{0:,.0f} (lista €{1:,.0f})'),
     '调货 {0} 个，少订 {1} 箱': ('{0} transfers, {1} fewer boxes', '{0} trasferimenti, {1} colli in meno'),
+    '双击「确定件数」修改 · Enter 确认 · Esc 取消': ('Double-click "Confirmed pcs" to edit · Enter to confirm · Esc to cancel', 'Doppio clic su «Pezzi confermati» per modificare · Invio conferma · Esc annulla'),
+    '{0} 报价': ('{0} quote', 'offerta {0}'),
 }
