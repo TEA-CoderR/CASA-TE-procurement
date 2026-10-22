@@ -86,6 +86,12 @@ def norm_override(v):
     return {"from": None, "pieces": int(v or 0), "auto": False}
 
 
+def _ok(n, store, far):
+    """这家门店能不能参与这个商品的调货：商品有自己的门店名单（allowed，供应商单独设的）就按名单，否则按总设置（far 不参与）"""
+    allowed = n.get("allowed")
+    return store in allowed if allowed is not None else store not in far
+
+
 def plan(needs, avail, cfg=None, far=(), overrides=None, stock=None, auto=True):
     """
     needs: [{"id", "store", "key"(商品), "need", "pack", "colli", "price"(件价), ...}]
@@ -130,7 +136,7 @@ def plan(needs, avail, cfg=None, far=(), overrides=None, stock=None, auto=True):
             if p <= 0:
                 continue
         if s is None:                                    # 只给了件数：从多出来最多的那家
-            cands = [d for (d, k), v in left.items() if k == n["key"] and d != n["store"] and d not in far and v >= p]
+            cands = [d for (d, k), v in left.items() if k == n["key"] and d != n["store"] and _ok(n, d, far) and v >= p]
             if not cands:
                 continue
             s = max(cands, key=lambda d: (left[(d, n["key"])], -d))
@@ -151,7 +157,7 @@ def plan(needs, avail, cfg=None, far=(), overrides=None, stock=None, auto=True):
     # 2) 系统建议：没人工定过的商品
     todo = []
     for n in needs:
-        if n["store"] in far or n["id"] in overrides:
+        if not _ok(n, n["store"], far) or n["id"] in overrides:
             continue
         opts = [o for o in options(n["need"], n["pack"], n["colli"], cfg.get("mode"), float(cfg.get("waste_ratio") or 0.5))
                 if o[0] > 0]
@@ -167,7 +173,7 @@ def plan(needs, avail, cfg=None, far=(), overrides=None, stock=None, auto=True):
         picks = []
         for n, opts in todo:
             cands = [d for (d, k), v in lft.items() if k == n["key"] and v > 0 and d != n["store"]
-                     and d not in far and d not in banned]
+                     and _ok(n, d, far) and d not in banned]
             for t, c2 in opts:
                 if item_min and t * float(n.get("price") or 0) < item_min - 1e-9:
                     continue

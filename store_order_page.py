@@ -359,9 +359,12 @@ class FillDialog(QDialog):
         self.merge_colo = QCheckBox(tr("① {0} 整单并进 BMS（和 BMS 同一个仓库）", colo))
         self.merge_colo.setChecked(bool(fc["merge_colocated"]))
         v2.addWidget(self.merge_colo)
+        self.merge_direct = QCheckBox(tr("② 把够起订量的门店整单并进 BMS（并的店最少、货值最小、并进去就够的那家）"))
+        self.merge_direct.setChecked(bool(fc.get("merge_direct", True)))
+        v2.addWidget(self.merge_direct)
         rb = QHBoxLayout()
         rb.setSpacing(8)
-        self.borrow = QCheckBox(tr("② 从同城门店借不紧急的货，借出门店现有库存至少够卖"))
+        self.borrow = QCheckBox(tr("③ 没有能整单并进来的门店时，才从同城门店借不紧急的货，借出门店现有库存至少够卖"))
         self.borrow.setChecked(bool(fc["borrow"]))
         self.borrow_days = QSpinBox()
         self.borrow_days.setRange(0, 365)
@@ -372,17 +375,14 @@ class FillDialog(QDialog):
         rb.addWidget(self.borrow_days)
         rb.addStretch()
         v2.addLayout(rb)
-        self.borrow_urgent = QCheckBox(tr("③ 还不够：紧急的货也借（只借借出门店超过自己起订量的部分）"))
+        self.borrow_urgent = QCheckBox(tr("④ 还不够：紧急的货也借（只借借出门店超过自己起订量的部分）"))
         self.borrow_urgent.setChecked(bool(fc.get("borrow_urgent", True)))
-        self.merge_direct = QCheckBox(tr("④ 还不够：把够起订量的门店整单并进 BMS（挑并进去就够、货值最小的那家）"))
-        self.merge_direct.setChecked(bool(fc.get("merge_direct", True)))
         v2.addWidget(self.borrow_urgent)
-        v2.addWidget(self.merge_direct)
-        v2.addWidget(QLabel(tr("可以借货的门店")))
+        v2.addWidget(QLabel(tr("可以并进 / 借给 BMS 的门店（供应商设置里可以按供应商单独选）")))
         far = set(fc.get("far_stores") or [])
         brow, self.lend = _store_checks({k for k in S.STORE_SHEETS if k not in far})
         v2.addLayout(brow)
-        v2.addWidget(_hint(tr("借货不会让借出门店低于起订量；紧急补货的商品不借；借出去的货由 BMS 订、到货后分回原门店。")))
+        v2.addWidget(_hint(tr("BMS 只帮订不起来的门店凑单：每家店的货只走一条路（整单直送或整单进 BMS），尽量不拆单借货。")))
         left.addWidget(c2)
         left.addStretch()
         cols.addLayout(left, 1)
@@ -402,7 +402,8 @@ class FillDialog(QDialog):
         self.setMinimumWidth(1040)
 
     def save(self):
-        self.page.cfg["fill"] = dict(self.page.fill_cfg(), max_amount_gap=self.gap_amount.value(),
+        base = {k: v for k, v in self.page.fill_cfg().items() if k != "supplier_cfg"}
+        self.page.cfg["fill"] = dict(base, max_amount_gap=self.gap_amount.value(),
                                      max_colli_gap=self.gap_colli.value(), max_stock_days=self.max_days.value(),
                                      fill_bms=self.fill_bms.isChecked(), merge_colocated=self.merge_colo.isChecked(),
                                      borrow=self.borrow.isChecked(), borrow_min_days=self.borrow_days.value(),
@@ -415,11 +416,15 @@ class FillDialog(QDialog):
 
 
 class MoqDialog(QDialog):
-    """修改一家供应商的起订量（文件里读错了自己改）；保存到 settings.json，选了对应供应商的话同时写进 suppliers_config.json"""
+    """
+    供应商设置：起订量（文件里读错了自己改；保存到 settings.json，选了对应供应商的话同时写进 suppliers_config.json），
+    以及这家供应商单独的门店名单：BMS 不够时可以并进 / 借给 BMS 的门店、参与门店间调货的门店（不设 = 按配货设置）
+    """
 
     def __init__(self, page, name, path, file_m, override):
         super().__init__(page.win)
-        self.setWindowTitle(tr("起订量 · {0}", name))
+        self.setWindowTitle(tr("供应商设置 · {0}", name))
+        self.result_supplier_cfg = dict((page.cfg.get("supplier_cfg") or {}).get(name) or {})
         self.result_override = override
         cur = S.apply_override(file_m, override)
         lay = QVBoxLayout(self)
@@ -467,6 +472,25 @@ class MoqDialog(QDialog):
         self.w_note.setPlaceholderText(tr("备注（可不填）"))
         lay.addWidget(self.w_note)
 
+        # 这家供应商单独的门店名单（不勾「单独设」= 按配货设置里的总设置）
+        fc = page.fill_cfg()
+        glob = {"bms_stores": {k for k in S.STORE_SHEETS if k not in set(fc.get("far_stores") or [])},
+                "transfer_stores": {k for k in S.STORE_SHEETS if k not in set(page.transfer_far())}}
+        self.store_sections = {}
+        for key, title in (("bms_stores", tr("BMS 不够起订量时，可以整单并进 / 借给 BMS 的门店")),
+                           ("transfer_stores", tr("参与门店间调货的门店"))):
+            own = self.result_supplier_cfg.get(key)
+            cb = QCheckBox(title + tr("（这家供应商单独设）"))
+            cb.setChecked(own is not None)
+            row, boxes = _store_checks({int(x) for x in own} if own is not None else glob[key])
+            for b_ in boxes.values():
+                b_.setEnabled(own is not None)
+            cb.toggled.connect(lambda on, bx=boxes: [b_.setEnabled(on) for b_ in bx.values()])
+            lay.addWidget(cb)
+            lay.addLayout(row)
+            self.store_sections[key] = (cb, boxes)
+        lay.addWidget(_hint(tr("不勾「单独设」就按「配货设置」里的总设置。")))
+
         # suppliers_config.json 里对应的供应商
         cl = QLabel(tr("同时写进配置文件 suppliers_config.json 的供应商："))
         lay.addWidget(cl)
@@ -506,10 +530,19 @@ class MoqDialog(QDialog):
                                 "pallets": self.w_pallets.value(), "per_pallet": self.w_per.value(),
                                 "multiple": self.w_mult.value(), "note": self.w_note.text().strip(),
                                 "config_id": self.w_cfg.currentData() or ""}
+        self._collect_stores()
         self.accept()
+
+    def _collect_stores(self):
+        out = {}
+        for key, (cb, boxes) in self.store_sections.items():
+            if cb.isChecked():
+                out[key] = [k for k, b_ in boxes.items() if b_.isChecked()]
+        self.result_supplier_cfg = out
 
     def _reset(self):
         self.result_override = None
+        self._collect_stores()
         self.accept()
 
 
@@ -537,7 +570,10 @@ class StoreOrderPage:
         self.sig.done.connect(self._done)
 
     def fill_cfg(self):
-        return dict(S.DEFAULT_FILL, **(self.cfg.get("fill") or {}))
+        """配货设置 + 各供应商单独设的门店名单（供应商设置里选的，supplier_cfg）"""
+        f = dict(S.DEFAULT_FILL, **(self.cfg.get("fill") or {}))
+        f["supplier_cfg"] = self.cfg.get("supplier_cfg") or {}
+        return f
 
     def transfer_cfg(self):
         import transfers as TR
@@ -593,7 +629,7 @@ class StoreOrderPage:
             self.calc["transfer_overrides"] = TR.unfreeze(self.calc.get("transfer_overrides"))
             self.calc["transfer_frozen"] = False
             self.calc.pop("transfer_auto_plan", None)
-        S.apply_transfers(self.calc, self.transfer_cfg(), self.transfer_far())
+        S.apply_transfers(self.calc, self.transfer_cfg(), self.transfer_far(), self.cfg.get("supplier_cfg"))
         new = copy.deepcopy(self.calc["base"])
         if keep_edits:
             for path, sid, row in self.edited:
@@ -1377,7 +1413,7 @@ class StoreOrderPage:
         calc.setdefault("date", _dt.date.today())    # 周销量按计算当天往回数
         self.calc = calc
         try:
-            S.apply_transfers(calc, self.transfer_cfg(), self.transfer_far())
+            S.apply_transfers(calc, self.transfer_cfg(), self.transfer_far(), self.cfg.get("supplier_cfg"))
             if calc.get("transfers"):
                 self.win.log(tr("[门店配货] 门店间调货：{0} 个商品", len(calc["transfers"])))
         except Exception as e:
@@ -1551,7 +1587,7 @@ class StoreOrderPage:
             for k, a_ in enumerate(amts + [b["amount"] if b else None, ra if rc else None]):
                 if a_ is not None:
                     t.item(r, 3 + k).setData(SORT_ROLE, float(a_))      # 排序按金额
-            t.item(r, 2).setToolTip(tr("起订量：{0}", S.moq_label(S.sc_moq(sc), mark=False)) + "\n" + tr("点一下修改起订量"))
+            t.item(r, 2).setToolTip(tr("起订量：{0}", S.moq_label(S.sc_moq(sc), mark=False)) + "\n" + tr("点一下：起订量、这家供应商参与 BMS / 调货的门店"))
             chk = QTableWidgetItem()
             chk.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled)
             chk.setCheckState(Qt.Checked if on else Qt.Unchecked)
@@ -2014,7 +2050,7 @@ class StoreOrderPage:
             lines.append(tr("文件里写的起订量：{0}", m["raw"]))
         t.item(i, 1).setToolTip("\n".join(lines))
         cur = self.moq_of(p) or {}
-        tip = tr("起订量：{0}", S.moq_label(cur, mark=False)) + "\n" + tr("点一下修改起订量")
+        tip = tr("起订量：{0}", S.moq_label(cur, mark=False)) + "\n" + tr("点一下：起订量、这家供应商参与 BMS / 调货的门店")
         if cur.get("pallets") and not cur.get("per_pallet"):
             tip = tr("按板起订，还没填每板几箱（点起订量修改）") + "\n" + tip
         if cur.get("source") == "manual":
@@ -2041,7 +2077,15 @@ class StoreOrderPage:
             self.moq_overrides().pop(name, None)
         else:
             self.moq_overrides()[name] = ov
+        scfg = self.cfg.setdefault("supplier_cfg", {})
+        stores_changed = (scfg.get(name) or {}) != (dlg.result_supplier_cfg or {})
+        if dlg.result_supplier_cfg:
+            scfg[name] = dlg.result_supplier_cfg
+        else:
+            scfg.pop(name, None)
         save_settings(self.settings)
+        if stores_changed and self.calc:
+            self.apply_transfers()                   # 调货门店变了：重算调货
         msg = tr("{0} 的起订量已保存", name)
         if ov is not None and ov.get("config_id"):
             try:

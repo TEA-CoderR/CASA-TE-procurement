@@ -16,6 +16,7 @@
 - 用户和同事**共用同一个文件夹**（`procurement_system ok 2.5`）开发。请直接在这个文件夹里改代码、`git commit`、`git push`，不要只推到云端分支却把文件另外写进文件夹（之前这样做过，文件夹和 git 记录对不上，发布前得先同步）。
 
 ## 最近改动（给接手的 AI 的纸条，新的写在最上面）
+- 2026-10-22（用户确认的业务规则）：BMS 只帮订不起来的门店凑单，每家店的货只走一条路。`plan_supplier` 顺序改成 ① 同仓门店并入 ② 够起订量的门店整单并入（店最少、货值最小）③④ 没有能并的店才借货。供应商设置（点起订量那一格，`MoqDialog`）可以按供应商单独选「可以并进 / 借给 BMS 的门店」「参与调货的门店」，存在 store_orders.supplier_cfg[供应商名]，`fill_cfg()` 带上，`store_orders.supplier_stores / bms_far`，调货按 need["allowed"]。
 - 2026-10-21：`COMPANY_DEFAULTS_VER` = 2：按采购部电脑现在的设置统一一次（新算法参数、凑单 / 借货 / 调货、起订规则、报价文件名称、订货明细和检查清单的列顺序 / 显示哪些列 / 列宽）。检查清单默认列顺序 = 用户排好的（`order_check._ORDER`）。
 - 2026-10-21：检查清单：数据库没有的商品也按条码去供应商报价里补箱规 / 件价（`price_check.apply_quotes`）；还是找不到的在工具条「全部商品」右边两个按钮「⚠ 数据库没有 / ⚠ 没有箱规」，点开是列表（`_problem` → nodb / nopack，`_fill_prob`、`_open_prob`），主表格只放能算的；调货列没调的一律写「不调」（订货明细也是）。界面卡住时 `logs/hang.log` 会记下各线程的调用栈（`main._start_hang_watchdog`）。
 - 2026-10-21：检查门店订货清单改成**按箱**审核：`order_check.init_boxes` 给每行 lbox（清单箱数）/ sbox（建议箱数）/ fbox（确定箱数 ✎，`_set_box` 同步 final = 箱数 × 每箱件数）；判断按箱比；调货用 `_need_pcs`（箱数没改用系统件数）。确认生成的主订单不写 PEZZI（`write_main_order(pieces=False)`），比价按 COLLI 分配供应商。数据库没有 / 没箱规的商品在第二个标签页。负库存：显示原值、计算当 0、不提醒。
