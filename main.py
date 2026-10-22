@@ -1279,7 +1279,7 @@ class FillItemsDialog(QDialog):
 
 
 class TransferSettingsDialog(QDialog):
-    """门店间调货设置（和门店配货「配货设置」里的「③ 门店之间调货」是同一块、存同一个地方）"""
+    """批发商比价的门店间调货设置（存 settings["wholesale_transfer"]，2026-10-22 起和门店配货分开，默认不启用）"""
 
     def __init__(self, parent):
         super().__init__(parent)
@@ -1295,7 +1295,8 @@ class TransferSettingsDialog(QDialog):
         t.setObjectName("Section")
         t.setToolTip(tr("门店之间调货：要的件数远小于一箱时，从别的门店调多出来的货，少订一箱"))
         lay.addWidget(t)
-        self.box = TransferBox(so.get("transfer"), far)
+        import transfers as TR
+        self.box = TransferBox(TR.wholesale_raw(settings), far)     # 批发商比价自己的调货设置（和门店配货分开）
         lay.addWidget(self.box)
         bb = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
         bb.accepted.connect(self.save)
@@ -1306,7 +1307,8 @@ class TransferSettingsDialog(QDialog):
     def save(self):
         import store_orders as SO
         so = settings.setdefault("store_orders", {})
-        so["transfer"] = self.box.transfer_values(so.get("transfer"))     # 参与调货门店存在调货设置里（和借货分开）
+        import transfers as TR
+        settings["wholesale_transfer"] = self.box.transfer_values(TR.wholesale_raw(settings))
         save_settings(settings)
         self.accept()
 
@@ -4508,7 +4510,7 @@ class MainWindow(QMainWindow):
         b_scen = QPushButton(tr("管理方案"))
         b_scen.clicked.connect(self.edit_scenarios)
         b_tr = QPushButton(tr("门店间调货…"))
-        b_tr.setToolTip(tr("要的件数远小于一箱时，从别的门店调多出来的货，少订一箱（和门店配货同一套设置）"))
+        b_tr.setToolTip(tr("批发商比价的门店间调货（和门店配货分开设，默认不启用）"))
         b_tr.clicked.connect(self.edit_transfers)
         b_names = QPushButton(tr("供应商名称"))
         b_names.setToolTip(tr("给供应商文件起名字（比如 formattato_… 叫 MEGA CASH），方案排除和起订规则都按名字认"))
@@ -4573,15 +4575,8 @@ class MainWindow(QMainWindow):
                 self.refresh_rule_line()
 
     def edit_transfers(self):
-        if TransferSettingsDialog(self).exec():
+        if TransferSettingsDialog(self).exec():          # 只改批发商比价的调货（门店配货在「配货设置」里单独设）
             self.refresh_rule_line()
-            sp = getattr(self, "store_orders", None)
-            if sp is not None and getattr(sp, "calc", None):
-                try:                      # 门店配货已经算过：按新设置重算调货
-                    sp.apply_transfers(refresh_auto=True)
-                    sp._refresh_matrix()
-                except Exception:
-                    pass
             self.show_toast(tr("调货设置已保存"))
 
     def _transfer_line(self):

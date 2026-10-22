@@ -36,6 +36,17 @@ def config(cfg=None):
     return dict(DEFAULT, **cfg)
 
 
+def wholesale_raw(settings):
+    """
+    批发商比价的调货设置（2026-10-22 起和门店配货分开设）：settings["wholesale_transfer"]；
+    还没设过 → 先照抄门店配货的那套参数，但默认不启用
+    """
+    w = (settings or {}).get("wholesale_transfer")
+    if w is None:
+        w = dict(((settings or {}).get("store_orders") or {}).get("transfer") or {}, enabled=False)
+    return dict(w)
+
+
 def excluded_stores(cfg, fallback=()):
     """不参与调货的门店：调货设置里的 exclude_stores（和借货分开设）；以前没设过 → 沿用借货的远店名单"""
     cfg = cfg or {}

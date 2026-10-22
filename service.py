@@ -152,7 +152,8 @@ def transfer_status(snapshot, settings):
     import transfers as TR
     import store_orders as SO
     so = (settings or {}).get("store_orders") or {}
-    cfg = TR.config(so.get("transfer"))
+    wt = TR.wholesale_raw(settings)                 # 批发商比价自己的调货设置（和门店配货分开）
+    cfg = TR.config(wt)
     if not snapshot:
         return "no_snapshot", tr("门店间调货：主订单没有门店库存数据，不算调货")
     if snapshot.get("planned_transfers") is not None:
@@ -167,7 +168,7 @@ def transfer_status(snapshot, settings):
         return "off", tr("门店间调货：已关闭（点「门店间调货…」打开）")
     own = snapshot.get("store")
     import transfers as TR
-    far = TR.excluded_stores(so.get("transfer"), (dict(SO.DEFAULT_FILL, **(so.get("fill") or {}))).get("far_stores"))
+    far = TR.excluded_stores(wt, (dict(SO.DEFAULT_FILL, **(so.get("fill") or {}))).get("far_stores"))
     name = SO.STORE_SHEETS.get(own, str(own))
     if own in far:
         return "far", tr("门店间调货：{0} 没勾「参与调货门店」，不参与调货（点「门店间调货…」可以改）", name)
@@ -192,7 +193,7 @@ def wholesale_transfers(rows_data, supplier_headers, snapshot, settings, labels=
     import transfers as TR
     import store_orders as SO
     so = (settings or {}).get("store_orders") or {}
-    cfg = TR.config(so.get("transfer"))
+    cfg = TR.config(TR.wholesale_raw(settings))     # 批发商比价自己的调货设置
     if not snapshot or not cfg.get("enabled"):
         return []
     own = snapshot.get("store")

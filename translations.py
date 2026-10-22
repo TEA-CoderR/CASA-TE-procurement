@@ -2377,4 +2377,7 @@ TRANSLATIONS = {
     '安全库存最多（天）': ('Max safety stock (days)', 'Scorta di sicurezza max (giorni)'),
     '按服务水平多备的货最多够卖几天（只限制卖得快的商品；卖得慢的按服务水平保证不断货）。A/B/C 的差别由服务水平区分': ('At most how many days of sales the extra stock for the service level may cover (only limits fast sellers; slow sellers follow the service level). A/B/C differ by service level', 'Al massimo quanti giorni di vendita può coprire la scorta extra per il livello di servizio (limita solo gli articoli veloci). A/B/C si distinguono per livello di servizio'),
     '订货周期 {0} 天 + 到货 {1} 天，服务水平 {2:.0%}{3}，安全库存最多 {4} 天': ('Order cycle {0} days + delivery {1} days, service level {2:.0%}{3}, safety stock at most {4} days', 'Ciclo {0} giorni + consegna {1} giorni, livello di servizio {2:.0%}{3}, scorta di sicurezza max {4} giorni'),
+    '批发商比价没有启用门店间调货（设置 → 门店间调货…）': ('Store-to-store transfers are off for wholesaler comparison (Settings → Store transfers…)', 'I trasferimenti tra negozi sono disattivati per il confronto grossisti (Impostazioni → Trasferimenti…)'),
+    '批发商比价的门店间调货（和门店配货分开设，默认不启用）': ('Store-to-store transfers for wholesaler comparison (set separately from store allocation, off by default)', 'Trasferimenti tra negozi per il confronto grossisti (separati dalla distribuzione, disattivati di default)'),
+    '自己这次也要订的商品不调出': ('Items the store also orders this time are not transferred out', 'Gli articoli che il negozio ordina anche questa volta non vengono trasferiti'),
 }

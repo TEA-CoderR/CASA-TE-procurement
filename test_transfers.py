@@ -77,13 +77,15 @@ def test_snapshot_roundtrip_and_wholesale(tmp_path):
     assert RS.load_snapshot(str(root / "ORDINE" / "别的.xlsx")) is None
     rows = [service._price_row_pieces(2, 3, {"MEGA": 1.0, "MELONI": 1.2}, {"MEGA": 12, "MELONI": 12}, "800001", "A")]
     assert service.attach_stock(rows, got) == 1 and rows[0]["daily"] == 0.1
-    ts = service.wholesale_transfers(rows, ["MEGA", "MELONI"], got, {"store_orders": {"transfer": {"item_min_value": 1}}})
+    # 批发商比价默认不调货（和门店配货分开设）
+    assert service.wholesale_transfers([dict(rows[0])], ["MEGA", "MELONI"], got, {"store_orders": {"transfer": {"item_min_value": 1}}}) == []
+    ts = service.wholesale_transfers(rows, ["MEGA", "MELONI"], got, {"wholesale_transfer": {"enabled": True, "item_min_value": 1}})
     assert [(t["from"], t["pieces"], t["colli_before"], t["colli_after"]) for t in ts] == [(4, 3, 1, 0)]
     assert rows[0]["qty"] == 0 and rows[0]["qty_orig"] == 3                  # 主订单件数减掉调货的
     assert ts[0]["supplier"] == "MEGA" and abs(ts[0]["value"] - 3.0) < 1e-9
     # 关掉调货 / 没有快照 → 不调
     rows2 = [service._price_row_pieces(2, 3, {"MEGA": 1.0}, {"MEGA": 12}, "800001", "A")]
-    assert service.wholesale_transfers(rows2, ["MEGA"], got, {"store_orders": {"transfer": {"enabled": False}}}) == []
+    assert service.wholesale_transfers(rows2, ["MEGA"], got, {"wholesale_transfer": {"enabled": False}}) == []
     assert service.wholesale_transfers(rows2, ["MEGA"], None, {}) == []
 
 
@@ -120,12 +122,14 @@ def test_wholesale_transfer_status():
     """批发商比价界面上说清楚这次会不会算门店间调货（离得远的门店不参与）"""
     import service
     snap = {"store": 2, "by_ean": {}}
+    on = {"wholesale_transfer": {"enabled": True}}
     assert service.transfer_status(None, {})[0] == "no_snapshot"
-    assert service.transfer_status(snap, {})[0] == "on"
-    assert service.transfer_status({"store": 1}, {})[0] == "far"                       # 默认 FOIANO 离得远
-    assert service.transfer_status({"store": 1}, {"store_orders": {"fill": {"far_stores": []}}})[0] == "on"
-    assert service.transfer_status(snap, {"store_orders": {"transfer": {"enabled": False}}})[0] == "off"
-    code, text = service.transfer_status(snap, {})
+    assert service.transfer_status(snap, {})[0] == "off"                               # 批发商比价默认不调货
+    assert service.transfer_status(snap, {"store_orders": {"transfer": {"enabled": True}}})[0] == "off"   # 门店配货开着也不影响
+    assert service.transfer_status(snap, on)[0] == "on"
+    assert service.transfer_status({"store": 1}, on)[0] == "far"                       # 默认 FOIANO 离得远
+    assert service.transfer_status({"store": 1}, dict(on, store_orders={"fill": {"far_stores": []}}))[0] == "on"
+    code, text = service.transfer_status(snap, on)
     assert "FOIANO" not in text.split("从")[1].split("调")[0]                          # 远的门店不在调出名单里
 
 

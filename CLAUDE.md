@@ -17,6 +17,7 @@
 - 用户和同事**共用同一个文件夹**（`procurement_system ok 2.5`）开发。请直接在这个文件夹里改代码、`git commit`、`git push`，不要只推到云端分支却把文件另外写进文件夹（之前这样做过，文件夹和 git 记录对不上，发布前得先同步）。
 
 ## 最近改动（给接手的 AI 的纸条，新的写在最上面）
+- 2026-10-22（用户定）：门店间调货设置**门店配货和批发商比价分开**：门店配货 = settings.store_orders.transfer（默认启用，「配货设置 ③」）；批发商比价 = settings.wholesale_transfer（默认不启用，比价设置「门店间调货…」）。`transfers.wholesale_raw(settings)` 取批发商的设置（没设过 = 照抄门店配货的参数但 enabled=False）；service.transfer_status / wholesale_transfers、order_check 的调货都用它。
 - 2026-10-22（用户定）：新算法「平均压货最多 max_stock_days」换成「安全库存最多 max_safety_days 天」（默认 7，`target_stock` 的 cap = μ + 日均 × 天数），不再和订货周期绑在一起（周期 30 天时旧设置让快销品安全库存 = 0、C 比 A 留得多）；「库存多」判断改成够卖 > 2 ×（周期 + 到货）。max_stock_days 留着不用。
 - 2026-10-22：选新算法时「月均」「需求（件）」也按新算法算（`store_orders.monthly_and_need`）：月均 = 加权日均（含季节）× 30，需求 = 目标库存 − 安全库存（= 日均 × 要备的天数）；原程序算法照旧（180 天 ÷ 6、90 天日均 × 周期）。订货明细、检查清单都用它；订单文件本来就不写这两列。
 - 2026-10-22（用户定，简单版 ABC×XYZ）：等级 = 按本店近 13 周销售额帕累托（`abc_by_revenue`）+ 动销兜底（`forecast.adjust_tier`）：近 13 周 ≥ abc_freq_hi（10）周有卖 → 最低 B；≤ abc_freq_lo（3）周 → 最高 C；新品按上架周数折算、不降级。在 `apply_v2` 里套用，「算法设置 → 动销兜底」可改。以后可能升级成完整 ABC-XYZ（周期系数 / 安全库存按 X/Y/Z）。

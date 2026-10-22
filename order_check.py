@@ -869,8 +869,12 @@ class OrderCheck:
             return
         import store_orders as SO
         so = self.settings.get("store_orders") or {}
-        cfg = TR.config(so.get("transfer"))
-        far = set(TR.excluded_stores(so.get("transfer"), (dict(SO.DEFAULT_FILL, **(so.get("fill") or {}))).get("far_stores")))
+        wt = TR.wholesale_raw(self.settings)          # 批发商比价自己的调货设置
+        cfg = TR.config(wt)
+        if not cfg.get("enabled"):
+            self.win.show_toast(tr("批发商比价没有启用门店间调货（设置 → 门店间调货…）"))
+            return
+        far = set(TR.excluded_stores(wt, (dict(SO.DEFAULT_FILL, **(so.get("fill") or {}))).get("far_stores")))
         sid, code = x.get("store"), str(x.get("code"))
         ordering = {(r.get("store"), str(r.get("code"))) for r in self.rows if int(r.get("final") or 0) > 0}
         stores = []
@@ -1599,7 +1603,8 @@ class OrderCheck:
         import store_orders as SO
         import transfers as TR
         so = self.settings.get("store_orders") or {}
-        far = TR.excluded_stores(so.get("transfer"), (dict(SO.DEFAULT_FILL, **(so.get("fill") or {}))).get("far_stores"))
+        wt = TR.wholesale_raw(self.settings)          # 批发商比价自己的调货设置
+        far = TR.excluded_stores(wt, (dict(SO.DEFAULT_FILL, **(so.get("fill") or {}))).get("far_stores"))
         by_store = {}
         for x in self.rows:                       # 调货按「真正要的件数」算（确定箱数没改就是系统算的件数，零头才能调）
             by_store.setdefault(x.get("store"), []).append(dict(x, final=self._need_pcs(x)) if _can_transfer(x) else
@@ -1607,7 +1612,7 @@ class OrderCheck:
         snap = self.meta.get("snap")
         if not snap:
             return [], {}
-        return R.plan_batch_transfers(by_store, snap, so.get("transfer"), far, getattr(self, "transfer_ov", None),
+        return R.plan_batch_transfers(by_store, snap, wt, far, getattr(self, "transfer_ov", None),
                                       auto=not getattr(self, "transfer_frozen", False))
 
     def confirm(self):
