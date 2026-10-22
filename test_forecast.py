@@ -106,3 +106,17 @@ def test_abc_cycle_factor():
     assert a["S"] > b["S"] > c["S"]
     same = dict(q, cycle_a=1.0, cycle_c=1.0)
     assert F.target_stock(10.0, 20.0, 0, "A", same)["S"] == F.target_stock(10.0, 20.0, 0, "C", same)["S"]
+
+
+def test_adjust_tier_by_sales_weeks():
+    """金额定等级，动销兜底：13 周里 ≥ 10 周有卖 → 至少 B；≤ 3 周 → 最多 C；新品不降级"""
+    steady = [1.0] * 13 + [1.0] * 13                # 每周都卖
+    rare = [0, 0, 5, 0, 0, 0, 0, 3, 0, 0, 0, 0, 0] + [1.0] * 13   # 13 周里只有 2 周卖
+    assert F.adjust_tier("C", steady, P) == ("B", "up")
+    assert F.adjust_tier("A", steady, P) == ("A", None)
+    assert F.adjust_tier("A", rare, P) == ("C", "down")
+    assert F.adjust_tier("C", rare, P) == ("C", None)
+    new = [1.0, 1.0, 0.0] + [0.0] * 23                 # 新品：3 周里 2 周卖 → 不降级
+    assert F.adjust_tier("A", new, P) == ("A", None)
+    assert F.adjust_tier("C", [1.0] * 4 + [0.0] * 22, P) == ("B", "up")     # 新品每周都卖 → 升 B
+    assert F.adjust_tier("B", [0.0] * 26, P) == ("B", None)                  # 没销量：不动

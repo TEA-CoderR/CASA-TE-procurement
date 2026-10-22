@@ -2365,4 +2365,8 @@ TRANSLATIONS = {
     '，安全库存 A {0:.0%} · B {1:.0%} · C {2:.0%}': (', safety stock A {0:.0%} · B {1:.0%} · C {2:.0%}', ', scorta di sicurezza A {0:.0%} · B {1:.0%} · C {2:.0%}'),
     '安全库存': ('Safety stock', 'Scorta di sicurezza'),
     '件数凑不成整箱时：少订（往下取整）后的库存够卖一个订货周期的这个比例，就少订，不为了一两件硬凑一箱；不够才多订一箱': ('When the quantity is not a whole number of boxes: round down if the stock after rounding down still covers this share of one order cycle; otherwise add one box', 'Se la quantità non è a colli interi: arrotonda per difetto se la scorta copre ancora questa quota di un ciclo; altrimenti aggiungi un collo'),
+    ' 周 → B': (' wk → B', ' sett → B'),
+    ' 周 → C': (' wk → C', ' sett → C'),
+    '动销兜底': ('Sales-frequency check', 'Controllo rotazione'),
+    '等级先按本店近 13 周销售额排（前 80% A，到 95% B，其余 C），再看近 13 周有几周卖过：卖过的周数 ≥ 左边 → 最低算 B（天天卖的便宜货不当 C 少订）；≤ 右边 → 最高算 C（偶尔才卖的不多备）。新品按上架以来的周数折算，不降级。左边填 14 = 不升级，右边填 0 = 不降级': ("Class is first set by the store's last 13 weeks of sales value (top 80% A, up to 95% B, rest C), then by how many of the 13 weeks had sales: at least the left number → at least B (cheap everyday sellers are not cut as C); at most the right number → at most C (occasional sellers are not overstocked). New items are scaled to weeks since first sale and never downgraded. Left 14 = never upgrade, right 0 = never downgrade", 'La classe si basa sulle vendite in valore delle ultime 13 settimane (primo 80% A, fino al 95% B, resto C), poi su quante settimane su 13 hanno vendite: almeno il numero a sinistra → almeno B; al massimo il numero a destra → al massimo C. I nuovi articoli si rapportano alle settimane dalla prima vendita e non vengono declassati. Sinistra 14 = mai promuovere, destra 0 = mai declassare'),
 }

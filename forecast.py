@@ -13,6 +13,8 @@
        有销量的商品至少保留 min_shelf 件陈列
   4. 建议件数 = S − 现有库存（负数当 0）− 在途
   5. 服务水平按 ABC：A = 目标 + 2.5%，B = 目标，C = 目标 − 5%（ABC 按本店近 13 周销售额帕累托：前 80% A，到 95% B，其余 C）
+     动销兜底（2026-10-22 用户定，简单版 ABC×XYZ）：近 13 周里 ≥ abc_freq_hi 周有卖的最低算 B（天天卖的便宜货不被当 C 少订），
+     ≤ abc_freq_lo 周有卖的最高算 C（偶尔才卖的不多备）；新品按上架以来的周数折算，上架不满 13 周的不降级
      订货周期也按 ABC 乘系数（cycle_a / cycle_b / cycle_c，默认 1.25 / 1 / 0.75）：
      A 类多备一点（订够 1.25 个周期），C 类不必订够一个周期（0.75 个），少压货。
      只影响「要备多少天的货」；判断会不会卖断仍按实际的订货周期
@@ -33,6 +35,8 @@ DEFAULT_PARAMS = {
     "max_stock_days": 14,      # 平均库存最多够卖几天（限制卖得快的商品的安全库存）
     "season": True,            # 用去年同期做季节调整
     "pack_threshold": 0.3,     # （旧规则，已不用）零头 ≥ 一箱的 30% 才多订一箱
+    "abc_freq_hi": 10,         # 动销兜底：近 13 周 ≥ 10 周有卖 → 最低 B
+    "abc_freq_lo": 3,          # 近 13 周 ≤ 3 周有卖 → 最高 C
     "safety_a": 0.9,           # 凑不成整箱时：少订后的库存够卖一个周期的 90%（A 类）就少订
     "safety_b": 0.7,
     "safety_c": 0.5,
@@ -197,6 +201,30 @@ def abc_by_revenue(revenue):
         cum += v
         out[k] = "A" if share_before < 0.80 else "B" if share_before < 0.95 else "C"
     return out
+
+
+def sold_weeks(weekly, n=13):
+    """近 n 周里有几周有销量"""
+    return sum(1 for x in (weekly or [])[:n] if (x or 0) > 0)
+
+
+def adjust_tier(tier, weekly, params):
+    """
+    动销兜底：按金额分出的等级，再看近 13 周有几周卖过——
+      ≥ abc_freq_hi 周 → 至少 B；≤ abc_freq_lo 周 → 最多 C。新品（上架不满 13 周）按上架以来的周数折算，不降级。
+    返回 (等级, 原因：None / "up" / "down")
+    """
+    hi = float(params.get("abc_freq_hi", 10))
+    lo = float(params.get("abc_freq_lo", 3))
+    age = min(13, age_weeks([float(x or 0) for x in (weekly or [])], 26))   # 半年内第一次卖到现在几周（最多算 13）
+    if age <= 0:
+        return tier, None
+    n = sold_weeks(weekly, 13)
+    if tier == "C" and n / age >= hi / 13.0:
+        return "B", "up"
+    if tier in ("A", "B") and age >= 13 and n <= lo:
+        return "C", "down"
+    return tier, None
 
 
 def decide(daily, inv, qty, tier, params, total_inv=0, sold_26w=True):
