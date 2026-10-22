@@ -33,9 +33,11 @@ DEFAULT_FILL = {
     "borrow_min_days": 7,     # 借货条件：这家店现有库存至少还够卖几天
     "borrow_urgent": True,    # ③ 不紧急的借完还不够：紧急的也借（只借这家店超过自己起订量的部分）
     "merge_direct": True,     # ④ 还不够：把够起订量的门店整单并进 BMS，让其他门店也订得起来
-    "far_stores": [1],        # 离得远的门店：不借它的货
+    "far_stores": [1],        # 不参与 BMS 凑单的门店（供应商设置里可以按供应商单独选）
     "colocated_store": 3,     # 和 BMS 仓库在一起的门店
+    "bms_order": [3, 4, 5, 2, 1],   # 订不起来的门店按这个先后并进 BMS，够起订量就停
 }
+BMS_ORDER = [3, 4, 5, 2, 1]
 
 
 def _norm(v):
@@ -533,7 +535,7 @@ def demand_by_store(db, schede, stores, days_list, reorder_cycle, use_supplier_c
 # =====================================================================
 # 门店之间调货（transfers.py）：要的件数远小于一箱时，从别的门店调多出来的货，少订一箱
 # =====================================================================
-def apply_transfers(calc, cfg=None, far_stores=None):
+def apply_transfers(calc, cfg=None, far_stores=None, supplier_cfg=None):
     # calc["transfer_overrides"] = {(SCHEDA 路径, 调入门店, 行号): 人工定的调货}（订货明细里改的，见 transfers.norm_override；
     #   件数 0 = 不调）；calc["transfer_frozen"] = True 时只按它调
     """
@@ -556,6 +558,8 @@ def apply_transfers(calc, cfg=None, far_stores=None):
     needs, info, ordering = [], {}, set()
     for sc in calc["schede"]:
         items = {it["row"]: it for it in sc["items"]}
+        # 供应商设置里单独选了参与调货的门店：这家供应商的商品只在这几家店之间调
+        allowed = supplier_stores({"supplier_cfg": supplier_cfg}, sc, "transfer_stores")
         for sid, lines in base.get(sc["path"], {}).items():
             for row, n in lines.items():
                 it = items.get(row)
@@ -568,7 +572,7 @@ def apply_transfers(calc, cfg=None, far_stores=None):
                     continue
                 nid = (sc["path"], sid, row)
                 needs.append({"id": nid, "store": sid, "key": code, "need": d.get("need", d.get("sugg", 0)),
-                              "pack": it["pack"], "colli": n, "price": it.get("price") or 0.0})
+                              "pack": it["pack"], "colli": n, "price": it.get("price") or 0.0, "allowed": allowed})
                 info[nid] = (sc, it)
     avail, stock = {}, {}
     for sid in stores:
@@ -858,6 +862,25 @@ def _bms_state(scheda, res, members, lent, items):
     return lines, dem_rows, per_store
 
 
+def supplier_stores(fill, scheda, key):
+    """
+    这家供应商单独设的门店名单（配货设置里的总名单之外，「供应商设置」里可以按供应商单独选）：
+      key = "bms_stores"（BMS 不够时可以整单并进 BMS 的门店）/ "transfer_stores"（参与门店间调货的门店）
+    没单独设 → None（按总设置）
+    """
+    c = ((fill or {}).get("supplier_cfg") or {}).get(scheda.get("name")) or {}
+    v = c.get(key)
+    return None if v is None else {int(x) for x in v}
+
+
+def bms_far(fill, scheda):
+    """不能被并进 / 借给 BMS 的门店：供应商单独设了就按它，否则按配货设置的 far_stores"""
+    own = supplier_stores(fill, scheda, "bms_stores")
+    if own is not None:
+        return set(STORE_SHEETS) - own
+    return set((fill or {}).get("far_stores") or [])
+
+
 def _borrow(scheda, res, members, lent, fill, items, relaxed=False):
     """
     从同城、直接送店的门店一箱一箱借不紧急的货给 BMS，直到 BMS 够起订量；借完那家店自己还要够起订量。
@@ -866,7 +889,7 @@ def _borrow(scheda, res, members, lent, fill, items, relaxed=False):
     返回 True = 借够了
     """
     mc, ma = scheda["moq_colli"], scheda["moq_amount"]
-    far = set(fill.get("far_stores") or [])
+    far = bms_far(fill, scheda)
     donors = [sid for sid, st in res["stores"].items()
               if st["status"] in ("direct", "filled") and sid not in far and sid not in members]
     remain = {sid: dict(res["stores"][sid]["lines"]) for sid in donors}
@@ -921,21 +944,21 @@ def bms_ordered(b):
     return bool(b) and b.get("status") in ("direct", "filled", "forced")
 
 
-def plan_supplier(scheda, demand, fill=None, stores=None, colli=None, mode="auto"):
+def plan_supplier(scheda, demand, fill=None, stores=None, colli=None, mode="auto", picks=None):
     """
     一个供应商的配货方案。
     返回 {"stores": {门店号: {status, colli, amount, lines, added, lent}}, "bms": {...} 或 None}
-      status: "direct" 直接送店 / "filled" 凑单后直接送店 / "bms" 并入 BMS /
-              "merged" 和 BMS 同仓、整单并进 BMS / "pulled" 自己够起订量，但整单并进 BMS 让其他店也订得起来 /
-              "none" 不用订
-      lent: 借给 BMS 的货 [(行号, 箱数, 金额)]（这家店仍直接送店，这部分由 BMS 订、到货后分回来）
-    BMS 不够起订量时依次尝试：① 同仓门店整单并入 ② 从同城门店借不紧急的货 ③ 紧急的也借（只借超过借出门店起订量的部分）
-    ④ 把够起订量的门店整单并进 BMS（货值最小、并进去就够的那家）；每一步都会试 BMS 凑单；
-    试完能订得起来才采用，否则维持「BMS 仍不够起订量」（这张 BMS 单不下）。
+      status: "direct" 直接送店 / "filled" 凑单后直接送店 / "bms" 并入 BMS / "wait" 这次不订（下次再看）/
+              "pulled" 自己够起订量、手动并进 BMS / "dropped" 手动选「只订达标门店」后不订 / "none" 不用订
+    规则（2026-10-22 用户定，从简单开始）：
+      能单独送店（够起订量，或差一点凑单后够）就单独送店——不拆单借货，也不把它拉进 BMS；
+      订不起来的门店按 fill["bms_order"]（默认 3-4-5-2-1，只算参与 BMS 凑单的门店）一家一家并进 BMS，
+      每加一家试一次（含 BMS 凑单），够起订量就停；剩下的、不参与的、全并完还不够的 → "wait" 这次不订，下次再看。
     mode（配货结果页手动选）：
       "auto"        系统建议（上面的规则）
-      "all_bms"     所有要订的门店整单并进 BMS（就算有的店自己够起订量）；BMS 不够起订量也照样下单（status "forced"）
-      "direct_only" 只订自己够起订量（含凑单后够）的门店，其他门店这次不订（status "dropped"），不借货、不出 BMS 单
+      "manual"      picks = {"stores": [进 BMS 的门店], "force": 不够起订量也下单}：自己够起订量的店也可以并进来
+      "all_bms"     所有要订的门店整单并进 BMS；BMS 不够起订量也照样下单（status "forced"）
+      "direct_only" 只订自己够起订量（含凑单后够）的门店，其他门店这次不订（status "dropped"）
     """
     fill = dict(DEFAULT_FILL, **(fill or {}))
     stores = stores or list(scheda["sheets"].keys())
@@ -982,18 +1005,9 @@ def plan_supplier(scheda, demand, fill=None, stores=None, colli=None, mode="auto
         for sid in to_bms:
             res["stores"][sid]["status"] = "dropped"
         return res
-    if mode == "all_bms":
-        to_bms = [sid for sid, st in res["stores"].items() if st["status"] != "none"]
-        for sid in to_bms:
-            st = res["stores"][sid]
-            st["status"] = "bms"
-            st["lines"], st["added"] = dict(st["base_lines"]), []
-            st["colli"], st["amount"] = _totals(st["lines"], items)
-    if not to_bms:
-        return res
 
-    def evaluate(members, lent):
-        lines, dem_rows, per_store = _bms_state(scheda, res, members, lent, items)
+    def evaluate(members):
+        lines, dem_rows, per_store = _bms_state(scheda, res, members, {}, items)
         c, a = _totals(lines, items)
         if _satisfied(c, a, mc, ma):
             return "direct", lines, [], per_store
@@ -1002,82 +1016,59 @@ def plan_supplier(scheda, demand, fill=None, stores=None, colli=None, mode="auto
             return "filled", r[0], r[1], per_store
         return "short", lines, [], per_store
 
-    members, lent, how = list(to_bms), {}, []
-    status, lines, added, per_store = evaluate(members, lent)
-    if status == "short" and mode != "all_bms":
-        # ① 同仓门店整单并进 BMS
-        colo = fill.get("colocated_store")
-        trial_members = list(members)
-        if fill.get("merge_colocated", True) and colo in res["stores"] and colo not in members and \
-                res["stores"][colo]["status"] in ("direct", "filled"):
-            trial_members.append(colo)
-        trial_lent = {}
-        ok = False
-        if trial_members != members:
-            s2 = evaluate(trial_members, trial_lent)
-            ok = s2[0] != "short"
-        # ② 从同城门店借不紧急的货
-        if not ok and fill.get("borrow", True):
-            got = _borrow(scheda, res, trial_members, trial_lent, fill, items)
-            s2 = evaluate(trial_members, trial_lent) if (got or trial_lent) else None
-            ok = bool(s2) and s2[0] != "short"
-            # ③ 还不够：紧急的也借，只借这些店超过自己起订量的部分
-            if not ok and fill.get("borrow_urgent", True):
-                got = _borrow(scheda, res, trial_members, trial_lent, fill, items, relaxed=True)
-                s2 = evaluate(trial_members, trial_lent) if (got or trial_lent) else None
-                ok = bool(s2) and s2[0] != "short"
-        # ④ 还不够：把够起订量的门店整单并进 BMS（挑并进去就够、货值最小的那家；一家不够再两家…）
-        pulled = []
-        if not ok and fill.get("merge_direct", True):
-            far = set(fill.get("far_stores") or [])
-            cands = [sid for sid, st_ in res["stores"].items()
-                     if st_["status"] in ("direct", "filled") and sid not in far and sid not in trial_members]
-            from itertools import combinations
-            base_amt = {sid: _totals(res["stores"][sid]["base_lines"], items)[1] for sid in cands}
-            for k in range(1, len(cands) + 1):
-                for combo in sorted(combinations(cands, k), key=lambda cs: sum(base_amt[x] for x in cs)):
-                    s3 = evaluate(trial_members + list(combo), {})
-                    if s3[0] != "short":
-                        pulled = list(combo)
-                        trial_members, trial_lent, s2, ok = trial_members + pulled, {}, s3, True
-                        break
-                if pulled:
-                    break
-        if ok:
-            if colo in trial_members and colo not in members:
-                how.append("merged")
-                st = res["stores"][colo]
-                st["status"] = "merged"
-                st["lines"], st["added"] = dict(st["base_lines"]), []
-                st["colli"], st["amount"] = _totals(st["lines"], items)
-            for sid in pulled:
-                st = res["stores"][sid]
-                st["status"] = "pulled"
-                st["lines"], st["added"] = dict(st["base_lines"]), []
-                st["colli"], st["amount"] = _totals(st["lines"], items)
-            if pulled:
-                how.append("pulled")
-            if trial_lent:
-                how.append("borrow")
-            members, lent = trial_members, trial_lent
-            status, lines, added, per_store = s2
-    # 借出的门店：直接送店的箱数减掉借出去的
-    for sid, rows in lent.items():
+    def to_base(sid, status):
         st = res["stores"][sid]
-        for row, n in rows.items():
-            st["lines"][row] = st["lines"].get(row, 0) - n
-            if st["lines"][row] <= 0:
-                st["lines"].pop(row)
-        st["lent"] = [(row, n, n * items[row]["pack"] * items[row]["price"]) for row, n in rows.items() if n > 0]
+        st["status"] = status
+        st["lines"], st["added"] = dict(st["base_lines"]), []
         st["colli"], st["amount"] = _totals(st["lines"], items)
-    c, a = _totals(lines, items)
-    b0c, b0a = _totals(_bms_state(scheda, res, to_bms, {}, items)[0], items)
-    if mode == "all_bms":
+
+    how = []
+    if mode == "all_bms":                                   # 手动：所有要订的门店整单并进 BMS
+        members = [sid for sid, st in res["stores"].items() if st["status"] != "none"]
+        for sid in members:
+            to_base(sid, "bms")
         how = ["manual"]
-        if status == "short":
-            status = "forced"
-    b = {"stores": members, "lenders": {k: v for k, v in lent.items() if v}, "colli": c, "amount": a,
-         "lines": lines, "added": added, "status": status, "how": how, "before_colli": b0c, "before_amount": b0a}
+    elif mode == "manual":                                  # 手动选哪几家进 BMS（自己够起订量的也可以并进来）
+        pick = picks or {}
+        members = [sid for sid in (pick.get("stores") or []) if sid in res["stores"]
+                   and res["stores"][sid]["status"] != "none"]
+        for sid in members:
+            to_base(sid, "bms" if sid in to_bms else "pulled")
+        for sid in to_bms:
+            if sid not in members:
+                res["stores"][sid]["status"] = "wait"
+        how = ["picked"]
+    else:
+        # 系统建议（2026-10-22 用户定的规则）：能单独送店的都单独送店，从不拆单借货、也不把它们拉进 BMS；
+        # 订不起来的门店按优先顺序（默认 3-4-5-2-1，只算参与 BMS 凑单的门店）一家一家并进 BMS，
+        # 够起订量就停（BMS 分货的门店越少越省事）；剩下的、不参与的、并完还不够的 → 这次不订，下次再看
+        if not to_bms:
+            return res
+        far = bms_far(fill, scheda)
+        order = [int(x) for x in (fill.get("bms_order") or BMS_ORDER)]
+        eligible = [sid for sid in order if sid in to_bms and sid not in far] + \
+                   [sid for sid in to_bms if sid not in order and sid not in far]
+        members, ok = [], False
+        for sid in eligible:
+            members.append(sid)
+            if evaluate(members)[0] != "short":
+                ok = True
+                break
+        for sid in to_bms:
+            if not ok or sid not in members:
+                res["stores"][sid]["status"] = "wait"
+        if not members:
+            return res
+        how = ["priority"]
+    if not members:
+        return res
+    status, lines, added, per_store = evaluate(members)
+    if status == "short" and (mode == "all_bms" or (mode == "manual" and (picks or {}).get("force"))):
+        status = "forced"
+    c, a = _totals(lines, items)
+    b0c, b0a = _totals(_bms_state(scheda, res, members, {}, items)[0], items)
+    b = {"stores": members, "lenders": {}, "colli": c, "amount": a, "lines": lines, "added": added,
+         "status": status, "how": how, "before_colli": b0c, "before_amount": b0a}
     # 凑单加的箱放在 BMS 里这个商品卖得最快的那家店
     involved = list(per_store.keys())
     for row, n, _ in added:
@@ -1086,6 +1077,39 @@ def plan_supplier(scheda, demand, fill=None, stores=None, colli=None, mode="auto
     b["per_store"] = per_store
     res["bms"] = b
     return res
+
+
+def urgent_share(scheda, lines, dem_rows, days=7, with_total=False):
+    """
+    一张单里「紧急缺货」商品占多少：库存够卖不到 days 天（默认一周）的商品个数 ÷ 这张单的商品个数。
+    返回 (占比 0~1, 紧急商品数)；with_total=True 时多返回商品总数。给起订量检查 / 配货结果标颜色用
+    """
+    items = {it["row"]: it for it in scheda.get("items") or []}
+    tot = n = 0
+    for row, c in (lines or {}).items():
+        if row not in items or c <= 0:
+            continue
+        tot += 1
+        d = (dem_rows or {}).get(row)
+        cd = cover_days(d) if d else None
+        if cd is not None and cd < days:
+            n += 1
+    share = n / tot if tot else 0.0
+    return (share, n, tot) if with_total else (share, n)
+
+
+def plan_urgent(scheda, plan, sid):
+    """某一张单的紧急占比（按商品个数）：门店（sid）用这家店的单；sid = None 是 BMS 单（各店并进来的部分合起来算）"""
+    if sid is not None:
+        st = (plan.get("stores") or {}).get(sid) or {}
+        return urgent_share(scheda, st.get("lines") or st.get("base_lines"), st.get("dem_rows"))
+    b = plan.get("bms") or {}
+    n = tot = 0
+    for s_, lines in (b.get("per_store") or {}).items():
+        _, k, t = urgent_share(scheda, lines, ((plan.get("stores") or {}).get(s_) or {}).get("dem_rows"), with_total=True)
+        n += k
+        tot += t
+    return (n / tot if tot else 0.0), n
 
 
 # =====================================================================
@@ -1316,10 +1340,11 @@ def _write_extra(xml, scheda, rows_vals, headers, row_map):
     return _set_row_cells(xml, values, styles)
 
 
-def write_order_file(scheda, per_store_lines, out_path, extra=None, headers=None):
+def write_order_file(scheda, per_store_lines, out_path, extra=None, headers=None, marks=None):
     """
     复制 SCHEDA → out_path，各门店页 Colli 列：per_store_lines 里有的门店写箱数，其余门店清空。
     extra：{门店号: {行号: [附加列的值]}}（extra_data），有的话在各门店页 IMPORTO 后面加 GIA、ROT.30d … 这些列。
+    marks：{门店页名: 去向文字}，写在汇总页（GRIGLIA PER TUTTI PDV）门店名上面。
     打开时让 Excel / WPS 重新计算合计。
     """
     colli_col = _col_letter(scheda["cols"]["colli"])
@@ -1343,10 +1368,16 @@ def write_order_file(scheda, per_store_lines, out_path, extra=None, headers=None
                 targets[p] = cells
                 if extra and sid in extra:
                     extra_by_path[p] = (extra[sid], rm)
+        grid = None
+        if marks:
+            grid = next((p for n, p in paths.items() if "GRIGLIA" in n.upper()), None)
+            sst = _shared_strings(zin) if grid else []
         with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zout:
             for item in zin.infolist():
                 data = zin.read(item.filename)
-                if item.filename in targets:
+                if grid and item.filename == grid and item.filename not in targets:
+                    data = _mark_griglia(data.decode("utf-8"), sst, marks).encode("utf-8")
+                elif item.filename in targets:
                     x = _set_cells(data.decode("utf-8"), colli_col, targets[item.filename], plain_col)
                     if item.filename in extra_by_path:
                         vals, rm = extra_by_path[item.filename]
@@ -1367,6 +1398,76 @@ def write_order_file(scheda, per_store_lines, out_path, extra=None, headers=None
     return out_path
 
 
+GRIGLIA_MARK = {"direct": "DIRETTO", "bms": "BMS"}     # 汇总页门店名上面写的去向
+
+
+def _shared_strings(z):
+    import html
+    try:
+        x = z.read("xl/sharedStrings.xml").decode("utf-8")
+    except KeyError:
+        return []
+    out = []
+    for si in re.finditer(r"<si\b[^>]*>(.*?)</si>", x, re.S):
+        out.append(html.unescape("".join(re.findall(r"<t\b[^>]*>(.*?)</t>", si.group(1), re.S))))
+    return out
+
+
+def _mark_griglia(xml, sst, marks):
+    """
+    汇总页（GRIGLIA PER TUTTI PDV）：在每个门店名的上一行写去向（marks: {门店页名: 文字}），
+    用门店名那一格的格式；门店名是合并格时上面也合并同样宽度。
+    """
+    import html
+    found = {}
+    for cm in _CELL_RE.finditer(xml):
+        r = int(cm.group(2))
+        if r < 2 or r > 15:
+            continue
+        cell = cm.group(0)
+        tag = cell.split(">")[0]
+        txt = None
+        v = re.search(r"<v>(.*?)</v>", cell, re.S)
+        if 't="s"' in tag and v:
+            i = int(v.group(1))
+            txt = sst[i] if 0 <= i < len(sst) else None
+        elif 't="inlineStr"' in tag or 't="str"' in tag:
+            t = re.search(r"<t\b[^>]*>(.*?)</t>", cell, re.S) or v
+            txt = html.unescape(t.group(1)) if t else None
+        name = _norm(txt) if txt else ""
+        for sheet in marks:
+            if name and name == _norm(sheet) and sheet not in found:
+                found[sheet] = (r, _col_num(cm.group(1)), _cell_style(cell, f"{cm.group(1)}{r}"))
+    if not found:
+        return xml
+    values, styles = {}, {}
+    merges = re.findall(r'<mergeCell ref="([A-Z]+)(\d+):([A-Z]+)(\d+)"\s*/>', xml)
+    new_merges = []
+    for sheet, (r, c, st) in found.items():
+        values.setdefault(r - 1, {})[c] = marks[sheet] or None
+        styles[(r - 1, c)] = st
+        for c1, r1, c2, r2 in merges:
+            if _col_num(c1) == c and int(r1) == r == int(r2) and _col_num(c2) > c:
+                rng = (c, r - 1, _col_num(c2))
+                clash = any(int(a2) <= r - 1 <= int(b2) and _col_num(a1) <= rng[2] and _col_num(b1) >= c
+                            for a1, a2, b1, b2 in merges)
+                if not clash:
+                    new_merges.append(f'<mergeCell ref="{c1}{r - 1}:{c2}{r - 1}"/>')
+                    for cc in range(c + 1, rng[2] + 1):
+                        values[r - 1].setdefault(cc, None)
+                        styles[(r - 1, cc)] = st
+    xml = _set_row_cells(xml, values, styles)
+    if new_merges:
+        m = re.search(r'<mergeCells\b[^>]*count="(\d+)"[^>]*>', xml)
+        if m:
+            tag = m.group(0).replace(f'count="{m.group(1)}"', f'count="{int(m.group(1)) + len(new_merges)}"')
+            xml = xml[:m.start()] + tag + "".join(new_merges) + xml[m.end():]
+        elif "</sheetData>" in xml:
+            xml = xml.replace("</sheetData>", f'</sheetData><mergeCells count="{len(new_merges)}">'
+                              + "".join(new_merges) + "</mergeCells>", 1)
+    return xml
+
+
 def written_source(w, result=None):
     """生成的文件是哪个 SCHEDA 的：新版本记在第 7 项；老结果（只有 6 项）按「星期文件夹 + 供应商名」找回来"""
     if len(w) > 6:
@@ -1378,40 +1479,69 @@ def written_source(w, result=None):
     return None
 
 
+def written_files(written):
+    """生成的文件（去重，按顺序）：一家供应商一个文件，written 里每个去向一行，几行可能是同一个文件"""
+    seen, out = set(), []
+    for w in written:
+        if w[0] not in seen:
+            seen.add(w[0])
+            out.append(w[0])
+    return out
+
+
+def plan_marks(plan):
+    """{门店页名: 去向文字}：直接送店 / 并进 BMS 的；其余门店（这次不订）留空"""
+    marks = {name: "" for name in STORE_SHEETS.values()}
+    for sid, st in plan["stores"].items():
+        if st["status"] in ("direct", "filled") and sid in STORE_SHEETS:
+            marks[STORE_SHEETS[sid]] = GRIGLIA_MARK["direct"]
+    b = plan.get("bms")
+    if bms_ordered(b):
+        for sid in (b.get("per_store") or {}):
+            if sid in STORE_SHEETS:
+                marks[STORE_SHEETS[sid]] = GRIGLIA_MARK["bms"]
+    return marks
+
+
 def write_plans(results, out_root, date_tag=None, on_file=None, calc=None):
     """
-    results: [(星期, scheda, plan)]。每家直接送店的门店一个文件，BMS 一个文件。
+    results: [(星期, scheda, plan)]。一家供应商一个文件：直接送店的门店和并进 BMS 的门店都写在同一个文件里，
+    汇总页门店名上面写明去向（DIRETTO / BMS）。
     calc: compute() 的结果；有的话各门店页加上 GIA、ROT.30d … 附加数据列
-    返回 [(文件路径, 供应商, 去向, 箱数, 金额, 状态)]
+    返回 [(文件路径, 供应商, 去向, 箱数, 金额, 状态, SCHEDA 路径)]：每个去向一行（同一家供应商的路径相同）
     """
     date_tag = date_tag or datetime.now().strftime("%d%m")
     written = []
-    total = sum(sum(1 for st in plan["stores"].values() if st["status"] in ("direct", "filled")) +
-                (1 if bms_ordered(plan.get("bms")) else 0) for _, _, plan in results)
-    on_file = on_file or _noop
+    todo = []
     for day, sc, plan in results:
+        direct = [(sid, st) for sid, st in plan["stores"].items() if st["status"] in ("direct", "filled")]
+        b = plan.get("bms")
+        if direct or bms_ordered(b):          # BMS 不够起订量的不算（这次不订）
+            todo.append((day, sc, plan, direct, b if bms_ordered(b) else None))
+    on_file = on_file or _noop
+    for n, (day, sc, plan, direct, b) in enumerate(todo):
         folder = os.path.join(out_root, day)
         os.makedirs(folder, exist_ok=True)
         safe = re.sub(r'[\\/:*?"<>|]', "_", sc["name"])
         extra = extra_data(sc, calc.get("demand"), calc.get("base"), calc.get("days")) if calc else None
         heads = extra_headers(calc.get("days")) if calc else None
         extra, heads = file_extra(extra, heads)
-        for sid, st in plan["stores"].items():
-            if st["status"] in ("direct", "filled"):
-                p = os.path.join(folder, f"Ordine_{safe}_{STORE_SHEETS[sid]}_{date_tag}.xlsx")
-                on_file(len(written), total, os.path.basename(p))
-                write_order_file(sc, {sid: st["lines"]}, p, extra, heads)
-                written.append((p, sc["name"], STORE_SHEETS[sid], st["colli"], st["amount"], st["status"], sc["path"]))
-        b = plan.get("bms")
-        if bms_ordered(b):        # BMS 不够起订量的不生成文件（这次不订）
-            p = os.path.join(folder, f"Ordine_{safe}_{BMS}_{date_tag}.xlsx")
-            on_file(len(written), total, os.path.basename(p))
-            write_order_file(sc, b["per_store"], p, extra, heads)
+        lines = {sid: st["lines"] for sid, st in direct}
+        if b:
+            for sid, ln in (b.get("per_store") or {}).items():
+                lines[sid] = ln
+        p = os.path.join(folder, f"Ordine_{safe}_{date_tag}.xlsx")
+        on_file(n, len(todo), os.path.basename(p))
+        write_order_file(sc, lines, p, extra, heads, marks=plan_marks(plan))
+        for sid, st in direct:
+            written.append((p, sc["name"], STORE_SHEETS[sid], st["colli"], st["amount"], st["status"], sc["path"]))
+        if b:
             written.append((p, sc["name"], BMS, b["colli"], b["amount"], b["status"], sc["path"]))
     return written
 
 
 STATUS_TEXT = {"direct": "直接送店", "filled": "凑单后送店", "bms": "并入 BMS", "none": "不用订",
+               "wait": "这次不订（下次再看）",
                "short": "BMS 仍不够起订量", "merged": "并入 BMS（同一仓库）", "dropped": "不订（手动）",
                "pulled": "并入 BMS（帮其他店凑起订量）"}
 # 去向是 BMS 的那一行：由 BMS 订货，到货后仓库分给各门店
@@ -1489,6 +1619,8 @@ def bms_note(b):
         parts.append("够起订量的门店整单并入，让其他店也订得起来")
     if "manual" in b.get("how", []):
         parts.append("手动选择全部并入 BMS")
+    if "picked" in b.get("how", []):
+        parts.append("手动选的门店")
     if b.get("lenders"):
         parts.append("借货：" + "、".join(f"{STORE_SHEETS[s]} {sum(r.values()):g} 箱" for s, r in b["lenders"].items()))
     return "；".join(parts)
@@ -1645,9 +1777,11 @@ def compute(db, schede_paths, stores, days_list, reorder_cycle, log=print, use_s
             "stores": list(stores), "days": list(days_list)}
 
 
-def allocate(calc, colli, fill, out_root, log=print, date_tag=None, edited=None, only=None, progress=None, modes=None):
+def allocate(calc, colli, fill, out_root, log=print, date_tag=None, edited=None, only=None, progress=None, modes=None,
+             picks=None):
     """
     calc: compute() 的结果；colli: {路径: {门店号: {行号: 箱数}}}（建议值或手动改过的值）。
+    picks: {路径: {"stores": [...], "force": bool}}：配货前「BMS 调整」手动定的进 BMS 的门店（按 manual 配）
     only: 只处理这些路径（None = 全部）。返回 {"results", "written", "summary", "out_root"}
     """
     progress = progress or _noop
@@ -1656,8 +1790,9 @@ def allocate(calc, colli, fill, out_root, log=print, date_tag=None, edited=None,
     todo = [sc for sc in calc["schede"] if only is None or sc["path"] in only]
     for i, sc in enumerate(todo):
         progress(0, "running", f"{i + 1} / {len(todo)}", sc["name"], 40.0 * i / max(1, len(todo)))
+        pk = (picks or {}).get(sc["path"])
         plan = plan_supplier(sc, calc["demand"], fill, stores, colli.get(sc["path"], {}),
-                             (modes or {}).get(sc["path"], "auto"))
+                             "manual" if pk is not None else (modes or {}).get(sc["path"], "auto"), picks=pk)
         results.append((sc["day"], sc, plan))
         parts = [f"{STORE_SHEETS[s]}:{status_text(STORE_SHEETS[s], st['status'])}" for s, st in plan["stores"].items()
                  if st["status"] != "none"]
@@ -1669,7 +1804,7 @@ def allocate(calc, colli, fill, out_root, log=print, date_tag=None, edited=None,
     written = write_plans(results, out_root, date_tag,
                           lambda k, n, name: progress(1, "running", f"{k + 1} / {n}", name, 40.0 + 50.0 * k / max(1, n)),
                           calc=calc)
-    progress(1, "done", f"{len(written)}", "", 90.0)
+    progress(1, "done", f"{len(written_files(written))}", "", 90.0)
     progress(2, "running", "", "", 92.0)
     summary = os.path.join(out_root, f"配货汇总_{date_tag or datetime.now().strftime('%d%m')}.xlsx")
     export_summary(results, summary, calc["demand"], calc["base"], edited, calc.get("days"))
@@ -1683,23 +1818,24 @@ def allocate(calc, colli, fill, out_root, log=print, date_tag=None, edited=None,
             log(f"⚠ 调货单生成失败：{e}")
             tfile = None
     progress(2, "done", "", "", 100.0)
-    log(f"完成：生成 {len(written)} 个订单文件 → {out_root}")
+    log(f"完成：生成 {len(written_files(written))} 个订单文件 → {out_root}")
     return {"results": results, "written": written, "summary": summary, "out_root": out_root,
             "transfers_file": tfile}
 
 
-def reallocate_one(calc, colli, fill, result, index, mode, edited=None, log=print):
+def reallocate_one(calc, colli, fill, result, index, mode, edited=None, log=print, picks=None):
     """
     配货结果页手动改一个供应商的去向：重新配这一家，删掉它在这次文件夹里的旧文件、写新文件，重做汇总表。
     只删这一个 SCHEDA（这个星期的这家供应商）的文件：同一家供应商在别的星期也有 SCHEDA 时不能动它的文件。
     """
     day, sc, _old = result["results"][index]
-    plan = plan_supplier(sc, calc["demand"], fill, calc["stores"], colli.get(sc["path"], {}), mode)
+    plan = plan_supplier(sc, calc["demand"], fill, calc["stores"], colli.get(sc["path"], {}), mode, picks=picks)
     keep = []
     for w in result["written"]:
         if written_source(w, result) == sc["path"]:
             try:
-                os.remove(w[0])
+                if os.path.exists(w[0]):
+                    os.remove(w[0])
             except OSError:
                 pass
         else:
@@ -1711,7 +1847,7 @@ def reallocate_one(calc, colli, fill, result, index, mode, edited=None, log=prin
     order = {x[1]["path"]: k for k, x in enumerate(results)}
     written = sorted(keep + new, key=lambda w: order.get(written_source(w, result), 0))
     export_summary(results, result["summary"], calc["demand"], calc["base"], edited, calc.get("days"))
-    log(f"手动调整 {sc['name']}：{mode}，生成 {len(new)} 个文件")
+    log(f"手动调整 {sc['name']}：{mode}，生成 {len(written_files(new))} 个文件")
     return dict(result, results=results, written=written)
 
 

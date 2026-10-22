@@ -20,14 +20,11 @@ def _card(title, sub=""):
     v = QVBoxLayout(f)
     v.setContentsMargins(18, 14, 18, 16)
     v.setSpacing(10)
-    t = QLabel(title)
+    t = QLabel(title + ("  ⓘ" if sub else ""))
     t.setObjectName("Section")
-    v.addWidget(t)
     if sub:
-        s = QLabel(sub)
-        s.setObjectName("Faint")
-        s.setWordWrap(True)
-        v.addWidget(s)
+        t.setToolTip(sub)              # 界面要简洁：说明放在鼠标提示里
+    v.addWidget(t)
     return f, v
 
 
@@ -69,9 +66,7 @@ class SettingsPage:
 
         # 算法
         c, v = _card(tr("订货算法"), tr("门店配货和批发商比价 · 检查清单共用这套设置"))
-        self.algo_info = QLabel("")
-        self.algo_info.setWordWrap(True)
-        v.addWidget(self.algo_info)
+        self.algo_info = QLabel("")           # 不显示，参数说明放在算法下拉的鼠标提示里
         row = QHBoxLayout()
         row.addWidget(QLabel(tr("算法")))
         self.engine = QComboBox()
@@ -113,21 +108,18 @@ class SettingsPage:
         grid.addWidget(c, 1, 0)
 
         # 门店与仓库
-        c, v = _card(tr("门店与仓库"), tr("配货时用：远店不借货；BMS 不够起订量时，先把同仓门店整单并入，再向同城门店借不紧急的货"))
+        c, v = _card(tr("门店与仓库"), tr("门店配货的「配货设置」里改：哪些门店参与 BMS 凑单、先后顺序"))
         fill = dict(S.DEFAULT_FILL, **(so.get("fill") or {}))
         far = set(fill.get("far_stores") or [])
-        colo = fill.get("colocated_store")
         self.store_chips = []
         for sid, name in S.STORE_SHEETS.items():
             r = QHBoxLayout()
             n = QLabel(f"{sid} · {name}")
             r.addWidget(n, 1)
             if sid in far:
-                tag, kind = tr("远店 · 不借货"), "warn"
-            elif sid == colo:
-                tag, kind = tr("和 BMS 同一个仓库"), "ok"
+                tag, kind = tr("不参与 BMS 凑单"), "warn"
             else:
-                tag, kind = tr("同城"), "accent"
+                tag, kind = tr("参与 BMS 凑单"), "accent"
             ch = chip(tag, kind)
             self.store_chips.append((ch, tag, kind))
             r.addWidget(ch)
@@ -153,7 +145,8 @@ class SettingsPage:
         r.addStretch()
         v.addLayout(r)
         g2 = QGridLayout()
-        g2.addWidget(QLabel(tr("用户名称")), 0, 0)
+        from erp_widgets import tip_label
+        g2.addWidget(tip_label(tr("用户名称"), tr("语言在右上角切换；用户名称重启后显示在右上角")), 0, 0)
         self.user_name = QLineEdit(self.settings.get("user_name") or tr("采购部"))
         g2.addWidget(self.user_name, 0, 1)
         g2.addWidget(QLabel(tr("所在位置")), 1, 0)
@@ -163,9 +156,7 @@ class SettingsPage:
         sv = QPushButton(tr("保存"))
         sv.clicked.connect(self._save_user)
         r = QHBoxLayout()
-        hint = QLabel(tr("语言在右上角切换；用户名称重启后显示在右上角"))
-        hint.setObjectName("Faint")
-        r.addWidget(hint, 1)
+        r.addStretch(1)
         r.addWidget(sv)
         v.addLayout(r)
         grid.addWidget(c, 2, 0)
@@ -194,8 +185,7 @@ class SettingsPage:
         ub.addWidget(cb)
         v.addLayout(ub)
         for a, b in ((tr("版本"), f"{tr('CASA&TE采购系统')} {APP_VERSION}"),
-                     (tr("设置文件"), SETTINGS_PATH),
-                     (tr("模块"), tr("采购管理（门店配货、批发商比价、历史记录、起订规则）；分货管理（分货数据处理、导入 / 导出）"))):
+                     (tr("设置文件"), SETTINGS_PATH)):
             r = QHBoxLayout()
             la = QLabel(a)
             la.setObjectName("Faint")
@@ -238,6 +228,7 @@ class SettingsPage:
         self.engine.setCurrentIndex(max(0, self.engine.findData(p.get("engine", "v2"))))
         self.engine.blockSignals(False)
         self.algo_info.setText(algo_summary(p))
+        self.engine.setToolTip(algo_summary(p))
         for e, getter in self.paths.values():
             e.setText(getter())
         self.refresh_update()

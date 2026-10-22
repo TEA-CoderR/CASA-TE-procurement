@@ -57,7 +57,7 @@ COMPANY_DEFAULTS = {
     # 门店配货：订货周期、凑单 / 借货、门店间调货；订货明细的列顺序、显示哪些列、列宽
     "store_orders": {
         "cycle": 30, "days": [30, 60, 90, 180], "use_supplier_cycles": True,
-        "fill": {"max_amount_gap": 30.0, "max_colli_gap": 3, "max_stock_days": 60, "fill_bms": True, "merge_colocated": True, "borrow": True, "borrow_min_days": 30, "borrow_urgent": True, "merge_direct": True, "far_stores": [1], "colocated_store": 3},
+        "fill": {"max_amount_gap": 30.0, "max_colli_gap": 3, "max_stock_days": 60, "fill_bms": True, "merge_colocated": True, "borrow": True, "borrow_min_days": 30, "borrow_urgent": True, "merge_direct": True, "far_stores": [1], "colocated_store": 3, "bms_order": [3, 4, 5, 2, 1]},
         "transfer": {"enabled": True, "mode": "waste", "waste_ratio": 0.5, "item_min_value": 10.0, "min_value": 0.0, "keep_cycles": 1.0, "exclude_stores": [1]},
         "detail_columns": [4, 36, 5, 18, 19, 6, 20, 22, 11, 7, 8, 9, 10, 23, 12, 15, 2, 16, 33, 32, 13, 17, 35, 1, 0, 3, 34, 14, 21, 24, 25, 26, 27, 28, 29, 30, 31], "detail_columns_ver": 5,
         "detail_cols_hidden": [0, 1, 3, 14, 21, 24, 25, 26, 27, 28, 29, 30, 31, 34], "detail_cols_hidden_ver": 4,

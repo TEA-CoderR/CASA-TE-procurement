@@ -73,12 +73,12 @@ def test_pallet_without_size_never_direct_but_can_force():
     sc = _scheda({"pallets": 1})
     dem = {1: {"1": {"sugg": 500, "daily": 5, "inv": 0}}, 2: {"1": {"sugg": 300, "daily": 5, "inv": 0}}}
     p = S.plan_supplier(sc, dem, FILL, [1, 2])
-    assert p["stores"][1]["status"] == "bms" and p["bms"]["status"] == "short"
+    assert p["stores"][1]["status"] == "wait" and p["bms"]["status"] == "short"
     p = S.plan_supplier(sc, dem, FILL, [1, 2], mode="all_bms")
     assert p["bms"]["status"] == "forced"
     sc = _scheda({"pallets": 1, "per_pallet": 40})                # 填了每板 40 箱 → 50 箱够
     p = S.plan_supplier(sc, dem, FILL, [1, 2])
-    assert p["stores"][1]["status"] == "direct" and p["stores"][2]["status"] == "bms"
+    assert p["stores"][1]["status"] == "direct" and p["stores"][2]["status"] == "wait"
 
 
 # ---------------------------------------------------------------------
@@ -194,3 +194,41 @@ def test_write_extra_columns(tmp_path):
     assert ws.cell(3, 9).value is None                                     # 数据库没有的商品留空
     assert ws.cell(2, 8).value == "=F2*E2*G2"                              # 公式不动
     assert load_workbook(out)["FOIANO"].cell(1, 9).value is None          # 没算的门店不加
+
+
+def test_one_file_per_supplier(tmp_path, monkeypatch):
+    """一家供应商只生成一个文件：直接送店和 BMS 写在同一个文件里，汇总页标明去向"""
+    got = []
+
+    def fake_write(sc, per_store, out, *a, **k):
+        got.append((dict(per_store), k.get("marks")))
+        open(out, "w").close()
+        return out
+    monkeypatch.setattr(S, "write_order_file", fake_write)
+    sc = _scheda({"colli": 0, "amount": 0}, "ACME", os.path.join("x", "周一", "SCHEDA ACME.xlsx"))
+    plan = {"stores": {1: {"status": "direct", "lines": {7: 2}, "colli": 2, "amount": 20},
+                       3: {"status": "bms", "lines": {8: 1}}, 4: {"status": "wait", "lines": {9: 1}}},
+            "bms": {"status": "direct", "colli": 1, "amount": 10, "per_store": {3: {8: 1}}}}
+    w = S.write_plans([("周一", sc, plan)], str(tmp_path), "1810")
+    assert len(S.written_files(w)) == 1 and [x[2] for x in w] == ["FOIANO", S.BMS]
+    assert os.path.basename(w[0][0]) == "Ordine_ACME_1810.xlsx"
+    lines, marks = got[0]
+    assert lines == {1: {7: 2}, 3: {8: 1}}
+    assert marks["FOIANO"] == S.GRIGLIA_MARK["direct"] and marks["S.FILIPPO"] == S.GRIGLIA_MARK["bms"]
+    assert marks["S.MARCO"] == ""
+
+
+def test_allocate_uses_bms_picks(tmp_path, monkeypatch):
+    """起订量检查「BMS 调整」配货前定好的门店：配货时整单进 BMS，没勾的够起订量就直送"""
+    monkeypatch.setattr(S, "write_order_file", lambda sc, per, out, *a, **k: open(out, "w").close() or out)
+    sc = _scheda({"colli": 0, "amount": 0}, "ACME", os.path.join("x", "周一", "SCHEDA ACME.xlsx"))
+    sc["day"] = "周一"
+    full = lambda n: {"sugg": n, "daily": 1, "inv": 0, "sales": [30, 60, 90, 180], "inv_days": 0, "decision": "", "tier": "A"}
+    dem = {1: {"1": full(30)}, 2: {"2": full(12)}}
+    calc = {"schede": [sc], "demand": dem, "stores": [1, 2], "base": {}, "days": [30, 60, 90, 180]}
+    colli = {sc["path"]: S.base_colli(sc, dem, [1, 2])}
+    res = S.allocate(calc, colli, FILL, str(tmp_path), log=lambda *_: None, date_tag="1810",
+                     picks={sc["path"]: {"stores": [2], "force": True}})
+    plan = res["results"][0][2]
+    assert plan["bms"]["stores"] == [2] and plan["stores"][2]["status"] == "pulled"
+    assert plan["stores"][1]["status"] == "direct"

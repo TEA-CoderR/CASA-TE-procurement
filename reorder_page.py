@@ -110,15 +110,14 @@ class AlgoDialog(QDialog):
         self.settings = settings
         p = algo_params(settings)
         lay = QVBoxLayout(self)
-        intro = QLabel(tr("新算法：目标库存 = 下次到货前要卖的量 + 安全库存（按销量波动和服务水平算），建议量 = 目标库存 − 现有库存。日均 = 近 4 周 50% + 13 周 30% + 26 周 20%，可按去年同期做季节调整。"))
-        intro.setWordWrap(True)
-        intro.setObjectName("Faint")
-        lay.addWidget(intro)
+        from erp_widgets import tip_label
+        self.setToolTip(tr("新算法：目标库存 = 下次到货前要卖的量 + 安全库存（按销量波动和服务水平算），建议量 = 目标库存 − 现有库存。日均 = 近 4 周 50% + 13 周 30% + 26 周 20%，可按去年同期做季节调整。"))
         g = QGridLayout()
+        g.setHorizontalSpacing(14)
         self.w = {}
 
         def spin(key, label, lo, hi, tip, row, dec=None, scale=1):
-            g.addWidget(QLabel(label), row, 0)
+            g.addWidget(tip_label(label, tip), row, 0)
             if dec is None:
                 sb = QSpinBox()
                 sb.setRange(lo, hi)
@@ -129,11 +128,8 @@ class AlgoDialog(QDialog):
                 sb.setRange(lo, hi)
                 sb.setValue(float(p[key]) * scale)
             sb.setFixedWidth(90)
+            sb.setToolTip(tip)
             g.addWidget(sb, row, 1)
-            t = QLabel(tip)
-            t.setObjectName("Faint")
-            t.setWordWrap(True)
-            g.addWidget(t, row, 2)
             self.w[key] = (sb, scale)
 
         spin("review_days", tr("订货周期（天）"), 1, 120, tr("多久下一次单。每周订 = 7；这次订的要卖到下次订的货到为止"), 0)
@@ -142,19 +138,21 @@ class AlgoDialog(QDialog):
         spin("max_stock_days", tr("平均压货最多（天）"), 1, 365, tr("平均库存最多够卖几天（只限制卖得快的商品；卖得慢的按服务水平保证不断货）"), 3)
         spin("pack_threshold", tr("整箱取整门槛 %"), 0, 100, tr("零头 ≥ 一箱的这个比例才多订一箱；一箱都不到时，只有下次到货前会卖断才订"), 4, scale=100)
         spin("min_shelf", tr("最少陈列件数"), 0, 50, tr("近 13 周有销量的商品至少保留几件"), 5)
-        lay.addLayout(g)
-        self.abc = QCheckBox(tr("按 ABC 调整服务水平（A +2.5%，C −5%；ABC 按本店近 13 周销售额帕累托）"))
+        self.abc = QCheckBox(tr("ABC 调整服务水平"))
+        self.abc.setToolTip(tr("按 ABC 调整服务水平（A +2.5%，C −5%；ABC 按本店近 13 周销售额帕累托）"))
         self.abc.setChecked(bool(p["abc_service"]))
-        self.season = QCheckBox(tr("用去年同期做季节调整（数据不够一年或量太小时不调整）"))
+        self.season = QCheckBox(tr("季节调整"))
+        self.season.setToolTip(tr("用去年同期做季节调整（数据不够一年或量太小时不调整）"))
         self.season.setChecked(bool(p["season"]))
-        lay.addWidget(self.abc)
-        lay.addWidget(self.season)
+        g.addWidget(self.abc, 6, 0, 1, 2)
+        g.addWidget(self.season, 7, 0, 1, 2)
+        lay.addLayout(g)
         bb = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel | QDialogButtonBox.RestoreDefaults)
         bb.accepted.connect(self.save)
         bb.rejected.connect(self.reject)
         bb.button(QDialogButtonBox.RestoreDefaults).clicked.connect(self.defaults)
         lay.addWidget(bb)
-        self.resize(640, 0)
+        self.resize(360, 0)
 
     def defaults(self):
         import forecast as F
@@ -210,9 +208,11 @@ def algo_widgets(page, ui):
             engine.blockSignals(True)
             engine.setCurrentIndex(i)
             engine.blockSignals(False)
-        info.setText(algo_summary(cur))
+        info.setText("ⓘ")
+        info.setToolTip(algo_summary(cur))
+        engine.setToolTip(algo_summary(cur))
         v1 = cur["engine"] == "v1"
-        for w in (getattr(page, "cycle", None), getattr(page, "use_cfg", None)):
+        for w in (getattr(page, "cycle", None),):   # 「按配置文件周期」两种算法都能用
             if w is not None:
                 if not hasattr(w, "_tip0"):
                     w._tip0 = w.toolTip()

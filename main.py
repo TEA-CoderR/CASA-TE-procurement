@@ -418,9 +418,7 @@ class SupplierDropDialog(QDialog):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(20, 18, 20, 16)
         lay.setSpacing(10)
-        t = QLabel(tr("每个新文件替换哪一家的旧报价？旧文件会挪进 distribuire\\_旧文件（不删除）。"))
-        t.setWordWrap(True)
-        lay.addWidget(t)
+        self.setToolTip(tr("每个新文件替换哪一家的旧报价？旧文件会挪进 distribuire\\_旧文件（不删除）。"))
         g = QGridLayout()
         g.setHorizontalSpacing(12)
         g.setVerticalSpacing(8)
@@ -577,16 +575,15 @@ class RuleDialog(QDialog):
             l.setWordWrap(True)
             return l
 
+        from erp_widgets import tip_label
         g.addWidget(QLabel(tr("供应商名称")), 0, 0)
         g.addWidget(self.name, 0, 1)
-        g.addWidget(QLabel(tr("文件名关键字")), 1, 0)
+        g.addWidget(tip_label(tr("文件名关键字"), tr("文件名里有这几个字，就算这家。比如 mega。")), 1, 0)
         g.addWidget(self.kw, 1, 1)
-        g.addWidget(hint(tr("文件名里有这几个字，就算这家。比如 mega。")), 2, 1)
-        g.addWidget(QLabel(tr("起订箱数")), 3, 0)
+        g.addWidget(tip_label(tr("起订箱数"), tr("填 0 就是不限。金额 = 净价 × 箱数。")), 3, 0)
         g.addWidget(self.colli, 3, 1)
-        g.addWidget(QLabel(tr("起订金额")), 4, 0)
+        g.addWidget(tip_label(tr("起订金额"), tr("填 0 就是不限。金额 = 净价 × 箱数。")), 4, 0)
         g.addWidget(self.amount, 4, 1)
-        g.addWidget(hint(tr("填 0 就是不限。金额 = 净价 × 箱数。")), 5, 1)
         lay.addLayout(g)
 
         # 条件：达到起订箱数 / 达到起订金额 / 都要达到
@@ -631,15 +628,12 @@ class RuleDialog(QDialog):
         lim.setVerticalSpacing(8)
         self.manual_extra = money_box(rule.get("manual_extra", 5))
         self.drop_extra = money_box(rule.get("drop_extra", 30))
-        lim.addWidget(QLabel(tr("手动调整线")), 0, 0)
+        lim.addWidget(tip_label(tr("手动调整线"), tr("多花超过这个数，打开手动调整。") + tr("填 0 就是不用这条线。")), 0, 0)
         lim.addWidget(self.manual_extra, 0, 1)
-        lim.addWidget(hint(tr("多花超过这个数，打开手动调整。")), 0, 2)
-        lim.addWidget(QLabel(tr("放弃供应商线")), 1, 0)
+        lim.addWidget(tip_label(tr("放弃供应商线"), tr("多花超过这个数，问你要不要放弃这家。") + tr("填 0 就是不用这条线。")), 1, 0)
         lim.addWidget(self.drop_extra, 1, 1)
-        lim.addWidget(hint(tr("多花超过这个数，问你要不要放弃这家。")), 1, 2)
         lim.setColumnStretch(2, 1)
         lay.addLayout(lim)
-        lay.addWidget(hint(tr("填 0 就是不用这条线。")))
         self.enabled = Toggle(tr("启用这条规则"), rule.get("enabled", True))
         lay.addWidget(self.enabled)
 
@@ -1297,9 +1291,9 @@ class TransferSettingsDialog(QDialog):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(22, 18, 22, 16)
         lay.setSpacing(10)
-        t = QLabel(tr("门店之间调货：要的件数远小于一箱时，从别的门店调多出来的货，少订一箱"))
+        t = QLabel(tr("门店间调货") + "  ⓘ")
         t.setObjectName("Section")
-        t.setWordWrap(True)
+        t.setToolTip(tr("门店之间调货：要的件数远小于一箱时，从别的门店调多出来的货，少订一箱"))
         lay.addWidget(t)
         self.box = TransferBox(so.get("transfer"), far)
         lay.addWidget(self.box)
@@ -1307,7 +1301,7 @@ class TransferSettingsDialog(QDialog):
         bb.accepted.connect(self.save)
         bb.rejected.connect(self.reject)
         lay.addWidget(bb)
-        self.setMinimumWidth(620)
+        self.setMinimumWidth(420)
 
     def save(self):
         import store_orders as SO
@@ -2405,10 +2399,8 @@ class SupplierNamesDialog(QDialog):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(20, 18, 20, 16)
         lay.setSpacing(10)
-        t = QLabel(tr("供应商文件名每周会变，有的文件名里也看不出是哪家（比如 formattato_059603）。在这里给每个文件起个名字："
-                      "「管理方案」里排除的关键词、起订规则都会同时按文件名和这个名字找。拖入新文件替换旧文件时，名字会自动带到新文件上。"))
-        t.setWordWrap(True)
-        lay.addWidget(t)
+        self.setToolTip(tr("供应商文件名每周会变，有的文件名里也看不出是哪家（比如 formattato_059603）。在这里给每个文件起个名字："
+                           "「管理方案」里排除的关键词、起订规则都会同时按文件名和这个名字找。拖入新文件替换旧文件时，名字会自动带到新文件上。"))
         self.table = QTableWidget(len(self.headers), 2)
         self.table.setHorizontalHeaderLabels([tr("供应商文件"), tr("供应商名称")])
         self.table.verticalHeader().setVisible(False)
@@ -2601,17 +2593,13 @@ class ScenarioSettingsDialog(QDialog):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(20, 18, 20, 16)
         lay.setSpacing(10)
-        t = QLabel(tr("每个方案排除哪些供应商：写供应商名称或文件名里的关键词，几个用逗号分开（不分大小写）。第一个方案是对比的基准，一般不排除任何供应商。"))
-        t.setWordWrap(True)
-        lay.addWidget(t)
+        tip = tr("每个方案排除哪些供应商：写供应商名称或文件名里的关键词，几个用逗号分开（不分大小写）。第一个方案是对比的基准，一般不排除任何供应商。")
         if suppliers:
             import supplier_names as SN
-            sl = QLabel(tr("这次的供应商：{0}", tr("、").join(
+            tip += "\n\n" + tr("这次的供应商：{0}", tr("、").join(
                 f"{SN.label_of(h, settings)}（{short(h)}）" if SN.label_of(h, settings) != short(h) else short(h)
-                for h in suppliers)))
-            sl.setObjectName("Faint")
-            sl.setWordWrap(True)
-            lay.addWidget(sl)
+                for h in suppliers))
+        self.setToolTip(tip)
         self.table = QTableWidget(0, 2)
         self.table.setHorizontalHeaderLabels([tr("方案名"), tr("排除的供应商（关键词）")])
         self.table.verticalHeader().setVisible(False)
@@ -3931,9 +3919,7 @@ class MainWindow(QMainWindow):
             b.clicked.connect(fn)
             acts.addWidget(b)
         acts.addStretch()
-        h = QLabel(tr("双击一行也可以编辑。设置文件：{0}", SETTINGS_PATH))
-        h.setObjectName("Faint")
-        acts.addWidget(h)
+        self.rules_table.setToolTip(tr("双击一行也可以编辑。设置文件：{0}", SETTINGS_PATH))
         p.lay.addLayout(acts)
         lay.addWidget(p)
         lay.addStretch()
@@ -4698,10 +4684,16 @@ class MainWindow(QMainWindow):
         return tr("多方案对比：{0}（处理时对比后由你选）", tr("、").join(tr(d["name"]) for d in defs))
 
     def refresh_rule_line(self):
+        """设置窗口里只显示一行短的（几条起订规则），完整说明放在鼠标提示里（界面要简洁）"""
         self._refresh_rule_line()
+        full = self.rule_line.text()
         for extra in (self._scenario_line(), self._transfer_line()):
             if extra:
-                self.rule_line.setText(self.rule_line.text() + "\n" + extra)
+                full += "\n" + extra
+        n = sum(1 for r in settings["rules"] if r.get("enabled", True))
+        short = tr("起订量凑单：关") if not self.t_min.isChecked() else tr("起订规则 {0} 条", n)
+        self.rule_line.setText(short + "  ⓘ")
+        self.rule_line.setToolTip(full.replace("　　", "\n"))
 
     def _refresh_rule_line(self):
         if not self.t_min.isChecked():

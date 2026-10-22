@@ -410,7 +410,21 @@ def compute_suggestions(db, store_id, product_codes, days_list=None, reorder_cyc
     if raw_inv is not None and "CodArticolo" in result_df.columns:
         result_df = result_df.merge(raw_inv, on="CodArticolo", how="left")
     if use_v2 and len(result_df):
-        result_df = apply_v2(db, store_id, result_df, algo)
+        cycles = None
+        if use_supplier_cycles and "IDFornitore" in result_df.columns:
+            # 新算法也按配置文件：配置里单独设了周期的供应商用它自己的周期，其余用「算法设置」里的订货周期
+            base = algo.get("review_days", 7)
+            memo = {}
+
+            def cyc(sid):
+                if not pd.notna(sid):
+                    return base
+                sid = int(sid)
+                if sid not in memo:
+                    memo[sid] = AppConfig.get_supplier_reorder_cycle(sid, fallback=base)
+                return memo[sid]
+            cycles = [cyc(s) for s in result_df["IDFornitore"].tolist()]
+        result_df = apply_v2(db, store_id, result_df, algo, cycles=cycles)
     return result_df
 
 
@@ -454,8 +468,9 @@ def query_store_revenue(db, store_id, days=91):
     return {int(r["CodArticolo"]): float(r["rev"] or 0) for _, r in df.iterrows() if r["CodArticolo"] is not None}
 
 
-def apply_v2(db, store_id, result_df, algo, weekly=None, revenue=None, on_order=None):
-    """用新算法覆盖 suggested_order_qty / decision_text / priority / sales_tier / inventory_days 等列"""
+def apply_v2(db, store_id, result_df, algo, weekly=None, revenue=None, on_order=None, cycles=None):
+    """用新算法覆盖 suggested_order_qty / decision_text / priority / sales_tier / inventory_days 等列
+    cycles：每行的订货周期（按配置文件周期时）；None = 全部用 algo 的 review_days"""
     import forecast as F
     result_df = result_df.copy()
     codes = [int(c) for c in result_df["CodArticolo"].tolist()]
@@ -471,11 +486,17 @@ def apply_v2(db, store_id, result_df, algo, weekly=None, revenue=None, on_order=
     cols = {k: [] for k in ("suggested_order_qty", "decision_text", "priority", "sales_tier", "inventory_days",
                             "daily_rate", "safety_stock", "target_stock", "service_level", "season_factor",
                             "age_weeks", "weekly_26")}
-    for _, r in result_df.iterrows():
+    used = []
+    for i, (_, r) in enumerate(result_df.iterrows()):
         c = int(r["CodArticolo"])
         inv = float(r.get("store_inventory", 0) or 0)           # 已经把负数当 0
         tier = tiers.get(c, "C")
-        a = F.analyze(weekly.get(c, [0.0] * F.WEEKS), inv, tier, algo,
+        p = algo
+        if cycles is not None and i < len(cycles) and cycles[i] is not None \
+                and float(cycles[i]) != float(algo.get("review_days", 7)):
+            p = dict(algo, review_days=float(cycles[i]))
+        used.append(int(round(float(p.get("review_days", 7)))))
+        a = F.analyze(weekly.get(c, [0.0] * F.WEEKS), inv, tier, p,
                       total_inv=float(r.get("total_inventory", 0) or 0), on_order=float(on_order.get(c, 0) or 0))
         cols["suggested_order_qty"].append(a["qty"])
         cols["decision_text"].append(a["decision"])
@@ -491,7 +512,7 @@ def apply_v2(db, store_id, result_df, algo, weekly=None, revenue=None, on_order=
         cols["weekly_26"].append(list(reversed(weekly.get(c, [0.0] * F.WEEKS)[:26])))   # 旧 → 新，画图用
     for k, v in cols.items():
         result_df[k] = v
-    result_df["reorder_cycle_used"] = int(algo.get("review_days", 7))
+    result_df["reorder_cycle_used"] = used if used else int(algo.get("review_days", 7))
     result_df["algo"] = "v2"
     return result_df
 

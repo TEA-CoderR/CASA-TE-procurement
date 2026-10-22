@@ -288,3 +288,18 @@ def test_store_orders_frozen_transfers():
     out = S.apply_transfers(calc, {"item_min_value": 0}, far_stores=[])
     assert [(t["from"], t["to"], t["pieces"], t["manual"]) for t in out] == [(3, other, 3, True)]
     assert calc["base"]["p"][other] == {} and calc["base"]["p"][first] == {5: 1}
+
+
+def test_supplier_transfer_stores():
+    """供应商设置里单独选了参与调货的门店：只在这几家店之间调"""
+    needs = [_need("a", 2, "X", 3, 12, 1, 5.0)]
+    avail = {(4, "X"): 20, (5, "X"): 10}
+    moves, _ = TR.plan(needs, avail, {"item_min_value": 0})
+    assert moves[0]["from"] == 4
+    needs[0]["allowed"] = {2, 5}
+    moves, _ = TR.plan(needs, avail, {"item_min_value": 0})
+    assert moves[0]["from"] == 5
+    needs[0]["allowed"] = {4, 5}                  # 调入门店自己不在名单里 → 不调
+    moves, _ = TR.plan(needs, avail, {"item_min_value": 0})
+    assert moves == []
+

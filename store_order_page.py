@@ -71,13 +71,10 @@ class ParamDialog(QDialog):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(20, 18, 20, 16)
         lay.setSpacing(12)
-        intro = QLabel(tr("这些参数只在「原程序算法」时使用；新算法按「算法设置」里的订货周期和到货天数计算。"))
-        intro.setObjectName("Faint")
-        intro.setWordWrap(True)
-        lay.addWidget(intro)
+        from erp_widgets import tip_label
         g = QGridLayout()
         g.setSpacing(10)
-        g.addWidget(QLabel(tr("订货周期")), 0, 0)
+        g.addWidget(tip_label(tr("订货周期"), tr("这些参数只在「原程序算法」时使用；新算法按「算法设置」里的订货周期和到货天数计算。")), 0, 0)
         page.cycle = QComboBox()
         for d in R.REORDER_CYCLE_OPTIONS:
             page.cycle.addItem(tr("{0} 天", d), d)
@@ -85,7 +82,7 @@ class ParamDialog(QDialog):
         g.addWidget(page.cycle, 0, 1)
         page.use_cfg = QCheckBox(tr("按配置文件周期"))
         page.use_cfg.setChecked(bool(cfg.get("use_supplier_cycles", True)))
-        page.use_cfg.setToolTip(tr("打开：suppliers_config.json 里单独设了订货周期的供应商用它自己的周期，其余用左边选的周期。\n关闭：全部用左边选的周期。"))
+        page.use_cfg.setToolTip(tr("打开：配置文件里单独设了订货周期的供应商用它自己的周期，其余用默认周期（新算法 = 算法设置里的）。\n关闭：全部用默认周期。"))
         g.addWidget(page.use_cfg, 0, 2)
         g.addWidget(QLabel(tr("销量周期（天）")), 1, 0)
         dr = QHBoxLayout()
@@ -122,7 +119,9 @@ class TransferDialog(QDialog):
         t.setStyleSheet("font-size:18px;")
         lay.addWidget(t)
         dn = TR.by_donor(self.ts)
-        sub = QLabel(tr("这些商品要的件数远小于一箱，从别的门店调多出来的货，就少订一箱。") + "　" + "　".join(
+        t.setText(tr("门店间调货") + "  ⓘ")
+        t.setToolTip(tr("这些商品要的件数远小于一箱，从别的门店调多出来的货，就少订一箱。"))
+        sub = QLabel("　".join(
             tr("从 {0}：{1} 个商品 · €{2:,.2f}", S.STORE_SHEETS.get(k, k), v["items"], v["value"])
             for k, v in sorted(dn.items())))
         sub.setObjectName("Muted")
@@ -193,15 +192,27 @@ def _card(title, sub=""):
     v = QVBoxLayout(f)
     v.setContentsMargins(16, 12, 16, 14)
     v.setSpacing(8)
-    t = QLabel(title)
+    t = QLabel(title + ("  ⓘ" if sub else ""))
     t.setObjectName("PanelTitle")
-    v.addWidget(t)
     if sub:
-        s = QLabel(sub)
-        s.setObjectName("Faint")
-        s.setWordWrap(True)
-        v.addWidget(s)
+        t.setToolTip(sub)              # 界面要简洁：说明不占地方，鼠标停在标题上看
+    v.addWidget(t)
     return f, v
+
+
+def _form_rows(grid, rows):
+    """设置表单：每行 标签 + 输入框；说明放在鼠标提示里（不显示一大段字）。返回各行的标签"""
+    from erp_widgets import tip_label
+    labels = []
+    for r, (lab, w, tip) in enumerate(rows):
+        lb = tip_label(lab, tip)
+        if tip:
+            w.setToolTip(tip)
+        grid.addWidget(lb, r, 0)
+        grid.addWidget(w, r, 1)
+        labels.append(lb)
+    grid.setColumnStretch(2, 1)
+    return labels
 
 
 def _hint(text):
@@ -265,35 +276,26 @@ class TransferBox(QWidget):
         self.keep = spin(tc.get("keep_cycles", 1.0), 0, 10, 1)
         self.itemv = spin(tc["item_min_value"], 0, 100000, 2)
         self.minv = spin(tc["min_value"], 0, 100000, 0)
+        self.mode.setFixedWidth(170)
         rows = [
             (tr("什么时候调"), self.mode, ""),
             (tr("只占整箱 ≤"), self.share, tr("例：一箱 12 件只要 3 件 = 25%")),
-            (tr("调出门店留货系数"), self.keep, tr("留够 日均 × 订货周期 × 系数，多的才调")),
-            (tr("每个商品至少 €"), self.itemv, tr("调货件数 × 件价，太少不值得拣货")),
-            (tr("每家调出门店合计至少 €"), self.minv, tr("0 = 不限")),
+            (tr("调出店留货系数"), self.keep, tr("留够 日均 × 订货周期 × 系数，多的才调")),
+            (tr("单品至少 €"), self.itemv, tr("调货件数 × 件价，太少不值得拣货")),
+            (tr("单店合计至少 €"), self.minv, tr("每家调出门店合计，0 = 不限")),
         ]
-        self._share_row = []
-        for r, (lab, w, hint) in enumerate(rows):
-            lb = QLabel(lab)
-            g.addWidget(lb, r, 0)
-            if w is self.mode:
-                g.addWidget(w, r, 1, 1, 2)
-                continue
-            hl = _hint(hint)
-            g.addWidget(w, r, 1)
-            g.addWidget(hl, r, 2)
-            if w is self.share:
-                self._share_row = [lb, w, hl]
+        labels = _form_rows(g, rows)
+        self._share_row = [labels[1], self.share]
         v.addLayout(g)
         # 「所有要订商品」用不上比例：整行藏起来（只变灰看不出来）
         self.mode.currentIndexChanged.connect(lambda _: self._show_share())
         self._show_share()
         out = set(TR.excluded_stores(tc_raw, fallback_far))
-        lab = QLabel(tr("参与调货门店"))
+        lab = QLabel(tr("参与门店"))
+        lab.setToolTip(tr("自己这次也要订的商品不调出。门店配货和批发商比价共用这套设置。"))
         v.addWidget(lab)
         row, self.stores = _store_checks({k for k in S.STORE_SHEETS if k not in out})
         v.addLayout(row)
-        v.addWidget(_hint(tr("自己这次也要订的商品不调出。门店配货和批发商比价共用这套设置。")))
 
     def _show_share(self):
         on = self.mode.currentData() == "waste"
@@ -321,7 +323,7 @@ class FillDialog(QDialog):
         lay.setSpacing(12)
 
         # ① 凑单
-        c1, v1 = _card(tr("① 凑单"), tr("每家店离起订量只差一点时，加点卖得动的商品凑够；差太多就并到 BMS"))
+        c1, v1 = _card(tr("① 凑单"), tr("每家店离起订量只差一点时，加点卖得动的商品凑够"))
         g = QGridLayout()
         g.setHorizontalSpacing(12)
         g.setVerticalSpacing(8)
@@ -336,15 +338,15 @@ class FillDialog(QDialog):
         self.max_days = QSpinBox()
         self.max_days.setRange(1, 3650)
         self.max_days.setValue(int(fc["max_stock_days"]))
-        for r, (lab, w, hint) in enumerate(((tr("金额差不超过 €"), self.gap_amount, tr("0 = 不按金额凑单")),
-                                            (tr("箱数差不超过"), self.gap_colli, tr("0 = 不按箱数凑单")),
-                                            (tr("凑单后库存最多够卖（天）"), self.max_days, tr("只加卖得动的商品")))):
-            g.addWidget(QLabel(lab), r, 0)
+        self.max_days.setSuffix(tr(" 天"))
+        for w in (self.gap_amount, self.gap_colli, self.max_days):
             w.setFixedWidth(90)
-            g.addWidget(w, r, 1)
-            g.addWidget(_hint(hint), r, 2)
+        _form_rows(g, ((tr("金额差 ≤ €"), self.gap_amount, tr("0 = 不按金额凑单")),
+                       (tr("箱数差 ≤"), self.gap_colli, tr("0 = 不按箱数凑单")),
+                       (tr("凑完最多够卖"), self.max_days, tr("只加卖得动的商品：加完后库存最多够卖几天"))))
         v1.addLayout(g)
-        self.fill_bms = QCheckBox(tr("BMS 不够也凑单"))
+        self.fill_bms = QCheckBox(tr("BMS 也凑单"))
+        self.fill_bms.setToolTip(tr("BMS 离起订量只差一点时，也加点卖得动的商品凑够"))
         self.fill_bms.setChecked(bool(fc["fill_bms"]))
         v1.addWidget(self.fill_bms)
         cols = QHBoxLayout()                 # 左边：凑单、BMS；右边：调货（竖着排太高，小屏幕放不下）
@@ -353,42 +355,33 @@ class FillDialog(QDialog):
         left.setSpacing(12)
         left.addWidget(c1)
 
-        # ② BMS 不够起订量
-        c2, v2 = _card(tr("② BMS 不够起订量时"), tr("按顺序试，能让 BMS 订得起来才采用"))
-        colo = S.STORE_SHEETS.get(fc.get("colocated_store"), "")
-        self.merge_colo = QCheckBox(tr("① {0} 整单并进 BMS（和 BMS 同一个仓库）", colo))
-        self.merge_colo.setChecked(bool(fc["merge_colocated"]))
-        v2.addWidget(self.merge_colo)
-        rb = QHBoxLayout()
-        rb.setSpacing(8)
-        self.borrow = QCheckBox(tr("② 从同城门店借不紧急的货，借出门店现有库存至少够卖"))
-        self.borrow.setChecked(bool(fc["borrow"]))
-        self.borrow_days = QSpinBox()
-        self.borrow_days.setRange(0, 365)
-        self.borrow_days.setValue(int(fc["borrow_min_days"]))
-        self.borrow_days.setSuffix(tr(" 天"))
-        self.borrow_days.setFixedWidth(80)
-        rb.addWidget(self.borrow)
-        rb.addWidget(self.borrow_days)
-        rb.addStretch()
-        v2.addLayout(rb)
-        self.borrow_urgent = QCheckBox(tr("③ 还不够：紧急的货也借（只借借出门店超过自己起订量的部分）"))
-        self.borrow_urgent.setChecked(bool(fc.get("borrow_urgent", True)))
-        self.merge_direct = QCheckBox(tr("④ 还不够：把够起订量的门店整单并进 BMS（挑并进去就够、货值最小的那家）"))
-        self.merge_direct.setChecked(bool(fc.get("merge_direct", True)))
-        v2.addWidget(self.borrow_urgent)
-        v2.addWidget(self.merge_direct)
-        v2.addWidget(QLabel(tr("可以借货的门店")))
+        # ② BMS 凑单：能单独送店的都单独送店；订不起来的门店按下面的先后并进 BMS，够起订量就停；凑不够的这次不订
+        c2, v2 = _card(tr("② BMS 凑单顺序"), tr("能单独送店的都单独送店。订不起来的门店按这个先后一家一家并进 BMS，"
+                                                 "够起订量就停；没勾的、凑不够的这次不订。起订量检查里点「BMS 调整」可以手动选。"))
+        from PySide6.QtWidgets import QListWidget, QListWidgetItem, QAbstractItemView
+        self.bms_list = QListWidget()
+        self.bms_list.setDragDropMode(QAbstractItemView.InternalMove)
+        self.bms_list.setDefaultDropAction(Qt.MoveAction)
         far = set(fc.get("far_stores") or [])
-        brow, self.lend = _store_checks({k for k in S.STORE_SHEETS if k not in far})
-        v2.addLayout(brow)
-        v2.addWidget(_hint(tr("借货不会让借出门店低于起订量；紧急补货的商品不借；借出去的货由 BMS 订、到货后分回原门店。")))
+        order = [int(x) for x in (fc.get("bms_order") or S.BMS_ORDER)]
+        order += [k for k in S.STORE_SHEETS if k not in order]
+        for k in order:
+            if k not in S.STORE_SHEETS:
+                continue
+            it = QListWidgetItem(f"{k} · {S.STORE_SHEETS[k]}")
+            it.setData(Qt.UserRole, k)
+            it.setFlags(it.flags() | Qt.ItemIsUserCheckable | Qt.ItemIsDragEnabled)
+            it.setCheckState(Qt.Unchecked if k in far else Qt.Checked)
+            self.bms_list.addItem(it)
+        self.bms_list.setMaximumHeight(5 * 30 + 8)
+        self.bms_list.setToolTip(tr("勾选 = 参与；拖动调整先后"))
+        v2.addWidget(self.bms_list)
         left.addWidget(c2)
         left.addStretch()
         cols.addLayout(left, 1)
 
         # ③ 门店之间调货
-        c3, v3 = _card(tr("③ 门店之间调货"), tr("要的件数远小于一箱时，从别的门店调多出来的货，少订一箱"))
+        c3, v3 = _card(tr("③ 门店间调货"), tr("要的件数远小于一箱时，从别的门店调多出来的货，少订一箱"))
         self.tbox = TransferBox(page.transfer_cfg(), fc.get("far_stores") or [])
         v3.addWidget(self.tbox)
         v3.addStretch()
@@ -399,44 +392,45 @@ class FillDialog(QDialog):
         bb.accepted.connect(self.save)
         bb.rejected.connect(self.reject)
         lay.addWidget(bb)
-        self.setMinimumWidth(1040)
+        self.setMinimumWidth(820)
 
     def save(self):
-        self.page.cfg["fill"] = dict(self.page.fill_cfg(), max_amount_gap=self.gap_amount.value(),
+        base = {k: v for k, v in self.page.fill_cfg().items() if k != "supplier_cfg"}
+        order = [self.bms_list.item(i).data(Qt.UserRole) for i in range(self.bms_list.count())]
+        far = [self.bms_list.item(i).data(Qt.UserRole) for i in range(self.bms_list.count())
+               if self.bms_list.item(i).checkState() != Qt.Checked]
+        self.page.cfg["fill"] = dict(base, max_amount_gap=self.gap_amount.value(),
                                      max_colli_gap=self.gap_colli.value(), max_stock_days=self.max_days.value(),
-                                     fill_bms=self.fill_bms.isChecked(), merge_colocated=self.merge_colo.isChecked(),
-                                     borrow=self.borrow.isChecked(), borrow_min_days=self.borrow_days.value(),
-                                     borrow_urgent=self.borrow_urgent.isChecked(),
-                                     merge_direct=self.merge_direct.isChecked(),
-                                     far_stores=[k for k, cb in self.lend.items() if not cb.isChecked()])
+                                     fill_bms=self.fill_bms.isChecked(), bms_order=order, far_stores=far)
         self.page.cfg["transfer"] = self.tbox.transfer_values(self.page.transfer_cfg())
         save_settings(self.page.settings)
         self.accept()
 
 
 class MoqDialog(QDialog):
-    """修改一家供应商的起订量（文件里读错了自己改）；保存到 settings.json，选了对应供应商的话同时写进 suppliers_config.json"""
+    """
+    供应商设置：起订量（文件里读错了自己改；保存到 settings.json，选了对应供应商的话同时写进 suppliers_config.json），
+    以及这家供应商单独的门店名单：BMS 不够时可以并进 / 借给 BMS 的门店、参与门店间调货的门店（不设 = 按配货设置）
+    """
 
     def __init__(self, page, name, path, file_m, override):
         super().__init__(page.win)
-        self.setWindowTitle(tr("起订量 · {0}", name))
+        self.setWindowTitle(tr("供应商设置 · {0}", name))
+        self.result_supplier_cfg = dict((page.cfg.get("supplier_cfg") or {}).get(name) or {})
         self.result_override = override
         cur = S.apply_override(file_m, override)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(20, 18, 20, 16)
         lay.setSpacing(10)
-        t = QLabel(name)
+        t = QLabel(name + "  ⓘ")
         t.setObjectName("Section")
+        t.setToolTip(tr("文件：{0}", os.path.basename(path)) + "\n" +
+                     tr("文件里写的起订量：{0}", file_m.get("raw") or tr("（空）")) + "\n" +
+                     tr("程序读到：{0}", S.moq_label(dict(file_m, source="file"))))
         lay.addWidget(t)
-        info = QLabel(tr("文件：{0}", os.path.basename(path)) + "\n" +
-                      tr("文件里写的起订量：{0}", file_m.get("raw") or tr("（空）")) + "\n" +
-                      tr("程序读到：{0}", S.moq_label(dict(file_m, source="file"))))
-        info.setObjectName("Faint")
-        info.setWordWrap(True)
-        info.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        lay.addWidget(info)
         g = QGridLayout()
-        g.setSpacing(8)
+        g.setHorizontalSpacing(12)
+        g.setVerticalSpacing(8)
 
         def spin(v, decimals=0, top=1000000):
             w = QDoubleSpinBox()
@@ -456,20 +450,35 @@ class MoqDialog(QDialog):
                 (tr("起订板数"), self.w_pallets, tr("按板（BANCALE / PEDANE）起订时填")),
                 (tr("每板多少箱"), self.w_per, tr("按板起订时必须填，否则判断不了够不够")),
                 (tr("按几箱的倍数订"), self.w_mult, tr("只做提示，不影响配货判断")))
-        for r, (lab, w, hint) in enumerate(rows):
-            g.addWidget(QLabel(lab), r, 0)
-            g.addWidget(w, r, 1)
-            h = QLabel(hint)
-            h.setObjectName("Faint")
-            g.addWidget(h, r, 2)
+        _form_rows(g, rows)
         lay.addLayout(g)
         self.w_note = QLineEdit((override or {}).get("note", ""))
         self.w_note.setPlaceholderText(tr("备注（可不填）"))
         lay.addWidget(self.w_note)
 
+        # 这家供应商单独的门店名单（不勾「单独设」= 按配货设置里的总设置）
+        fc = page.fill_cfg()
+        glob = {"bms_stores": {k for k in S.STORE_SHEETS if k not in set(fc.get("far_stores") or [])},
+                "transfer_stores": {k for k in S.STORE_SHEETS if k not in set(page.transfer_far())}}
+        self.store_sections = {}
+        for key, title in (("bms_stores", tr("单独设 BMS 凑单门店")),
+                           ("transfer_stores", tr("单独设调货门店"))):
+            own = self.result_supplier_cfg.get(key)
+            cb = QCheckBox(title + "  ⓘ")
+            cb.setToolTip(tr("不勾就按「配货设置」里的总设置"))
+            cb.setChecked(own is not None)
+            row, boxes = _store_checks({int(x) for x in own} if own is not None else glob[key])
+            for b_ in boxes.values():
+                b_.setEnabled(own is not None)
+            cb.toggled.connect(lambda on, bx=boxes: [b_.setEnabled(on) for b_ in bx.values()])
+            lay.addWidget(cb)
+            lay.addLayout(row)
+            self.store_sections[key] = (cb, boxes)
+
         # suppliers_config.json 里对应的供应商
-        cl = QLabel(tr("同时写进配置文件 suppliers_config.json 的供应商："))
-        lay.addWidget(cl)
+        from erp_widgets import tip_label
+        cl = tip_label(tr("写进配置文件"), tr("同时写进配置文件 suppliers_config.json 的供应商：") + "\n" +
+                       tr("会更新这个供应商的 min_order_amount（起订金额），按箱 / 按板的也一起记下。"))
         self.w_cfg = QComboBox()
         self.w_cfg.addItem(tr("不写进配置文件"), "")
         details = {}
@@ -477,16 +486,16 @@ class MoqDialog(QDialog):
             from fenpei.config import SUPPLIERS_CONFIG_FILE
             details = S.load_suppliers_config(SUPPLIERS_CONFIG_FILE).get("supplier_details", {})
         except Exception as e:
-            cl.setText(tr("读不了 suppliers_config.json：{0}", e))
+            cl.setText(tr("写进配置文件") + "  ⚠")
+            cl.setToolTip(tr("读不了 suppliers_config.json：{0}", e))
         for sid, d in sorted(details.items(), key=lambda kv: kv[1].get("name", "")):
             self.w_cfg.addItem(tr("{0}（ID {1}）· 现在起订 €{2}", d.get("name", ""), sid, d.get("min_order_amount", "—")), sid)
         guess = (override or {}).get("config_id") or S.match_config_supplier(name, file_m.get("company"), details)
         self.w_cfg.setCurrentIndex(max(0, self.w_cfg.findData(guess or "")))
-        lay.addWidget(self.w_cfg)
-        h2 = QLabel(tr("会更新这个供应商的 min_order_amount（起订金额），按箱 / 按板的也一起记下。"))
-        h2.setObjectName("Faint")
-        h2.setWordWrap(True)
-        lay.addWidget(h2)
+        cr = QHBoxLayout()
+        cr.addWidget(cl)
+        cr.addWidget(self.w_cfg, 1)
+        lay.addLayout(cr)
 
         bb = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
         self.btn_reset = bb.addButton(tr("恢复成文件里的值"), QDialogButtonBox.ResetRole)
@@ -495,7 +504,7 @@ class MoqDialog(QDialog):
         bb.accepted.connect(self._save)
         bb.rejected.connect(self.reject)
         lay.addWidget(bb)
-        self.setMinimumWidth(560)
+        self.setMinimumWidth(480)
 
     def _save(self):
         if self.w_pallets.value() and not self.w_per.value():
@@ -506,10 +515,19 @@ class MoqDialog(QDialog):
                                 "pallets": self.w_pallets.value(), "per_pallet": self.w_per.value(),
                                 "multiple": self.w_mult.value(), "note": self.w_note.text().strip(),
                                 "config_id": self.w_cfg.currentData() or ""}
+        self._collect_stores()
         self.accept()
+
+    def _collect_stores(self):
+        out = {}
+        for key, (cb, boxes) in self.store_sections.items():
+            if cb.isChecked():
+                out[key] = [k for k, b_ in boxes.items() if b_.isChecked()]
+        self.result_supplier_cfg = out
 
     def _reset(self):
         self.result_override = None
+        self._collect_stores()
         self.accept()
 
 
@@ -528,6 +546,8 @@ class StoreOrderPage:
         self.result = None
         self.result_sig = None     # 配货时的输入（箱数、勾选、配货设置、起订量）；返回修改后没变 → 直接回结果页
         self.alloc_on = set()      # 起订量检查里勾选、要配货的供应商（SCHEDA 路径）
+        self.bms_picks = {}        # 「BMS 调整」手动定的：{路径: {"stores": [...], "force": False}}
+        self.bms_edit = False      # 起订量检查正在「BMS 调整」：门店格子带勾选框
         self.running = False
         self.list_token = 0
         self.detail_win = None
@@ -537,7 +557,10 @@ class StoreOrderPage:
         self.sig.done.connect(self._done)
 
     def fill_cfg(self):
-        return dict(S.DEFAULT_FILL, **(self.cfg.get("fill") or {}))
+        """配货设置 + 各供应商单独设的门店名单（供应商设置里选的，supplier_cfg）"""
+        f = dict(S.DEFAULT_FILL, **(self.cfg.get("fill") or {}))
+        f["supplier_cfg"] = self.cfg.get("supplier_cfg") or {}
+        return f
 
     def transfer_cfg(self):
         import transfers as TR
@@ -593,7 +616,7 @@ class StoreOrderPage:
             self.calc["transfer_overrides"] = TR.unfreeze(self.calc.get("transfer_overrides"))
             self.calc["transfer_frozen"] = False
             self.calc.pop("transfer_auto_plan", None)
-        S.apply_transfers(self.calc, self.transfer_cfg(), self.transfer_far())
+        S.apply_transfers(self.calc, self.transfer_cfg(), self.transfer_far(), self.cfg.get("supplier_cfg"))
         new = copy.deepcopy(self.calc["base"])
         if keep_edits:
             for path, sid, row in self.edited:
@@ -655,10 +678,9 @@ class StoreOrderPage:
         col.setSpacing(3)
         t = QLabel(tr("门店配货"))
         t.setObjectName("PageTitle")
-        s = QLabel(tr("品牌供应商直接送店 · 每家店单独满起订量才直送，差一点自动凑单，差太多并到 BMS"))
-        s.setObjectName("PageSub")
+        t.setText(tr("门店配货") + "  ⓘ")
+        t.setToolTip(tr("品牌供应商直接送店 · 每家店单独满起订量才直送，差一点自动凑单，差太多并到 BMS"))
         col.addWidget(t)
-        col.addWidget(s)
         tr_.addLayout(col, 1)
         self.param_dlg = ParamDialog(self)           # 建出 self.cycle / self.use_cfg / self.days
         bp = QPushButton(tr("计算参数"))
@@ -684,6 +706,58 @@ class StoreOrderPage:
         return page
 
     # ---------------- 工作台 ----------------
+    LEGEND = (("ok", "直送"), ("near", "BMS"), ("far", "这次不订"), ("err", "紧急缺货"))
+
+    def _add_legend(self, lay, store):
+        """图例：绿 = 直送 · 橙 = BMS · 灰 = 这次不订 · 红 = 紧急缺货（库存够卖不到一周的商品金额占比高）"""
+        tips = {"ok": tr("单独够起订量（或差一点凑单后够），直接送店"),
+                "near": tr("单独不够，几家门店合起来够 BMS 起订量，由 BMS 订货后分货"),
+                "far": tr("不够起订量，这次不订，下次再看"),
+                "err": tr("这次不订的单里，库存够卖不到一周的商品个数占 ≥ 50%：红底；≥ 25%：红字。考虑并进 BMS")}
+        for kind, text in self.LEGEND:
+            dot = QLabel()
+            dot.setFixedSize(10, 10)
+            lab = QLabel(tr(text))
+            lab.setObjectName("Faint")
+            lab.setToolTip(tips[kind])
+            dot.setToolTip(tips[kind])
+            lay.addWidget(dot)
+            lay.addWidget(lab)
+            lay.addSpacing(8)
+            store.append((dot, kind))
+
+    @staticmethod
+    def _urgent_of(sc, plan, sid):
+        st = (plan or {}).get("stores", {}).get(sid)
+        if not st:
+            return 0.0, 0, 0
+        return S.urgent_share(sc, st.get("base_lines") or st["lines"], st.get("dem_rows"), with_total=True)
+
+    @staticmethod
+    def _paint_cell(it, state, share=0.0, n_urg=0):
+        """门店格子着色（起订量检查和配货结果一样）：state = ok / fill / bms_ok / short；这次不订的紧急缺货多 → 红"""
+        bg = {"ok": T("ok_soft"), "fill": T("ok_soft"), "bms_ok": T("warn_soft"), "short": T("track")}
+        fg = {"ok": T("ok"), "fill": T("ok"), "bms_ok": T("warn"), "short": T("muted")}
+        if state not in bg:
+            return
+        it.setBackground(QColor(bg[state]))
+        it.setForeground(QColor(fg[state]))
+        f = it.font()
+        f.setBold(state in ("ok", "bms_ok"))
+        if state == "short" and n_urg and share >= 0.25:
+            f.setBold(True)
+            it.setForeground(QColor(T("err")))
+            if share >= 0.5:
+                it.setBackground(QColor(T("err_soft")))
+        it.setFont(f)
+
+    def _style_bms_btn(self):
+        on = self.bms_edit
+        self.bms_btn.setStyleSheet(
+            f"QPushButton {{ background:{T('warn') if on else T('warn_soft')}; color:{'#ffffff' if on else T('warn')};"
+            f" border:1px solid {T('warn')}; border-radius:6px; padding:4px 14px; font-weight:700; }}"
+            f"QPushButton:hover {{ background:{T('warn')}; color:#ffffff; }}")
+
     def _build_work(self):
         w = QWidget()
         h = QHBoxLayout(w)
@@ -770,10 +844,7 @@ class StoreOrderPage:
         self.ftable.horizontalHeaderItem(2).setToolTip(tr("点起订量那一格可以修改（读错了自己改，会保存）"))
         self.ftable.setMinimumHeight(420)
         lv.addWidget(self.ftable, 1)
-        hint = QLabel(tr("不再合作的供应商取消勾选，下次会记住"))
-        hint.setObjectName("Faint")
-        hint.setContentsMargins(14, 0, 14, 0)
-        lv.addWidget(hint)
+        self.ftable.horizontalHeaderItem(0).setToolTip(tr("不再合作的供应商取消勾选，下次会记住"))
         h.addWidget(left)
 
         # 右
@@ -834,16 +905,21 @@ class StoreOrderPage:
             mh.addWidget(lb)
             self.m_links = getattr(self, "m_links", []) + [lb]
         mh.addStretch(1)
+        self.bms_reset = QPushButton(tr("恢复系统建议"))
+        self.bms_reset.setObjectName("Link")
+        self.bms_reset.setCursor(Qt.PointingHandCursor)
+        self.bms_reset.setToolTip(tr("不再手动指定，按配货设置里的 BMS 顺序自动凑"))
+        self.bms_reset.clicked.connect(self.reset_bms_picks)
+        self.bms_reset.hide()
+        mh.addWidget(self.bms_reset)
+        self.bms_btn = QPushButton(tr("BMS 调整"))
+        self.bms_btn.setCursor(Qt.PointingHandCursor)
+        self.bms_btn.setToolTip(tr("点一下进入调整：每个门店格子出现勾选框，勾上的门店整单进 BMS；够 BMS 起订量才变橙色"))
+        self.bms_btn.clicked.connect(self.toggle_bms_edit)
+        mh.addWidget(self.bms_btn)
+        mh.addSpacing(14)
         self.legend = []
-        for kind, text in (("ok", tr("单独够起订量 · 直送")), ("near", tr("合起来够 BMS 起订量")), ("far", tr("不够 · 这次不订"))):
-            dot = QLabel()
-            dot.setFixedSize(10, 10)
-            lab = QLabel(text)
-            lab.setObjectName("Faint")
-            mh.addWidget(dot)
-            mh.addWidget(lab)
-            mh.addSpacing(8)
-            self.legend.append((dot, kind))
+        self._add_legend(mh, self.legend)
         mv.addLayout(mh)
         self.matrix_stack = QStackedWidget()
         es = EmptyState("suggest", tr("还没有计算"), tr("左边勾选供应商、上面选门店，然后点底部的「开始计算」。计算完这里显示每家店的箱数和金额够不够起订量。"))
@@ -878,11 +954,8 @@ class StoreOrderPage:
         dc.setSpacing(2)
         self.detail_title = QLabel(tr("订货明细"))
         self.detail_title.setStyleSheet("font-size:14px; font-weight:600;")
-        ds = QLabel(tr("每个商品 × 门店的库存、销量、日均、目标库存和建议箱数，可逐行修改；在独立窗口里打开，不挤占工作台"))
-        ds.setObjectName("Faint")
-        ds.setWordWrap(True)
+        self.detail_title.setToolTip(tr("每个商品 × 门店的库存、销量、日均、目标库存和建议箱数，可逐行修改；在独立窗口里打开，不挤占工作台"))
         dc.addWidget(self.detail_title)
-        dc.addWidget(ds)
         self.btn_detail = QPushButton(tr("打开明细窗口"))
         self.btn_detail.setObjectName("Outline")
         self.btn_detail.clicked.connect(lambda: self.open_detail())
@@ -979,85 +1052,33 @@ class StoreOrderPage:
         c1, self.r_total, self.r_total_sub = kpi_card(tr("采购总额"), "—", " ")
         c2, self.r_direct, self.r_direct_sub = kpi_card(tr("直接送店"), "—", " ")
         c3, self.r_bms, self.r_bms_sub = kpi_card(tr("BMS 分货"), "—", " ")
-        c4, self.r_warn, self.r_warn_sub = kpi_card(tr("需要注意"), "—", " ")
+        c4, self.r_warn, self.r_warn_sub = kpi_card(tr("这次不订"), "—", " ")
         for i, c in enumerate((c1, c2, c3, c4)):
             k.addWidget(c, 0, i)
         v.addLayout(k)
 
-        rp, rv = _panel()
-        rh = QHBoxLayout()
-        self.route_title = QLabel(tr("配货路线"))
-        self.route_title.setObjectName("Section")
-        rh.addWidget(self.route_title, 1)
-        self.route_moq = chip("", "accent")
-        rh.addWidget(self.route_moq)
-        self.route_sup = QComboBox()
-        self.route_sup.setMinimumWidth(220)
-        self.route_sup.currentIndexChanged.connect(self._show_route)
-        rh.addWidget(self.route_sup)
-        rv.addLayout(rh)
-        mh = QHBoxLayout()
-        mh.setSpacing(8)
-        ml = QLabel(tr("这家怎么订："))
-        ml.setObjectName("Faint")
-        mh.addWidget(ml)
-        self.mode_group = QButtonGroup(self.route_sup)
-        self.mode_group.setExclusive(True)
-        self.mode_btns = {}
-        for mode, text, tip in (("auto", tr("系统建议"), tr("按配货规则：够起订量的直送，不够的合并 BMS（BMS 不够起订量就不订）")),
-                                ("all_bms", tr("全部并入 BMS"), tr("所有要订的门店都并进 BMS，由 BMS 订货后分货（包括自己够起订量的门店）；BMS 不够起订量也照样下单")),
-                                ("direct_only", tr("只订达标门店，其他不订"), tr("只给自己够起订量的门店下单，其他门店这次不订，也不借货"))):
-            b = QPushButton(text)
-            b.setObjectName("Chip")
-            b.setCheckable(True)
-            b.setToolTip(tip)
-            b.setCursor(Qt.PointingHandCursor)
-            b.setProperty("mode", mode)
-            from erp_widgets import fit_chip
-            fit_chip(b)
-            self.mode_group.addButton(b)
-            self.mode_btns[mode] = b
-            mh.addWidget(b)
-        self.mode_group.buttonClicked.connect(lambda b: self._apply_mode(b.property("mode")))
-        self.mode_note = QLabel("")
-        self.mode_note.setObjectName("Faint")
-        mh.addWidget(self.mode_note, 1)
-        rv.addLayout(mh)
-        self.route_body = QHBoxLayout()
-        self.route_body.setSpacing(18)
-        rw = QWidget()
-        rw.setLayout(self.route_body)
-        rv.addWidget(rw)
-        self.route_panel = rp
-        v.addWidget(rp)
-
-        row = QHBoxLayout()
-        row.setSpacing(14)
         tp, tv = _panel()
         th = QHBoxLayout()
-        tt = QLabel(tr("配货结果"))
-        tt.setObjectName("Section")
-        th.addWidget(tt, 1)
-        tip = QLabel(tr("双击一行打开订单文件"))
-        tip.setObjectName("Faint")
-        th.addWidget(tip)
+        self.r_title = QLabel(tr("订单"))
+        self.r_title.setObjectName("Section")
+        self.r_title.setToolTip(tr("一家供应商一个订单文件；双击一行打开文件"))
+        th.addWidget(self.r_title)
+        th.addStretch(1)
+        self.r_legend = []
+        self._add_legend(th, self.r_legend)
         tv.addLayout(th)
-        self.rtable = self.ui.make_table([tr("星期"), tr("供应商"), tr("起订量"), tr("去向"), tr("箱数"), tr("金额"), tr("状态"),
-                                          tr("说明")], stretch_col=7, numeric_cols=(4, 5))
-        self.rtable.setMinimumHeight(360)
-        self.rtable.verticalHeader().setDefaultSectionSize(36)
+        self.rtable = self.ui.make_table([tr("星期"), tr("供应商"), tr("起订量")] + list(S.STORE_SHEETS.values())
+                                         + ["BMS", tr("合计"), tr("文件")], stretch_col=1)
+        self.rtable.setMinimumHeight(420)
+        self.rtable.verticalHeader().setDefaultSectionSize(40)
+        rh_ = self.rtable.horizontalHeader()
+        rh_.setSectionResizeMode(QHeaderView.ResizeToContents)
+        rh_.setSectionResizeMode(1, QHeaderView.Stretch)
         self.rtable.cellDoubleClicked.connect(self._open_row)
-        self._rrows = []
-        self.r_sorter = RowSorter(self.rtable, refill=self._results_refill)
+        self.rtable.cellClicked.connect(lambda r, c: self._open_row(r, c) if c == self.rtable.columnCount() - 1 else None)
+        self.r_sorter = RowSorter(self.rtable, pin_last=True)
         tv.addWidget(self.rtable)
-        row.addWidget(tp, 3)
-        fp, fv = _panel(tr("生成的文件"))
-        self.file_list = QVBoxLayout()
-        self.file_list.setSpacing(6)
-        fv.addLayout(self.file_list)
-        fv.addStretch()
-        row.addWidget(fp, 1)
-        v.addLayout(row)
+        v.addWidget(tp)
         v.addStretch()
         return w
 
@@ -1075,7 +1096,7 @@ class StoreOrderPage:
         if self.result and in_result:
             for i in range(5):
                 st.set_state(i, "done")
-            st.set_state(4, "done", tr("{0} 个文件", len(self.result["written"])))
+            st.set_state(4, "done", tr("{0} 个文件", len(S.written_files(self.result["written"]))))
             st.set_state(3, "done", "")
         elif self.calc:
             st.set_state(0, "done", tr("{0} 家", len(self.calc["schede"])))
@@ -1130,8 +1151,10 @@ class StoreOrderPage:
 
     def restyle(self):
         self.steps.restyle()
-        for dot, kind in self.legend:
-            dot.setStyleSheet(f"background:{T('ok') if kind == 'ok' else T(kind)}; border-radius:3px;")
+        for dot, kind in self.legend + getattr(self, "r_legend", []):
+            col = {"ok": T("ok"), "near": T("near"), "far": T("far"), "err": T("err")}[kind]
+            dot.setStyleSheet(f"background:{col}; border-radius:3px;")
+        self._style_bms_btn()
         self.detail_icon.setPixmap(icon("table", T("accent"), 20).pixmap(20, 20))
         self.detail_icon.setStyleSheet(f"background:{T('accent_soft')}; border-radius:10px;")
         self.ok_icon.setPixmap(icon("check", T("ok"), 22).pixmap(22, 22))
@@ -1377,7 +1400,7 @@ class StoreOrderPage:
         calc.setdefault("date", _dt.date.today())    # 周销量按计算当天往回数
         self.calc = calc
         try:
-            S.apply_transfers(calc, self.transfer_cfg(), self.transfer_far())
+            S.apply_transfers(calc, self.transfer_cfg(), self.transfer_far(), self.cfg.get("supplier_cfg"))
             if calc.get("transfers"):
                 self.win.log(tr("[门店配货] 门店间调货：{0} 个商品", len(calc["transfers"])))
         except Exception as e:
@@ -1468,14 +1491,16 @@ class StoreOrderPage:
         import json
         lines = self.colli.get(sc["path"], {})
         fill = self.fill_cfg()
+        pk = self.__dict__.get("bms_picks", {}).get(sc["path"])
         key = (sc["path"], id(self.calc["demand"]), tuple(self.calc["stores"]),
-               json.dumps(fill, sort_keys=True, default=str),
+               json.dumps(fill, sort_keys=True, default=str), json.dumps(pk, sort_keys=True),
                tuple(sorted((sid, tuple(sorted(ln.items()))) for sid, ln in lines.items())), json.dumps(S.sc_moq(sc), default=str))
         cache = self.__dict__.setdefault("_pv_cache", {})
         if key not in cache:
             if len(cache) > 400:
                 cache.clear()
-            cache[key] = S.plan_supplier(sc, self.calc["demand"], fill, self.calc["stores"], lines)
+            cache[key] = S.plan_supplier(sc, self.calc["demand"], fill, self.calc["stores"], lines,
+                                         "manual" if pk is not None else "auto", picks=pk)
         return cache[key]
 
     @staticmethod
@@ -1494,7 +1519,7 @@ class StoreOrderPage:
             return "fill"
         if st["status"] in ("bms", "merged", "pulled"):
             return "bms_ok" if S.bms_ordered(plan.get("bms")) else "short"
-        return "short"
+        return "short"                 # wait / dropped：这次不订
 
     def _refresh_matrix(self, only_path=None):
         if not self.calc:
@@ -1505,11 +1530,9 @@ class StoreOrderPage:
         schede = self.calc["schede"]
         t.blockSignals(True)
         t.setRowCount(len(schede) + 1)
-        bg = {"ok": T("ok_soft"), "fill": T("ok_soft"), "bms_ok": T("warn_soft"), "short": T("track"), "none": T("surface")}
-        fg = {"ok": T("ok"), "fill": T("ok"), "bms_ok": T("warn"), "short": T("muted"), "none": T("faint")}
         tips = {"ok": tr("单独够起订量，直接送店"), "fill": tr("差一点，凑单后直接送店"),
                 "bms_ok": tr("单独不够，和其他门店合起来够 BMS 起订量 → BMS 订货后分货"),
-                "short": tr("单独不够，合起来也不够 BMS 起订量 → 这次不订")}
+                "short": tr("单独不够起订量，这次不订（凑不够 BMS，或者 BMS 已经够了用不到它）；可以点「BMS 调整」手动选进 BMS")}
         self._plans = {}
         col_c = {sid: 0.0 for sid in S.STORE_SHEETS}
         col_a = {sid: 0.0 for sid in S.STORE_SHEETS}
@@ -1541,17 +1564,18 @@ class StoreOrderPage:
                 states.append(st)
                 amts.append(a if c else None)
             b = plan.get("bms")
+            manual = sc["path"] in self.bms_picks
             if b:
-                vals.append(tr("{0:g} 箱 · €{1:,.0f}", b["colli"], b["amount"]))
+                vals.append(tr("{0:g} 箱 · €{1:,.0f}", b["colli"], b["amount"]) + (" ✎" if manual else ""))
             else:
-                vals.append("—")
+                vals.append("—" + (" ✎" if manual else ""))
             vals.append(tr("{0:g} 箱 · €{1:,.0f}", rc, ra) if rc else "—")
             orderable = any(x in ("ok", "fill", "bms_ok") for x in states)
             self.ui.table_set_row(t, r, vals)
             for k, a_ in enumerate(amts + [b["amount"] if b else None, ra if rc else None]):
                 if a_ is not None:
                     t.item(r, 3 + k).setData(SORT_ROLE, float(a_))      # 排序按金额
-            t.item(r, 2).setToolTip(tr("起订量：{0}", S.moq_label(S.sc_moq(sc), mark=False)) + "\n" + tr("点一下修改起订量"))
+            t.item(r, 2).setToolTip(tr("起订量：{0}", S.moq_label(S.sc_moq(sc), mark=False)) + "\n" + tr("点一下：起订量、这家供应商参与 BMS / 调货的门店"))
             chk = QTableWidgetItem()
             chk.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled)
             chk.setCheckState(Qt.Checked if on else Qt.Unchecked)
@@ -1570,17 +1594,20 @@ class StoreOrderPage:
                 t.item(r, 1).setToolTip(tr("没勾选：这次不配货、不生成订单"))
                 continue
             t.item(r, 2).setForeground(QColor(T("muted")))
+            in_bms = self._bms_members(sc["path"], plan) if self.bms_edit else set()
             for k, st in enumerate(states):
+                sid_ = list(S.STORE_SHEETS)[k]
+                if st and self.bms_edit and st != "none":
+                    t.item(r, 3 + k).setData(Qt.CheckStateRole, Qt.Checked if sid_ in in_bms else Qt.Unchecked)
                 if st:
                     it = t.item(r, 3 + k)
-                    it.setBackground(QColor(bg[st]))
-                    it.setForeground(QColor(fg[st]))
+                    share, n_urg, n_tot = self._urgent_of(sc, plan, sid_) if st == "short" else (0.0, 0, 0)
+                    self._paint_cell(it, st, share, n_urg)
                     if st in tips:
-                        it.setToolTip(tips[st])
-                    if st in ("ok", "bms_ok"):
-                        f = it.font()
-                        f.setBold(True)
-                        it.setFont(f)
+                        tip = tips[st]
+                        if n_urg:
+                            tip += "\n" + tr("紧急缺货（库存够卖不到一周）：{0} / {1} 个商品（{2:.0%}）", n_urg, n_tot, share)
+                        it.setToolTip(tip + ("\n" + tr("点一下：进 / 不进 BMS") if self.bms_edit and st != "none" else ""))
             bi = t.item(r, 3 + len(S.STORE_SHEETS))
             if b:
                 ok_b = S.bms_ordered(b)
@@ -1627,6 +1654,11 @@ class StoreOrderPage:
             self.edit_moq(path)
             return
         stores = list(S.STORE_SHEETS)
+        if self.bms_edit and path != ALL and 3 <= col < 3 + len(stores):     # BMS 调整：点格子 = 进 / 不进 BMS
+            it = t.item(row, col)
+            if it is not None and it.data(Qt.CheckStateRole) is not None:
+                self._toggle_bms_store(path, stores[col - 3])
+            return
         sid = stores[col - 3] if 3 <= col < 3 + len(stores) else ALL     # BMS / 合计列：这家供应商全部门店
         self.open_detail(path, sid)
 
@@ -1651,6 +1683,38 @@ class StoreOrderPage:
         else:
             self.alloc_on = {sc["path"] for sc in self.calc["schede"]} if on else set()
         self._refresh_matrix()
+        self._update_state()
+
+    def toggle_bms_edit(self):
+        """「BMS 调整」开 / 关：开的时候起订量检查的门店格子带勾选框，点格子就进 / 不进 BMS"""
+        if not self.calc or self.running:
+            return
+        self.bms_edit = not self.bms_edit
+        self.bms_btn.setText(tr("完成调整") if self.bms_edit else tr("BMS 调整"))
+        self._style_bms_btn()
+        self.bms_reset.setVisible(self.bms_edit)
+        self._refresh_matrix()
+
+    def reset_bms_picks(self):
+        if not self.bms_picks:
+            return
+        self.bms_picks.clear()
+        self._refresh_matrix()
+        self._update_state()
+
+    def _bms_members(self, path, plan=None):
+        """现在进 BMS 的门店：手动定过的按手动的；没定过的 = 系统建议里 BMS 够起订量时的那几家"""
+        pk = self.bms_picks.get(path)
+        if pk is not None:
+            return set(pk.get("stores") or [])
+        b = (plan or self._plans.get(path) or {}).get("bms")
+        return set(b.get("stores") or []) if S.bms_ordered(b) else set()
+
+    def _toggle_bms_store(self, path, sid):
+        cur = self._bms_members(path)
+        cur ^= {sid}
+        self.bms_picks[path] = {"stores": sorted(cur), "force": False}
+        self._refresh_matrix(only_path=path)
         self._update_state()
 
     # =================================================================
@@ -1686,8 +1750,9 @@ class StoreOrderPage:
         def work():
             try:
                 res = S.allocate(calc, colli, fill, out_root, log=lambda m: log("[门店配货] " + m), edited=edited,
+                                 picks={p_: v for p_, v in self.bms_picks.items() if p_ in keep},
                                  progress=lambda i, st, cnt, det, pct: (dlg.post_step(i, st, cnt, det), dlg.post_progress(pct)))
-                dlg.post_finished(True, tr("生成 {0} 个订单文件", len(res["written"])))
+                dlg.post_finished(True, tr("生成 {0} 个订单文件", len(S.written_files(res["written"]))))
                 res["sig"] = sig
                 self.sig.done.emit((res, None))
             except Exception as e:
@@ -1710,7 +1775,7 @@ class StoreOrderPage:
         self.result_sig = res.get("sig")
         self._fill_result()
         self._show_view(1)
-        self.win.show_toast(tr("门店配货完成：{0} 个订单文件", len(res["written"])))
+        self.win.show_toast(tr("门店配货完成：{0} 个订单文件", len(S.written_files(res["written"]))))
         if hasattr(self.win, "dashboard"):
             self.win.dashboard.refresh()
 
@@ -1718,7 +1783,8 @@ class StoreOrderPage:
     def _fill_result(self):
         res = self.result
         tot = S.plan_totals(res["results"])
-        self.ok_title.setText(tr("配货完成，生成 {0} 个订单文件", len(res["written"]))
+        n_files = len(S.written_files(res["written"]))
+        self.ok_title.setText(tr("配货完成，生成 {0} 个订单文件", n_files)
                               + (tr(" + 调货单（{0} 个商品）", len((self.calc or {}).get("transfers") or []))
                                  if res.get("transfers_file") else ""))
         self.ok_path.setText(os.path.normpath(res["out_root"]))
@@ -1727,249 +1793,121 @@ class StoreOrderPage:
         n_bms = sum(1 for _, _, plan in res["results"] if S.bms_ordered(plan.get("bms")))
         self.r_total.setText(f"€{tot['total']:,.2f}")
         self.r_total.setStyleSheet(f"color:{T('accent')};")
-        self.r_total_sub.setText(tr("{0:g} 箱 · {1} 家供应商", tot["direct_colli"] + tot["bms_colli"], len(res["results"])))
+        self.r_total_sub.setText(tr("{0:g} 箱 · {1} 个文件", tot["direct_colli"] + tot["bms_colli"], n_files))
         self.r_direct.setText(f"€{tot['direct']:,.2f}")
+        self.r_direct.setStyleSheet(f"color:{T('ok')};")
         self.r_direct_sub.setText(tr("{0:g} 箱 · {1} 张单", tot["direct_colli"], n_direct))
         self.r_bms.setText(f"€{tot['bms']:,.2f}")
+        self.r_bms.setStyleSheet(f"color:{T('warn')};")
         self.r_bms_sub.setText(tr("{0:g} 箱 · {1} 张单", tot["bms_colli"], n_bms))
-        warns = []
+        n_wait = a_wait = n_urg = 0
         for _, sc, plan in res["results"]:
-            b = plan.get("bms")
-            if b and b["status"] == "short":
-                warns.append(tr("{0} 的 BMS 不够起订量，这次不订", sc["name"]))
-            elif b and b["status"] == "forced":
-                warns.append(tr("{0} 手动并入 BMS，未达起订量", sc["name"]))
-            elif b and (b.get("lenders") or "merged" in b.get("how", []) or "pulled" in b.get("how", [])):
-                warns.append(tr("{0} 借货 / 并单后才够起订量", sc["name"]))
-        self.r_warn.setText(str(len(warns)))
-        self.r_warn.setStyleSheet(f"color:{T('warn')};" if warns else f"color:{T('ok')};")
-        self.r_warn_sub.setText(warns[0] if warns else tr("没有需要处理的"))
-
-        # 路线：所有有订货的供应商（可手动改去向）；默认选上次看的那家，没有就选第一家有 BMS 的
-        prev = self.route_sup.currentText()
-        self.route_sup.blockSignals(True)
-        self.route_sup.clear()
-        first_bms = None
-        for k, (_, sc, plan) in enumerate(res["results"]):
-            if plan.get("bms") or any(st["status"] != "none" for st in plan["stores"].values()):
-                mode = plan.get("mode", "auto")
-                label = sc["name"] + ("" if mode == "auto" else "  ✎")
-                self.route_sup.addItem(label, k)
-                if first_bms is None and plan.get("bms"):
-                    first_bms = self.route_sup.count() - 1
-        idx = next((i for i in range(self.route_sup.count())
-                    if self.route_sup.itemText(i).replace("  ✎", "") == prev.replace("  ✎", "")), None)
-        self.route_sup.setCurrentIndex(idx if idx is not None else (first_bms or 0))
-        self.route_sup.blockSignals(False)
-        self.route_panel.setVisible(self.route_sup.count() > 0)
-        self._show_route()
-
-        # 表格
-        rows, self.row_files, self._res_index = [], [], []
-        files = {(S.written_source(w, res), w[2]): w[0] for w in res["written"]}
-        for k_res, (day, sc, plan) in enumerate(res["results"]):
-            items = {it["row"]: it for it in sc["items"]}
-            moq = S.moq_label(S.sc_moq(sc), short=True)
             for sid, st in plan["stores"].items():
-                if st["status"] == "none":
+                if st["status"] != "none" and self._plan_state(plan, sid) == "short":
+                    n_wait += 1
+                    a_wait += st["amount"]
+                    n_urg += self._urgent_of(sc, plan, sid)[0] >= 0.5
+        self.r_warn.setText(f"€{a_wait:,.2f}" if n_wait else "0")
+        self.r_warn.setStyleSheet(f"color:{T('err') if n_urg else T('muted')};")
+        self.r_warn_sub.setText(tr("{0} 张单 · {1} 张紧急缺货多", n_wait, n_urg) if n_urg
+                                else tr("{0} 张单", n_wait) if n_wait else tr("全部订了"))
+
+        files = {}
+        for w in res["written"]:
+            files.setdefault(S.written_source(w, res), w[0])
+        t = self.rtable
+        rows = [(day, sc, plan) for day, sc, plan in res["results"]
+                if plan.get("bms") or any(st["status"] != "none" for st in plan["stores"].values())]
+        t.setRowCount(len(rows) + 1)
+        col_c = {sid: 0.0 for sid in S.STORE_SHEETS}
+        col_a = {sid: 0.0 for sid in S.STORE_SHEETS}
+        bc = ba = tc = ta = 0.0
+        tips = {"ok": tr("直接送店"), "fill": tr("凑单后直接送店"), "bms_ok": tr("并进 BMS，由 BMS 订货后分货"),
+                "short": tr("不够起订量，这次不订")}
+        nb = len(S.STORE_SHEETS)
+        for r, (day, sc, plan) in enumerate(rows):
+            vals = [tr(day), sc["name"], S.moq_label(S.sc_moq(sc), short=True)]
+            states = []
+            rc = ra = 0.0
+            for sid in S.STORE_SHEETS:
+                st = plan["stores"].get(sid)
+                if not st or st["status"] == "none":
+                    vals.append("")
+                    states.append(None)
                     continue
-                name = S.STORE_SHEETS[sid]
-                notes = []
-                if st["status"] == "dropped":
-                    notes.append(self._gap_note(sc, st) + "；" + tr("手动选择：只订达标门店"))
-                if st["added"]:
-                    notes.append(tr("加了：") + tr("、").join(f"{items[r]['desc'][:18]} +{n}" for r, n, _ in st["added"][:3]))
-                if st["lent"]:
-                    notes.append(tr("借给 BMS {0:g} 箱 €{1:,.2f}", sum(n for _, n, _ in st["lent"]), sum(v for _, _, v in st["lent"])))
-                if st["status"] == "bms":
-                    notes.append(self._gap_note(sc, st))
-                if st["status"] == "merged":
-                    notes.append(tr("和 BMS 同一个仓库，整单并进 BMS"))
-                if st["status"] == "pulled":
-                    notes.append(tr("自己够起订量，但整单并进 BMS，让其他门店也订得起来"))
-                rows.append((tr(day), sc["name"], moq, name, st, st["status"], "；".join(x for x in notes if x)))
-                self._res_index.append(k_res)
-                self.row_files.append(files.get((sc["path"], name)))
+                state = self._plan_state(plan, sid)
+                vals.append(tr("{0:g} 箱 · €{1:,.0f}", st["colli"], st["amount"]))
+                states.append((state, st))
+                if state in ("ok", "fill"):
+                    rc += st["colli"]
+                    ra += st["amount"]
+                    col_c[sid] += st["colli"]
+                    col_a[sid] += st["amount"]
             b = plan.get("bms")
-            if b:
-                note = tr("合并：") + tr("、").join(S.STORE_SHEETS[s] for s in b["stores"])
-                if b.get("lenders"):
-                    note += "；" + tr("借货：") + tr("、").join(f"{S.STORE_SHEETS[s_]} {sum(r_.values()):g}" for s_, r_ in b["lenders"].items())
-                if b["status"] in ("short", "forced"):
-                    note += "；" + self._gap_note(sc, b)
-                    if b["status"] == "short":
-                        note += "；" + tr("没有生成文件")
-                elif b["added"]:
-                    note += "；" + tr("凑单 {0:g} 箱", sum(n for _, n, _ in b["added"]))
-                if "manual" in b.get("how", []):
-                    note += "；" + tr("手动选择：全部并入 BMS")
-                rows.append((tr(day), sc["name"], moq, S.BMS, b, b["status"], note))
-                self._res_index.append(k_res)
-                self.row_files.append(files.get((sc["path"], S.BMS)))
-        self._rrows = list(zip(rows, self._res_index, self.row_files))
-        self._draw_results()
+            ok_b = S.bms_ordered(b)
+            if ok_b:
+                rc += b["colli"]
+                ra += b["amount"]
+                bc += b["colli"]
+                ba += b["amount"]
+            tc += rc
+            ta += ra
+            path = files.get(sc["path"])
+            vals += [tr("{0:g} 箱 · €{1:,.0f}", b["colli"], b["amount"]) if ok_b else "",
+                     tr("{0:g} 箱 · €{1:,.0f}", rc, ra) if rc else tr("不订"), tr("打开") if path else ""]
+            self.ui.table_set_row(t, r, vals)
+            t.item(r, 0).setData(Qt.UserRole, path)
+            t.item(r, 0).setForeground(QColor(T("muted")))
+            t.item(r, 2).setForeground(QColor(T("muted")))
+            t.item(r, 2).setToolTip(tr("起订量：{0}", S.moq_label(S.sc_moq(sc), mark=False)))
+            f = t.item(r, 1).font()
+            f.setBold(bool(rc))
+            t.item(r, 1).setFont(f)
+            if not rc:
+                t.item(r, 1).setForeground(QColor(T("muted")))
+            for k, x in enumerate(states):
+                if not x:
+                    continue
+                state, st = x
+                it = t.item(r, 3 + k)
+                it.setData(SORT_ROLE, float(st["amount"]))
+                share, n_urg, n_tot = self._urgent_of(sc, plan, list(S.STORE_SHEETS)[k]) if state == "short" else (0.0, 0, 0)
+                self._paint_cell(it, state, share, n_urg)
+                tip = tips[state]
+                if state == "short":
+                    tip += "（" + self._gap_note(sc, st) + "）"
+                if st.get("added"):
+                    tip += "\n" + tr("凑单加了：") + tr("、").join(
+                        f"{it_['desc'][:18]} +{n}" for r_, n, _ in st["added"][:5]
+                        for it_ in [next((x_ for x_ in sc["items"] if x_["row"] == r_), {"desc": ""})])
+                if n_urg:
+                    tip += "\n" + tr("紧急缺货（库存够卖不到一周）：{0} / {1} 个商品（{2:.0%}）", n_urg, n_tot, share)
+                it.setToolTip(tip)
+            bi = t.item(r, 3 + nb)
+            if ok_b:
+                bi.setData(SORT_ROLE, float(b["amount"]))
+                self._paint_cell(bi, "bms_ok")
+                bi.setToolTip(tr("BMS：{0}", tr("、").join(S.STORE_SHEETS[s_] for s_ in b["stores"]))
+                              + (("\n" + tr("凑单 {0:g} 箱", sum(n for _, n, _ in b["added"]))) if b.get("added") else ""))
+            ti = t.item(r, 4 + nb)
+            ti.setData(SORT_ROLE, float(ra))
+            f = ti.font()
+            f.setBold(True)
+            ti.setFont(f)
+            if not rc:
+                ti.setForeground(QColor(T("faint")))
+            fi = t.item(r, 5 + nb)
+            fi.setForeground(QColor(T("accent")))
+            if path:
+                fi.setToolTip(os.path.basename(path))
+        foot = ["", tr("合计"), ""] + [tr("{0:g} 箱 · €{1:,.0f}", col_c[s_], col_a[s_]) if col_c[s_] else "—"
+                                  for s_ in S.STORE_SHEETS] + \
+            [tr("{0:g} 箱 · €{1:,.0f}", bc, ba) if bc else "—", tr("{0:g} 箱 · €{1:,.0f}", tc, ta), ""]
+        self.ui.table_set_row(t, len(rows), foot, bold=True)
+        for c in range(t.columnCount()):
+            t.item(len(rows), c).setBackground(QColor(T("surface2")))
+        self.r_title.setText(tr("订单 · {0} 家供应商", len(rows)))
         self.r_sorter.apply()
-
-        # 文件
-        while self.file_list.count():
-            w = self.file_list.takeAt(0).widget()
-            if w:
-                w.deleteLater()
-        paths = [w[0] for w in res["written"]] + [res["summary"]]
-        for p in paths[:40]:
-            fr = QFrame()
-            fr.setObjectName("MiniCard")
-            h = QHBoxLayout(fr)
-            h.setContentsMargins(10, 6, 8, 6)
-            ic = QLabel()
-            ic.setPixmap(icon("file", T("ok"), 16).pixmap(16, 16))
-            nm = QLabel(os.path.basename(p))
-            nm.setFont(num_font(9))
-            nm.setToolTip(p)
-            ob = QPushButton(tr("打开"))
-            ob.setObjectName("Link")
-            ob.clicked.connect(lambda _=False, p=p: self._open(p))
-            h.addWidget(ic)
-            h.addWidget(nm, 1)
-            h.addWidget(ob)
-            self.file_list.addWidget(fr)
-
-    def _show_route(self, *_):
-        def _drop(w):
-            w.hide()
-            w.setParent(None)       # 马上从界面拿掉（deleteLater 要等事件循环，切换时会和新的叠在一起）
-            w.deleteLater()
-
-        while self.route_body.count():
-            it = self.route_body.takeAt(0)
-            if it.widget():
-                _drop(it.widget())
-            elif it.layout():
-                lay = it.layout()
-                while lay.count():
-                    w = lay.takeAt(0).widget()
-                    if w:
-                        _drop(w)
-                lay.deleteLater()
-        if not self.result or self.route_sup.currentData() is None:
-            return
-        _, sc, plan = self.result["results"][self.route_sup.currentData()]
-        b = plan.get("bms")
-        mode = plan.get("mode", "auto")
-        for m, btn in self.mode_btns.items():
-            btn.setChecked(m == mode)
-        self.mode_note.setText(tr("已手动修改，订单文件已按这个重新生成") if mode != "auto" else
-                               tr("点上面的选项会马上重新生成这家的订单文件（只改这一家）"))
-        set_chip(self.route_moq, tr("起订量 {0}", S.moq_label(S.sc_moq(sc))), "accent")
-        self.route_title.setText(tr("{0} 配货路线", sc["name"]))
-
-        def node(title, sub, kind=None, strong=False):
-            f = QFrame()
-            f.setObjectName("MiniCard")
-            if kind:
-                f.setStyleSheet(f"#MiniCard{{background:{T(kind + '_soft')}; border:{2 if strong else 1}px solid {T(kind)}; border-radius:9px;}}")
-            v = QVBoxLayout(f)
-            v.setContentsMargins(12, 8, 12, 8)
-            v.setSpacing(1)
-            a = QLabel(title)
-            a.setStyleSheet(f"font-weight:{700 if strong else 600}; font-size:12px;" + (f"color:{T(kind)};" if kind else ""))
-            s = QLabel(sub)
-            s.setFont(num_font(9))
-            s.setStyleSheet(f"color:{T(kind) if kind else T('muted')};")
-            v.addWidget(a)
-            v.addWidget(s)
-            f.setMinimumWidth(170)
-            return f
-
-        src, mid, dst = QVBoxLayout(), QVBoxLayout(), QVBoxLayout()
-        for lay in (src, mid, dst):
-            lay.setSpacing(8)
-        for sid, st in plan["stores"].items():
-            if st["status"] == "none":
-                continue
-            name = S.STORE_SHEETS[sid]
-            short_alone = not S._satisfied(st["before_colli"], st["before_amount"], sc["moq_colli"], sc["moq_amount"])
-            k = "warn" if st["status"] in ("bms", "dropped") and short_alone else None
-            src.addWidget(node(name, tr("{0:g} 箱 · €{1:,.2f}", st["before_colli"], st["before_amount"]) +
-                               (" · " + self._gap_note(sc, st) if k else ""), k))
-            if st["status"] == "dropped":
-                arrow = tr("── 这次不订 ──✕")
-            elif st["status"] in ("bms", "merged", "pulled"):
-                arrow = tr("── 整单并入 BMS ──▶")
-            elif st["lent"]:
-                arrow = tr("── 直送，借 {0:g} 箱给 BMS ┄▶", sum(n for _, n, _ in st["lent"]))
-            else:
-                arrow = tr("── 直接送店 ──▶")
-            al = QLabel(arrow)
-            al.setObjectName("Faint")
-            al.setMinimumHeight(44)
-            mid.addWidget(al)
-            if st["status"] in ("direct", "filled"):
-                dst.addWidget(node(tr("{0} 直送", name), tr("{0:g} 箱 · €{1:,.2f}", st["colli"], st["amount"]), "ok"))
-        if b:
-            dst.addWidget(node(tr("BMS 订单"), tr("{0:g} 箱 · €{1:,.2f}", b["colli"], b["amount"]) +
-                               (tr(" · 凑单 {0:g} 箱", sum(n for _, n, _ in b["added"])) if b["added"] else "") +
-                               ("" if S.bms_ordered(b) else " · " + tr("不订")),
-                               "err" if b["status"] == "short" else ("warn" if b["status"] == "forced" else "accent"), True))
-        for lay in (src, mid, dst):
-            lay.addStretch()
-            self.route_body.addLayout(lay)
-        expl = []
-        if mode == "all_bms":
-            expl.append(tr("手动选择：所有门店整单并入 BMS，由 BMS 订货后分货。"))
-        elif mode == "direct_only":
-            dropped = [S.STORE_SHEETS[s] for s, st in plan["stores"].items() if st["status"] == "dropped"]
-            expl.append(tr("手动选择：只订自己够起订量的门店。") +
-                        (tr("{0} 这次不订。", tr("、").join(dropped)) if dropped else ""))
-        bms_names = [S.STORE_SHEETS[s] for s, st in plan["stores"].items() if st["status"] == "bms"]
-        if bms_names and mode == "auto":
-            expl.append(tr("{0} 自己不够起订量、差得也多 → 并入 BMS。", tr("、").join(bms_names)))
-        if b:
-            if "merged" in b.get("how", []):
-                expl.append(tr("BMS 还不够 → 和 BMS 同仓的门店整单并入（不多跑一趟）。"))
-            if "pulled" in b.get("how", []):
-                expl.append(tr("借货还不够 → 把够起订量的 {0} 整单并进 BMS，让其他门店也订得起来。", tr("、").join(
-                    S.STORE_SHEETS[s_] for s_, st_ in plan["stores"].items() if st_["status"] == "pulled")))
-            if b.get("lenders"):
-                expl.append(tr("再向同城门店借货：{0}（借完这些店仍够起订量）。",
-                               tr("、").join(f"{S.STORE_SHEETS[s]} " + tr("{0:g} 箱", sum(r.values())) for s, r in b["lenders"].items())))
-            if b["added"]:
-                expl.append(tr("最后凑单 {0:g} 箱。", sum(n for _, n, _ in b["added"])))
-            expl.append(tr("BMS 结果：{0}。", tr(S.status_text(S.BMS, b["status"]))))
-            if b["status"] == "short":
-                expl.append(tr("想订的话选「全部并入 BMS」强制下单，或者选「只订达标门店」。"))
-        elif mode == "auto":
-            expl.append(tr("所有要订的门店都够起订量，直接送店。"))
-        far = [S.STORE_SHEETS[x] for x in (self.fill_cfg().get("far_stores") or []) if x in S.STORE_SHEETS]
-        if far:
-            expl.append(tr("{0} 不参与借货。", tr("、").join(far)))
-        ex = QLabel("\n".join(expl))
-        ex.setWordWrap(True)
-        ex.setObjectName("Faint")
-        ex.setStyleSheet(f"background:{T('surface2')}; border:1px dashed {T('line')}; border-radius:9px; padding:10px 12px;")
-        ex.setMinimumWidth(260)
-        self.route_body.addWidget(ex, 1)
-
-    def _apply_mode(self, mode):
-        if not self.result or self.route_sup.currentData() is None or self.running:
-            return
-        k = self.route_sup.currentData()
-        _, sc, plan = self.result["results"][k]
-        if plan.get("mode", "auto") == mode:
-            return
-        QApplication.setOverrideCursor(Qt.WaitCursor)
-        try:
-            self.result = S.reallocate_one(self.calc, self.colli, self.fill_cfg(), self.result, k, mode,
-                                           self.edited, log=lambda m: self.win.log("[门店配货] " + m))
-        except Exception as e:
-            QApplication.restoreOverrideCursor()
-            QMessageBox.warning(self.win, tr("门店配货"), tr("重新生成失败：{0}", e))
-            self._show_route()
-            return
-        QApplication.restoreOverrideCursor()
-        self._fill_result()
-        self._update_state()
-        self.win.show_toast(tr("{0} 已按「{1}」重新生成订单文件", sc["name"], self.mode_btns[mode].text()))
 
     # =================================================================
     # 返回修改：判断和上次配货相比有没有改动
@@ -1984,7 +1922,9 @@ class StoreOrderPage:
                       for p in on)
         moq = tuple((sc["path"], sc.get("moq_colli"), sc.get("moq_amount")) for sc in self.calc["schede"]
                     if sc["path"] in self.alloc_on)
-        return repr((on, colli, sorted(self.fill_cfg().items()), moq, id(self.calc)))
+        picks = sorted((p_, tuple(sorted(v.get("stores") or [])), bool(v.get("force")))
+                       for p_, v in self.bms_picks.items() if p_ in self.alloc_on)
+        return repr((on, colli, sorted(self.fill_cfg().items()), moq, id(self.calc), picks))
 
     def _result_current(self):
         """有配货结果，而且回来以后什么都没改"""
@@ -2014,7 +1954,7 @@ class StoreOrderPage:
             lines.append(tr("文件里写的起订量：{0}", m["raw"]))
         t.item(i, 1).setToolTip("\n".join(lines))
         cur = self.moq_of(p) or {}
-        tip = tr("起订量：{0}", S.moq_label(cur, mark=False)) + "\n" + tr("点一下修改起订量")
+        tip = tr("起订量：{0}", S.moq_label(cur, mark=False)) + "\n" + tr("点一下：起订量、这家供应商参与 BMS / 调货的门店")
         if cur.get("pallets") and not cur.get("per_pallet"):
             tip = tr("按板起订，还没填每板几箱（点起订量修改）") + "\n" + tip
         if cur.get("source") == "manual":
@@ -2041,7 +1981,15 @@ class StoreOrderPage:
             self.moq_overrides().pop(name, None)
         else:
             self.moq_overrides()[name] = ov
+        scfg = self.cfg.setdefault("supplier_cfg", {})
+        stores_changed = (scfg.get(name) or {}) != (dlg.result_supplier_cfg or {})
+        if dlg.result_supplier_cfg:
+            scfg[name] = dlg.result_supplier_cfg
+        else:
+            scfg.pop(name, None)
         save_settings(self.settings)
+        if stores_changed and self.calc:
+            self.apply_transfers()                   # 调货门店变了：重算调货
         msg = tr("{0} 的起订量已保存", name)
         if ov is not None and ov.get("config_id"):
             try:
@@ -2077,56 +2025,10 @@ class StoreOrderPage:
             parts.append(tr("差 €{0:,.2f}", sc["moq_amount"] - st["amount"]))
         return "，".join(parts)
 
-    def _results_refill(self, order):
-        self._rrows = [self._rrows[i] for i in order]
-        self._draw_results()
-
-    def _draw_results(self):
-        """配货结果表：self._rrows = [(行内容, 第几个供应商结果, 文件)]，按这个顺序画"""
-        rows = [r[0] for r in self._rrows]
-        self._res_index = [r[1] for r in self._rrows]
-        self.row_files = [r[2] for r in self._rrows]
-        t = self.rtable
-        t.setRowCount(len(rows))
-        kind = {"direct": "ok", "filled": "accent", "bms": "gray", "short": "err", "merged": "gray", "pulled": "gray", "dropped": "gray",
-                "forced": "warn"}
-        chip_w = 0
-        for i, (day, sup, moq, dest, st, status, note) in enumerate(rows):
-            label = tr(S.status_text(dest, status))
-            self.ui.table_set_row(t, i, [day, sup, moq, dest, f"{st['colli']:g}", f"€{st['amount']:,.2f}", label, note],
-                                  bold=dest == S.BMS)
-            t.item(i, 6).setForeground(QColor(0, 0, 0, 0))        # 文字由上面的小标签显示（排序、复制用）
-            t.item(i, 2).setForeground(QColor(T("muted")))
-            t.item(i, 2).setToolTip(S.moq_label(S.sc_moq(self.result["results"][self._res_index[i]][1]), mark=False))
-            if status in ("short", "dropped"):
-                for c in (4, 5):
-                    t.item(i, c).setForeground(QColor(T("faint")))
-            k = kind.get(status, "ok")
-            if dest == S.BMS and status in ("direct", "filled"):
-                k = "accent"
-            cw = QWidget()
-            ch = QHBoxLayout(cw)
-            ch.setContentsMargins(8, 0, 8, 0)
-            cp = chip(label, k)
-            ch.addWidget(cp)
-            ch.addStretch()
-            t.setCellWidget(i, 6, cw)
-            t.item(i, 7).setToolTip(note)
-            cf = cp.font()
-            cf.setPixelSize(12)
-            cf.setWeight(QFont.Weight.Medium)
-            need = QFontMetrics(cf).horizontalAdvance(label) + 24      # 左右 padding 9px + 余量
-            cp.setMinimumWidth(need)
-            chip_w = max(chip_w, need + 16)
-        # 状态是小标签（不是格子里的字）：按最宽的标签定列宽，不然「直接送店」这种字被挤掉
-        hh = t.horizontalHeader()
-        hh.setSectionResizeMode(6, QHeaderView.Interactive)
-        t.setColumnWidth(6, max(chip_w, hh.fontMetrics().horizontalAdvance(tr("状态")) + 30, 110))
-        t.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
-
     def _open_row(self, row, _col):
-        if 0 <= row < len(getattr(self, "row_files", [])):
-            self._open(self.row_files[row])
+        it = self.rtable.item(row, 0)
+        if it is not None:
+            self._open(it.data(Qt.UserRole))
 
     def _open(self, path):
         if path and os.path.exists(path):

@@ -155,10 +155,7 @@ class OrderCheck:
     def build(self):
         ui = self.ui
         p = ui.Panel(tr("② 检查门店订货清单"))
-        intro = QLabel(tr("比价用的主订单只从这里生成：把一家或几家门店的订货清单一起拖进来，按销量和数据库库存检查数量（增加 / 减少 / 不订），同时查五家门店的库存。确认时先用别的门店多出来的货（门店间调货），每家店剩下要订的各自生成主订单；再一家一家点下面的「开始处理」做供应商比价。"))
-        intro.setObjectName("Faint")
-        intro.setWordWrap(True)
-        p.lay.addWidget(intro)
+        p.setToolTip(tr("比价用的主订单只从这里生成：把一家或几家门店的订货清单一起拖进来，按销量和数据库库存检查数量（增加 / 减少 / 不订），同时查五家门店的库存。确认时先用别的门店多出来的货（门店间调货），每家店剩下要订的各自生成主订单；再一家一家点下面的「开始处理」做供应商比价。"))
 
         r1 = QHBoxLayout()
         r1.addWidget(QLabel(tr("清单")))
@@ -212,7 +209,7 @@ class OrderCheck:
         self.cycle.setCurrentIndex(max(0, self.cycle.findData(int(self.cfg.get("cycle", 30)))))
         r2.addWidget(self.cycle)
         self.use_cfg = ui.Toggle(tr("按配置文件周期"), bool(self.cfg.get("use_supplier_cycles", True)))
-        self.use_cfg.setToolTip(tr("打开：suppliers_config.json 里单独设了订货周期的供应商用它自己的周期，其余用左边选的周期。\n关闭：全部用左边选的周期。"))
+        self.use_cfg.setToolTip(tr("打开：配置文件里单独设了订货周期的供应商用它自己的周期，其余用默认周期（新算法 = 算法设置里的）。\n关闭：全部用默认周期。"))
         r2.addWidget(self.use_cfg)
         r2.addSpacing(12)
         r2.addWidget(QLabel(tr("销量周期（天）")))

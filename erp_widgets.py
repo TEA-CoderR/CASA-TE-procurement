@@ -605,6 +605,14 @@ class ToolWindow(QMainWindow):
         self.activateWindow()
 
 
+def tip_label(text, tip=None):
+    """设置界面的短标签：有说明时标签后加 ⓘ，说明放在鼠标提示里（界面要简洁，不放一段段字）"""
+    lb = QLabel(text + ("  ⓘ" if tip else ""))
+    if tip:
+        lb.setToolTip(tip)
+    return lb
+
+
 def kpi_card(label, value="—", sub=""):
     """小指标卡：返回 (框, 数值标签, 说明标签)"""
     f = QFrame()
