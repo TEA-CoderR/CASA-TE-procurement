@@ -611,8 +611,8 @@ class DetailWindow(ToolWindow):
         self.table.horizontalHeaderItem(_col(11)).setToolTip(tr("库存够卖 = 本店库存 ÷ 日均（账面库存是负数时按 0 算）。门店配货、检查订货清单、批发商比价都是这个算法"))
         self.table.horizontalHeaderItem(AFTER_COL).setToolTip(
             tr("到货后够卖 =（库存 + 订的货 + 调进来的 − 调给别的店的）÷ 日均：这次订的货和调的货都到了以后能卖几天；超过凑单天数标黄，可能压货"))
-        for k, tip in ((22, tr("月均 = 最长周期销量 ÷ 月数（默认 180 天 ÷ 6）")),
-                       (23, tr("需求 = 第 3 个周期（默认 90 天）的日均 × 订货周期")),
+        for k, tip in ((22, tr("月均：新算法 = 日均（加权 + 季节）× 30；原程序算法 = 最长周期销量 ÷ 月数（默认 180 天 ÷ 6）")),
+                       (23, tr("需求：新算法 = 日均 × 要备的天数（订货周期 × 等级系数 + 到货天数），不含安全库存；原程序算法 = 90 天日均 × 订货周期")),
                        (24, tr("GIA.0 = BMS 总仓库存；GIA.1 ~ GIA.5 = 各门店库存")),
                        (30, tr("GIA-period = 本店库存（负数按 0）− period_sales")),
                        (31, tr("period_sales = 第 3 个周期（默认 90 天）的销量"))):

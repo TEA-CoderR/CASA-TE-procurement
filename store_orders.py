@@ -1207,11 +1207,30 @@ def extra_headers(days=None):
             [f"GIA.{i}" for i in range(6)] + ["GIA-period", "period_sales"])
 
 
+def monthly_and_need(x, days=None, sales=None):
+    """
+    月均、需求（件）：
+      新算法（有目标库存 target）：月均 = 加权日均（含季节）× 30；需求 = 日均 × 要备的天数（订货周期 × 等级系数 + 到货天数），
+        就是目标库存里不含安全库存的那部分（target − safety）
+      原程序算法：月均 = 最长周期销量 ÷ 月数；需求 = 第 3 个周期（默认 90 天）的日均 × 订货周期
+    """
+    d = list(days or [30, 60, 90, 180])
+    if sales is None:
+        sales = [float(v or 0) for v in (x.get("sales") or [0, 0, 0, 0])][:4]
+        sales += [0.0] * (4 - len(sales))
+    if x.get("target") is not None and x.get("daily") is not None:
+        need = float(x["target"]) - float(x.get("safety") or 0)
+        return round(float(x["daily"]) * 30, 1), float(round(max(0.0, need)))
+    cyc = x.get("cycle") if isinstance(x.get("cycle"), (int, float)) else 30
+    months = max(1.0, d[3] / 30.0)
+    return round(sales[3] / months, 1), float(round(sales[2] / d[2] * float(cyc)) if d[2] else 0)
+
+
 def extra_fields(x, sugg_colli, days=None):
     """
     一个商品在一家店的附加数据（顺序同 extra_headers）；数据库里没有这个商品 → None（那一行留空）
-      GIA 本店库存（原值）· ROT 各周期销量 · 月均 = 最长周期销量 ÷ 月数 · 采购量 = 系统建议件数 · 箱数 = 系统建议箱数
-      需求 = 第 3 个周期（默认 90 天）的日均 × 订货周期 · Livello = 等级 · GIA.0~5 各门店库存（0 = BMS 总仓）
+      GIA 本店库存（原值）· ROT 各周期销量 · 月均 / 需求 见 monthly_and_need（新算法按新算法算）
+      采购量 = 系统建议件数 · 箱数 = 系统建议箱数 · Livello = 等级 · GIA.0~5 各门店库存（0 = BMS 总仓）
       period_sales = 第 3 个周期的销量 · GIA-period = 本店库存（负数按 0）− period_sales
     """
     if not x:
@@ -1219,13 +1238,11 @@ def extra_fields(x, sugg_colli, days=None):
     d = list(days or [30, 60, 90, 180])
     sales = [float(v or 0) for v in (x.get("sales") or [0, 0, 0, 0])][:4] + [0.0] * max(0, 4 - len(x.get("sales") or []))
     inv = float(x.get("inv_raw", x.get("inv", 0)) or 0)
-    months = max(1.0, d[3] / 30.0)
-    cyc = x.get("cycle") if isinstance(x.get("cycle"), (int, float)) else 30
     period = sales[2]
-    demand = round(period / d[2] * float(cyc)) if d[2] else 0
+    monthly, demand = monthly_and_need(x, d, sales)
     gia = [float(v or 0) for v in (x.get("gia_all") or [0] * 6)][:6]
     gia += [0.0] * (6 - len(gia))
-    return ([inv] + sales + [round(sales[3] / months, 1), float(x.get("sugg") or 0), float(sugg_colli or 0),
+    return ([inv] + sales + [monthly, float(x.get("sugg") or 0), float(sugg_colli or 0),
                              float(demand), x.get("tier") or ""] + gia + [max(0.0, inv) - period, period])
 
 

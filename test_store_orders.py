@@ -338,3 +338,11 @@ class CoverDaysTest(unittest.TestCase):
         self.assertEqual(S.days_text(float("inf")), "∞")
         self.assertEqual(S.days_text(12.4), "12")
         self.assertEqual(S.days_text(None), "")
+
+
+def test_monthly_and_need_follow_algorithm():
+    """月均 / 需求：新算法按加权日均和目标库存算，原程序算法按销量周期算"""
+    v1 = {"sales": [30, 60, 90, 180], "cycle": 30}
+    assert S.monthly_and_need(v1) == (30.0, 30.0)                 # 180 ÷ 6；90 天日均 1 × 30
+    v2 = dict(v1, daily=1.5, target=50.0, safety=5.0)
+    assert S.monthly_and_need(v2) == (45.0, 45.0)                 # 1.5 × 30；目标 50 − 安全库存 5

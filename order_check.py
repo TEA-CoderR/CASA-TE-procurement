@@ -362,7 +362,7 @@ class OrderCheck:
         for c, wd in enumerate(_perm((70, 80, 120, 280, 70, 52, 52, 52, 52, 96, 52, 70, 70, 70, 76, 70, 50, 50, 60, 70, 120, 120, 96,
                                       76, 200, 380, 110, 150, 56))):
             self.table.setColumnWidth(c, wd)
-        self.table.horizontalHeaderItem(_col(28)).setToolTip(tr("月均 = 最长周期销量 ÷ 月数（默认 180 天 ÷ 6）"))
+        self.table.horizontalHeaderItem(_col(28)).setToolTip(tr("月均：新算法 = 日均（加权 + 季节）× 30；原程序算法 = 最长周期销量 ÷ 月数（默认 180 天 ÷ 6）"))
         self.table.horizontalHeaderItem(EDIT_COL).setToolTip(tr("双击修改箱数，0 = 不订"))
         self.table.horizontalHeaderItem(EDIT_COL).setText(tr("确定箱数") + " ✎")
         self.table.horizontalHeaderItem(_col(10)).setToolTip(
@@ -767,12 +767,13 @@ class OrderCheck:
                       "；".join(self._reason_lines(x)), x.get("sup_code") or "", x.get("sup_name") or "", self._monthly(x)])
 
     def _monthly(self, x):
-        """月均 = 最长周期（默认 180 天）销量 ÷ 月数（和订货明细、订单文件的「月均」同一个算法）"""
+        """月均：新算法 = 加权日均 × 30；原程序算法 = 最长周期销量 ÷ 月数（和订货明细同一个算法，store_orders.monthly_and_need）"""
+        import store_orders as SO
         days = (self.meta or {}).get("days") or [30, 60, 90, 180]
         sales = x.get("sales") or []
         if not x.get("in_db", True) or len(sales) < 4 or not isinstance(sales[3], (int, float)):
             return ""
-        return f"{round(float(sales[3]) / max(1.0, days[3] / 30.0), 1):g}"
+        return f"{SO.monthly_and_need(x, days)[0]:g}"
 
     def _verdict(self, x):
         """(类别, 文字)：确定件数和门店清单比，不订 / 照清单订 / 多订 / 少订 / 建议调货"""
