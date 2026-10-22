@@ -5,6 +5,7 @@
 - **先读 `交接文档.md`**（代码地图、业务规则、发布流程、安全），业务细节在 `docs/`。
 - 用户是中文使用者：回复用中文，用业务语言解释，少用技术术语。
 - 界面文字一律 `tr("中文原文")`，新增文字在 `translations.py` 末尾补英 / 意翻译；改完运行 `python tools/check_translations.py`。
+- **界面要简洁（用户明确要求，2026-10-22）**：设置窗口、对话框只放短标签（几个字）+ 输入框 / 勾选框；说明文字一律放鼠标提示（tooltip，标题后加 ⓘ），不要在界面上放一段段说明。新加界面先想能不能少一个字、少一个按钮。
 - 颜色用 `theme.T("token")`，不要写死；页面提供 `restyle()`。耗时操作用 `erp_widgets.TaskDialog` + 线程 + Signal（参考 `import_page.py` 的 `start()`）。
 - 业务逻辑写成不依赖界面的函数并加测试；改动后跑 `python -m pytest -q test_*.py`（应全部通过）。
 - `store_orders.plan_supplier` 同时决定起订量检查表的颜色和实际配货结果，改它就是改业务规则，先和用户确认。

@@ -193,15 +193,27 @@ def _card(title, sub=""):
     v = QVBoxLayout(f)
     v.setContentsMargins(16, 12, 16, 14)
     v.setSpacing(8)
-    t = QLabel(title)
+    t = QLabel(title + ("  ⓘ" if sub else ""))
     t.setObjectName("PanelTitle")
-    v.addWidget(t)
     if sub:
-        s = QLabel(sub)
-        s.setObjectName("Faint")
-        s.setWordWrap(True)
-        v.addWidget(s)
+        t.setToolTip(sub)              # 界面要简洁：说明不占地方，鼠标停在标题上看
+    v.addWidget(t)
     return f, v
+
+
+def _form_rows(grid, rows):
+    """设置表单：每行 标签 + 输入框；说明放在鼠标提示里（不显示一大段字）。返回各行的标签"""
+    labels = []
+    for r, (lab, w, tip) in enumerate(rows):
+        lb = QLabel(lab)
+        if tip:
+            lb.setToolTip(tip)
+            w.setToolTip(tip)
+        grid.addWidget(lb, r, 0)
+        grid.addWidget(w, r, 1)
+        labels.append(lb)
+    grid.setColumnStretch(2, 1)
+    return labels
 
 
 def _hint(text):
@@ -265,35 +277,26 @@ class TransferBox(QWidget):
         self.keep = spin(tc.get("keep_cycles", 1.0), 0, 10, 1)
         self.itemv = spin(tc["item_min_value"], 0, 100000, 2)
         self.minv = spin(tc["min_value"], 0, 100000, 0)
+        self.mode.setFixedWidth(170)
         rows = [
             (tr("什么时候调"), self.mode, ""),
             (tr("只占整箱 ≤"), self.share, tr("例：一箱 12 件只要 3 件 = 25%")),
-            (tr("调出门店留货系数"), self.keep, tr("留够 日均 × 订货周期 × 系数，多的才调")),
-            (tr("每个商品至少 €"), self.itemv, tr("调货件数 × 件价，太少不值得拣货")),
-            (tr("每家调出门店合计至少 €"), self.minv, tr("0 = 不限")),
+            (tr("调出店留货系数"), self.keep, tr("留够 日均 × 订货周期 × 系数，多的才调")),
+            (tr("单品至少 €"), self.itemv, tr("调货件数 × 件价，太少不值得拣货")),
+            (tr("单店合计至少 €"), self.minv, tr("每家调出门店合计，0 = 不限")),
         ]
-        self._share_row = []
-        for r, (lab, w, hint) in enumerate(rows):
-            lb = QLabel(lab)
-            g.addWidget(lb, r, 0)
-            if w is self.mode:
-                g.addWidget(w, r, 1, 1, 2)
-                continue
-            hl = _hint(hint)
-            g.addWidget(w, r, 1)
-            g.addWidget(hl, r, 2)
-            if w is self.share:
-                self._share_row = [lb, w, hl]
+        labels = _form_rows(g, rows)
+        self._share_row = [labels[1], self.share]
         v.addLayout(g)
         # 「所有要订商品」用不上比例：整行藏起来（只变灰看不出来）
         self.mode.currentIndexChanged.connect(lambda _: self._show_share())
         self._show_share()
         out = set(TR.excluded_stores(tc_raw, fallback_far))
-        lab = QLabel(tr("参与调货门店"))
+        lab = QLabel(tr("参与门店"))
+        lab.setToolTip(tr("自己这次也要订的商品不调出。门店配货和批发商比价共用这套设置。"))
         v.addWidget(lab)
         row, self.stores = _store_checks({k for k in S.STORE_SHEETS if k not in out})
         v.addLayout(row)
-        v.addWidget(_hint(tr("自己这次也要订的商品不调出。门店配货和批发商比价共用这套设置。")))
 
     def _show_share(self):
         on = self.mode.currentData() == "waste"
@@ -321,7 +324,7 @@ class FillDialog(QDialog):
         lay.setSpacing(12)
 
         # ① 凑单
-        c1, v1 = _card(tr("① 凑单"), tr("每家店离起订量只差一点时，加点卖得动的商品凑够；差太多就并到 BMS"))
+        c1, v1 = _card(tr("① 凑单"), tr("每家店离起订量只差一点时，加点卖得动的商品凑够"))
         g = QGridLayout()
         g.setHorizontalSpacing(12)
         g.setVerticalSpacing(8)
@@ -336,15 +339,15 @@ class FillDialog(QDialog):
         self.max_days = QSpinBox()
         self.max_days.setRange(1, 3650)
         self.max_days.setValue(int(fc["max_stock_days"]))
-        for r, (lab, w, hint) in enumerate(((tr("金额差不超过 €"), self.gap_amount, tr("0 = 不按金额凑单")),
-                                            (tr("箱数差不超过"), self.gap_colli, tr("0 = 不按箱数凑单")),
-                                            (tr("凑单后库存最多够卖（天）"), self.max_days, tr("只加卖得动的商品")))):
-            g.addWidget(QLabel(lab), r, 0)
+        self.max_days.setSuffix(tr(" 天"))
+        for w in (self.gap_amount, self.gap_colli, self.max_days):
             w.setFixedWidth(90)
-            g.addWidget(w, r, 1)
-            g.addWidget(_hint(hint), r, 2)
+        _form_rows(g, ((tr("金额差 ≤ €"), self.gap_amount, tr("0 = 不按金额凑单")),
+                       (tr("箱数差 ≤"), self.gap_colli, tr("0 = 不按箱数凑单")),
+                       (tr("凑完最多够卖"), self.max_days, tr("只加卖得动的商品：加完后库存最多够卖几天"))))
         v1.addLayout(g)
-        self.fill_bms = QCheckBox(tr("BMS 差一点时也凑单"))
+        self.fill_bms = QCheckBox(tr("BMS 也凑单"))
+        self.fill_bms.setToolTip(tr("BMS 离起订量只差一点时，也加点卖得动的商品凑够"))
         self.fill_bms.setChecked(bool(fc["fill_bms"]))
         v1.addWidget(self.fill_bms)
         cols = QHBoxLayout()                 # 左边：凑单、BMS；右边：调货（竖着排太高，小屏幕放不下）
@@ -354,8 +357,8 @@ class FillDialog(QDialog):
         left.addWidget(c1)
 
         # ② BMS 凑单：能单独送店的都单独送店；订不起来的门店按下面的先后并进 BMS，够起订量就停；凑不够的这次不订
-        c2, v2 = _card(tr("② 订不起来的门店凑 BMS"), tr("能单独送店的都单独送店，不拆单、不拉进 BMS"))
-        v2.addWidget(QLabel(tr("参与 BMS 凑单的门店（勾选）和先后顺序（拖动排序）")))
+        c2, v2 = _card(tr("② BMS 凑单顺序"), tr("能单独送店的都单独送店。订不起来的门店按这个先后一家一家并进 BMS，"
+                                                 "够起订量就停；没勾的、凑不够的这次不订。配货结果里可以手动选进 BMS 的门店。"))
         from PySide6.QtWidgets import QListWidget, QListWidgetItem, QAbstractItemView
         self.bms_list = QListWidget()
         self.bms_list.setDragDropMode(QAbstractItemView.InternalMove)
@@ -372,16 +375,14 @@ class FillDialog(QDialog):
             it.setCheckState(Qt.Unchecked if k in far else Qt.Checked)
             self.bms_list.addItem(it)
         self.bms_list.setMaximumHeight(5 * 30 + 8)
+        self.bms_list.setToolTip(tr("勾选 = 参与；拖动调整先后"))
         v2.addWidget(self.bms_list)
-        v2.addWidget(_hint(tr("订不起来的门店按这个先后一家一家并进 BMS，够起订量就停（BMS 分货的门店越少越省事）；"
-                              "剩下的、没勾的、全并完还不够的 → 这次不订，下次再看。"
-                              "要凑 BMS 的话，在配货结果里点「手动选进 BMS 的门店…」。供应商设置里可以按供应商单独选门店。")))
         left.addWidget(c2)
         left.addStretch()
         cols.addLayout(left, 1)
 
         # ③ 门店之间调货
-        c3, v3 = _card(tr("③ 门店之间调货"), tr("要的件数远小于一箱时，从别的门店调多出来的货，少订一箱"))
+        c3, v3 = _card(tr("③ 门店间调货"), tr("要的件数远小于一箱时，从别的门店调多出来的货，少订一箱"))
         self.tbox = TransferBox(page.transfer_cfg(), fc.get("far_stores") or [])
         v3.addWidget(self.tbox)
         v3.addStretch()
@@ -392,7 +393,7 @@ class FillDialog(QDialog):
         bb.accepted.connect(self.save)
         bb.rejected.connect(self.reject)
         lay.addWidget(bb)
-        self.setMinimumWidth(1040)
+        self.setMinimumWidth(820)
 
     def save(self):
         base = {k: v for k, v in self.page.fill_cfg().items() if k != "supplier_cfg"}
@@ -469,10 +470,11 @@ class MoqDialog(QDialog):
         glob = {"bms_stores": {k for k in S.STORE_SHEETS if k not in set(fc.get("far_stores") or [])},
                 "transfer_stores": {k for k in S.STORE_SHEETS if k not in set(page.transfer_far())}}
         self.store_sections = {}
-        for key, title in (("bms_stores", tr("参与 BMS 凑单的门店")),
-                           ("transfer_stores", tr("参与门店间调货的门店"))):
+        for key, title in (("bms_stores", tr("单独设 BMS 凑单门店")),
+                           ("transfer_stores", tr("单独设调货门店"))):
             own = self.result_supplier_cfg.get(key)
-            cb = QCheckBox(title + tr("（这家供应商单独设）"))
+            cb = QCheckBox(title)
+            cb.setToolTip(tr("不勾就按「配货设置」里的总设置"))
             cb.setChecked(own is not None)
             row, boxes = _store_checks({int(x) for x in own} if own is not None else glob[key])
             for b_ in boxes.values():
@@ -481,7 +483,6 @@ class MoqDialog(QDialog):
             lay.addWidget(cb)
             lay.addLayout(row)
             self.store_sections[key] = (cb, boxes)
-        lay.addWidget(_hint(tr("不勾「单独设」就按「配货设置」里的总设置。")))
 
         # suppliers_config.json 里对应的供应商
         cl = QLabel(tr("同时写进配置文件 suppliers_config.json 的供应商："))
@@ -557,8 +558,8 @@ class BmsPickDialog(QDialog):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(20, 16, 20, 14)
         lay.setSpacing(10)
-        top = QLabel(tr("起订量：{0}。勾上的门店整单进 BMS，由 BMS 订货后分货；没勾的门店自己够起订量就直接送店，不够就这次不订。",
-                        S.moq_label(S.sc_moq(sc), mark=False)))
+        top = QLabel(tr("起订量 {0} · 勾上的门店整单进 BMS", S.moq_label(S.sc_moq(sc), mark=False)))
+        top.setToolTip(tr("没勾的门店：自己够起订量就直接送店，不够就这次不订"))
         top.setWordWrap(True)
         top.setObjectName("Muted")
         lay.addWidget(top)
