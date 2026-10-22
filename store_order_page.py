@@ -651,193 +651,6 @@ class BmsPickDialog(QDialog):
         self.accept()
 
 
-class BmsAdjustDialog(QDialog):
-    """
-    起订量检查「BMS 调整」：配货之前定好哪几家门店进 BMS（勾了哪几家，哪几家就整单进 BMS）。
-    上面选一家供应商，或「全部勾选的供应商」一起改。确定后 self.action = "set" / "auto"，self.target = 路径或 None（全部）
-    """
-
-    def __init__(self, page, path=None):
-        super().__init__(page.win)
-        self.page = page
-        self.setWindowTitle(tr("BMS 调整"))
-        self.action = self.target = self.picks = None
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(20, 16, 20, 14)
-        lay.setSpacing(10)
-        from PySide6.QtWidgets import QComboBox, QTableWidget, QAbstractItemView
-        top = QHBoxLayout()
-        lb = QLabel(tr("供应商") + " ⓘ")
-        lb.setToolTip(tr("勾上的门店整单进 BMS；没勾的门店自己够起订量就直接送店，不够就这次不订"))
-        top.addWidget(lb)
-        self.sup = QComboBox()
-        self.sup.addItem(tr("全部勾选的供应商"), None)
-        self.scs = {sc["path"]: sc for sc in page.calc["schede"] if sc["path"] in page.alloc_on}
-        for p_, sc in sorted(self.scs.items(), key=lambda x: x[1]["name"]):
-            mark = " ✎" if p_ in page.bms_picks else ""
-            self.sup.addItem(f"{sc['name']}（{tr(sc['day'])}）{mark}", p_)
-        top.addWidget(self.sup, 1)
-        lay.addLayout(top)
-        t = QTableWidget(0, 6)
-        t.setHorizontalHeaderLabels([tr("进 BMS"), tr("门店"), tr("箱数"), tr("金额"), tr("自己够起订量？"), tr("紧急缺货")])
-        t.verticalHeader().hide()
-        t.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        t.setSelectionMode(QAbstractItemView.NoSelection)
-        t.horizontalHeader().setStretchLastSection(True)
-        t.setMinimumWidth(640)
-        t.itemChanged.connect(lambda _it: self._update())
-        self.t = t
-        lay.addWidget(t)
-        self.sum_lbl = QLabel("")
-        self.sum_lbl.setWordWrap(True)
-        lay.addWidget(self.sum_lbl)
-        self.force = QCheckBox(tr("BMS 不够起订量也下单"))
-        self.force.setToolTip(tr("一般不勾：不够起订量的 BMS 单供应商可能不接；确定要订再勾"))
-        lay.addWidget(self.force)
-        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        bb.button(QDialogButtonBox.Ok).setText(tr("确定"))
-        b_auto = bb.addButton(tr("恢复系统建议"), QDialogButtonBox.ResetRole)
-        b_auto.setToolTip(tr("这家（或全部）不再手动指定，按配货设置里的 BMS 顺序自动凑"))
-        b_auto.clicked.connect(self._auto)
-        bb.accepted.connect(self._ok)
-        bb.rejected.connect(self.reject)
-        lay.addWidget(bb)
-        i = self.sup.findData(path) if path else 0
-        self.sup.setCurrentIndex(max(0, i))
-        self.sup.currentIndexChanged.connect(lambda _i: self._load())
-        self._load()
-
-    def _paths(self):
-        p_ = self.sup.currentData()
-        return [p_] if p_ else list(self.scs)
-
-    def _store_rows(self, path):
-        """[(门店, 箱数, 金额, 自己够, 紧急占比, 紧急个数, 箱数明细)]"""
-        sc = self.scs[path]
-        plan = self.page._preview(sc)
-        items = {it["row"]: it for it in sc["items"]}
-        out = []
-        for sid, st in plan["stores"].items():
-            if st["status"] == "none":
-                continue
-            base = st.get("base_lines") or st["lines"]
-            c, a = S._totals(base, items)
-            share, n = S.urgent_share(sc, base, st.get("dem_rows"))
-            out.append((sid, c, a, S._satisfied(c, a, sc["moq_colli"], sc["moq_amount"]), share, n, base))
-        return out
-
-    def _current(self, path):
-        pk = self.page.bms_picks.get(path)
-        if pk is not None:
-            return set(pk.get("stores") or []), bool(pk.get("force"))
-        b = self.page._preview(self.scs[path]).get("bms")
-        return (set(b.get("stores") or []) if S.bms_ordered(b) else set()), False
-
-    def _load(self):
-        from PySide6.QtWidgets import QTableWidgetItem
-        T_ = self.page.ui.T
-        paths = self._paths()
-        self.rows = {p_: self._store_rows(p_) for p_ in paths}
-        single = len(paths) == 1 and self.sup.currentData()
-        agg = {}
-        for p_, rows in self.rows.items():
-            for sid, c, a, alone, share, n, _ in rows:
-                g = agg.setdefault(sid, [0.0, 0.0, 0, 0, share, n])
-                g[0] += c
-                g[1] += a
-                g[2] += 1
-                g[3] += bool(alone)
-        cur, force = set(), False
-        if single:
-            cur, force = self._current(paths[0])
-        else:
-            picked = [self.page.bms_picks[p_] for p_ in paths if p_ in self.page.bms_picks]
-            if picked and len(picked) == len(paths):
-                cur = set.intersection(*[set(x.get("stores") or []) for x in picked])
-                force = all(x.get("force") for x in picked)
-        t = self.t
-        t.blockSignals(True)
-        t.setRowCount(0)
-        self.checks = {}
-        for sid in S.STORE_SHEETS:
-            if sid not in agg:
-                continue
-            c, a, n_sup, n_ok, share, n = agg[sid]
-            r = t.rowCount()
-            t.insertRow(r)
-            ck = QTableWidgetItem()
-            ck.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled)
-            ck.setCheckState(Qt.Checked if sid in cur else Qt.Unchecked)
-            t.setItem(r, 0, ck)
-            self.checks[sid] = ck
-            if single:
-                alone_txt = tr("够") if n_ok else self.page._gap_note(self.scs[paths[0]], {"colli": c, "amount": a})
-                urg = tr("{0:.0%}（{1} 个）", share, n) if n else "—"
-            else:
-                alone_txt = tr("{0} / {1} 家够", n_ok, n_sup)
-                urg = "—"
-            vals = [S.STORE_SHEETS[sid], f"{c:g}", f"€{a:,.2f}", alone_txt, urg]
-            for k, v in enumerate(vals, 1):
-                it = QTableWidgetItem(v)
-                if k in (2, 3, 5):
-                    it.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-                t.setItem(r, k, it)
-            t.item(r, 4).setForeground(QColor(T_("ok") if n_ok == n_sup else T_("warn")))
-            if single and n and share >= 0.25:
-                kk = "err" if share >= 0.5 else "warn"
-                t.item(r, 5).setForeground(QColor(T_(kk)))
-                t.item(r, 5).setBackground(QColor(T_(kk + "_soft")))
-        t.resizeColumnsToContents()
-        t.horizontalHeader().setStretchLastSection(True)
-        t.setMinimumHeight(min(320, 40 + 34 * max(1, t.rowCount())))
-        t.blockSignals(False)
-        self.force.setChecked(force)
-        self._update()
-
-    def _chosen(self):
-        return [sid for sid, ck in self.checks.items() if ck.checkState() == Qt.Checked]
-
-    def _update(self):
-        chosen = set(self._chosen())
-        T_ = self.page.ui.T
-        res = []
-        for p_, rows in self.rows.items():
-            sc = self.scs[p_]
-            items = {it["row"]: it for it in sc["items"]}
-            lines = {}
-            for sid, c, a, alone, share, n, base in rows:
-                if sid in chosen:
-                    for row, k in base.items():
-                        lines[row] = lines.get(row, 0) + k
-            if lines:
-                c, a = S._totals(lines, items)
-                res.append((c, a, S._satisfied(c, a, sc["moq_colli"], sc["moq_amount"]), sc))
-        if not chosen:
-            txt, col = tr("没有门店进 BMS：只出直送的单"), "muted"
-        elif self.sup.currentData():
-            c, a, ok, sc = res[0] if res else (0, 0, False, self.scs[self.sup.currentData()])
-            if ok:
-                txt, col = tr("BMS：{0} 家 · {1:g} 箱 · €{2:,.2f} → 够起订量", len(chosen), c, a), "ok"
-            else:
-                txt, col = tr("BMS：{0} 家 · {1:g} 箱 · €{2:,.2f} → 还不够起订量（{3}）", len(chosen), c, a,
-                              S.moq_label(S.sc_moq(sc), mark=False)), "err"
-        else:
-            n_ok = sum(1 for x in res if x[2])
-            txt = tr("BMS 够起订量：{0} / {1} 家供应商", n_ok, len(res))
-            col = "ok" if n_ok == len(res) else "warn"
-        self.sum_lbl.setText(txt)
-        self.sum_lbl.setStyleSheet(f"color:{T_(col)}; font-weight:600;")
-
-    def _ok(self):
-        self.action, self.target = "set", self.sup.currentData()
-        self.picks = {"stores": self._chosen(), "force": self.force.isChecked()}
-        self.accept()
-
-    def _auto(self):
-        self.action, self.target = "auto", self.sup.currentData()
-        self.accept()
-
-
 class StoreOrderPage:
     def __init__(self, win, settings, ui):
         self.win, self.settings, self.ui = win, settings, ui
@@ -850,7 +663,8 @@ class StoreOrderPage:
         self.result = None
         self.result_sig = None     # 配货时的输入（箱数、勾选、配货设置、起订量）；返回修改后没变 → 直接回结果页
         self.alloc_on = set()      # 起订量检查里勾选、要配货的供应商（SCHEDA 路径）
-        self.bms_picks = {}        # 「BMS 调整」手动定的：{路径: {"stores": [...], "force": bool}}
+        self.bms_picks = {}        # 「BMS 调整」手动定的：{路径: {"stores": [...], "force": False}}
+        self.bms_edit = False      # 起订量检查正在「BMS 调整」：门店格子带勾选框
         self.running = False
         self.list_token = 0
         self.detail_win = None
@@ -1159,13 +973,20 @@ class StoreOrderPage:
             lb.clicked.connect(lambda _=False, on=on: self._set_all_alloc(on))
             mh.addWidget(lb)
             self.m_links = getattr(self, "m_links", []) + [lb]
-        lb = QPushButton(tr("BMS 调整"))
-        lb.setObjectName("Link")
-        lb.setCursor(Qt.PointingHandCursor)
-        lb.setToolTip(tr("配货前手动定哪几家门店进 BMS（也可以点表格里的 BMS 格）"))
-        lb.clicked.connect(lambda: self.adjust_bms())
-        mh.addWidget(lb)
-        self.m_links.append(lb)
+        self.bms_btn = QPushButton(tr("BMS 调整"))
+        self.bms_btn.setObjectName("Link")
+        self.bms_btn.setCursor(Qt.PointingHandCursor)
+        self.bms_btn.setToolTip(tr("点一下进入调整：每个门店格子出现勾选框，勾上的门店整单进 BMS；够 BMS 起订量才变橙色"))
+        self.bms_btn.clicked.connect(self.toggle_bms_edit)
+        mh.addWidget(self.bms_btn)
+        self.bms_reset = QPushButton(tr("恢复系统建议"))
+        self.bms_reset.setObjectName("Link")
+        self.bms_reset.setCursor(Qt.PointingHandCursor)
+        self.bms_reset.setToolTip(tr("不再手动指定，按配货设置里的 BMS 顺序自动凑"))
+        self.bms_reset.clicked.connect(self.reset_bms_picks)
+        self.bms_reset.hide()
+        mh.addWidget(self.bms_reset)
+        self.m_links += [self.bms_btn, self.bms_reset]
         mh.addStretch(1)
         self.legend = []
         for kind, text in (("ok", tr("单独够起订量 · 直送")), ("near", tr("合起来够 BMS 起订量")), ("far", tr("不够 · 这次不订"))):
@@ -1909,13 +1730,17 @@ class StoreOrderPage:
                 t.item(r, 1).setToolTip(tr("没勾选：这次不配货、不生成订单"))
                 continue
             t.item(r, 2).setForeground(QColor(T("muted")))
+            in_bms = self._bms_members(sc["path"], plan) if self.bms_edit else set()
             for k, st in enumerate(states):
+                if st and self.bms_edit and st != "none":
+                    sid_ = list(S.STORE_SHEETS)[k]
+                    t.item(r, 3 + k).setData(Qt.CheckStateRole, Qt.Checked if sid_ in in_bms else Qt.Unchecked)
                 if st:
                     it = t.item(r, 3 + k)
                     it.setBackground(QColor(bg[st]))
                     it.setForeground(QColor(fg[st]))
                     if st in tips:
-                        it.setToolTip(tips[st])
+                        it.setToolTip(tips[st] + ("\n" + tr("点一下：进 / 不进 BMS") if self.bms_edit and st != "none" else ""))
                     if st in ("ok", "bms_ok"):
                         f = it.font()
                         f.setBold(True)
@@ -1930,9 +1755,7 @@ class StoreOrderPage:
                 bi.setFont(f)
                 how = S.bms_note(b)
                 bi.setToolTip((tr("够 BMS 起订量") if ok_b else tr("不够 BMS 起订量（{0}）", self._gap_note(sc, b)))
-                              + "\n" + how + "\n" + tr("点一下：BMS 调整"))
-            else:
-                bi.setToolTip(tr("点一下：BMS 调整"))
+                              + "\n" + how)
         tc, ta = sum(col_c.values()), sum(col_a.values())
         bc = sum(p_["bms"]["colli"] for k_, p_ in self._plans.items() if k_ in self.alloc_on and S.bms_ordered(p_.get("bms")))
         ba = sum(p_["bms"]["amount"] for k_, p_ in self._plans.items() if k_ in self.alloc_on and S.bms_ordered(p_.get("bms")))
@@ -1968,9 +1791,10 @@ class StoreOrderPage:
             self.edit_moq(path)
             return
         stores = list(S.STORE_SHEETS)
-        if col == 3 + len(stores):                                     # BMS 列：手动定哪几家进 BMS
-            if path == ALL or path in self.alloc_on:
-                self.adjust_bms(None if path == ALL else path)
+        if self.bms_edit and path != ALL and 3 <= col < 3 + len(stores):     # BMS 调整：点格子 = 进 / 不进 BMS
+            it = t.item(row, col)
+            if it is not None and it.data(Qt.CheckStateRole) is not None:
+                self._toggle_bms_store(path, stores[col - 3])
             return
         sid = stores[col - 3] if 3 <= col < 3 + len(stores) else ALL     # BMS / 合计列：这家供应商全部门店
         self.open_detail(path, sid)
@@ -1998,23 +1822,35 @@ class StoreOrderPage:
         self._refresh_matrix()
         self._update_state()
 
-    def adjust_bms(self, path=None):
-        """起订量检查「BMS 调整」：配货前手动定哪几家门店进 BMS（一家供应商或全部勾选的）"""
+    def toggle_bms_edit(self):
+        """「BMS 调整」开 / 关：开的时候起订量检查的门店格子带勾选框，点格子就进 / 不进 BMS"""
         if not self.calc or self.running:
             return
-        if not self.alloc_on:
-            QMessageBox.information(self.win, tr("BMS 调整"), tr("先勾选要配货的供应商"))
-            return
-        dlg = BmsAdjustDialog(self, path)
-        if not dlg.exec() or not dlg.action:
-            return
-        targets = [dlg.target] if dlg.target else list(dlg.scs)
-        for p_ in targets:
-            if dlg.action == "auto":
-                self.bms_picks.pop(p_, None)
-            else:
-                self.bms_picks[p_] = dict(dlg.picks)
+        self.bms_edit = not self.bms_edit
+        self.bms_btn.setText(tr("完成调整") if self.bms_edit else tr("BMS 调整"))
+        self.bms_reset.setVisible(self.bms_edit)
         self._refresh_matrix()
+
+    def reset_bms_picks(self):
+        if not self.bms_picks:
+            return
+        self.bms_picks.clear()
+        self._refresh_matrix()
+        self._update_state()
+
+    def _bms_members(self, path, plan=None):
+        """现在进 BMS 的门店：手动定过的按手动的；没定过的 = 系统建议里 BMS 够起订量时的那几家"""
+        pk = self.bms_picks.get(path)
+        if pk is not None:
+            return set(pk.get("stores") or [])
+        b = (plan or self._plans.get(path) or {}).get("bms")
+        return set(b.get("stores") or []) if S.bms_ordered(b) else set()
+
+    def _toggle_bms_store(self, path, sid):
+        cur = self._bms_members(path)
+        cur ^= {sid}
+        self.bms_picks[path] = {"stores": sorted(cur), "force": False}
+        self._refresh_matrix(only_path=path)
         self._update_state()
 
     # =================================================================
