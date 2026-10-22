@@ -2361,4 +2361,8 @@ TRANSLATIONS = {
     '，周期系数 A ×{0:g} · B ×{1:g} · C ×{2:g}': (', cycle factor A ×{0:g} · B ×{1:g} · C ×{2:g}', ', fattore ciclo A ×{0:g} · B ×{1:g} · C ×{2:g}'),
     '周期系数': ('Cycle factor', 'Fattore ciclo'),
     '按 ABC 乘订货周期：A 类多备（1.25 = 订够 1.25 个周期），C 类少备（0.75 = 订够 3/4 个周期），少压货。ABC 按本店近 13 周销售额：前 80% A，到 95% B，其余 C': ("Order cycle multiplied by ABC class: A stocks more (1.25 = 1.25 cycles), C less (0.75 = 3/4 of a cycle) to hold less stock. ABC by the store's last 13 weeks of sales: top 80% A, up to 95% B, rest C", "Ciclo d'ordine moltiplicato per classe ABC: A scorta di più (1,25 = 1,25 cicli), C di meno (0,75 = 3/4 di ciclo). ABC sulle vendite delle ultime 13 settimane: primo 80% A, fino al 95% B, resto C"),
+    '订货周期 {0} 天 + 到货 {1} 天，服务水平 {2:.0%}{3}，平均压货最多 {4} 天': ('Order cycle {0} days + delivery {1} days, service level {2:.0%}{3}, average stock at most {4} days', 'Ciclo {0} giorni + consegna {1} giorni, livello di servizio {2:.0%}{3}, scorta media max {4} giorni'),
+    '，安全库存 A {0:.0%} · B {1:.0%} · C {2:.0%}': (', safety stock A {0:.0%} · B {1:.0%} · C {2:.0%}', ', scorta di sicurezza A {0:.0%} · B {1:.0%} · C {2:.0%}'),
+    '安全库存': ('Safety stock', 'Scorta di sicurezza'),
+    '件数凑不成整箱时：少订（往下取整）后的库存够卖一个订货周期的这个比例，就少订，不为了一两件硬凑一箱；不够才多订一箱': ('When the quantity is not a whole number of boxes: round down if the stock after rounding down still covers this share of one order cycle; otherwise add one box', 'Se la quantità non è a colli interi: arrotonda per difetto se la scorta copre ancora questa quota di un ciclo; altrimenti aggiungi un collo'),
 }

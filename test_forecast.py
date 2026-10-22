@@ -51,14 +51,23 @@ def test_order_and_negative_stock():
 
 
 def test_smart_pack_rounding():
-    # 缺 13 件、一箱 12 件：零头 1 件 < 30% → 只订 1 箱
-    assert F.to_packs(13, 12, 0, 1.0, P) == 1
-    # 缺 16 件：零头 4 件 ≥ 3.6 → 2 箱
-    assert F.to_packs(16, 12, 0, 1.0, P) == 2
-    # 缺 2 件、一箱 24：现有 1 件，每天 0.1 → 12 天要卖 1.2 件 > 1 → 会卖断 → 订 1 箱
-    assert F.to_packs(2, 24, 1, 0.1, P) == 1
-    # 同样缺 2 件，但现有 5 件够卖到下次到货 → 这次不订
-    assert F.to_packs(2, 24, 5, 0.1, P) == 0
+    """凑不成整箱：少订后够安全库存（一个周期 × A 90% / B 70% / C 50%）就少订，不够才多订一箱"""
+    q = dict(P, review_days=30, lead_days=0)
+    # 每天 1 件，一个周期 30 件；缺 13 件、一箱 12 件，现有 20 件
+    # 少订 → 20 + 12 = 32 ≥ A 的 27 → 1 箱，不为 1 件多订一箱
+    assert F.to_packs(13, 12, 20, 1.0, q, tier="A") == 1
+    # 现有 10 件：10 + 12 = 22 < A 的 27 → 2 箱；B 要 21 → 够 → 1 箱；C 要 15 → 1 箱
+    assert F.to_packs(13, 12, 10, 1.0, q, tier="A") == 2
+    assert F.to_packs(13, 12, 10, 1.0, q, tier="B") == 1
+    assert F.to_packs(13, 12, 10, 1.0, q, tier="C") == 1
+    # 一箱都不到：缺 2 件、一箱 24，现有 20 件 ≥ C 的 15 → 不订；现有 5 件 → 订 1 箱
+    assert F.to_packs(2, 24, 20, 1.0, q, tier="C") == 0
+    assert F.to_packs(2, 24, 5, 1.0, q, tier="C") == 1
+    # 整箱正好、没有销量（只为陈列量）
+    assert F.to_packs(24, 12, 0, 1.0, q) == 2
+    assert F.to_packs(3, 12, 0, 0.0, q) == 0
+    # 供应商自己的订货周期（60 天）：要的安全库存更多
+    assert F.to_packs(13, 12, 20, 1.0, q, tier="B", cycle=60) == 2       # 32 < 60 × 70% = 42
 
 
 def test_seasonal_factor():

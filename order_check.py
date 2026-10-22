@@ -97,11 +97,14 @@ def _set_box(x, boxes):
     x["final"] = int(round(b * pk)) if pk > 0 else b
 
 
-def init_boxes(rows, units):
+def init_boxes(rows, units, algo=None):
     """
     检查结果按箱算：lbox 清单箱数、sbox 系统建议箱数、fbox 确定箱数（默认 = 建议；数据库没有 / 没有箱规的 = 清单）。
     units {门店: "colli" / "pcs"}：清单按箱的直接用清单数量，按件的折成箱（每箱件数用报价的）
+    algo：新算法参数；新算法算的行凑不成整箱时，少订后够安全库存就少订（forecast.to_packs），其余向上取整
     """
+    import forecast as F
+    v2 = bool(algo) and algo.get("engine") == "v2"
     for x in rows:
         pk = _pk(x)
         q = float(x.get("file_qty") or 0)
@@ -109,7 +112,13 @@ def init_boxes(rows, units):
             x["lbox"] = int(math.ceil(q - 1e-9))
         else:
             x["lbox"] = int(math.ceil(float(x.get("file_pcs") or 0) / pk - 1e-9))
-        x["sbox"] = int(math.ceil((x.get("suggested") or 0) / pk - 1e-9)) if (x.get("in_db", True) and pk > 0) else None
+        if not (x.get("in_db", True) and pk > 0):
+            x["sbox"] = None
+        elif v2 and x.get("daily") is not None:
+            x["sbox"] = F.to_packs(float(x.get("suggested") or 0), pk, float(x.get("inv0") or 0),
+                                   float(x.get("daily") or 0), algo, tier=x.get("tier") or "C", cycle=x.get("cycle"))
+        else:
+            x["sbox"] = int(math.ceil((x.get("suggested") or 0) / pk - 1e-9))
         _set_box(x, x["sbox"] if x["sbox"] is not None else x["lbox"])
 AFTER_COL = _col(20)          # 确定订后够卖（跟着确定件数变）
 LIST_AFTER_COL = _col(21)     # 清单订后够卖（按门店清单原来的数量订）
@@ -697,6 +706,10 @@ class OrderCheck:
 
         threading.Thread(target=work, daemon=True).start()
 
+    def _algo(self):
+        from reorder_page import algo_params
+        return algo_params(self.settings)
+
     def _done(self, payload):
         rows, err, meta = payload
         self.running = False
@@ -705,7 +718,7 @@ class OrderCheck:
             self.msg.setText(tr("计算失败"))
             self.win.notify(tr("检查清单失败：{0}", err))
             return
-        init_boxes(rows, meta.get("units"))
+        init_boxes(rows, meta.get("units"), self._algo())
         self.rows, self.meta = rows, meta
         # 人工改的调货 {(门店, 商品编号): {"from", "pieces", "auto"} 或 0 = 不调}；改过一次就冻结（别的行不再跟着变）
         self.transfer_ov = {}
@@ -1094,7 +1107,7 @@ class OrderCheck:
         """按现在的确定箱数重新算门店间调货（改了以后稍等一下再算，不卡）"""
         missing = [x for x in self.rows if "fbox" not in x]
         if missing:                                    # 还没按箱整理过的行（保险）
-            init_boxes(missing, (self.meta or {}).get("units"))
+            init_boxes(missing, (self.meta or {}).get("units"), self._algo())
         self._moves_in, self._moves_out = {}, {}
         self._moves = []
         if self.rows and self.meta.get("snap"):
@@ -1295,7 +1308,7 @@ class OrderCheck:
     def _fill(self):
         missing = [x for x in self.rows if "fbox" not in x]
         if missing:
-            init_boxes(missing, (self.meta or {}).get("units"))
+            init_boxes(missing, (self.meta or {}).get("units"), self._algo())
         self.ctl.render()
         self._summary()
 
