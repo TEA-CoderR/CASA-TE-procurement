@@ -165,7 +165,7 @@ class AlgoDialog(QDialog):
             sr.addWidget(sb)
             self.w[k] = (sb, 100)
         sr.addStretch()
-        g.addWidget(tip_label(tr("安全库存"), tr("件数凑不成整箱时：少订（往下取整）后的库存够卖一个订货周期的这个比例，就少订，不为了一两件硬凑一箱；不够才多订一箱")), 7, 0)
+        g.addWidget(tip_label(tr("最低保障线"), tr("件数凑不成整箱时：少订（往下取整）后的库存够卖一个订货周期的这个比例，就少订，不为了一两件硬凑一箱；不够才多订一箱。（和「安全库存」不是一回事：安全库存是按服务水平多备的货）")), 7, 0)
         g.addLayout(sr, 7, 1)
         fr = QHBoxLayout()
         fr.setSpacing(6)
@@ -224,7 +224,7 @@ def algo_summary(p):
     return tr("订货周期 {0} 天 + 到货 {1} 天，服务水平 {2:.0%}{3}，平均压货最多 {4} 天",
               p["review_days"], p["lead_days"], p["service"], tr("（按 ABC）") if p.get("abc_service") else "",
               p["max_stock_days"]) + \
-        tr("，安全库存 A {0:.0%} · B {1:.0%} · C {2:.0%}", p.get("safety_a", 0.9), p.get("safety_b", 0.7), p.get("safety_c", 0.5)) + \
+        tr("，最低保障线 A {0:.0%} · B {1:.0%} · C {2:.0%}", p.get("safety_a", 0.9), p.get("safety_b", 0.7), p.get("safety_c", 0.5)) + \
         tr("，周期系数 A ×{0:g} · B ×{1:g} · C ×{2:g}", p.get("cycle_a", 1), p.get("cycle_b", 1), p.get("cycle_c", 1))
 
 
