@@ -216,3 +216,19 @@ def test_one_file_per_supplier(tmp_path, monkeypatch):
     assert lines == {1: {7: 2}, 3: {8: 1}}
     assert marks["FOIANO"] == S.GRIGLIA_MARK["direct"] and marks["S.FILIPPO"] == S.GRIGLIA_MARK["bms"]
     assert marks["S.MARCO"] == ""
+
+
+def test_allocate_uses_bms_picks(tmp_path, monkeypatch):
+    """起订量检查「BMS 调整」配货前定好的门店：配货时整单进 BMS，没勾的够起订量就直送"""
+    monkeypatch.setattr(S, "write_order_file", lambda sc, per, out, *a, **k: open(out, "w").close() or out)
+    sc = _scheda({"colli": 0, "amount": 0}, "ACME", os.path.join("x", "周一", "SCHEDA ACME.xlsx"))
+    sc["day"] = "周一"
+    full = lambda n: {"sugg": n, "daily": 1, "inv": 0, "sales": [30, 60, 90, 180], "inv_days": 0, "decision": "", "tier": "A"}
+    dem = {1: {"1": full(30)}, 2: {"2": full(12)}}
+    calc = {"schede": [sc], "demand": dem, "stores": [1, 2], "base": {}, "days": [30, 60, 90, 180]}
+    colli = {sc["path"]: S.base_colli(sc, dem, [1, 2])}
+    res = S.allocate(calc, colli, FILL, str(tmp_path), log=lambda *_: None, date_tag="1810",
+                     picks={sc["path"]: {"stores": [2], "force": True}})
+    plan = res["results"][0][2]
+    assert plan["bms"]["stores"] == [2] and plan["stores"][2]["status"] == "pulled"
+    assert plan["stores"][1]["status"] == "direct"

@@ -1783,9 +1783,11 @@ def compute(db, schede_paths, stores, days_list, reorder_cycle, log=print, use_s
             "stores": list(stores), "days": list(days_list)}
 
 
-def allocate(calc, colli, fill, out_root, log=print, date_tag=None, edited=None, only=None, progress=None, modes=None):
+def allocate(calc, colli, fill, out_root, log=print, date_tag=None, edited=None, only=None, progress=None, modes=None,
+             picks=None):
     """
     calc: compute() 的结果；colli: {路径: {门店号: {行号: 箱数}}}（建议值或手动改过的值）。
+    picks: {路径: {"stores": [...], "force": bool}}：配货前「BMS 调整」手动定的进 BMS 的门店（按 manual 配）
     only: 只处理这些路径（None = 全部）。返回 {"results", "written", "summary", "out_root"}
     """
     progress = progress or _noop
@@ -1794,8 +1796,9 @@ def allocate(calc, colli, fill, out_root, log=print, date_tag=None, edited=None,
     todo = [sc for sc in calc["schede"] if only is None or sc["path"] in only]
     for i, sc in enumerate(todo):
         progress(0, "running", f"{i + 1} / {len(todo)}", sc["name"], 40.0 * i / max(1, len(todo)))
+        pk = (picks or {}).get(sc["path"])
         plan = plan_supplier(sc, calc["demand"], fill, stores, colli.get(sc["path"], {}),
-                             (modes or {}).get(sc["path"], "auto"))
+                             "manual" if pk is not None else (modes or {}).get(sc["path"], "auto"), picks=pk)
         results.append((sc["day"], sc, plan))
         parts = [f"{STORE_SHEETS[s]}:{status_text(STORE_SHEETS[s], st['status'])}" for s, st in plan["stores"].items()
                  if st["status"] != "none"]
