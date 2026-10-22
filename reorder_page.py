@@ -138,14 +138,29 @@ class AlgoDialog(QDialog):
         spin("max_stock_days", tr("平均压货最多（天）"), 1, 365, tr("平均库存最多够卖几天（只限制卖得快的商品；卖得慢的按服务水平保证不断货）"), 3)
         spin("pack_threshold", tr("整箱取整门槛 %"), 0, 100, tr("零头 ≥ 一箱的这个比例才多订一箱；一箱都不到时，只有下次到货前会卖断才订"), 4, scale=100)
         spin("min_shelf", tr("最少陈列件数"), 0, 50, tr("近 13 周有销量的商品至少保留几件"), 5)
+        cr = QHBoxLayout()
+        cr.setSpacing(6)
+        for i, k in enumerate(("cycle_a", "cycle_b", "cycle_c")):
+            sb = QDoubleSpinBox()
+            sb.setDecimals(2)
+            sb.setRange(0.1, 3.0)
+            sb.setSingleStep(0.05)
+            sb.setValue(float(p.get(k, 1.0)))
+            sb.setPrefix("ABC"[i] + " ×")
+            sb.setFixedWidth(84)
+            cr.addWidget(sb)
+            self.w[k] = (sb, 1)
+        cr.addStretch()
+        g.addWidget(tip_label(tr("周期系数"), tr("按 ABC 乘订货周期：A 类多备（1.25 = 订够 1.25 个周期），C 类少备（0.75 = 订够 3/4 个周期），少压货。ABC 按本店近 13 周销售额：前 80% A，到 95% B，其余 C")), 6, 0)
+        g.addLayout(cr, 6, 1)
         self.abc = QCheckBox(tr("ABC 调整服务水平"))
         self.abc.setToolTip(tr("按 ABC 调整服务水平（A +2.5%，C −5%；ABC 按本店近 13 周销售额帕累托）"))
         self.abc.setChecked(bool(p["abc_service"]))
         self.season = QCheckBox(tr("季节调整"))
         self.season.setToolTip(tr("用去年同期做季节调整（数据不够一年或量太小时不调整）"))
         self.season.setChecked(bool(p["season"]))
-        g.addWidget(self.abc, 6, 0, 1, 2)
-        g.addWidget(self.season, 7, 0, 1, 2)
+        g.addWidget(self.abc, 7, 0, 1, 2)
+        g.addWidget(self.season, 8, 0, 1, 2)
         lay.addLayout(g)
         bb = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel | QDialogButtonBox.RestoreDefaults)
         bb.accepted.connect(self.save)
@@ -178,7 +193,8 @@ def algo_summary(p):
         return tr("原程序算法：日均 × 订货周期 × 系数，按数据库箱规向上取整")
     return tr("订货周期 {0} 天 + 到货 {1} 天，服务水平 {2:.0%}{3}，平均压货最多 {4} 天，零头 ≥ {5:.0%} 一箱才多订",
               p["review_days"], p["lead_days"], p["service"], tr("（按 ABC）") if p.get("abc_service") else "",
-              p["max_stock_days"], p["pack_threshold"])
+              p["max_stock_days"], p["pack_threshold"]) + \
+        tr("，周期系数 A ×{0:g} · B ×{1:g} · C ×{2:g}", p.get("cycle_a", 1), p.get("cycle_b", 1), p.get("cycle_c", 1))
 
 
 _ALGO_UIS = []          # 各页面的算法选择（改了一个，其他跟着变）

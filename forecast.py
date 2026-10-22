@@ -13,6 +13,9 @@
        有销量的商品至少保留 min_shelf 件陈列
   4. 建议件数 = S − 现有库存（负数当 0）− 在途
   5. 服务水平按 ABC：A = 目标 + 2.5%，B = 目标，C = 目标 − 5%（ABC 按本店近 13 周销售额帕累托：前 80% A，到 95% B，其余 C）
+     订货周期也按 ABC 乘系数（cycle_a / cycle_b / cycle_c，默认 1.25 / 1 / 0.75）：
+     A 类多备一点（订够 1.25 个周期），C 类不必订够一个周期（0.75 个），少压货。
+     只影响「要备多少天的货」；判断会不会卖断、零头要不要多订一箱仍按实际的订货周期
   6. 换成箱：整箱以外的零头 ≥ 一箱的 pack_threshold 才多订一箱；
             一箱都不到时，只有下次到货前会卖断才订一箱
 """
@@ -29,6 +32,9 @@ DEFAULT_PARAMS = {
     "season": True,            # 用去年同期做季节调整
     "pack_threshold": 0.3,     # 零头 ≥ 一箱的 30% 才多订一箱
     "min_shelf": 1,            # 有销量的商品至少保留几件
+    "cycle_a": 1.25,           # A 类订够几个周期（2026-10-22 用户定）
+    "cycle_b": 1.0,
+    "cycle_c": 0.75,           # C 类不必订够一个周期
 }
 
 WEEKS = 60                     # 查多少周（季节调整要一年以上）
@@ -45,6 +51,11 @@ def service_for(tier, params):
     if params.get("abc_service", True):
         s += {"A": 0.025, "B": 0.0, "C": -0.05}.get(tier, 0.0)
     return min(max(s, 0.5), 0.995)
+
+
+def cycle_factor(tier, params):
+    """订货周期按 ABC 乘的系数（A 多备、C 少备）"""
+    return max(0.1, float(params.get({"A": "cycle_a", "B": "cycle_b"}.get(tier, "cycle_c"), 1.0)))
 
 
 def poisson_quantile(mean, p):
@@ -112,7 +123,7 @@ def seasonal_factor(weekly, horizon_days):
 
 def target_stock(daily, sigma_w, inv, tier, params, season=1.0, has_recent_sales=True):
     """返回 dict：mu 期间需求、ss 安全库存、S 目标库存、svc 服务水平"""
-    R = float(params.get("review_days", 7))
+    R = float(params.get("review_days", 7)) * cycle_factor(tier, params)    # 按 ABC：A 多备、C 少备
     L = float(params.get("lead_days", 5))
     P = R + L
     d = daily * season

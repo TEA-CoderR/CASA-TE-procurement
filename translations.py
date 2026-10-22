@@ -2358,4 +2358,7 @@ TRANSLATIONS = {
     '（估算）': (' (estimate)', ' (stima)'),
     '已配货': ('Allocated', 'Distribuito'),
     '不配货': ('Not allocated', 'Non distribuito'),
+    '，周期系数 A ×{0:g} · B ×{1:g} · C ×{2:g}': (', cycle factor A ×{0:g} · B ×{1:g} · C ×{2:g}', ', fattore ciclo A ×{0:g} · B ×{1:g} · C ×{2:g}'),
+    '周期系数': ('Cycle factor', 'Fattore ciclo'),
+    '按 ABC 乘订货周期：A 类多备（1.25 = 订够 1.25 个周期），C 类少备（0.75 = 订够 3/4 个周期），少压货。ABC 按本店近 13 周销售额：前 80% A，到 95% B，其余 C': ("Order cycle multiplied by ABC class: A stocks more (1.25 = 1.25 cycles), C less (0.75 = 3/4 of a cycle) to hold less stock. ABC by the store's last 13 weeks of sales: top 80% A, up to 95% B, rest C", "Ciclo d'ordine moltiplicato per classe ABC: A scorta di più (1,25 = 1,25 cicli), C di meno (0,75 = 3/4 di ciclo). ABC sulle vendite delle ultime 13 settimane: primo 80% A, fino al 95% B, resto C"),
 }

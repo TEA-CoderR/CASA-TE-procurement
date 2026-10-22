@@ -23,7 +23,7 @@ def test_poisson_for_slow_movers():
     assert F.poisson_quantile(0.4, 0.95) == 2
     assert F.poisson_quantile(0.0, 0.95) == 0
     # 每月卖 1 件：期间需求 12 天 ≈ 0.4 件 → 目标 2 件（泊松 95%）
-    t = F.target_stock(1 / 30, 0.5, 0, "C", dict(P, abc_service=False))
+    t = F.target_stock(1 / 30, 0.5, 0, "C", dict(P, abc_service=False, cycle_c=1.0))
     assert t["S"] == 2
 
 
@@ -85,3 +85,15 @@ def test_decision_consistent_with_qty():
     avg_days = a["target"] / a["daily"] - P["lead_days"] - P["review_days"] / 2
     assert 3 <= avg_days <= 14
     assert math.isinf(F.analyze([0.0] * 60, 0, "C", P)["cover_days"])
+
+
+def test_abc_cycle_factor():
+    """A 类订够 1.25 个周期、C 类 0.75 个（只改备货天数）"""
+    q = dict(P, review_days=30, lead_days=0, max_stock_days=60, abc_service=False)
+    a = F.target_stock(10.0, 20.0, 0, "A", q)
+    b = F.target_stock(10.0, 20.0, 0, "B", q)
+    c = F.target_stock(10.0, 20.0, 0, "C", q)
+    assert a["mu"] == 10 * 37.5 and b["mu"] == 10 * 30 and c["mu"] == 10 * 22.5
+    assert a["S"] > b["S"] > c["S"]
+    same = dict(q, cycle_a=1.0, cycle_c=1.0)
+    assert F.target_stock(10.0, 20.0, 0, "A", same)["S"] == F.target_stock(10.0, 20.0, 0, "C", same)["S"]
