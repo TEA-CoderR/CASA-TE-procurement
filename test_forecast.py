@@ -32,9 +32,12 @@ def test_target_stock_normal_and_cap():
     mu = 10 * 12
     assert t["mu"] == mu
     assert t["S"] > mu                                 # 有安全库存
-    assert (t["S"] - mu) / 10 + 7 / 2 <= 14 + 1e-9     # 平均库存不超过 14 天
+    assert (t["S"] - mu) / 10 <= 7 + 1e-9               # 安全库存最多够卖 7 天
     big = F.target_stock(10.0, 500.0, 0, "B", P)       # 波动极大 → 被上限截住
-    assert abs(big["S"] - (mu + 10 * (14 - 3.5))) < 1e-9
+    assert abs(big["S"] - (mu + 10 * 7)) < 1e-9
+    # 订货周期 30 天时，快销品照样有安全库存（以前「平均压货 14 天」会把它压成 0）
+    m = F.target_stock(10.0, 30.0, 0, "B", dict(P, review_days=30, lead_days=0))
+    assert m["S"] > m["mu"]
 
 
 def test_abc_service_levels_and_pareto():

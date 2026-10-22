@@ -9,7 +9,8 @@
        覆盖天数 P = 下单间隔 R + 到货天数 L
        卖得慢（期间需求 < 20 件）：泊松分布的服务水平分位数
        其余：μ + z·σ·√P
-       上限（卖得快的）：平均库存（安全库存 + 半个下单间隔）不超过 max_stock_days 天
+       上限（卖得快的）：安全库存最多够卖 max_safety_days 天（2026-10-22 用户定，默认 7 天；
+         以前是「平均压货最多 max_stock_days 天」，和订货周期绑在一起，周期 30 天时快销品安全库存变成 0）
        有销量的商品至少保留 min_shelf 件陈列
   4. 建议件数 = S − 现有库存（负数当 0）− 在途
   5. 服务水平按 ABC：A = 目标 + 2.5%，B = 目标，C = 目标 − 5%（ABC 按本店近 13 周销售额帕累托：前 80% A，到 95% B，其余 C）
@@ -32,7 +33,8 @@ DEFAULT_PARAMS = {
     "lead_days": 5,            # 到货天数 L（下单后 2–7 天到）
     "service": 0.95,           # 目标服务水平（不缺货的概率）
     "abc_service": True,       # 按 ABC 调整服务水平
-    "max_stock_days": 14,      # 平均库存最多够卖几天（限制卖得快的商品的安全库存）
+    "max_stock_days": 14,      # （旧，已不用）平均库存最多够卖几天
+    "max_safety_days": 7,      # 安全库存最多够卖几天（只限制卖得快的商品）
     "season": True,            # 用去年同期做季节调整
     "pack_threshold": 0.3,     # （旧规则，已不用）零头 ≥ 一箱的 30% 才多订一箱
     "abc_freq_hi": 10,         # 动销兜底：近 13 周 ≥ 10 周有卖 → 最低 B
@@ -148,8 +150,8 @@ def target_stock(daily, sigma_w, inv, tier, params, season=1.0, has_recent_sales
         S = float(poisson_quantile(mu, svc))
     else:
         S = mu + z_of(svc) * sd
-        # 平均库存 ≈ 安全库存 + 半个下单间隔的量；限制平均库存不超过 max_stock_days 天
-        cap = mu + d * max(0.0, float(params.get("max_stock_days", 14)) - R / 2)
+        # 安全库存最多够卖 max_safety_days 天（不和订货周期绑在一起；A/B/C 的差别交给服务水平）
+        cap = mu + d * max(0.0, float(params.get("max_safety_days", 7)))
         S = min(S, cap)
     if has_recent_sales:
         S = max(S, float(params.get("min_shelf", 1)))
@@ -244,7 +246,7 @@ def decide(daily, inv, qty, tier, params, total_inv=0, sold_26w=True):
         return "🟡【建议订货】下次到货前会卖断", 6 if tier == "A" else 5
     if qty > 0:
         return "🟠【可订】补到目标库存", 3
-    if cover > 2 * (L + float(params.get("max_stock_days", 14))):
+    if cover > 2 * (R + L):
         return "🟢【库存多】", 1
     return "🟢【不用订】库存够", 2
 

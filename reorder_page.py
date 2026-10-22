@@ -135,7 +135,7 @@ class AlgoDialog(QDialog):
         spin("review_days", tr("订货周期（天）"), 1, 120, tr("多久下一次单。每周订 = 7；这次订的要卖到下次订的货到为止"), 0)
         spin("lead_days", tr("到货天数"), 0, 60, tr("下单后几天到货（一般 2–7 天）"), 1)
         spin("service", tr("服务水平 %"), 50, 99.5, tr("不缺货的概率。95 = 100 次里约 5 次可能卖断"), 2, dec=1, scale=100)
-        spin("max_stock_days", tr("平均压货最多（天）"), 1, 365, tr("平均库存最多够卖几天（只限制卖得快的商品；卖得慢的按服务水平保证不断货）"), 3)
+        spin("max_safety_days", tr("安全库存最多（天）"), 0, 90, tr("按服务水平多备的货最多够卖几天（只限制卖得快的商品；卖得慢的按服务水平保证不断货）。A/B/C 的差别由服务水平区分"), 3)
         spin("min_shelf", tr("最少陈列件数"), 0, 50, tr("近 13 周有销量的商品至少保留几件"), 5)
         cr = QHBoxLayout()
         cr.setSpacing(6)
@@ -221,9 +221,9 @@ class AlgoDialog(QDialog):
 def algo_summary(p):
     if p.get("engine") != "v2":
         return tr("原程序算法：日均 × 订货周期 × 系数，按数据库箱规向上取整")
-    return tr("订货周期 {0} 天 + 到货 {1} 天，服务水平 {2:.0%}{3}，平均压货最多 {4} 天",
+    return tr("订货周期 {0} 天 + 到货 {1} 天，服务水平 {2:.0%}{3}，安全库存最多 {4} 天",
               p["review_days"], p["lead_days"], p["service"], tr("（按 ABC）") if p.get("abc_service") else "",
-              p["max_stock_days"]) + \
+              p.get("max_safety_days", 7)) + \
         tr("，最低保障线 A {0:.0%} · B {1:.0%} · C {2:.0%}", p.get("safety_a", 0.9), p.get("safety_b", 0.7), p.get("safety_c", 0.5)) + \
         tr("，周期系数 A ×{0:g} · B ×{1:g} · C ×{2:g}", p.get("cycle_a", 1), p.get("cycle_b", 1), p.get("cycle_c", 1))
 
