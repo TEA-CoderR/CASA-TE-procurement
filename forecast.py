@@ -15,9 +15,11 @@
   5. 服务水平按 ABC：A = 目标 + 2.5%，B = 目标，C = 目标 − 5%（ABC 按本店近 13 周销售额帕累托：前 80% A，到 95% B，其余 C）
      订货周期也按 ABC 乘系数（cycle_a / cycle_b / cycle_c，默认 1.25 / 1 / 0.75）：
      A 类多备一点（订够 1.25 个周期），C 类不必订够一个周期（0.75 个），少压货。
-     只影响「要备多少天的货」；判断会不会卖断、零头要不要多订一箱仍按实际的订货周期
-  6. 换成箱：整箱以外的零头 ≥ 一箱的 pack_threshold 才多订一箱；
-            一箱都不到时，只有下次到货前会卖断才订一箱
+     只影响「要备多少天的货」；判断会不会卖断仍按实际的订货周期
+  6. 换成箱（2026-10-22 用户定）：件数凑不成整箱时，先看少订（往下取整）行不行——
+       少订后的库存（现有 + 在途 + 整箱数 × 每箱件数）够卖「安全库存」= 一个订货周期销量 × 系数
+       （A 90% / B 70% / C 50%，safety_a / safety_b / safety_c）→ 少订，不为了一两件硬凑一箱；
+       不够 → 多订一箱。没有销量（只保留陈列量）的不为它多订一箱
 """
 import math
 from statistics import NormalDist
@@ -30,7 +32,10 @@ DEFAULT_PARAMS = {
     "abc_service": True,       # 按 ABC 调整服务水平
     "max_stock_days": 14,      # 平均库存最多够卖几天（限制卖得快的商品的安全库存）
     "season": True,            # 用去年同期做季节调整
-    "pack_threshold": 0.3,     # 零头 ≥ 一箱的 30% 才多订一箱
+    "pack_threshold": 0.3,     # （旧规则，已不用）零头 ≥ 一箱的 30% 才多订一箱
+    "safety_a": 0.9,           # 凑不成整箱时：少订后的库存够卖一个周期的 90%（A 类）就少订
+    "safety_b": 0.7,
+    "safety_c": 0.5,
     "min_shelf": 1,            # 有销量的商品至少保留几件
     "cycle_a": 1.25,           # A 类订够几个周期（2026-10-22 用户定）
     "cycle_b": 1.0,
@@ -151,24 +156,32 @@ def order_qty(S, inv, on_order=0.0):
     return max(0, int(math.ceil(S - max(0.0, inv) - max(0.0, on_order) - 1e-9)))
 
 
-def to_packs(qty, pack, inv, daily, params):
-    """件数 → 箱数（智能取整，见模块说明）"""
+def safety_ratio(tier, params):
+    """凑不成整箱时可以接受的最低库存：一个订货周期销量的几成（A 90% / B 70% / C 50%）"""
+    return max(0.0, float(params.get({"A": "safety_a", "B": "safety_b"}.get(tier, "safety_c"), 0.7)))
+
+
+def to_packs(qty, pack, inv, daily, params, tier="B", cycle=None, on_order=0.0):
+    """
+    件数 → 箱数。整箱正好就按整箱；凑不成整箱时：
+      少订（往下取整）后的库存 ≥ 安全库存（一个订货周期销量 × A 90% / B 70% / C 50%）→ 少订；否则多订一箱。
+    cycle：这个商品实际的订货周期（天，按配置文件周期时每家供应商不一样）；None = 算法设置里的
+    """
     if qty <= 0:
         return 0
     pack = pack if pack and pack > 0 else 1
     if pack == 1:
-        return int(qty)
+        return int(math.ceil(qty - 1e-9))
     full = int(qty // pack)
     rem = qty - full * pack
     if rem <= 1e-9:
         return full
-    thr = float(params.get("pack_threshold", 0.3))
-    if rem >= thr * pack:
-        return full + 1
-    if full == 0:
-        P = float(params.get("review_days", 7)) + float(params.get("lead_days", 5))
-        return 1 if max(0.0, inv) < daily * P else 0     # 不订的话下次到货前会卖断 → 订一箱
-    return full
+    if daily <= 0:
+        return full                   # 没有销量（只为保留陈列量）不为零头多订一箱
+    R = float(cycle if cycle else params.get("review_days", 7))
+    P = R + float(params.get("lead_days", 5))
+    after = max(0.0, inv) + max(0.0, on_order) + full * pack
+    return full if after >= safety_ratio(tier, params) * daily * P else full + 1
 
 
 def abc_by_revenue(revenue):

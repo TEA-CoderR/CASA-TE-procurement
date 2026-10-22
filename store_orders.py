@@ -644,12 +644,13 @@ def export_transfers(transfers, path, date_tag=""):
 
 
 def colli_for(d, pack, algo=None):
-    """建议件数 → SCHEDA 箱数。新算法：智能取整（零头够多才多订一箱）；原程序算法：件数（已按原程序取整）÷ 每箱件数，向上取整"""
+    """建议件数 → SCHEDA 箱数。新算法：凑不成整箱时少订后够安全库存就少订（forecast.to_packs）；原程序算法：件数（已按原程序取整）÷ 每箱件数，向上取整"""
     if not d or d["sugg"] <= 0:
         return 0
     if algo and algo.get("engine") == "v2":
         import forecast as F
-        return F.to_packs(d["sugg"], pack, d.get("inv", 0), d.get("daily", 0), algo)
+        return F.to_packs(d["sugg"], pack, d.get("inv", 0), d.get("daily", 0), algo,
+                          tier=d.get("tier") or "C", cycle=d.get("cycle"))
     return math.ceil(d["sugg"] / pack)
 
 
