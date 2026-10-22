@@ -31,7 +31,7 @@ class PlanTest(unittest.TestCase):
         p = S.plan_supplier(sc, dem, dict(FILL, max_colli_gap=0), [1, 2])
         self.assertEqual(p["stores"][1]["status"], "direct")
         self.assertEqual(p["stores"][1]["lines"], {6: 6})
-        self.assertEqual(p["stores"][2]["status"], "bms")
+        self.assertEqual(p["stores"][2]["status"], "wait")             # 凑不够 BMS → 这次不订
         self.assertEqual(p["bms"]["stores"], [2])
         self.assertEqual(p["bms"]["status"], "short")
 
@@ -48,7 +48,7 @@ class PlanTest(unittest.TestCase):
     def test_big_gap_goes_to_bms_and_bms_merges(self):
         sc = _scheda(moq_amount=100)
         dem = {1: {"1": _d(50)}, 3: {"1": _d(30), "2": _d(12)}}   # €50 / €30+€30
-        p = S.plan_supplier(sc, dem, FILL, [1, 3])
+        p = S.plan_supplier(sc, dem, dict(FILL, far_stores=[]), [1, 3])
         self.assertEqual(p["stores"][1]["status"], "bms")
         self.assertEqual(p["stores"][3]["status"], "bms")
         b = p["bms"]
@@ -63,7 +63,7 @@ class PlanTest(unittest.TestCase):
         # 只差 1 箱，但加一箱后库存够卖 > 60 天 → 不凑，并入 BMS
         dem = {1: {"1": _d(20, daily=0.1, inv=0)}}
         p = S.plan_supplier(sc, dem, FILL, [1])
-        self.assertEqual(p["stores"][1]["status"], "bms")
+        self.assertEqual(p["stores"][1]["status"], "wait")
 
     def test_colli_gap_adds_fastest_seller(self):
         sc = _scheda(moq_colli=4)
@@ -77,7 +77,7 @@ class PlanTest(unittest.TestCase):
         sc = _scheda(moq_amount=100)
         dem = {1: {"1": _d(90)}}
         p = S.plan_supplier(sc, dem, dict(FILL, max_amount_gap=0), [1])
-        self.assertEqual(p["stores"][1]["status"], "bms")
+        self.assertEqual(p["stores"][1]["status"], "wait")
 
     def test_no_moq_any_quantity_is_direct(self):
         sc = _scheda()
@@ -113,54 +113,73 @@ class PlanTest(unittest.TestCase):
                4: {"8": dict(calm, sugg=3)}, 5: {"9": dict(calm, sugg=3)}}     # 各 3 箱 → BMS 只有 6 箱
         return sc, dem
 
-    def test_bms_merges_whole_store_before_borrowing(self):
-        """2026-10-22：有能整单并进来的门店就整单并，不拆别的店的单借货（每家店的货只走一条路）"""
-        sc, dem = self._rescue_setup()
-        p = S.plan_supplier(sc, dem, dict(FILL, max_colli_gap=0), [1, 2, 4, 5])
-        b = p["bms"]
-        self.assertEqual(b["status"], "direct")
-        self.assertEqual(b["lenders"], {})
-        self.assertEqual(sorted(b["stores"]), [2, 4, 5])
-        self.assertEqual(p["stores"][2]["status"], "pulled")
-        self.assertEqual(p["stores"][1]["status"], "direct")            # 远店不动
-        # 供应商单独设：2 号店不能并进 BMS → 没别的店可并，也借不到（2 号店也不能借）→ 不够
-        fill = dict(FILL, max_colli_gap=0, supplier_cfg={sc["name"]: {"bms_stores": [4, 5]}})
-        p = S.plan_supplier(sc, dem, fill, [1, 2, 4, 5])
-        self.assertEqual(p["bms"]["status"], "short")
-        self.assertEqual(p["stores"][2]["status"], "direct")
-        # 供应商单独设：1 号店（总设置里是远店）可以并 → 并 1 号店（12 箱，比 2 号店 15 箱小）
-        fill = dict(FILL, max_colli_gap=0, supplier_cfg={sc["name"]: {"bms_stores": [1, 2, 3, 4, 5]}})
-        p = S.plan_supplier(sc, dem, fill, [1, 2, 4, 5])
-        self.assertEqual(p["stores"][1]["status"], "pulled")
-        self.assertEqual(p["stores"][2]["status"], "direct")
+    def _prio_setup(self):
+        items = [{"row": r, "code": str(r), "ean": "", "desc": f"P{r}", "pack": 1, "price": 1.0} for r in range(6, 12)]
+        sc = _scheda(moq_colli=10, items=items)
+        calm = {"daily": 1.0, "inv": 20, "decision": ""}
+        dem = {1: {"6": dict(calm, sugg=12)}, 2: {"7": dict(calm, sugg=15)},           # 1、2 号店自己够
+               3: {"8": dict(calm, sugg=4)}, 4: {"9": dict(calm, sugg=6)}, 5: {"10": dict(calm, sugg=5)}}
+        return sc, dem
 
-    def test_bms_borrows_non_urgent_from_same_city_not_far_store(self):
-        sc, dem = self._rescue_setup()
-        fill = dict(FILL, max_colli_gap=0, merge_direct=False)       # 不整单并入时才借货
-        p = S.plan_supplier(sc, dem, fill, [1, 2, 4, 5])
-        b = p["bms"]
-        self.assertEqual(b["status"], "direct")
-        self.assertEqual(b["colli"], 10)
-        self.assertEqual(b["lenders"], {2: {7: 4}})                     # 只借 2 号店不急的那个商品
-        self.assertEqual(p["stores"][2]["lines"], {6: 8, 7: 3})         # 2 号店还剩 11 箱，仍够起订量
-        self.assertEqual(p["stores"][2]["status"], "direct")
-        self.assertEqual(p["stores"][1]["lines"], {6: 12})              # 1 号店不动
-        self.assertEqual(b["per_store"][2], {7: 4})
-        # 关掉借货（也不整单并入）→ 还是不够
-        p = S.plan_supplier(sc, dem, dict(fill, borrow=False, merge_direct=False), [1, 2, 4, 5])
-        self.assertEqual(p["bms"]["status"], "short")
-        self.assertEqual(p["stores"][2]["lines"], {6: 8, 7: 7})
-
-    def test_colocated_store_merges_first(self):
-        sc, dem = self._rescue_setup()
-        dem[3] = {"10": {"daily": 1.0, "inv": 0, "sugg": 11, "decision": "🔴"}}
+    def test_bms_priority_order_stops_when_enough(self):
+        """能单独送店的单独送店；订不起来的按 3-4-5-2-1 并进 BMS，够起订量就停，剩下的这次不订"""
+        sc, dem = self._prio_setup()
         p = S.plan_supplier(sc, dem, dict(FILL, max_colli_gap=0), [1, 2, 3, 4, 5])
         b = p["bms"]
-        self.assertEqual(p["stores"][3]["status"], "merged")
+        self.assertEqual(b["stores"], [3, 4])                          # 3 号 4 箱 + 4 号 6 箱 = 10 箱，够了
         self.assertEqual(b["status"], "direct")
-        self.assertEqual(sorted(b["stores"]), [3, 4, 5])
-        self.assertEqual(b["lenders"], {})                              # 并了 3 号店就够了，不用借
-        self.assertEqual(S.status_text("S.FILIPPO", "merged"), "并入 BMS（同一仓库）")
+        self.assertEqual(p["stores"][5]["status"], "wait")
+        self.assertEqual({s: p["stores"][s]["status"] for s in (1, 2)}, {1: "direct", 2: "direct"})
+        self.assertEqual(b["lenders"], {})
+        # 改优先顺序：5 号先 → 5 + 4 = 11 箱
+        p = S.plan_supplier(sc, dem, dict(FILL, max_colli_gap=0, bms_order=[5, 4, 3, 2, 1]), [1, 2, 3, 4, 5])
+        self.assertEqual(p["bms"]["stores"], [5, 4])
+        self.assertEqual(p["stores"][3]["status"], "wait")
+        # 供应商单独设：3 号店不参与 → 4 + 5 = 11 箱
+        fill = dict(FILL, max_colli_gap=0, supplier_cfg={sc["name"]: {"bms_stores": [2, 4, 5]}})
+        p = S.plan_supplier(sc, dem, fill, [1, 2, 3, 4, 5])
+        self.assertEqual(p["bms"]["stores"], [4, 5])
+        self.assertEqual(p["stores"][3]["status"], "wait")
+
+    def test_bms_not_enough_means_wait_never_pull_direct_stores(self):
+        sc, dem = self._prio_setup()
+        dem[4]["9"]["sugg"] = 1
+        dem[5]["10"]["sugg"] = 1                                        # 3+4+5 只有 6 箱
+        p = S.plan_supplier(sc, dem, dict(FILL, max_colli_gap=0), [1, 2, 3, 4, 5])
+        self.assertEqual(p["bms"]["status"], "short")
+        self.assertEqual({s: p["stores"][s]["status"] for s in (3, 4, 5)}, {3: "wait", 4: "wait", 5: "wait"})
+        self.assertEqual(p["stores"][2]["status"], "direct")            # 自己够的照样直送，不拉进 BMS
+        self.assertEqual(S.plan_totals([("周一", sc, p)])["total"], 12 + 15)
+
+    def test_manual_pick_bms_stores(self):
+        """手动决定哪几家进 BMS：自己够起订量的 2 号店也可以并进来"""
+        sc, dem = self._prio_setup()
+        dem[4]["9"]["sugg"] = 1
+        dem[5]["10"]["sugg"] = 1
+        p = S.plan_supplier(sc, dem, dict(FILL, max_colli_gap=0), [1, 2, 3, 4, 5], mode="manual",
+                            picks={"stores": [2, 3, 4, 5]})
+        b = p["bms"]
+        self.assertEqual(b["status"], "direct")
+        self.assertEqual(p["stores"][2]["status"], "pulled")
+        self.assertEqual(p["stores"][1]["status"], "direct")
+        p = S.plan_supplier(sc, dem, dict(FILL, max_colli_gap=0), [1, 2, 3, 4, 5], mode="manual",
+                            picks={"stores": [4, 5]})
+        self.assertEqual(p["bms"]["status"], "short")
+        self.assertEqual(p["stores"][3]["status"], "wait")
+        p = S.plan_supplier(sc, dem, dict(FILL, max_colli_gap=0), [1, 2, 3, 4, 5], mode="manual",
+                            picks={"stores": [4, 5], "force": True})
+        self.assertEqual(p["bms"]["status"], "forced")
+        self.assertTrue(S.bms_ordered(p["bms"]))
+
+    def test_urgent_share(self):
+        sc, dem = self._prio_setup()
+        dem[3] = {"8": {"daily": 1.0, "inv": 2, "sugg": 4}, "9": {"daily": 1.0, "inv": 30, "sugg": 4}}
+        p = S.plan_supplier(sc, dem, dict(FILL, max_colli_gap=0), [1, 2, 3, 4, 5])
+        share, n = S.plan_urgent(sc, p, 3)
+        self.assertAlmostEqual(share, 0.5)                              # 一半的货够卖不到一周
+        self.assertEqual(n, 1)
+        share_b, _ = S.plan_urgent(sc, p, None)
+        self.assertGreater(share_b, 0)
 
     def test_colocated_store_stays_direct_when_bms_is_enough(self):
         sc, dem = self._rescue_setup()
@@ -173,48 +192,6 @@ class PlanTest(unittest.TestCase):
         self.assertEqual(sorted(p["bms"]["stores"]), [4, 5])
         self.assertEqual(p["bms"]["lenders"], {})
 
-    def test_no_rescue_when_it_cannot_reach_moq(self):
-        sc, dem = self._rescue_setup()
-        dem[2]["7"]["inv"] = 0                                          # 2 号店的货也急 → 不能借
-        p = S.plan_supplier(sc, dem, dict(FILL, max_colli_gap=0, borrow_urgent=False, merge_direct=False),
-                            [1, 2, 4, 5])
-        self.assertEqual(p["bms"]["status"], "short")
-        self.assertEqual(p["bms"]["lenders"], {})
-        self.assertEqual(p["stores"][2]["lines"], {6: 8, 7: 7})
-        t = S.plan_totals([("周一", sc, p)])
-        self.assertAlmostEqual(t["total"], 12 + 15)         # BMS 不够起订量 → 不下单，不算金额
-
-
-    def test_borrow_urgent_part_above_lender_moq(self):
-        """不紧急的借不到：把 2 号店超过起订量的部分（紧急的也行）借给 BMS，2 号店仍够起订量"""
-        sc, dem = self._rescue_setup()
-        dem[2]["7"]["inv"] = 0
-        p = S.plan_supplier(sc, dem, dict(FILL, max_colli_gap=0, merge_direct=False), [1, 2, 4, 5])
-        b = p["bms"]
-        self.assertEqual(b["status"], "direct")
-        self.assertEqual(b["colli"], 10)
-        self.assertEqual(sum(sum(r.values()) for r in b["lenders"].values()), 4)
-        self.assertEqual(p["stores"][2]["status"], "direct")
-        self.assertGreaterEqual(p["stores"][2]["colli"], 10)            # 借完 2 号店还够起订量
-        self.assertNotIn("pulled", b["how"])
-
-    def test_merge_whole_store_when_borrowing_is_not_enough(self):
-        """2 号店只超出 1 箱，借了也不够 → 把 2 号店整单并进 BMS，3、4 号店也订得起来"""
-        sc, dem = self._rescue_setup()
-        dem[2] = {"6": {"daily": 1.0, "inv": 0, "sugg": 11, "decision": "🔴"}}   # 11 箱，只多 1 箱
-        p = S.plan_supplier(sc, dem, dict(FILL, max_colli_gap=0), [1, 2, 4, 5])
-        b = p["bms"]
-        self.assertEqual(b["status"], "direct")
-        self.assertEqual(sorted(b["stores"]), [2, 4, 5])
-        self.assertEqual(p["stores"][2]["status"], "pulled")
-        self.assertEqual(b["lenders"], {})
-        self.assertIn("pulled", b["how"])
-        self.assertEqual(p["stores"][1]["status"], "direct")            # 远店不动
-        self.assertEqual(S.status_text("MARLIA", "pulled"), "并入 BMS（帮其他店凑起订量）")
-        # 关掉 ④ → 还是不够
-        p = S.plan_supplier(sc, dem, dict(FILL, max_colli_gap=0, merge_direct=False), [1, 2, 4, 5])
-        self.assertEqual(p["bms"]["status"], "short")
-        self.assertEqual(p["stores"][2]["status"], "direct")
     def test_mode_direct_only(self):
         sc, dem = self._rescue_setup()
         dem[2]["7"]["inv"] = 0

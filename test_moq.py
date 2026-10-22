@@ -73,12 +73,12 @@ def test_pallet_without_size_never_direct_but_can_force():
     sc = _scheda({"pallets": 1})
     dem = {1: {"1": {"sugg": 500, "daily": 5, "inv": 0}}, 2: {"1": {"sugg": 300, "daily": 5, "inv": 0}}}
     p = S.plan_supplier(sc, dem, FILL, [1, 2])
-    assert p["stores"][1]["status"] == "bms" and p["bms"]["status"] == "short"
+    assert p["stores"][1]["status"] == "wait" and p["bms"]["status"] == "short"
     p = S.plan_supplier(sc, dem, FILL, [1, 2], mode="all_bms")
     assert p["bms"]["status"] == "forced"
     sc = _scheda({"pallets": 1, "per_pallet": 40})                # 填了每板 40 箱 → 50 箱够
     p = S.plan_supplier(sc, dem, FILL, [1, 2])
-    assert p["stores"][1]["status"] == "direct" and p["stores"][2]["status"] == "bms"
+    assert p["stores"][1]["status"] == "direct" and p["stores"][2]["status"] == "wait"
 
 
 # ---------------------------------------------------------------------
