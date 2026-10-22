@@ -85,7 +85,7 @@ class ParamDialog(QDialog):
         g.addWidget(page.cycle, 0, 1)
         page.use_cfg = QCheckBox(tr("按配置文件周期"))
         page.use_cfg.setChecked(bool(cfg.get("use_supplier_cycles", True)))
-        page.use_cfg.setToolTip(tr("打开：suppliers_config.json 里单独设了订货周期的供应商用它自己的周期，其余用左边选的周期。\n关闭：全部用左边选的周期。"))
+        page.use_cfg.setToolTip(tr("打开：配置文件里单独设了订货周期的供应商用它自己的周期，其余用默认周期（新算法 = 算法设置里的）。\n关闭：全部用默认周期。"))
         g.addWidget(page.use_cfg, 0, 2)
         g.addWidget(QLabel(tr("销量周期（天）")), 1, 0)
         dr = QHBoxLayout()
@@ -1216,7 +1216,7 @@ class StoreOrderPage:
         if self.result and in_result:
             for i in range(5):
                 st.set_state(i, "done")
-            st.set_state(4, "done", tr("{0} 个文件", len(self.result["written"])))
+            st.set_state(4, "done", tr("{0} 个文件", len(S.written_files(self.result["written"]))))
             st.set_state(3, "done", "")
         elif self.calc:
             st.set_state(0, "done", tr("{0} 家", len(self.calc["schede"])))
@@ -1828,7 +1828,7 @@ class StoreOrderPage:
             try:
                 res = S.allocate(calc, colli, fill, out_root, log=lambda m: log("[门店配货] " + m), edited=edited,
                                  progress=lambda i, st, cnt, det, pct: (dlg.post_step(i, st, cnt, det), dlg.post_progress(pct)))
-                dlg.post_finished(True, tr("生成 {0} 个订单文件", len(res["written"])))
+                dlg.post_finished(True, tr("生成 {0} 个订单文件", len(S.written_files(res["written"]))))
                 res["sig"] = sig
                 self.sig.done.emit((res, None))
             except Exception as e:
@@ -1851,7 +1851,7 @@ class StoreOrderPage:
         self.result_sig = res.get("sig")
         self._fill_result()
         self._show_view(1)
-        self.win.show_toast(tr("门店配货完成：{0} 个订单文件", len(res["written"])))
+        self.win.show_toast(tr("门店配货完成：{0} 个订单文件", len(S.written_files(res["written"]))))
         if hasattr(self.win, "dashboard"):
             self.win.dashboard.refresh()
 
@@ -1859,7 +1859,7 @@ class StoreOrderPage:
     def _fill_result(self):
         res = self.result
         tot = S.plan_totals(res["results"])
-        self.ok_title.setText(tr("配货完成，生成 {0} 个订单文件", len(res["written"]))
+        self.ok_title.setText(tr("配货完成，生成 {0} 个订单文件", len(S.written_files(res["written"])))
                               + (tr(" + 调货单（{0} 个商品）", len((self.calc or {}).get("transfers") or []))
                                  if res.get("transfers_file") else ""))
         self.ok_path.setText(os.path.normpath(res["out_root"]))
@@ -1960,7 +1960,7 @@ class StoreOrderPage:
             w = self.file_list.takeAt(0).widget()
             if w:
                 w.deleteLater()
-        paths = [w[0] for w in res["written"]] + [res["summary"]]
+        paths = S.written_files(res["written"]) + [res["summary"]]
         for p in paths[:40]:
             fr = QFrame()
             fr.setObjectName("MiniCard")

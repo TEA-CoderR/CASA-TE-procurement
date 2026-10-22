@@ -165,6 +165,21 @@ def test_apply_v2_overrides_columns():
     assert list(out["sales_tier"]) == ["A", "A", "C"]          # 两个各占 50% 销售额 → 都在前 80%
 
 
+def test_apply_v2_supplier_cycles():
+    """新算法按配置文件周期：每行用自己的订货周期，周期长的建议量更多"""
+    import pandas as pd
+    import forecast as F
+    df = pd.DataFrame({"CodArticolo": [1, 2], "store_inventory": [0, 0], "total_inventory": [0, 0],
+                       "PrezzoVedi1": [1, 1]})
+    weekly = {1: [7.0] * 60, 2: [7.0] * 60}
+    algo = dict(F.DEFAULT_PARAMS, review_days=7)
+    out = R.apply_v2(None, 1, df, algo, weekly=weekly, revenue={1: 100, 2: 100}, cycles=[7, 60])
+    assert list(out["reorder_cycle_used"]) == [7, 60]
+    assert out.loc[1, "suggested_order_qty"] > out.loc[0, "suggested_order_qty"] + 40
+    same = R.apply_v2(None, 1, df, algo, weekly=weekly, revenue={1: 100, 2: 100})
+    assert list(same["reorder_cycle_used"]) == [7, 7]
+
+
 def test_old_algorithm_per_supplier_groups_match_original():
     """原程序算法按供应商分组：结果和原程序一次只算一个 SCHEDA 完全一样（等级在同一家供应商里比）"""
     import pandas as pd

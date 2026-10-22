@@ -212,7 +212,7 @@ def algo_widgets(page, ui):
             engine.blockSignals(False)
         info.setText(algo_summary(cur))
         v1 = cur["engine"] == "v1"
-        for w in (getattr(page, "cycle", None), getattr(page, "use_cfg", None)):
+        for w in (getattr(page, "cycle", None),):   # 「按配置文件周期」两种算法都能用
             if w is not None:
                 if not hasattr(w, "_tip0"):
                     w._tip0 = w.toolTip()

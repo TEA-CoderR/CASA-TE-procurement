@@ -1346,10 +1346,11 @@ def _write_extra(xml, scheda, rows_vals, headers, row_map):
     return _set_row_cells(xml, values, styles)
 
 
-def write_order_file(scheda, per_store_lines, out_path, extra=None, headers=None):
+def write_order_file(scheda, per_store_lines, out_path, extra=None, headers=None, marks=None):
     """
     复制 SCHEDA → out_path，各门店页 Colli 列：per_store_lines 里有的门店写箱数，其余门店清空。
     extra：{门店号: {行号: [附加列的值]}}（extra_data），有的话在各门店页 IMPORTO 后面加 GIA、ROT.30d … 这些列。
+    marks：{门店页名: 去向文字}，写在汇总页（GRIGLIA PER TUTTI PDV）门店名上面。
     打开时让 Excel / WPS 重新计算合计。
     """
     colli_col = _col_letter(scheda["cols"]["colli"])
@@ -1373,10 +1374,16 @@ def write_order_file(scheda, per_store_lines, out_path, extra=None, headers=None
                 targets[p] = cells
                 if extra and sid in extra:
                     extra_by_path[p] = (extra[sid], rm)
+        grid = None
+        if marks:
+            grid = next((p for n, p in paths.items() if "GRIGLIA" in n.upper()), None)
+            sst = _shared_strings(zin) if grid else []
         with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zout:
             for item in zin.infolist():
                 data = zin.read(item.filename)
-                if item.filename in targets:
+                if grid and item.filename == grid and item.filename not in targets:
+                    data = _mark_griglia(data.decode("utf-8"), sst, marks).encode("utf-8")
+                elif item.filename in targets:
                     x = _set_cells(data.decode("utf-8"), colli_col, targets[item.filename], plain_col)
                     if item.filename in extra_by_path:
                         vals, rm = extra_by_path[item.filename]
@@ -1397,6 +1404,76 @@ def write_order_file(scheda, per_store_lines, out_path, extra=None, headers=None
     return out_path
 
 
+GRIGLIA_MARK = {"direct": "DIRETTO", "bms": "BMS"}     # 汇总页门店名上面写的去向
+
+
+def _shared_strings(z):
+    import html
+    try:
+        x = z.read("xl/sharedStrings.xml").decode("utf-8")
+    except KeyError:
+        return []
+    out = []
+    for si in re.finditer(r"<si\b[^>]*>(.*?)</si>", x, re.S):
+        out.append(html.unescape("".join(re.findall(r"<t\b[^>]*>(.*?)</t>", si.group(1), re.S))))
+    return out
+
+
+def _mark_griglia(xml, sst, marks):
+    """
+    汇总页（GRIGLIA PER TUTTI PDV）：在每个门店名的上一行写去向（marks: {门店页名: 文字}），
+    用门店名那一格的格式；门店名是合并格时上面也合并同样宽度。
+    """
+    import html
+    found = {}
+    for cm in _CELL_RE.finditer(xml):
+        r = int(cm.group(2))
+        if r < 2 or r > 15:
+            continue
+        cell = cm.group(0)
+        tag = cell.split(">")[0]
+        txt = None
+        v = re.search(r"<v>(.*?)</v>", cell, re.S)
+        if 't="s"' in tag and v:
+            i = int(v.group(1))
+            txt = sst[i] if 0 <= i < len(sst) else None
+        elif 't="inlineStr"' in tag or 't="str"' in tag:
+            t = re.search(r"<t\b[^>]*>(.*?)</t>", cell, re.S) or v
+            txt = html.unescape(t.group(1)) if t else None
+        name = _norm(txt) if txt else ""
+        for sheet in marks:
+            if name and name == _norm(sheet) and sheet not in found:
+                found[sheet] = (r, _col_num(cm.group(1)), _cell_style(cell, f"{cm.group(1)}{r}"))
+    if not found:
+        return xml
+    values, styles = {}, {}
+    merges = re.findall(r'<mergeCell ref="([A-Z]+)(\d+):([A-Z]+)(\d+)"\s*/>', xml)
+    new_merges = []
+    for sheet, (r, c, st) in found.items():
+        values.setdefault(r - 1, {})[c] = marks[sheet] or None
+        styles[(r - 1, c)] = st
+        for c1, r1, c2, r2 in merges:
+            if _col_num(c1) == c and int(r1) == r == int(r2) and _col_num(c2) > c:
+                rng = (c, r - 1, _col_num(c2))
+                clash = any(int(a2) <= r - 1 <= int(b2) and _col_num(a1) <= rng[2] and _col_num(b1) >= c
+                            for a1, a2, b1, b2 in merges)
+                if not clash:
+                    new_merges.append(f'<mergeCell ref="{c1}{r - 1}:{c2}{r - 1}"/>')
+                    for cc in range(c + 1, rng[2] + 1):
+                        values[r - 1].setdefault(cc, None)
+                        styles[(r - 1, cc)] = st
+    xml = _set_row_cells(xml, values, styles)
+    if new_merges:
+        m = re.search(r'<mergeCells\b[^>]*count="(\d+)"[^>]*>', xml)
+        if m:
+            tag = m.group(0).replace(f'count="{m.group(1)}"', f'count="{int(m.group(1)) + len(new_merges)}"')
+            xml = xml[:m.start()] + tag + "".join(new_merges) + xml[m.end():]
+        elif "</sheetData>" in xml:
+            xml = xml.replace("</sheetData>", f'</sheetData><mergeCells count="{len(new_merges)}">'
+                              + "".join(new_merges) + "</mergeCells>", 1)
+    return xml
+
+
 def written_source(w, result=None):
     """生成的文件是哪个 SCHEDA 的：新版本记在第 7 项；老结果（只有 6 项）按「星期文件夹 + 供应商名」找回来"""
     if len(w) > 6:
@@ -1408,35 +1485,63 @@ def written_source(w, result=None):
     return None
 
 
+def written_files(written):
+    """生成的文件（去重，按顺序）：一家供应商一个文件，written 里每个去向一行，几行可能是同一个文件"""
+    seen, out = set(), []
+    for w in written:
+        if w[0] not in seen:
+            seen.add(w[0])
+            out.append(w[0])
+    return out
+
+
+def plan_marks(plan):
+    """{门店页名: 去向文字}：直接送店 / 并进 BMS 的；其余门店（这次不订）留空"""
+    marks = {name: "" for name in STORE_SHEETS.values()}
+    for sid, st in plan["stores"].items():
+        if st["status"] in ("direct", "filled") and sid in STORE_SHEETS:
+            marks[STORE_SHEETS[sid]] = GRIGLIA_MARK["direct"]
+    b = plan.get("bms")
+    if bms_ordered(b):
+        for sid in (b.get("per_store") or {}):
+            if sid in STORE_SHEETS:
+                marks[STORE_SHEETS[sid]] = GRIGLIA_MARK["bms"]
+    return marks
+
+
 def write_plans(results, out_root, date_tag=None, on_file=None, calc=None):
     """
-    results: [(星期, scheda, plan)]。每家直接送店的门店一个文件，BMS 一个文件。
+    results: [(星期, scheda, plan)]。一家供应商一个文件：直接送店的门店和并进 BMS 的门店都写在同一个文件里，
+    汇总页门店名上面写明去向（DIRETTO / BMS）。
     calc: compute() 的结果；有的话各门店页加上 GIA、ROT.30d … 附加数据列
-    返回 [(文件路径, 供应商, 去向, 箱数, 金额, 状态)]
+    返回 [(文件路径, 供应商, 去向, 箱数, 金额, 状态, SCHEDA 路径)]：每个去向一行（同一家供应商的路径相同）
     """
     date_tag = date_tag or datetime.now().strftime("%d%m")
     written = []
-    total = sum(sum(1 for st in plan["stores"].values() if st["status"] in ("direct", "filled")) +
-                (1 if bms_ordered(plan.get("bms")) else 0) for _, _, plan in results)
-    on_file = on_file or _noop
+    todo = []
     for day, sc, plan in results:
+        direct = [(sid, st) for sid, st in plan["stores"].items() if st["status"] in ("direct", "filled")]
+        b = plan.get("bms")
+        if direct or bms_ordered(b):          # BMS 不够起订量的不算（这次不订）
+            todo.append((day, sc, plan, direct, b if bms_ordered(b) else None))
+    on_file = on_file or _noop
+    for n, (day, sc, plan, direct, b) in enumerate(todo):
         folder = os.path.join(out_root, day)
         os.makedirs(folder, exist_ok=True)
         safe = re.sub(r'[\\/:*?"<>|]', "_", sc["name"])
         extra = extra_data(sc, calc.get("demand"), calc.get("base"), calc.get("days")) if calc else None
         heads = extra_headers(calc.get("days")) if calc else None
         extra, heads = file_extra(extra, heads)
-        for sid, st in plan["stores"].items():
-            if st["status"] in ("direct", "filled"):
-                p = os.path.join(folder, f"Ordine_{safe}_{STORE_SHEETS[sid]}_{date_tag}.xlsx")
-                on_file(len(written), total, os.path.basename(p))
-                write_order_file(sc, {sid: st["lines"]}, p, extra, heads)
-                written.append((p, sc["name"], STORE_SHEETS[sid], st["colli"], st["amount"], st["status"], sc["path"]))
-        b = plan.get("bms")
-        if bms_ordered(b):        # BMS 不够起订量的不生成文件（这次不订）
-            p = os.path.join(folder, f"Ordine_{safe}_{BMS}_{date_tag}.xlsx")
-            on_file(len(written), total, os.path.basename(p))
-            write_order_file(sc, b["per_store"], p, extra, heads)
+        lines = {sid: st["lines"] for sid, st in direct}
+        if b:
+            for sid, ln in (b.get("per_store") or {}).items():
+                lines[sid] = ln
+        p = os.path.join(folder, f"Ordine_{safe}_{date_tag}.xlsx")
+        on_file(n, len(todo), os.path.basename(p))
+        write_order_file(sc, lines, p, extra, heads, marks=plan_marks(plan))
+        for sid, st in direct:
+            written.append((p, sc["name"], STORE_SHEETS[sid], st["colli"], st["amount"], st["status"], sc["path"]))
+        if b:
             written.append((p, sc["name"], BMS, b["colli"], b["amount"], b["status"], sc["path"]))
     return written
 
@@ -1702,7 +1807,7 @@ def allocate(calc, colli, fill, out_root, log=print, date_tag=None, edited=None,
     written = write_plans(results, out_root, date_tag,
                           lambda k, n, name: progress(1, "running", f"{k + 1} / {n}", name, 40.0 + 50.0 * k / max(1, n)),
                           calc=calc)
-    progress(1, "done", f"{len(written)}", "", 90.0)
+    progress(1, "done", f"{len(written_files(written))}", "", 90.0)
     progress(2, "running", "", "", 92.0)
     summary = os.path.join(out_root, f"配货汇总_{date_tag or datetime.now().strftime('%d%m')}.xlsx")
     export_summary(results, summary, calc["demand"], calc["base"], edited, calc.get("days"))
@@ -1716,7 +1821,7 @@ def allocate(calc, colli, fill, out_root, log=print, date_tag=None, edited=None,
             log(f"⚠ 调货单生成失败：{e}")
             tfile = None
     progress(2, "done", "", "", 100.0)
-    log(f"完成：生成 {len(written)} 个订单文件 → {out_root}")
+    log(f"完成：生成 {len(written_files(written))} 个订单文件 → {out_root}")
     return {"results": results, "written": written, "summary": summary, "out_root": out_root,
             "transfers_file": tfile}
 
@@ -1732,7 +1837,8 @@ def reallocate_one(calc, colli, fill, result, index, mode, edited=None, log=prin
     for w in result["written"]:
         if written_source(w, result) == sc["path"]:
             try:
-                os.remove(w[0])
+                if os.path.exists(w[0]):
+                    os.remove(w[0])
             except OSError:
                 pass
         else:
@@ -1744,7 +1850,7 @@ def reallocate_one(calc, colli, fill, result, index, mode, edited=None, log=prin
     order = {x[1]["path"]: k for k, x in enumerate(results)}
     written = sorted(keep + new, key=lambda w: order.get(written_source(w, result), 0))
     export_summary(results, result["summary"], calc["demand"], calc["base"], edited, calc.get("days"))
-    log(f"手动调整 {sc['name']}：{mode}，生成 {len(new)} 个文件")
+    log(f"手动调整 {sc['name']}：{mode}，生成 {len(written_files(new))} 个文件")
     return dict(result, results=results, written=written)
 
 

@@ -194,3 +194,25 @@ def test_write_extra_columns(tmp_path):
     assert ws.cell(3, 9).value is None                                     # 数据库没有的商品留空
     assert ws.cell(2, 8).value == "=F2*E2*G2"                              # 公式不动
     assert load_workbook(out)["FOIANO"].cell(1, 9).value is None          # 没算的门店不加
+
+
+def test_one_file_per_supplier(tmp_path, monkeypatch):
+    """一家供应商只生成一个文件：直接送店和 BMS 写在同一个文件里，汇总页标明去向"""
+    got = []
+
+    def fake_write(sc, per_store, out, *a, **k):
+        got.append((dict(per_store), k.get("marks")))
+        open(out, "w").close()
+        return out
+    monkeypatch.setattr(S, "write_order_file", fake_write)
+    sc = _scheda({"colli": 0, "amount": 0}, "ACME", os.path.join("x", "周一", "SCHEDA ACME.xlsx"))
+    plan = {"stores": {1: {"status": "direct", "lines": {7: 2}, "colli": 2, "amount": 20},
+                       3: {"status": "bms", "lines": {8: 1}}, 4: {"status": "wait", "lines": {9: 1}}},
+            "bms": {"status": "direct", "colli": 1, "amount": 10, "per_store": {3: {8: 1}}}}
+    w = S.write_plans([("周一", sc, plan)], str(tmp_path), "1810")
+    assert len(S.written_files(w)) == 1 and [x[2] for x in w] == ["FOIANO", S.BMS]
+    assert os.path.basename(w[0][0]) == "Ordine_ACME_1810.xlsx"
+    lines, marks = got[0]
+    assert lines == {1: {7: 2}, 3: {8: 1}}
+    assert marks["FOIANO"] == S.GRIGLIA_MARK["direct"] and marks["S.FILIPPO"] == S.GRIGLIA_MARK["bms"]
+    assert marks["S.MARCO"] == ""

@@ -269,12 +269,12 @@ class DashboardPage:
                 else:
                     st.set_state(2, "now", tr("改了 {0} 处", ed))
                     st.set_state(3, "todo", tr("直接送店 / 并入 BMS"))
-                    st.set_state(4, "todo", tr("每店一个文件 + BMS"))
+                    st.set_state(4, "todo", tr("每家供应商一个文件"))
             else:
                 st.set_state(1, "now", tr("点「开始今日采购」"))
                 st.set_state(2, "todo", tr("可手动修改箱数"))
                 st.set_state(3, "todo", tr("直接送店 / 并入 BMS"))
-                st.set_state(4, "todo", tr("每店一个文件 + BMS"))
+                st.set_state(4, "todo", tr("每家供应商一个文件"))
 
         # 今日供应商
         rows = []

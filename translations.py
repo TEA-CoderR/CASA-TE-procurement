@@ -984,6 +984,7 @@ TRANSLATIONS = {
     '点「开始今日采购」': ('Click "Start today\'s purchasing"', 'Clicca "Inizia acquisti di oggi"'),
     '直接送店 / 并入 BMS': ('Direct / merged into BMS', 'Diretto / unito a BMS'),
     '每店一个文件 + BMS': ('One file per store + BMS', 'Un file per negozio + BMS'),
+    '每家供应商一个文件': ('One file per supplier', 'Un file per fornitore'),
     '已生成订单': ('Ordered', 'Ordinato'),
     '离总仓远 · 不借货': ('Far from warehouse · no borrowing', 'Lontano dal magazzino · nessun prestito'),
     '远店': ('Far', 'Lontano'),
@@ -2301,4 +2302,5 @@ TRANSLATIONS = {
     '箱数差 ≤': ('Box gap ≤', 'Differenza colli ≤'),
     '凑完最多够卖': ('Max stock after top-up', 'Scorta massima dopo integrazione'),
     '只加卖得动的商品：加完后库存最多够卖几天': ('Only add items that sell: max days of stock after adding', 'Solo articoli che si vendono: giorni massimi di scorta dopo'),
+    '打开：配置文件里单独设了订货周期的供应商用它自己的周期，其余用默认周期（新算法 = 算法设置里的）。\n关闭：全部用默认周期。': ('On: suppliers with their own cycle in the config file use it, the others use the default cycle (new algorithm = the one in Algorithm settings).\nOff: all use the default cycle.', 'Attivo: i fornitori con un ciclo proprio nel file di configurazione usano quello, gli altri il ciclo predefinito (nuovo algoritmo = quello nelle impostazioni algoritmo).\nDisattivo: tutti usano il ciclo predefinito.'),
 }

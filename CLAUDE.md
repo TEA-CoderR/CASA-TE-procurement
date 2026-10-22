@@ -17,6 +17,7 @@
 - 用户和同事**共用同一个文件夹**（`procurement_system ok 2.5`）开发。请直接在这个文件夹里改代码、`git commit`、`git push`，不要只推到云端分支却把文件另外写进文件夹（之前这样做过，文件夹和 git 记录对不上，发布前得先同步）。
 
 ## 最近改动（给接手的 AI 的纸条，新的写在最上面）
+- 2026-10-22：配货结果**一家供应商一个订单文件** `Ordine_<供应商>_<ddmm>.xlsx`（`store_orders.write_plans`）：直送门店 + BMS 门店写在同一个文件，汇总页 GRIGLIA 门店名上一行写 DIRETTO / BMS（`_mark_griglia`、`plan_marks`）；`written` 仍是每个去向一行（路径相同），数文件用 `written_files`。新算法也能「按配置文件周期」：`compute_suggestions` 把每行供应商周期（没设的用算法设置的订货周期）传给 `apply_v2(cycles=)`。
 - 2026-10-22（用户定的业务规则，第二版，先从简单开始）：**不借货、不把能直送的店拉进 BMS**。`plan_supplier` auto：够起订量（含小差额凑单）→ 直送；订不起来的按 `fill["bms_order"]`（默认 3-4-5-2-1，只算参与 BMS 凑单的门店 = 不在 far_stores / 供应商设置 bms_stores 里）一家家并进 BMS，够起订量就停；剩下的 / 凑不够的 → status "wait"（这次不订）。配货结果「手动选进 BMS 的门店…」（`BmsPickDialog` → mode "manual" + picks）可以把任意门店整单并进 BMS、可强制下单。配货结果加「紧急缺货」列（`store_orders.urgent_share / plan_urgent`：库存够卖 < 7 天的商品金额占比，红 ≥ 50%、黄 ≥ 25%）；状态改成格子里的彩色字。配货设置 ② 改成可勾选 + 拖动排序的门店列表。供应商设置可单独选参与 BMS / 调货的门店（store_orders.supplier_cfg）。
 - 2026-10-21：`COMPANY_DEFAULTS_VER` = 2：按采购部电脑现在的设置统一一次（新算法参数、凑单 / 借货 / 调货、起订规则、报价文件名称、订货明细和检查清单的列顺序 / 显示哪些列 / 列宽）。检查清单默认列顺序 = 用户排好的（`order_check._ORDER`）。
 - 2026-10-21：检查清单：数据库没有的商品也按条码去供应商报价里补箱规 / 件价（`price_check.apply_quotes`）；还是找不到的在工具条「全部商品」右边两个按钮「⚠ 数据库没有 / ⚠ 没有箱规」，点开是列表（`_problem` → nodb / nopack，`_fill_prob`、`_open_prob`），主表格只放能算的；调货列没调的一律写「不调」（订货明细也是）。界面卡住时 `logs/hang.log` 会记下各线程的调用栈（`main._start_hang_watchdog`）。
