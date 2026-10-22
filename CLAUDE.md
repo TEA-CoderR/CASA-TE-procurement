@@ -17,6 +17,7 @@
 - 用户和同事**共用同一个文件夹**（`procurement_system ok 2.5`）开发。请直接在这个文件夹里改代码、`git commit`、`git push`，不要只推到云端分支却把文件另外写进文件夹（之前这样做过，文件夹和 git 记录对不上，发布前得先同步）。
 
 ## 最近改动（给接手的 AI 的纸条，新的写在最上面）
+- 2026-10-22：紧急缺货改成**按商品个数**算（`urgent_share`：库存够卖 < 7 天的商品个数 ÷ 这张单的商品个数；`with_total=True` 多给总数），格子里不写字，只上色（≥ 50% 红底、≥ 25% 红字），数字在鼠标提示里。设置界面统一精简：新加 `erp_widgets.tip_label(文字, 说明)`（标签 + ⓘ + 鼠标提示），算法设置 / 计算参数 / 供应商设置 / 起订规则 / 调货 / 方案 / 供应商名称 / 系统设置 / 比价设置里的说明文字全部收进鼠标提示；算法说明行只留 ⓘ（`algo_widgets`）。
 - 2026-10-22：配货结果页重做：横幅 + 4 张卡（采购总额 / 直接送店 / BMS 分货 / 这次不订）+ 一张「订单」表（一家供应商一行：起订量、5 家门店、BMS、合计、文件；门店格子颜色和起订量检查一样，`_paint_cell`），去掉了配货路线 / 「这家怎么订」/ 文件列表 / `BmsPickDialog`（改 BMS 统一在起订量检查「BMS 调整」做，`reallocate_one` 现在界面不用）。起订量检查和结果表里「这次不订」的格子紧急缺货 ≥ 50% 标红、≥ 25% 加 ⚠（`_urgent_of`）。「BMS 调整」按钮移到图例左边，橙色描边，调整中变实心「完成调整」（`_style_bms_btn`）。
 - 2026-10-22：起订量检查加「BMS 调整」（全不选右边）：点了进入调整模式（`bms_edit`，按钮变「完成调整」+「恢复系统建议」），门店格子显示勾选框（CheckStateRole，不设 UserCheckable，点格子由 `_matrix_clicked` → `_toggle_bms_store` 切换），勾上的门店整单进 BMS；不强制下单，够 BMS 起订量才变橙色。存在 `StoreOrderPage.bms_picks`（只在这次运行里），`_preview` 和 `S.allocate(picks=)` 都按 mode "manual" 配；BMS 格带 ✎。
 - 2026-10-22：配货结果**一家供应商一个订单文件** `Ordine_<供应商>_<ddmm>.xlsx`（`store_orders.write_plans`）：直送门店 + BMS 门店写在同一个文件，汇总页 GRIGLIA 门店名上一行写 DIRETTO / BMS（`_mark_griglia`、`plan_marks`）；`written` 仍是每个去向一行（路径相同），数文件用 `written_files`。新算法也能「按配置文件周期」：`compute_suggestions` 把每行供应商周期（没设的用算法设置的订货周期）传给 `apply_v2(cycles=)`。

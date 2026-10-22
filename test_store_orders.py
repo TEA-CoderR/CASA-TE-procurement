@@ -176,7 +176,7 @@ class PlanTest(unittest.TestCase):
         dem[3] = {"8": {"daily": 1.0, "inv": 2, "sugg": 4}, "9": {"daily": 1.0, "inv": 30, "sugg": 4}}
         p = S.plan_supplier(sc, dem, dict(FILL, max_colli_gap=0), [1, 2, 3, 4, 5])
         share, n = S.plan_urgent(sc, p, 3)
-        self.assertAlmostEqual(share, 0.5)                              # 一半的货够卖不到一周
+        self.assertAlmostEqual(share, 0.5)                              # 一半的商品够卖不到一周（按个数）
         self.assertEqual(n, 1)
         share_b, _ = S.plan_urgent(sc, p, None)
         self.assertGreater(share_b, 0)

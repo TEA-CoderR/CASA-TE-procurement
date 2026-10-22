@@ -1079,43 +1079,37 @@ def plan_supplier(scheda, demand, fill=None, stores=None, colli=None, mode="auto
     return res
 
 
-def urgent_share(scheda, lines, dem_rows, days=7):
+def urgent_share(scheda, lines, dem_rows, days=7, with_total=False):
     """
-    一张单里「紧急缺货」商品占多少：库存够卖不到 days 天（默认一周）的商品的金额 ÷ 整单金额。
-    返回 (占比 0~1, 紧急商品数)；给配货结果标颜色、手动决定要不要凑 BMS 用
+    一张单里「紧急缺货」商品占多少：库存够卖不到 days 天（默认一周）的商品个数 ÷ 这张单的商品个数。
+    返回 (占比 0~1, 紧急商品数)；with_total=True 时多返回商品总数。给起订量检查 / 配货结果标颜色用
     """
     items = {it["row"]: it for it in scheda.get("items") or []}
-    tot = urg = 0.0
-    n = 0
+    tot = n = 0
     for row, c in (lines or {}).items():
-        it = items.get(row)
-        if not it or c <= 0:
+        if row not in items or c <= 0:
             continue
-        v = c * it["pack"] * (it.get("price") or 0.0)
-        tot += v
+        tot += 1
         d = (dem_rows or {}).get(row)
         cd = cover_days(d) if d else None
         if cd is not None and cd < days:
-            urg += v
             n += 1
-    return (urg / tot if tot > 0 else 0.0), n
+    share = n / tot if tot else 0.0
+    return (share, n, tot) if with_total else (share, n)
 
 
 def plan_urgent(scheda, plan, sid):
-    """配货结果某一行的紧急占比：门店（sid）用这家店的单；sid = None 是 BMS 单（各店并进来的部分合起来算）"""
+    """某一张单的紧急占比（按商品个数）：门店（sid）用这家店的单；sid = None 是 BMS 单（各店并进来的部分合起来算）"""
     if sid is not None:
         st = (plan.get("stores") or {}).get(sid) or {}
         return urgent_share(scheda, st.get("lines") or st.get("base_lines"), st.get("dem_rows"))
     b = plan.get("bms") or {}
-    tot_u = tot = 0.0
-    n = 0
+    n = tot = 0
     for s_, lines in (b.get("per_store") or {}).items():
-        share, k = urgent_share(scheda, lines, ((plan.get("stores") or {}).get(s_) or {}).get("dem_rows"))
-        amt = _totals(lines, {it["row"]: it for it in scheda["items"]})[1]
-        tot_u += share * amt
-        tot += amt
+        _, k, t = urgent_share(scheda, lines, ((plan.get("stores") or {}).get(s_) or {}).get("dem_rows"), with_total=True)
         n += k
-    return (tot_u / tot if tot > 0 else 0.0), n
+        tot += t
+    return (n / tot if tot else 0.0), n
 
 
 # =====================================================================

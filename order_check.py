@@ -155,10 +155,7 @@ class OrderCheck:
     def build(self):
         ui = self.ui
         p = ui.Panel(tr("② 检查门店订货清单"))
-        intro = QLabel(tr("比价用的主订单只从这里生成：把一家或几家门店的订货清单一起拖进来，按销量和数据库库存检查数量（增加 / 减少 / 不订），同时查五家门店的库存。确认时先用别的门店多出来的货（门店间调货），每家店剩下要订的各自生成主订单；再一家一家点下面的「开始处理」做供应商比价。"))
-        intro.setObjectName("Faint")
-        intro.setWordWrap(True)
-        p.lay.addWidget(intro)
+        p.setToolTip(tr("比价用的主订单只从这里生成：把一家或几家门店的订货清单一起拖进来，按销量和数据库库存检查数量（增加 / 减少 / 不订），同时查五家门店的库存。确认时先用别的门店多出来的货（门店间调货），每家店剩下要订的各自生成主订单；再一家一家点下面的「开始处理」做供应商比价。"))
 
         r1 = QHBoxLayout()
         r1.addWidget(QLabel(tr("清单")))

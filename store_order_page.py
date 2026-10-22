@@ -71,13 +71,10 @@ class ParamDialog(QDialog):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(20, 18, 20, 16)
         lay.setSpacing(12)
-        intro = QLabel(tr("这些参数只在「原程序算法」时使用；新算法按「算法设置」里的订货周期和到货天数计算。"))
-        intro.setObjectName("Faint")
-        intro.setWordWrap(True)
-        lay.addWidget(intro)
+        from erp_widgets import tip_label
         g = QGridLayout()
         g.setSpacing(10)
-        g.addWidget(QLabel(tr("订货周期")), 0, 0)
+        g.addWidget(tip_label(tr("订货周期"), tr("这些参数只在「原程序算法」时使用；新算法按「算法设置」里的订货周期和到货天数计算。")), 0, 0)
         page.cycle = QComboBox()
         for d in R.REORDER_CYCLE_OPTIONS:
             page.cycle.addItem(tr("{0} 天", d), d)
@@ -122,7 +119,9 @@ class TransferDialog(QDialog):
         t.setStyleSheet("font-size:18px;")
         lay.addWidget(t)
         dn = TR.by_donor(self.ts)
-        sub = QLabel(tr("这些商品要的件数远小于一箱，从别的门店调多出来的货，就少订一箱。") + "　" + "　".join(
+        t.setText(tr("门店间调货") + "  ⓘ")
+        t.setToolTip(tr("这些商品要的件数远小于一箱，从别的门店调多出来的货，就少订一箱。"))
+        sub = QLabel("　".join(
             tr("从 {0}：{1} 个商品 · €{2:,.2f}", S.STORE_SHEETS.get(k, k), v["items"], v["value"])
             for k, v in sorted(dn.items())))
         sub.setObjectName("Muted")
@@ -203,11 +202,11 @@ def _card(title, sub=""):
 
 def _form_rows(grid, rows):
     """设置表单：每行 标签 + 输入框；说明放在鼠标提示里（不显示一大段字）。返回各行的标签"""
+    from erp_widgets import tip_label
     labels = []
     for r, (lab, w, tip) in enumerate(rows):
-        lb = QLabel(lab)
+        lb = tip_label(lab, tip)
         if tip:
-            lb.setToolTip(tip)
             w.setToolTip(tip)
         grid.addWidget(lb, r, 0)
         grid.addWidget(w, r, 1)
@@ -423,18 +422,15 @@ class MoqDialog(QDialog):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(20, 18, 20, 16)
         lay.setSpacing(10)
-        t = QLabel(name)
+        t = QLabel(name + "  ⓘ")
         t.setObjectName("Section")
+        t.setToolTip(tr("文件：{0}", os.path.basename(path)) + "\n" +
+                     tr("文件里写的起订量：{0}", file_m.get("raw") or tr("（空）")) + "\n" +
+                     tr("程序读到：{0}", S.moq_label(dict(file_m, source="file"))))
         lay.addWidget(t)
-        info = QLabel(tr("文件：{0}", os.path.basename(path)) + "\n" +
-                      tr("文件里写的起订量：{0}", file_m.get("raw") or tr("（空）")) + "\n" +
-                      tr("程序读到：{0}", S.moq_label(dict(file_m, source="file"))))
-        info.setObjectName("Faint")
-        info.setWordWrap(True)
-        info.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        lay.addWidget(info)
         g = QGridLayout()
-        g.setSpacing(8)
+        g.setHorizontalSpacing(12)
+        g.setVerticalSpacing(8)
 
         def spin(v, decimals=0, top=1000000):
             w = QDoubleSpinBox()
@@ -454,12 +450,7 @@ class MoqDialog(QDialog):
                 (tr("起订板数"), self.w_pallets, tr("按板（BANCALE / PEDANE）起订时填")),
                 (tr("每板多少箱"), self.w_per, tr("按板起订时必须填，否则判断不了够不够")),
                 (tr("按几箱的倍数订"), self.w_mult, tr("只做提示，不影响配货判断")))
-        for r, (lab, w, hint) in enumerate(rows):
-            g.addWidget(QLabel(lab), r, 0)
-            g.addWidget(w, r, 1)
-            h = QLabel(hint)
-            h.setObjectName("Faint")
-            g.addWidget(h, r, 2)
+        _form_rows(g, rows)
         lay.addLayout(g)
         self.w_note = QLineEdit((override or {}).get("note", ""))
         self.w_note.setPlaceholderText(tr("备注（可不填）"))
@@ -473,7 +464,7 @@ class MoqDialog(QDialog):
         for key, title in (("bms_stores", tr("单独设 BMS 凑单门店")),
                            ("transfer_stores", tr("单独设调货门店"))):
             own = self.result_supplier_cfg.get(key)
-            cb = QCheckBox(title)
+            cb = QCheckBox(title + "  ⓘ")
             cb.setToolTip(tr("不勾就按「配货设置」里的总设置"))
             cb.setChecked(own is not None)
             row, boxes = _store_checks({int(x) for x in own} if own is not None else glob[key])
@@ -485,8 +476,9 @@ class MoqDialog(QDialog):
             self.store_sections[key] = (cb, boxes)
 
         # suppliers_config.json 里对应的供应商
-        cl = QLabel(tr("同时写进配置文件 suppliers_config.json 的供应商："))
-        lay.addWidget(cl)
+        from erp_widgets import tip_label
+        cl = tip_label(tr("写进配置文件"), tr("同时写进配置文件 suppliers_config.json 的供应商：") + "\n" +
+                       tr("会更新这个供应商的 min_order_amount（起订金额），按箱 / 按板的也一起记下。"))
         self.w_cfg = QComboBox()
         self.w_cfg.addItem(tr("不写进配置文件"), "")
         details = {}
@@ -494,16 +486,16 @@ class MoqDialog(QDialog):
             from fenpei.config import SUPPLIERS_CONFIG_FILE
             details = S.load_suppliers_config(SUPPLIERS_CONFIG_FILE).get("supplier_details", {})
         except Exception as e:
-            cl.setText(tr("读不了 suppliers_config.json：{0}", e))
+            cl.setText(tr("写进配置文件") + "  ⚠")
+            cl.setToolTip(tr("读不了 suppliers_config.json：{0}", e))
         for sid, d in sorted(details.items(), key=lambda kv: kv[1].get("name", "")):
             self.w_cfg.addItem(tr("{0}（ID {1}）· 现在起订 €{2}", d.get("name", ""), sid, d.get("min_order_amount", "—")), sid)
         guess = (override or {}).get("config_id") or S.match_config_supplier(name, file_m.get("company"), details)
         self.w_cfg.setCurrentIndex(max(0, self.w_cfg.findData(guess or "")))
-        lay.addWidget(self.w_cfg)
-        h2 = QLabel(tr("会更新这个供应商的 min_order_amount（起订金额），按箱 / 按板的也一起记下。"))
-        h2.setObjectName("Faint")
-        h2.setWordWrap(True)
-        lay.addWidget(h2)
+        cr = QHBoxLayout()
+        cr.addWidget(cl)
+        cr.addWidget(self.w_cfg, 1)
+        lay.addLayout(cr)
 
         bb = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
         self.btn_reset = bb.addButton(tr("恢复成文件里的值"), QDialogButtonBox.ResetRole)
@@ -512,7 +504,7 @@ class MoqDialog(QDialog):
         bb.accepted.connect(self._save)
         bb.rejected.connect(self.reject)
         lay.addWidget(bb)
-        self.setMinimumWidth(560)
+        self.setMinimumWidth(480)
 
     def _save(self):
         if self.w_pallets.value() and not self.w_per.value():
@@ -686,10 +678,9 @@ class StoreOrderPage:
         col.setSpacing(3)
         t = QLabel(tr("门店配货"))
         t.setObjectName("PageTitle")
-        s = QLabel(tr("品牌供应商直接送店 · 每家店单独满起订量才直送，差一点自动凑单，差太多并到 BMS"))
-        s.setObjectName("PageSub")
+        t.setText(tr("门店配货") + "  ⓘ")
+        t.setToolTip(tr("品牌供应商直接送店 · 每家店单独满起订量才直送，差一点自动凑单，差太多并到 BMS"))
         col.addWidget(t)
-        col.addWidget(s)
         tr_.addLayout(col, 1)
         self.param_dlg = ParamDialog(self)           # 建出 self.cycle / self.use_cfg / self.days
         bp = QPushButton(tr("计算参数"))
@@ -722,7 +713,7 @@ class StoreOrderPage:
         tips = {"ok": tr("单独够起订量（或差一点凑单后够），直接送店"),
                 "near": tr("单独不够，几家门店合起来够 BMS 起订量，由 BMS 订货后分货"),
                 "far": tr("不够起订量，这次不订，下次再看"),
-                "err": tr("这次不订的单里，库存够卖不到一周的商品金额占 ≥ 50%（≥ 25% 标 ⚠）：考虑并进 BMS")}
+                "err": tr("这次不订的单里，库存够卖不到一周的商品个数占 ≥ 50%：红底；≥ 25%：红字。考虑并进 BMS")}
         for kind, text in self.LEGEND:
             dot = QLabel()
             dot.setFixedSize(10, 10)
@@ -739,8 +730,8 @@ class StoreOrderPage:
     def _urgent_of(sc, plan, sid):
         st = (plan or {}).get("stores", {}).get(sid)
         if not st:
-            return 0.0, 0
-        return S.urgent_share(sc, st.get("base_lines") or st["lines"], st.get("dem_rows"))
+            return 0.0, 0, 0
+        return S.urgent_share(sc, st.get("base_lines") or st["lines"], st.get("dem_rows"), with_total=True)
 
     @staticmethod
     def _paint_cell(it, state, share=0.0, n_urg=0):
@@ -754,7 +745,6 @@ class StoreOrderPage:
         f = it.font()
         f.setBold(state in ("ok", "bms_ok"))
         if state == "short" and n_urg and share >= 0.25:
-            it.setText(it.text() + f"  ⚠{share:.0%}")
             f.setBold(True)
             it.setForeground(QColor(T("err")))
             if share >= 0.5:
@@ -854,10 +844,7 @@ class StoreOrderPage:
         self.ftable.horizontalHeaderItem(2).setToolTip(tr("点起订量那一格可以修改（读错了自己改，会保存）"))
         self.ftable.setMinimumHeight(420)
         lv.addWidget(self.ftable, 1)
-        hint = QLabel(tr("不再合作的供应商取消勾选，下次会记住"))
-        hint.setObjectName("Faint")
-        hint.setContentsMargins(14, 0, 14, 0)
-        lv.addWidget(hint)
+        self.ftable.horizontalHeaderItem(0).setToolTip(tr("不再合作的供应商取消勾选，下次会记住"))
         h.addWidget(left)
 
         # 右
@@ -967,11 +954,8 @@ class StoreOrderPage:
         dc.setSpacing(2)
         self.detail_title = QLabel(tr("订货明细"))
         self.detail_title.setStyleSheet("font-size:14px; font-weight:600;")
-        ds = QLabel(tr("每个商品 × 门店的库存、销量、日均、目标库存和建议箱数，可逐行修改；在独立窗口里打开，不挤占工作台"))
-        ds.setObjectName("Faint")
-        ds.setWordWrap(True)
+        self.detail_title.setToolTip(tr("每个商品 × 门店的库存、销量、日均、目标库存和建议箱数，可逐行修改；在独立窗口里打开，不挤占工作台"))
         dc.addWidget(self.detail_title)
-        dc.addWidget(ds)
         self.btn_detail = QPushButton(tr("打开明细窗口"))
         self.btn_detail.setObjectName("Outline")
         self.btn_detail.clicked.connect(lambda: self.open_detail())
@@ -1617,12 +1601,12 @@ class StoreOrderPage:
                     t.item(r, 3 + k).setData(Qt.CheckStateRole, Qt.Checked if sid_ in in_bms else Qt.Unchecked)
                 if st:
                     it = t.item(r, 3 + k)
-                    share, n_urg = self._urgent_of(sc, plan, sid_) if st == "short" else (0.0, 0)
+                    share, n_urg, n_tot = self._urgent_of(sc, plan, sid_) if st == "short" else (0.0, 0, 0)
                     self._paint_cell(it, st, share, n_urg)
                     if st in tips:
                         tip = tips[st]
                         if n_urg:
-                            tip += "\n" + tr("库存够卖不到一周的商品：{0} 个，占这张单金额的 {1:.0%}", n_urg, share)
+                            tip += "\n" + tr("紧急缺货（库存够卖不到一周）：{0} / {1} 个商品（{2:.0%}）", n_urg, n_tot, share)
                         it.setToolTip(tip + ("\n" + tr("点一下：进 / 不进 BMS") if self.bms_edit and st != "none" else ""))
             bi = t.item(r, 3 + len(S.STORE_SHEETS))
             if b:
@@ -1887,7 +1871,7 @@ class StoreOrderPage:
                 state, st = x
                 it = t.item(r, 3 + k)
                 it.setData(SORT_ROLE, float(st["amount"]))
-                share, n_urg = self._urgent_of(sc, plan, list(S.STORE_SHEETS)[k]) if state == "short" else (0.0, 0)
+                share, n_urg, n_tot = self._urgent_of(sc, plan, list(S.STORE_SHEETS)[k]) if state == "short" else (0.0, 0, 0)
                 self._paint_cell(it, state, share, n_urg)
                 tip = tips[state]
                 if state == "short":
@@ -1897,7 +1881,7 @@ class StoreOrderPage:
                         f"{it_['desc'][:18]} +{n}" for r_, n, _ in st["added"][:5]
                         for it_ in [next((x_ for x_ in sc["items"] if x_["row"] == r_), {"desc": ""})])
                 if n_urg:
-                    tip += "\n" + tr("库存够卖不到一周的商品：{0} 个，占这张单金额的 {1:.0%}", n_urg, share)
+                    tip += "\n" + tr("紧急缺货（库存够卖不到一周）：{0} / {1} 个商品（{2:.0%}）", n_urg, n_tot, share)
                 it.setToolTip(tip)
             bi = t.item(r, 3 + nb)
             if ok_b:
