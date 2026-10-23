@@ -135,7 +135,7 @@ class AlgoDialog(QDialog):
         spin("review_days", tr("订货周期（天）"), 1, 120, tr("多久下一次单。每周订 = 7；这次订的要卖到下次订的货到为止"), 0)
         spin("lead_days", tr("到货天数"), 0, 60, tr("下单后几天到货（一般 2–7 天）"), 1)
         spin("service", tr("服务水平 %"), 50, 99.5, tr("不缺货的概率。95 = 100 次里约 5 次可能卖断"), 2, dec=1, scale=100)
-        spin("max_stock_days", tr("平均压货最多（天）"), 1, 365, tr("平均库存最多够卖几天（只限制卖得快的商品；卖得慢的按服务水平保证不断货）"), 3)
+        spin("max_safety_days", tr("安全库存最多（天）"), 0, 90, tr("按服务水平多备的货最多够卖几天（只限制卖得快的商品；卖得慢的按服务水平保证不断货）。A/B/C 的差别由服务水平区分"), 3)
         spin("min_shelf", tr("最少陈列件数"), 0, 50, tr("近 13 周有销量的商品至少保留几件"), 5)
         cr = QHBoxLayout()
         cr.setSpacing(6)
@@ -165,16 +165,30 @@ class AlgoDialog(QDialog):
             sr.addWidget(sb)
             self.w[k] = (sb, 100)
         sr.addStretch()
-        g.addWidget(tip_label(tr("安全库存"), tr("件数凑不成整箱时：少订（往下取整）后的库存够卖一个订货周期的这个比例，就少订，不为了一两件硬凑一箱；不够才多订一箱")), 7, 0)
+        g.addWidget(tip_label(tr("最低保障线"), tr("件数凑不成整箱时：少订（往下取整）后的库存够卖一个订货周期的这个比例，就少订，不为了一两件硬凑一箱；不够才多订一箱。（和「安全库存」不是一回事：安全库存是按服务水平多备的货）")), 7, 0)
         g.addLayout(sr, 7, 1)
+        fr = QHBoxLayout()
+        fr.setSpacing(6)
+        for k, pre, suf, lo_, hi_ in (("abc_freq_hi", "≥ ", tr(" 周 → B"), 1, 14), ("abc_freq_lo", "≤ ", tr(" 周 → C"), 0, 13)):
+            sb = QSpinBox()
+            sb.setRange(lo_, hi_)
+            sb.setValue(int(p.get(k, 10 if k == "abc_freq_hi" else 3)))
+            sb.setPrefix(pre)
+            sb.setSuffix(suf)
+            sb.setFixedWidth(110)
+            fr.addWidget(sb)
+            self.w[k] = (sb, 1)
+        fr.addStretch()
+        g.addWidget(tip_label(tr("动销兜底"), tr("等级先按本店近 13 周销售额排（前 80% A，到 95% B，其余 C），再看近 13 周有几周卖过：卖过的周数 ≥ 左边 → 最低算 B（天天卖的便宜货不当 C 少订）；≤ 右边 → 最高算 C（偶尔才卖的不多备）。新品按上架以来的周数折算，不降级。左边填 14 = 不升级，右边填 0 = 不降级")), 8, 0)
+        g.addLayout(fr, 8, 1)
         self.abc = QCheckBox(tr("ABC 调整服务水平"))
         self.abc.setToolTip(tr("按 ABC 调整服务水平（A +2.5%，C −5%；ABC 按本店近 13 周销售额帕累托）"))
         self.abc.setChecked(bool(p["abc_service"]))
         self.season = QCheckBox(tr("季节调整"))
         self.season.setToolTip(tr("用去年同期做季节调整（数据不够一年或量太小时不调整）"))
         self.season.setChecked(bool(p["season"]))
-        g.addWidget(self.abc, 8, 0, 1, 2)
-        g.addWidget(self.season, 9, 0, 1, 2)
+        g.addWidget(self.abc, 9, 0, 1, 2)
+        g.addWidget(self.season, 10, 0, 1, 2)
         lay.addLayout(g)
         bb = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel | QDialogButtonBox.RestoreDefaults)
         bb.accepted.connect(self.save)
@@ -207,10 +221,10 @@ class AlgoDialog(QDialog):
 def algo_summary(p):
     if p.get("engine") != "v2":
         return tr("原程序算法：日均 × 订货周期 × 系数，按数据库箱规向上取整")
-    return tr("订货周期 {0} 天 + 到货 {1} 天，服务水平 {2:.0%}{3}，平均压货最多 {4} 天",
+    return tr("订货周期 {0} 天 + 到货 {1} 天，服务水平 {2:.0%}{3}，安全库存最多 {4} 天",
               p["review_days"], p["lead_days"], p["service"], tr("（按 ABC）") if p.get("abc_service") else "",
-              p["max_stock_days"]) + \
-        tr("，安全库存 A {0:.0%} · B {1:.0%} · C {2:.0%}", p.get("safety_a", 0.9), p.get("safety_b", 0.7), p.get("safety_c", 0.5)) + \
+              p.get("max_safety_days", 7)) + \
+        tr("，最低保障线 A {0:.0%} · B {1:.0%} · C {2:.0%}", p.get("safety_a", 0.9), p.get("safety_b", 0.7), p.get("safety_c", 0.5)) + \
         tr("，周期系数 A ×{0:g} · B ×{1:g} · C ×{2:g}", p.get("cycle_a", 1), p.get("cycle_b", 1), p.get("cycle_c", 1))
 
 

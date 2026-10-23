@@ -490,7 +490,7 @@ def apply_v2(db, store_id, result_df, algo, weekly=None, revenue=None, on_order=
     for i, (_, r) in enumerate(result_df.iterrows()):
         c = int(r["CodArticolo"])
         inv = float(r.get("store_inventory", 0) or 0)           # 已经把负数当 0
-        tier = tiers.get(c, "C")
+        tier, _why = F.adjust_tier(tiers.get(c, "C"), weekly.get(c, []), algo)      # 金额定等级，动销兜底
         p = algo
         if cycles is not None and i < len(cycles) and cycles[i] is not None \
                 and float(cycles[i]) != float(algo.get("review_days", 7)):

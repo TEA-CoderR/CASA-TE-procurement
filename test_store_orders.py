@@ -338,3 +338,45 @@ class CoverDaysTest(unittest.TestCase):
         self.assertEqual(S.days_text(float("inf")), "∞")
         self.assertEqual(S.days_text(12.4), "12")
         self.assertEqual(S.days_text(None), "")
+
+
+def test_monthly_and_need_follow_algorithm():
+    """月均 / 需求：新算法按加权日均和目标库存算，原程序算法按销量周期算"""
+    v1 = {"sales": [30, 60, 90, 180], "cycle": 30}
+    assert S.monthly_and_need(v1) == (30.0, 30.0)                 # 180 ÷ 6；90 天日均 1 × 30
+    v2 = dict(v1, daily=1.5, target=50.0, safety=5.0)
+    assert S.monthly_and_need(v2) == (45.0, 45.0)                 # 1.5 × 30；目标 50 − 安全库存 5
+
+
+def test_duplicate_codes_ass_and_colours(tmp_path):
+    """
+    同一个编号好几行（ASS. 整箱 + 各颜色每箱 1 件）：建议量只算在第一行；别的门店页按同一行号写，
+    不能把颜色行的数量（件数当箱数）写到 ASS. 那一行（2026-10-23 LATEX：MARLIA 页 ASS. 变成 27 箱）
+    """
+    from openpyxl import Workbook, load_workbook
+    p = str(tmp_path / "SCHEDA TEST.xlsx")
+    wb = Workbook()
+    wb.active.title = "SCHEDA ANAGRAFICA FORNITORI "
+    for name in ("FOIANO", "MARLIA"):
+        ws = wb.create_sheet(name)
+        ws.append(["NO.", "Cod.Art.", "Codice EAN", "Descrizione Prodotto", "PZ*COLLI", "Colli", "PREZZO NETTO"])
+        ws.append([1, 100, 800100, "CUSCINO ASS.", 24, None, 4.6])
+        for k, col in enumerate(("ROSSO", "BLU", "VERDE"), 2):
+            ws.append([k, 100, 800100, "CUSCINO " + col, 1, None, 4.6])
+        ws.append([5, 200, 800200, "ALTRO", 6, None, 2.0])
+    wb.save(p)
+    sc = S.parse_scheda(p)
+    assert sc["rowmap"] == {}                         # 两页一样：一行对一行
+    for it in sc["items"]:
+        it["db_code"] = it["code"]
+    S.mark_duplicates([sc])
+    assert [it.get("dup_of") for it in sc["items"]] == [None, 2, 2, 2, None]
+    d = {"sugg": 27, "daily": 0.2, "inv": 0, "tier": "A", "cycle": 30}
+    dem = {1: {"100": d}, 2: {"100": d}, "_algo": None}
+    base = S.base_colli(sc, dem, [1, 2])
+    assert base == {1: {2: 2}, 2: {2: 2}}             # 只有 ASS. 那一行：27 件 ÷ 24 → 2 箱
+    out = str(tmp_path / "o.xlsx")
+    S.write_order_file(sc, base, out)
+    wb2 = load_workbook(out)
+    for name in ("FOIANO", "MARLIA"):
+        assert [wb2[name].cell(r, 6).value for r in range(2, 7)] == [2, None, None, None, None]

@@ -362,7 +362,7 @@ class OrderCheck:
         for c, wd in enumerate(_perm((70, 80, 120, 280, 70, 52, 52, 52, 52, 96, 52, 70, 70, 70, 76, 70, 50, 50, 60, 70, 120, 120, 96,
                                       76, 200, 380, 110, 150, 56))):
             self.table.setColumnWidth(c, wd)
-        self.table.horizontalHeaderItem(_col(28)).setToolTip(tr("月均 = 最长周期销量 ÷ 月数（默认 180 天 ÷ 6）"))
+        self.table.horizontalHeaderItem(_col(28)).setToolTip(tr("月均：新算法 = 日均（加权 + 季节）× 30；原程序算法 = 最长周期销量 ÷ 月数（默认 180 天 ÷ 6）"))
         self.table.horizontalHeaderItem(EDIT_COL).setToolTip(tr("双击修改箱数，0 = 不订"))
         self.table.horizontalHeaderItem(EDIT_COL).setText(tr("确定箱数") + " ✎")
         self.table.horizontalHeaderItem(_col(10)).setToolTip(
@@ -767,12 +767,13 @@ class OrderCheck:
                       "；".join(self._reason_lines(x)), x.get("sup_code") or "", x.get("sup_name") or "", self._monthly(x)])
 
     def _monthly(self, x):
-        """月均 = 最长周期（默认 180 天）销量 ÷ 月数（和订货明细、订单文件的「月均」同一个算法）"""
+        """月均：新算法 = 加权日均 × 30；原程序算法 = 最长周期销量 ÷ 月数（和订货明细同一个算法，store_orders.monthly_and_need）"""
+        import store_orders as SO
         days = (self.meta or {}).get("days") or [30, 60, 90, 180]
         sales = x.get("sales") or []
         if not x.get("in_db", True) or len(sales) < 4 or not isinstance(sales[3], (int, float)):
             return ""
-        return f"{round(float(sales[3]) / max(1.0, days[3] / 30.0), 1):g}"
+        return f"{SO.monthly_and_need(x, days)[0]:g}"
 
     def _verdict(self, x):
         """(类别, 文字)：确定件数和门店清单比，不订 / 照清单订 / 多订 / 少订 / 建议调货"""
@@ -868,8 +869,12 @@ class OrderCheck:
             return
         import store_orders as SO
         so = self.settings.get("store_orders") or {}
-        cfg = TR.config(so.get("transfer"))
-        far = set(TR.excluded_stores(so.get("transfer"), (dict(SO.DEFAULT_FILL, **(so.get("fill") or {}))).get("far_stores")))
+        wt = TR.wholesale_raw(self.settings)          # 批发商比价自己的调货设置
+        cfg = TR.config(wt)
+        if not cfg.get("enabled"):
+            self.win.show_toast(tr("批发商比价没有启用门店间调货（设置 → 门店间调货…）"))
+            return
+        far = set(TR.excluded_stores(wt, (dict(SO.DEFAULT_FILL, **(so.get("fill") or {}))).get("far_stores")))
         sid, code = x.get("store"), str(x.get("code"))
         ordering = {(r.get("store"), str(r.get("code"))) for r in self.rows if int(r.get("final") or 0) > 0}
         stores = []
@@ -1598,7 +1603,8 @@ class OrderCheck:
         import store_orders as SO
         import transfers as TR
         so = self.settings.get("store_orders") or {}
-        far = TR.excluded_stores(so.get("transfer"), (dict(SO.DEFAULT_FILL, **(so.get("fill") or {}))).get("far_stores"))
+        wt = TR.wholesale_raw(self.settings)          # 批发商比价自己的调货设置
+        far = TR.excluded_stores(wt, (dict(SO.DEFAULT_FILL, **(so.get("fill") or {}))).get("far_stores"))
         by_store = {}
         for x in self.rows:                       # 调货按「真正要的件数」算（确定箱数没改就是系统算的件数，零头才能调）
             by_store.setdefault(x.get("store"), []).append(dict(x, final=self._need_pcs(x)) if _can_transfer(x) else
@@ -1606,7 +1612,7 @@ class OrderCheck:
         snap = self.meta.get("snap")
         if not snap:
             return [], {}
-        return R.plan_batch_transfers(by_store, snap, so.get("transfer"), far, getattr(self, "transfer_ov", None),
+        return R.plan_batch_transfers(by_store, snap, wt, far, getattr(self, "transfer_ov", None),
                                       auto=not getattr(self, "transfer_frozen", False))
 
     def confirm(self):

@@ -53,7 +53,7 @@ COMPANY_DEFAULTS = {
     "allow_partial_purchase": False,
     "history_keep_days": 180,
     # 订货算法：新算法（订货周期 30 天、到货 0 天、服务水平 95%、平均压货最多 14 天；凑不成整箱时按安全库存 A 90% / B 70% / C 50% 决定少订还是多订一箱，见 forecast.to_packs）
-    "algo": {"engine": "v2", "review_days": 30, "lead_days": 0, "service": 0.95, "abc_service": True, "max_stock_days": 14, "season": True, "pack_threshold": 0.5, "min_shelf": 1},
+    "algo": {"engine": "v2", "review_days": 30, "lead_days": 0, "service": 0.95, "abc_service": True, "max_stock_days": 14, "max_safety_days": 7, "season": True, "pack_threshold": 0.5, "min_shelf": 1},
     # 门店配货：订货周期、凑单 / 借货、门店间调货；订货明细的列顺序、显示哪些列、列宽
     "store_orders": {
         "cycle": 30, "days": [30, 60, 90, 180], "use_supplier_cycles": True,

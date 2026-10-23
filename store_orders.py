@@ -408,21 +408,39 @@ def parse_scheda(path, overrides=None):
         for sid, sheet in info["sheets"].items():
             if sheet == first:
                 continue
-            key2row = {}
+            # 同一个编号可能出现好几行（例如 ASS. 整箱一行 + 各个颜色一行，编号、EAN 都一样）：
+            # 同一行号上编号对得上就用同一行；对不上才按编号找，第 n 次出现对第 n 次出现（不能都对到第一行）
+            row_keys, key_rows = {}, {}
             for r_idx, row in enumerate(wb[sheet].iter_rows(min_row=hdr + 1, values_only=True), hdr + 1):
+                keys = {}
                 for k in ("code", "ean"):
                     c = cols.get(k)
                     v = row[c - 1] if c and c - 1 < len(row) else None
                     v = str(int(v)) if isinstance(v, float) and v == int(v) else str(v or "").strip()
                     if v:
-                        key2row.setdefault((k, v), r_idx)
-            m = {}
+                        keys[k] = v
+                        key_rows.setdefault((k, v), []).append(r_idx)
+                row_keys[r_idx] = keys
+            m, used = {}, set()
+
+            def same(r, it):
+                k = row_keys.get(r) or {}
+                return (it["code"] and k.get("code") == it["code"]) or (not it["code"] and it["ean"] and k.get("ean") == it["ean"])
             for it in info["items"]:
-                r = key2row.get(("code", it["code"])) if it["code"] else None
-                r = r or (key2row.get(("ean", it["ean"])) if it["ean"] else None)
-                if r and r != it["row"]:
+                if same(it["row"], it):
+                    used.add(it["row"])
+            for it in info["items"]:
+                if same(it["row"], it):
+                    continue
+                r = None
+                for key in ((("code", it["code"]),) if it["code"] else ()) + ((("ean", it["ean"]),) if it["ean"] else ()):
+                    r = next((x for x in key_rows.get(key, []) if x not in used), None)
+                    if r:
+                        break
+                if r:
+                    used.add(r)
                     m[it["row"]] = r
-                elif not r:
+                else:
                     m[it["row"]] = None
             if m:
                 info["rowmap"][sid] = m
@@ -468,6 +486,34 @@ def moq_label(m, mark=True, short=False):
 # =====================================================================
 # 计算
 # =====================================================================
+DUP_PREFIX = "dup:"
+
+
+def mark_duplicates(schede):
+    """
+    同一个 SCHEDA 里同一个商品编号出现好几行（例如「ASS.」整箱一行 + 各个颜色各一行，编号、EAN 一样，颜色行每箱 1 件）：
+    数据库里只有一个商品、一份销量，建议量只算在第一次出现的那一行；后面的行 dup_of = 第一行，
+    db_code 换成查不到的 "dup:编号"，不再各算一遍（不然一份需求会订好几遍，颜色行还会按件当箱）。要订颜色行自己手动填。
+    """
+    for s in schede:
+        first = {}
+        for it in s["items"]:
+            code = it.get("db_code")
+            if not code or str(code).startswith(DUP_PREFIX):
+                continue
+            if code in first:
+                it["dup_of"] = first[code]
+                it["db_code"] = DUP_PREFIX + str(code)
+            else:
+                first[code] = it["row"]
+
+
+def item_code(it):
+    """表格里显示的商品编号（重复行也显示原来的编号）"""
+    c = it.get("db_code") or it["code"]
+    return it["code"] if str(c).startswith(DUP_PREFIX) else c
+
+
 def demand_by_store(db, schede, stores, days_list, reorder_cycle, use_supplier_cycles=True, algo=None,
                     on_store=None):
     """
@@ -488,7 +534,8 @@ def demand_by_store(db, schede, stores, days_list, reorder_cycle, use_supplier_c
                 it["db_code"] = ean_map.get(it["ean"])
                 if not it["db_code"]:
                     missing.append((s["name"], it["code"] or it["ean"], it["desc"]))
-    codes = sorted({it["db_code"] for s in schede for it in s["items"] if it.get("db_code")})
+    mark_duplicates(schede)
+    codes = sorted({it["db_code"] for s in schede for it in s["items"] if it.get("db_code") and not it.get("dup_of")})
     out = {"_missing": missing, "_algo": dict(algo) if algo else None}
     if not codes:
         return out
@@ -1207,11 +1254,30 @@ def extra_headers(days=None):
             [f"GIA.{i}" for i in range(6)] + ["GIA-period", "period_sales"])
 
 
+def monthly_and_need(x, days=None, sales=None):
+    """
+    月均、需求（件）：
+      新算法（有目标库存 target）：月均 = 加权日均（含季节）× 30；需求 = 日均 × 要备的天数（订货周期 × 等级系数 + 到货天数），
+        就是目标库存里不含安全库存的那部分（target − safety）
+      原程序算法：月均 = 最长周期销量 ÷ 月数；需求 = 第 3 个周期（默认 90 天）的日均 × 订货周期
+    """
+    d = list(days or [30, 60, 90, 180])
+    if sales is None:
+        sales = [float(v or 0) for v in (x.get("sales") or [0, 0, 0, 0])][:4]
+        sales += [0.0] * (4 - len(sales))
+    if x.get("target") is not None and x.get("daily") is not None:
+        need = float(x["target"]) - float(x.get("safety") or 0)
+        return round(float(x["daily"]) * 30, 1), float(round(max(0.0, need)))
+    cyc = x.get("cycle") if isinstance(x.get("cycle"), (int, float)) else 30
+    months = max(1.0, d[3] / 30.0)
+    return round(sales[3] / months, 1), float(round(sales[2] / d[2] * float(cyc)) if d[2] else 0)
+
+
 def extra_fields(x, sugg_colli, days=None):
     """
     一个商品在一家店的附加数据（顺序同 extra_headers）；数据库里没有这个商品 → None（那一行留空）
-      GIA 本店库存（原值）· ROT 各周期销量 · 月均 = 最长周期销量 ÷ 月数 · 采购量 = 系统建议件数 · 箱数 = 系统建议箱数
-      需求 = 第 3 个周期（默认 90 天）的日均 × 订货周期 · Livello = 等级 · GIA.0~5 各门店库存（0 = BMS 总仓）
+      GIA 本店库存（原值）· ROT 各周期销量 · 月均 / 需求 见 monthly_and_need（新算法按新算法算）
+      采购量 = 系统建议件数 · 箱数 = 系统建议箱数 · Livello = 等级 · GIA.0~5 各门店库存（0 = BMS 总仓）
       period_sales = 第 3 个周期的销量 · GIA-period = 本店库存（负数按 0）− period_sales
     """
     if not x:
@@ -1219,13 +1285,11 @@ def extra_fields(x, sugg_colli, days=None):
     d = list(days or [30, 60, 90, 180])
     sales = [float(v or 0) for v in (x.get("sales") or [0, 0, 0, 0])][:4] + [0.0] * max(0, 4 - len(x.get("sales") or []))
     inv = float(x.get("inv_raw", x.get("inv", 0)) or 0)
-    months = max(1.0, d[3] / 30.0)
-    cyc = x.get("cycle") if isinstance(x.get("cycle"), (int, float)) else 30
     period = sales[2]
-    demand = round(period / d[2] * float(cyc)) if d[2] else 0
+    monthly, demand = monthly_and_need(x, d, sales)
     gia = [float(v or 0) for v in (x.get("gia_all") or [0] * 6)][:6]
     gia += [0.0] * (6 - len(gia))
-    return ([inv] + sales + [round(sales[3] / months, 1), float(x.get("sugg") or 0), float(sugg_colli or 0),
+    return ([inv] + sales + [monthly, float(x.get("sugg") or 0), float(sugg_colli or 0),
                              float(demand), x.get("tier") or ""] + gia + [max(0.0, inv) - period, period])
 
 
@@ -1712,7 +1776,7 @@ def export_summary(results, path, demand=None, base=None, edited=None, days_list
                         note.append("同仓并入")
                     if st["status"] == "pulled" and dest == BMS:
                         note.append("并入帮其他店凑起订量")
-                    ws2.append([day, sc["name"], STORE_SHEETS[sid], dest, it.get("db_code") or it["code"], it["ean"],
+                    ws2.append([day, sc["name"], STORE_SHEETS[sid], dest, item_code(it), it["ean"],
                                 it["desc"], it["pack"], it["price"], x.get("inv_raw", x["inv"]) if x else None,
                                 *((x["sales"] if x else [None] * 4)), _fmt_days(cover_days(x)) if x else None, after,
                                 x["decision"] if x else "数据库没有", x["sugg"] if x else None, sg or None, n or None,

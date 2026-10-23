@@ -292,7 +292,7 @@ class TransferBox(QWidget):
         self._show_share()
         out = set(TR.excluded_stores(tc_raw, fallback_far))
         lab = QLabel(tr("参与门店"))
-        lab.setToolTip(tr("自己这次也要订的商品不调出。门店配货和批发商比价共用这套设置。"))
+        lab.setToolTip(tr("自己这次也要订的商品不调出"))
         v.addWidget(lab)
         row, self.stores = _store_checks({k for k in S.STORE_SHEETS if k not in out})
         v.addLayout(row)

@@ -9,15 +9,18 @@
        覆盖天数 P = 下单间隔 R + 到货天数 L
        卖得慢（期间需求 < 20 件）：泊松分布的服务水平分位数
        其余：μ + z·σ·√P
-       上限（卖得快的）：平均库存（安全库存 + 半个下单间隔）不超过 max_stock_days 天
+       上限（卖得快的）：安全库存最多够卖 max_safety_days 天（2026-10-22 用户定，默认 7 天；
+         以前是「平均压货最多 max_stock_days 天」，和订货周期绑在一起，周期 30 天时快销品安全库存变成 0）
        有销量的商品至少保留 min_shelf 件陈列
   4. 建议件数 = S − 现有库存（负数当 0）− 在途
   5. 服务水平按 ABC：A = 目标 + 2.5%，B = 目标，C = 目标 − 5%（ABC 按本店近 13 周销售额帕累托：前 80% A，到 95% B，其余 C）
+     动销兜底（2026-10-22 用户定，简单版 ABC×XYZ）：近 13 周里 ≥ abc_freq_hi 周有卖的最低算 B（天天卖的便宜货不被当 C 少订），
+     ≤ abc_freq_lo 周有卖的最高算 C（偶尔才卖的不多备）；新品按上架以来的周数折算，上架不满 13 周的不降级
      订货周期也按 ABC 乘系数（cycle_a / cycle_b / cycle_c，默认 1.25 / 1 / 0.75）：
      A 类多备一点（订够 1.25 个周期），C 类不必订够一个周期（0.75 个），少压货。
      只影响「要备多少天的货」；判断会不会卖断仍按实际的订货周期
   6. 换成箱（2026-10-22 用户定）：件数凑不成整箱时，先看少订（往下取整）行不行——
-       少订后的库存（现有 + 在途 + 整箱数 × 每箱件数）够卖「安全库存」= 一个订货周期销量 × 系数
+       少订后的库存（现有 + 在途 + 整箱数 × 每箱件数）够卖「最低保障线」= 一个订货周期销量 × 系数
        （A 90% / B 70% / C 50%，safety_a / safety_b / safety_c）→ 少订，不为了一两件硬凑一箱；
        不够 → 多订一箱。没有销量（只保留陈列量）的不为它多订一箱
 """
@@ -30,9 +33,12 @@ DEFAULT_PARAMS = {
     "lead_days": 5,            # 到货天数 L（下单后 2–7 天到）
     "service": 0.95,           # 目标服务水平（不缺货的概率）
     "abc_service": True,       # 按 ABC 调整服务水平
-    "max_stock_days": 14,      # 平均库存最多够卖几天（限制卖得快的商品的安全库存）
+    "max_stock_days": 14,      # （旧，已不用）平均库存最多够卖几天
+    "max_safety_days": 7,      # 安全库存最多够卖几天（只限制卖得快的商品）
     "season": True,            # 用去年同期做季节调整
     "pack_threshold": 0.3,     # （旧规则，已不用）零头 ≥ 一箱的 30% 才多订一箱
+    "abc_freq_hi": 10,         # 动销兜底：近 13 周 ≥ 10 周有卖 → 最低 B
+    "abc_freq_lo": 3,          # 近 13 周 ≤ 3 周有卖 → 最高 C
     "safety_a": 0.9,           # 凑不成整箱时：少订后的库存够卖一个周期的 90%（A 类）就少订
     "safety_b": 0.7,
     "safety_c": 0.5,
@@ -144,8 +150,8 @@ def target_stock(daily, sigma_w, inv, tier, params, season=1.0, has_recent_sales
         S = float(poisson_quantile(mu, svc))
     else:
         S = mu + z_of(svc) * sd
-        # 平均库存 ≈ 安全库存 + 半个下单间隔的量；限制平均库存不超过 max_stock_days 天
-        cap = mu + d * max(0.0, float(params.get("max_stock_days", 14)) - R / 2)
+        # 安全库存最多够卖 max_safety_days 天（不和订货周期绑在一起；A/B/C 的差别交给服务水平）
+        cap = mu + d * max(0.0, float(params.get("max_safety_days", 7)))
         S = min(S, cap)
     if has_recent_sales:
         S = max(S, float(params.get("min_shelf", 1)))
@@ -199,6 +205,30 @@ def abc_by_revenue(revenue):
     return out
 
 
+def sold_weeks(weekly, n=13):
+    """近 n 周里有几周有销量"""
+    return sum(1 for x in (weekly or [])[:n] if (x or 0) > 0)
+
+
+def adjust_tier(tier, weekly, params):
+    """
+    动销兜底：按金额分出的等级，再看近 13 周有几周卖过——
+      ≥ abc_freq_hi 周 → 至少 B；≤ abc_freq_lo 周 → 最多 C。新品（上架不满 13 周）按上架以来的周数折算，不降级。
+    返回 (等级, 原因：None / "up" / "down")
+    """
+    hi = float(params.get("abc_freq_hi", 10))
+    lo = float(params.get("abc_freq_lo", 3))
+    age = min(13, age_weeks([float(x or 0) for x in (weekly or [])], 26))   # 半年内第一次卖到现在几周（最多算 13）
+    if age <= 0:
+        return tier, None
+    n = sold_weeks(weekly, 13)
+    if tier == "C" and n / age >= hi / 13.0:
+        return "B", "up"
+    if tier in ("A", "B") and age >= 13 and n <= lo:
+        return "C", "down"
+    return tier, None
+
+
 def decide(daily, inv, qty, tier, params, total_inv=0, sold_26w=True):
     """判断（和建议量一致）：返回 (文字, 优先级)"""
     R = float(params.get("review_days", 7))
@@ -216,7 +246,7 @@ def decide(daily, inv, qty, tier, params, total_inv=0, sold_26w=True):
         return "🟡【建议订货】下次到货前会卖断", 6 if tier == "A" else 5
     if qty > 0:
         return "🟠【可订】补到目标库存", 3
-    if cover > 2 * (L + float(params.get("max_stock_days", 14))):
+    if cover > 2 * (R + L):
         return "🟢【库存多】", 1
     return "🟢【不用订】库存够", 2
 
