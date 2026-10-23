@@ -267,7 +267,7 @@ class AddItemsDialog(QDialog):
         ds = c.get("days_stock")
         total = c["ordered"] + add
         vals = [(it["desc"], it["desc"]), (str(it.get("ean") or ""), str(it.get("ean") or "")),
-                (str(it.get("db_code") or it["code"]), str(it.get("db_code") or it["code"])),
+                (str(S.item_code(it)), str(S.item_code(it))),
                 (c["tier"], _TIER_RANK.get(c["tier"], 9)), (f"{c['daily']:.2f}", c["daily"]), (f"{c['inv']:g}", c["inv"]),
                 (S.days_text(ds), 1e12 if ds is None or math.isinf(ds) else ds),
                 (f"{c['ordered']:g}" if c["ordered"] else "", c["ordered"]),
@@ -291,7 +291,7 @@ class AddItemsDialog(QDialog):
             item.setFlags(flags)
             if k == 0:
                 item.setData(DI_ROLE, c["row"])
-                item.setToolTip(f"{it['desc']}\nEAN {it.get('ean') or '—'} · {tr('编号')} {it.get('db_code') or it['code']}")
+                item.setToolTip(f"{it['desc']}\nEAN {it.get('ean') or '—'} · {tr('编号')} {S.item_code(it)}")
             self.table.setItem(r, k, item)
         if add and da > float(self.page.fill_cfg().get("max_stock_days") or 60):
             self.table.item(r, self.ADD + 1).setForeground(QColor(T("warn")))
@@ -312,7 +312,7 @@ class AddItemsDialog(QDialog):
                 hide = True
             if self.only_new.isChecked() and c["ordered"] > 0 and not added:
                 hide = True
-            if q and q not in f"{it.get('db_code') or it['code']} {it.get('ean', '')} {it['desc']}".lower():
+            if q and q not in f"{S.item_code(it)} {it.get('ean', '')} {it['desc']}".lower():
                 hide = True
             self.table.setRowHidden(r, hide)
 
@@ -827,7 +827,7 @@ class DetailWindow(ToolWindow):
         self.d_over.setText(f"{S.STORE_SHEETS[sid]} · {sc['name']}")
         self.d_title.setText(it["desc"])
         fc = f" · Cod.Forn. {it['sup_code']}" if it.get("sup_code") else ""
-        self.d_codes.setText(f"{it.get('db_code') or it['code']} · {it['ean']}{fc}\n{it['pack']:g} {tr('件/箱')} · €{it['price']:.3f}/{tr('件')}")
+        self.d_codes.setText(f"{S.item_code(it)} · {it['ean']}{fc}\n{it['pack']:g} {tr('件/箱')} · €{it['price']:.3f}/{tr('件')}")
         (a1, a2), (b1, b2), (c1, c2), (d1, d2) = self.minis
         if x:
             a1.setText(f"{x.get('inv_raw', x['inv']):g}")      # 显示原值（计算时负数当 0）
@@ -971,8 +971,8 @@ class DetailWindow(ToolWindow):
         # 库存够卖 = 库存 ÷ 日均（负库存按 0 算），和「订后够卖」、检查订货清单同一个算法
         inv_days = S.days_text(S.cover_days(x)) if x else ""
         vals = _perm([
-            sc["name"], S.STORE_SHEETS[sid], short_decision(x["decision"]) if x else tr("数据库没有"),
-            it.get("db_code") or it["code"], it["ean"], it["desc"],
+            sc["name"], S.STORE_SHEETS[sid], short_decision(x["decision"]) if x else (tr("同上（重复编号）") if it.get("dup_of") else tr("数据库没有")),
+            S.item_code(it), it["ean"], it["desc"],
             f"{x.get('inv_raw', x['inv']):g}" if x else "", *([f"{v:g}" for v in x["sales"]] if x else [""] * 4),
             inv_days or "", f"{it['pack']:g}", f"{it['price']:.3f}".rstrip("0").rstrip("."),
             f"{x['sugg']:,}" if x else "", f"{sug_c:g}" if sug_c else "", "", "",
@@ -1154,6 +1154,10 @@ class DetailWindow(ToolWindow):
         calc = self.page.calc
         code = it.get("db_code") or it["code"]
         x = calc["demand"].get(sid, {}).get(code)
+        if not x and it.get("dup_of"):
+            first = next((y for y in sc["items"] if y["row"] == it["dup_of"]), None)
+            return [tr("和「{0}」是同一个商品编号，销量和建议量只算在那一行；要订这一行（例如指定颜色）自己填箱数",
+                       (first or {}).get("desc", "")[:30])]
         if not x:
             return [tr("数据库里找不到这个商品，没有建议量；需要的话手动填箱数")]
         tin = None
@@ -1253,7 +1257,7 @@ class DetailWindow(ToolWindow):
             inv_days = 1e12
         num = lambda v: float(v) if isinstance(v, (int, float)) else None
         return [k0, (sid,) + k0, (_dec_rank(x["decision"]) if x else 9, -(x["sugg"] if x else 0)) + k0,
-                it.get("db_code") or it["code"], it["ean"], it["desc"].lower(),
+                S.item_code(it), it["ean"], it["desc"].lower(),
                 num(x.get("inv_raw", x["inv"])) if x else None, *([num(v) for v in x["sales"]] if x else [None] * 4),
                 num(inv_days), float(it["pack"]), float(it["price"]),
                 float(x["sugg"]) if x else None, float(sug_c), 0.0, 0.0,
@@ -1473,7 +1477,7 @@ class DetailWindow(ToolWindow):
                 x = calc["demand"].get(sid, {}).get(it.get("db_code") or it["code"])
                 hide = not (x and "🔴" in (x["decision"] or ""))
             if not hide and text:
-                hide = text not in f"{it.get('db_code') or it['code']} {it['ean']} {it['desc']}".lower()
+                hide = text not in f"{S.item_code(it)} {it['ean']} {it['desc']}".lower()
             self.table.setRowHidden(self.pos[i], hide)
             shown += not hide
         self.table.setUpdatesEnabled(True)

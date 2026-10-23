@@ -17,6 +17,7 @@
 - 用户和同事**共用同一个文件夹**（`procurement_system ok 2.5`）开发。请直接在这个文件夹里改代码、`git commit`、`git push`，不要只推到云端分支却把文件另外写进文件夹（之前这样做过，文件夹和 git 记录对不上，发布前得先同步）。
 
 ## 最近改动（给接手的 AI 的纸条，新的写在最上面）
+- 2026-10-23（bug 修复）：SCHEDA 里同一编号好几行（ASS. 整箱 + 各颜色每箱 1 件、同一商品不同包装 / 颜色）：① 以前别的门店页的 rowmap 按编号对到第一次出现的行，颜色行的数量（件数当箱）写到 ASS. 那一行（LATEX：MARLIA 页 ASS. 27 箱 = 648 件）→ 现在同一行号编号对得上就一行对一行，不然第 n 次出现对第 n 次；② 以前每一行都按同一份需求算一遍建议量（订好几遍）→ `store_orders.mark_duplicates`：建议量只算在第一次出现的行，后面的行 dup_of + db_code = "dup:编号"（查不到需求），订货明细显示「同上（重复编号）」，要订自己填；显示编号用 `item_code`。
 - 2026-10-22（用户定）：门店间调货设置**门店配货和批发商比价分开**：门店配货 = settings.store_orders.transfer（默认启用，「配货设置 ③」）；批发商比价 = settings.wholesale_transfer（默认不启用，比价设置「门店间调货…」）。`transfers.wholesale_raw(settings)` 取批发商的设置（没设过 = 照抄门店配货的参数但 enabled=False）；service.transfer_status / wholesale_transfers、order_check 的调货都用它。
 - 2026-10-22（用户定）：新算法「平均压货最多 max_stock_days」换成「安全库存最多 max_safety_days 天」（默认 7，`target_stock` 的 cap = μ + 日均 × 天数），不再和订货周期绑在一起（周期 30 天时旧设置让快销品安全库存 = 0、C 比 A 留得多）；「库存多」判断改成够卖 > 2 ×（周期 + 到货）。max_stock_days 留着不用。
 - 2026-10-22：选新算法时「月均」「需求（件）」也按新算法算（`store_orders.monthly_and_need`）：月均 = 加权日均（含季节）× 30，需求 = 目标库存 − 安全库存（= 日均 × 要备的天数）；原程序算法照旧（180 天 ÷ 6、90 天日均 × 周期）。订货明细、检查清单都用它；订单文件本来就不写这两列。

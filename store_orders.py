@@ -408,21 +408,39 @@ def parse_scheda(path, overrides=None):
         for sid, sheet in info["sheets"].items():
             if sheet == first:
                 continue
-            key2row = {}
+            # 同一个编号可能出现好几行（例如 ASS. 整箱一行 + 各个颜色一行，编号、EAN 都一样）：
+            # 同一行号上编号对得上就用同一行；对不上才按编号找，第 n 次出现对第 n 次出现（不能都对到第一行）
+            row_keys, key_rows = {}, {}
             for r_idx, row in enumerate(wb[sheet].iter_rows(min_row=hdr + 1, values_only=True), hdr + 1):
+                keys = {}
                 for k in ("code", "ean"):
                     c = cols.get(k)
                     v = row[c - 1] if c and c - 1 < len(row) else None
                     v = str(int(v)) if isinstance(v, float) and v == int(v) else str(v or "").strip()
                     if v:
-                        key2row.setdefault((k, v), r_idx)
-            m = {}
+                        keys[k] = v
+                        key_rows.setdefault((k, v), []).append(r_idx)
+                row_keys[r_idx] = keys
+            m, used = {}, set()
+
+            def same(r, it):
+                k = row_keys.get(r) or {}
+                return (it["code"] and k.get("code") == it["code"]) or (not it["code"] and it["ean"] and k.get("ean") == it["ean"])
             for it in info["items"]:
-                r = key2row.get(("code", it["code"])) if it["code"] else None
-                r = r or (key2row.get(("ean", it["ean"])) if it["ean"] else None)
-                if r and r != it["row"]:
+                if same(it["row"], it):
+                    used.add(it["row"])
+            for it in info["items"]:
+                if same(it["row"], it):
+                    continue
+                r = None
+                for key in ((("code", it["code"]),) if it["code"] else ()) + ((("ean", it["ean"]),) if it["ean"] else ()):
+                    r = next((x for x in key_rows.get(key, []) if x not in used), None)
+                    if r:
+                        break
+                if r:
+                    used.add(r)
                     m[it["row"]] = r
-                elif not r:
+                else:
                     m[it["row"]] = None
             if m:
                 info["rowmap"][sid] = m
@@ -468,6 +486,34 @@ def moq_label(m, mark=True, short=False):
 # =====================================================================
 # 计算
 # =====================================================================
+DUP_PREFIX = "dup:"
+
+
+def mark_duplicates(schede):
+    """
+    同一个 SCHEDA 里同一个商品编号出现好几行（例如「ASS.」整箱一行 + 各个颜色各一行，编号、EAN 一样，颜色行每箱 1 件）：
+    数据库里只有一个商品、一份销量，建议量只算在第一次出现的那一行；后面的行 dup_of = 第一行，
+    db_code 换成查不到的 "dup:编号"，不再各算一遍（不然一份需求会订好几遍，颜色行还会按件当箱）。要订颜色行自己手动填。
+    """
+    for s in schede:
+        first = {}
+        for it in s["items"]:
+            code = it.get("db_code")
+            if not code or str(code).startswith(DUP_PREFIX):
+                continue
+            if code in first:
+                it["dup_of"] = first[code]
+                it["db_code"] = DUP_PREFIX + str(code)
+            else:
+                first[code] = it["row"]
+
+
+def item_code(it):
+    """表格里显示的商品编号（重复行也显示原来的编号）"""
+    c = it.get("db_code") or it["code"]
+    return it["code"] if str(c).startswith(DUP_PREFIX) else c
+
+
 def demand_by_store(db, schede, stores, days_list, reorder_cycle, use_supplier_cycles=True, algo=None,
                     on_store=None):
     """
@@ -488,7 +534,8 @@ def demand_by_store(db, schede, stores, days_list, reorder_cycle, use_supplier_c
                 it["db_code"] = ean_map.get(it["ean"])
                 if not it["db_code"]:
                     missing.append((s["name"], it["code"] or it["ean"], it["desc"]))
-    codes = sorted({it["db_code"] for s in schede for it in s["items"] if it.get("db_code")})
+    mark_duplicates(schede)
+    codes = sorted({it["db_code"] for s in schede for it in s["items"] if it.get("db_code") and not it.get("dup_of")})
     out = {"_missing": missing, "_algo": dict(algo) if algo else None}
     if not codes:
         return out
@@ -1729,7 +1776,7 @@ def export_summary(results, path, demand=None, base=None, edited=None, days_list
                         note.append("同仓并入")
                     if st["status"] == "pulled" and dest == BMS:
                         note.append("并入帮其他店凑起订量")
-                    ws2.append([day, sc["name"], STORE_SHEETS[sid], dest, it.get("db_code") or it["code"], it["ean"],
+                    ws2.append([day, sc["name"], STORE_SHEETS[sid], dest, item_code(it), it["ean"],
                                 it["desc"], it["pack"], it["price"], x.get("inv_raw", x["inv"]) if x else None,
                                 *((x["sales"] if x else [None] * 4)), _fmt_days(cover_days(x)) if x else None, after,
                                 x["decision"] if x else "数据库没有", x["sugg"] if x else None, sg or None, n or None,

@@ -2380,4 +2380,6 @@ TRANSLATIONS = {
     '批发商比价没有启用门店间调货（设置 → 门店间调货…）': ('Store-to-store transfers are off for wholesaler comparison (Settings → Store transfers…)', 'I trasferimenti tra negozi sono disattivati per il confronto grossisti (Impostazioni → Trasferimenti…)'),
     '批发商比价的门店间调货（和门店配货分开设，默认不启用）': ('Store-to-store transfers for wholesaler comparison (set separately from store allocation, off by default)', 'Trasferimenti tra negozi per il confronto grossisti (separati dalla distribuzione, disattivati di default)'),
     '自己这次也要订的商品不调出': ('Items the store also orders this time are not transferred out', 'Gli articoli che il negozio ordina anche questa volta non vengono trasferiti'),
+    '同上（重复编号）': ('Same item (duplicate code)', 'Stesso articolo (codice duplicato)'),
+    '和「{0}」是同一个商品编号，销量和建议量只算在那一行；要订这一行（例如指定颜色）自己填箱数': ('Same item code as "{0}"; sales and the suggestion are counted on that row only. To order this row (e.g. a specific colour), enter the boxes yourself', 'Stesso codice di "{0}"; vendite e suggerimento sono solo su quella riga. Per ordinare questa riga (es. un colore) inserisci i colli a mano'),
 }
