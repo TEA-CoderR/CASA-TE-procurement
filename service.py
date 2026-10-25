@@ -3,6 +3,8 @@ import os
 import math
 import gc
 import time
+import re
+from datetime import datetime
 import win32com.client as win32
 from openpyxl import load_workbook
 
@@ -1264,6 +1266,11 @@ def run_process(ordine_file, eliminare_path, distribuire_path, log, progress=Non
     log("\n" + "=" * 50)
     log(tr("[完成] 处理完成"))
     log("=" * 50)
+    try:
+        summary["orders"] = export_orders(distribuire_path, purchased_suppliers(rows_data, assignment), log,
+                                          summary.get("supplier_labels"), settings)
+    except Exception as e:
+        log(tr("⚠ 订单文件夹没生成：{0}", e))
     P(100, tr("处理完成"))
     summary["ok"] = True
     summary["elapsed"] = time.time() - t_start
@@ -1697,6 +1704,101 @@ def switch_scenario(data, idx, log, progress=None):
     return rewrite_assignment(d2, new, sources, log, progress, force=True)
 
 
+ORDERS_DIR = "Ordini"        # 门店比价文件夹里：只放这次采购了的供应商订单（用户 2026-10-25）
+
+
+def _hide_folder(path):
+    """Windows 上把文件夹设成隐藏（distribuire 是程序的工作副本，用户只看 Ordini）；别的系统不做"""
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+        ctypes.windll.kernel32.SetFileAttributesW(str(path), 0x02)
+    except Exception:
+        pass
+
+
+def _date_tag(store_dir):
+    """比价结果\\2026-10-25\\FOIANO → 2510（日月）；看不出日期用今天"""
+    try:
+        return datetime.strptime(os.path.basename(os.path.dirname(store_dir)), "%Y-%m-%d").strftime("%d%m")
+    except ValueError:
+        return datetime.now().strftime("%d%m")
+
+
+def _safe_name(s):
+    return re.sub(r'[\\/:*?"<>|]+', " ", str(s or "")).strip()
+
+
+def order_file_name(store, supplier, tag):
+    """Ordine_门店名_供应商名_日期.xlsx（日期 = 日月，例如 2510）"""
+    return f"Ordine_{_safe_name(store)}_{_safe_name(supplier)}_{tag}.xlsx"
+
+
+def purchased_suppliers(rows, assign):
+    """这次真的订了货的供应商文件（有商品分给它、数量 > 0）"""
+    out = set()
+    for r in rows or []:
+        s_ = assign.get(r["row"])
+        if not s_:
+            continue
+        try:
+            if float(_order_qty(r, s_) or 0) > 0:
+                out.add(s_)
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def export_orders(dist, purchased, log=None, labels=None, settings=None):
+    """
+    门店比价文件夹里建 Ordini：只放采购了的供应商的订单，文件名 Ordine_门店名_供应商名_日期.xlsx；
+    没采购的供应商不放。distribuire（程序的工作副本：修改分配、重新比价要用）设成隐藏；缺失报告复制到门店文件夹。
+    每次比价 / 修改分配后重新生成（先清掉上次的 Ordine_ 文件）。返回生成的文件路径
+    """
+    import shutil
+    import supplier_names as SN
+    log = log or (lambda *a: None)
+    store_dir = os.path.dirname(os.path.abspath(dist))
+    store = os.path.basename(store_dir)
+    tag = _date_tag(store_dir)
+    dest = os.path.join(store_dir, ORDERS_DIR)
+    os.makedirs(dest, exist_ok=True)
+    for f in os.listdir(dest):
+        if f.startswith("Ordine_") and f.lower().endswith(".xlsx"):
+            try:
+                os.remove(os.path.join(dest, f))
+            except OSError as e:
+                log(tr("⚠ {0} 删不掉（可能被 Excel 打开了）：{1}", f, e))
+    settings = settings if settings is not None else load_settings()
+    out, used = [], set()
+    for f in sorted(purchased):
+        src = _supplier_work_path(os.path.join(dist, f))
+        if not src or not os.path.exists(src):
+            continue
+        name = (labels or {}).get(f) or SN.label_of(f, settings)
+        fn = order_file_name(store, name, tag)
+        k = 2
+        while fn.lower() in used:
+            fn = order_file_name(store, f"{name} ({k})", tag)
+            k += 1
+        used.add(fn.lower())
+        try:
+            shutil.copy2(src, os.path.join(dest, fn))
+            out.append(os.path.join(dest, fn))
+        except OSError as e:
+            log(tr("⚠ {0} 没复制成功：{1}", fn, e))
+    rep = os.path.join(dist, "缺失报告.xlsx")
+    if os.path.exists(rep):
+        try:
+            shutil.copy2(rep, os.path.join(store_dir, f"缺失报告_{_safe_name(store)}_{tag}.xlsx"))
+        except OSError:
+            pass
+    _hide_folder(dist)
+    log(tr("[订单] {0}：{1} 家供应商的订单放在 {2}", store, len(out), ORDERS_DIR))
+    return out
+
+
 def rewrite_assignment(data, new_assign, new_sources, log, progress=None, force=False, qty=None, new_rows=None):
     """
     data: 上次处理的 summary（含 state）
@@ -1874,6 +1976,10 @@ def rewrite_assignment(data, new_assign, new_sources, log, progress=None, force=
         out["state"]["written"] = _written_fingerprints(ordine_file, dist)
     except Exception as e:
         log(tr("⚠ {0}", e))
+    try:
+        out["orders"] = export_orders(dist, purchased_suppliers(rows, new_assign), log, st.get("labels"))
+    except Exception as e:
+        log(tr("⚠ 订单文件夹没生成：{0}", e))
     _save_history(out, log, update=True)
     save_state(out)
     log(tr("[完成] 修改分配已写入"))

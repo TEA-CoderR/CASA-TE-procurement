@@ -2455,4 +2455,12 @@ TRANSLATIONS = {
     'A 类：按门店清单订': ('Class A: order as the store list', 'Classe A: ordinare come la lista del negozio'),
     '库存按 0 重新算': ('recalculated with stock = 0', 'ricalcolato con giacenza 0'),
     '只看库存可能不准': ('Only "stock may be wrong"', 'Solo "giacenza forse errata"'),
+    '[订单] {0}：{1} 家供应商的订单放在 {2}': ('[Orders] {0}: orders of {1} suppliers saved in {2}', '[Ordini] {0}: ordini di {1} fornitori salvati in {2}'),
+    '⚠ 订单文件夹没生成：{0}': ('⚠ Orders folder not created: {0}', '⚠ Cartella ordini non creata: {0}'),
+    '⚠ {0} 没复制成功：{1}': ('⚠ {0} not copied: {1}', '⚠ {0} non copiato: {1}'),
+    '⚠ {0} 删不掉（可能被 Excel 打开了）：{1}': ('⚠ {0} cannot be deleted (maybe open in Excel): {1}', '⚠ {0} non eliminabile (forse aperto in Excel): {1}'),
+    '拖入门店清单': ('Drop store lists here', 'Trascina qui le liste dei negozi'),
+    '✔ {0}：{1} 个商品': ('✔ {0}: {1} items', '✔ {0}: {1} articoli'),
+    '订单文件已生成': ('Order files created', 'File ordine creati'),
+    '要改的话点「返回修改」再配货一次（会另存为新的一次，不覆盖这次的文件）': ('To change, click "Back to edit" and allocate again (saved as a new run, this one is not overwritten)', 'Per modificare clicca "Torna a modificare" e rialloca (salvato come nuova esecuzione, questa non viene sovrascritta)'),
 }

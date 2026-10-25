@@ -1130,13 +1130,16 @@ class StoreOrderPage:
         self.edit_chip.setVisible(ne > 0 and not in_result)
         fc = self.fill_cfg()
         if in_result:
-            self.bar_text.setText(tr("订单文件已生成；要改的话点「返回修改」再配货一次（会另存为新的一次，不覆盖这次的文件）"))
+            self.bar_text.setText(tr("订单文件已生成"))
+            self.bar_text.setToolTip(tr("要改的话点「返回修改」再配货一次（会另存为新的一次，不覆盖这次的文件）"))
         elif unchanged:
-            self.bar_text.setText(tr("和上次配货相比没有改动，点「回到配货结果」直接回去，不用重新配货；改了箱数、勾选或配货设置后会重新配货"))
+            self.bar_text.setText(tr("没有改动"))
+            self.bar_text.setToolTip(tr("和上次配货相比没有改动，点「回到配货结果」直接回去，不用重新配货；改了箱数、勾选或配货设置后会重新配货"))
         else:
-            self.bar_text.setText(tr("凑单：金额差 ≤ €{0:g} · 箱数差 ≤ {1} · 凑后最多够卖 {2} 天 · 订单放到 {3}\\第几次_时间",
-                                     fc["max_amount_gap"], fc["max_colli_gap"], fc["max_stock_days"],
-                                     os.path.normpath(self._out_root()) if self.folder.text().strip() else "—"))
+            self.bar_text.setText("")
+            self.bar_text.setToolTip(tr("凑单：金额差 ≤ €{0:g} · 箱数差 ≤ {1} · 凑后最多够卖 {2} 天 · 订单放到 {3}\\第几次_时间",
+                                        fc["max_amount_gap"], fc["max_colli_gap"], fc["max_stock_days"],
+                                        os.path.normpath(self._out_root()) if self.folder.text().strip() else "—"))
 
     def _main_action(self):
         if self.views.currentIndex() == 1:

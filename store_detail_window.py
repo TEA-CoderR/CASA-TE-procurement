@@ -202,13 +202,10 @@ class AddItemsDialog(QDialog):
         self.hf = HeaderFilter(self.table, apply=self._filter,
                                base_hidden=lambda r: self._base_hide.get(r, False))
         lay.addWidget(self.table, 1)
-        tip = QLabel(tr("按日均销量从高到低排：卖得快、加了以后也不会压太久的排前面。「按销量推荐」只加加完后库存够卖不超过 {0} 天的商品（配货设置里的凑单天数）。",
-                        int(self.page.fill_cfg().get("max_stock_days") or 60)))
-        tip.setObjectName("Faint")
-        tip.setWordWrap(True)
-        lay.addWidget(tip)
         btns = QHBoxLayout()
         b_sug = QPushButton(tr("按销量推荐补齐起订量"))
+        b_sug.setToolTip(tr("按日均销量从高到低排：卖得快、加了以后也不会压太久的排前面。「按销量推荐」只加加完后库存够卖不超过 {0} 天的商品（配货设置里的凑单天数）。",
+                            int(self.page.fill_cfg().get("max_stock_days") or 60)))
         b_sug.setObjectName("Outline")
         b_sug.clicked.connect(self.suggest)
         b_clear = QPushButton(tr("清空这家的"))
@@ -679,7 +676,7 @@ class DetailWindow(ToolWindow):
         sh.setContentsMargins(16, 7, 16, 7)
         self.status_l = QLabel("")
         self.status_l.setObjectName("StatusText")
-        self.status_r = QLabel(tr("双击「订货箱数」修改 · Enter 确认 · Esc 取消"))
+        self.status_r = QLabel("")
         self.status_r.setObjectName("StatusText")
         sh.addWidget(self.status_l, 1)
         sh.addWidget(self.status_r)
@@ -1497,7 +1494,7 @@ class DetailWindow(ToolWindow):
             self._flash_timer = QTimer(self)
             self._flash_timer.setSingleShot(True)
             self._flash_timer.timeout.connect(lambda: (
-                self.status_r.setText(tr("双击「订货箱数」修改 · Enter 确认 · Esc 取消")),
+                self.status_r.setText(""),
                 self.status_r.setStyleSheet("")))
         self._flash_timer.start(6000)
 

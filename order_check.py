@@ -287,7 +287,7 @@ class OrderCheck:
         r1.addWidget(QLabel(tr("清单")))
         self.file_edit = QLineEdit()
         self.file_edit.setReadOnly(True)
-        self.file_edit.setPlaceholderText(tr("把一家或几家门店的订货清单拖到这里（可以一次拖好几个），或点「选择文件…」"))
+        self.file_edit.setPlaceholderText(tr("拖入门店清单"))
         self.file_edit.setToolTip(tr("几家门店的清单一起检查，才能先在门店之间调货、再订剩下的（和门店配货一样）"))
         from erp_widgets import accept_file_drops
         accept_file_drops(self.file_edit, self._dropped, (".xlsx", ".xlsm"), multi=True)
@@ -458,9 +458,7 @@ class OrderCheck:
             dv = QVBoxLayout(dlg)
             dv.setContentsMargins(16, 14, 16, 12)
             dv.setSpacing(8)
-            lb = QLabel(tip)
-            lb.setObjectName("Muted")
-            lb.setWordWrap(True)
+            dlg.setToolTip(tip)
             t = ui.make_table([tr("门店"), tr("条码"), tr("名称"), tr("供应商"), tr("清单箱数"), tr("确定箱数") + " ✎"],
                               stretch_col=2, numeric_cols=(4, 5))
             t.verticalHeader().setDefaultSectionSize(30)
@@ -476,7 +474,6 @@ class OrderCheck:
             bb = QHBoxLayout()
             bb.addStretch()
             bb.addWidget(close)
-            dv.addWidget(lb)
             dv.addWidget(t, 1)
             dv.addLayout(bb)
             self.prob[kind] = (dlg, b, t)
@@ -578,9 +575,6 @@ class OrderCheck:
         self.count_lbl = QLabel("")
         self.count_lbl.setObjectName("StatusText")
         sh.addWidget(self.count_lbl, 1)
-        hint = QLabel(tr("双击「确定」改箱数 · Enter 确认 · Esc 取消"))
-        hint.setObjectName("StatusText")
-        sh.addWidget(hint)
         self.btn_confirm = QPushButton(tr("确认，开始比价"))
         self.btn_confirm.setObjectName("Primary")
         self.btn_confirm.setToolTip(tr("按「确定件数」给每家门店生成主订单，然后自动一家一家比价"))
@@ -927,8 +921,7 @@ class OrderCheck:
         self.window.setWindowTitle(tr("检查门店订货清单 — {0} · {1} 个商品",
                                       "、".join(store_label(k) for k in meta["stores"]), len(rows)))
         self.window.bring_up()
-        self.msg.setText(tr("✔ 门店 {0}：{1} 个商品，检查完成。在检查窗口核对「确定箱数」后点「确认，开始比价」。",
-                            "、".join(store_label(k) for k in meta["stores"]), len(rows)))
+        self.msg.setText(tr("✔ {0}：{1} 个商品", "、".join(store_label(k) for k in meta["stores"]), len(rows)))
 
     def _vals(self, i):
         """数据行 i 每一列显示的文字（按屏幕上的列顺序）"""

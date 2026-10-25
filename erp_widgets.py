@@ -707,6 +707,8 @@ class EmptyState(QWidget):
         s.setWordWrap(True)
         s.setAlignment(Qt.AlignCenter)
         s.setMaximumWidth(560)
+        s.hide()                        # 界面要简洁：说明放进鼠标提示
+        self.setToolTip(text)
         v.addWidget(ic, 0, Qt.AlignCenter)
         v.addWidget(t)
         v.addWidget(s, 0, Qt.AlignCenter)

@@ -233,3 +233,34 @@ def test_month_keys_and_series():
     assert R.monthly_series({(2026, 10): 5, (2025, 10): 2}, k)[-1] == 5.0
     assert R.monthly_series({(2026, 10): 5, (2025, 10): 2}, k)[-13] == 2.0
     assert sum(R.monthly_series({}, k)) == 0
+
+
+def test_export_orders(tmp_path=None):
+    """比价结果：Ordini 里只放采购了的供应商，名字 Ordine_门店_供应商_日期；distribuire 原样留着"""
+    import tempfile
+    import service as SV
+    root = str(tmp_path or tempfile.mkdtemp())
+    store_dir = os.path.join(root, "4 比价结果", "2026-10-25", "FOIANO")
+    dist = os.path.join(store_dir, "distribuire")
+    os.makedirs(dist)
+    for f in ("Listino_01 - Offerta.xlsx", "formattato_059603.xlsx", "Canvass 44 New Grieco.xlsx", "缺失报告.xlsx"):
+        with open(os.path.join(dist, f), "wb") as fh:
+            fh.write(b"x")
+    os.makedirs(os.path.join(store_dir, "Ordini"))
+    with open(os.path.join(store_dir, "Ordini", "Ordine_FOIANO_OLD_2410.xlsx"), "wb") as fh:
+        fh.write(b"old")
+    old_valid = SV.is_valid_xlsx
+    SV.is_valid_xlsx = lambda p: True
+    try:
+        rows = [{"row": 2, "qty": 3}, {"row": 3, "qty": 0}, {"row": 4, "qty": 2}]
+        assign = {2: "Listino_01 - Offerta.xlsx", 3: "Canvass 44 New Grieco.xlsx", 4: "formattato_059603.xlsx"}
+        got = SV.purchased_suppliers(rows, assign)
+        assert got == {"Listino_01 - Offerta.xlsx", "formattato_059603.xlsx"}      # 数量 0 的不算采购
+        out = SV.export_orders(dist, got, labels={"Listino_01 - Offerta.xlsx": "MELONI", "formattato_059603.xlsx": "MEGA CASH"},
+                               settings={})
+    finally:
+        SV.is_valid_xlsx = old_valid
+    names = sorted(os.listdir(os.path.join(store_dir, "Ordini")))
+    assert names == ["Ordine_FOIANO_MEGA CASH_2510.xlsx", "Ordine_FOIANO_MELONI_2510.xlsx"]
+    assert len(out) == 2 and os.path.exists(os.path.join(dist, "Canvass 44 New Grieco.xlsx"))
+    assert os.path.exists(os.path.join(store_dir, "缺失报告_FOIANO_2510.xlsx"))
