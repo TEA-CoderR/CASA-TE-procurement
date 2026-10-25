@@ -2448,4 +2448,11 @@ TRANSLATIONS = {
     '个周期': ('cycles', 'cicli'),
     '系统算出来只要 {0:,} 箱；门店清单要 {1:,} 箱有它的原因，少订最多砍掉 {2:.0%}，按 {3:,} 箱订（库存够卖 {4:g} 个订货周期以上才会砍得更多）': ('The system needs only {0:,} cases; the store list asks {1:,} for a reason, so at most {2:.0%} is cut: ordering {3:,} cases (more is cut only when stock covers {4:g} order cycles or more)', 'Il sistema calcola solo {0:,} colli; la lista ne chiede {1:,} per un motivo, quindi si riduce al massimo del {2:.0%}: si ordinano {3:,} colli (si riduce di più solo se la giacenza copre {4:g} cicli o più)'),
     'A 类保护：卖得好的商品，库存不够卖一个订货周期，至少订 1 箱': ('Class A protection: a good seller whose stock does not cover one order cycle — order at least 1 case', 'Protezione classe A: articolo che vende bene e la giacenza non copre un ciclo — almeno 1 collo'),
+    '库存可能不准：账面有 {0:g} 件，但已经 {1} 天一件没卖（平时这段时间能卖 {2:.0f} 件），门店又点名要，货架上多半没货了': ('Stock may be wrong: {0:g} pcs on the books, but nothing sold for {1} days (normally about {2:.0f} pcs in that time) and the store asks for it — the shelf is probably empty', 'Giacenza forse errata: {0:g} pz a sistema, ma nessuna vendita da {1} giorni (di solito circa {2:.0f} pz in quel periodo) e il negozio lo chiede — lo scaffale è probabilmente vuoto'),
+    'C 类卖得慢，只提醒，订多少你决定': ('Class C sells slowly: warning only, you decide the quantity', 'Classe C vende poco: solo avviso, decidi tu la quantità'),
+    '库存可能不准': ('Stock may be wrong', 'Giacenza forse errata'),
+    '账面有 {0:g} 件，但已经 {1} 天一件没卖（平时能卖 {2:.0f} 件），货架上多半没货了': ('{0:g} pcs on the books but nothing sold for {1} days (normally {2:.0f} pcs): the shelf is probably empty', '{0:g} pz a sistema ma nessuna vendita da {1} giorni (di solito {2:.0f} pz): scaffale probabilmente vuoto'),
+    'A 类：按门店清单订': ('Class A: order as the store list', 'Classe A: ordinare come la lista del negozio'),
+    '库存按 0 重新算': ('recalculated with stock = 0', 'ricalcolato con giacenza 0'),
+    '只看库存可能不准': ('Only "stock may be wrong"', 'Solo "giacenza forse errata"'),
 }

@@ -142,6 +142,36 @@ def _cover_now(x):
     return inv / d
 
 
+PHANTOM_MIN_DAYS = 7          # 至少这么多天没卖才算（周末、关门几天很正常）
+PHANTOM_UNITS = 3.0          # 按平时的速度，这段时间本该卖出 3 件以上（真有货却一件不卖的概率 ≈ e^-3 ≈ 5%）
+
+
+def phantom_info(x, today=None):
+    """
+    虚库存（账面有货、货架上没货）：门店点名要、账面还有货，但按平时的卖法早该卖出几件了，却一件都没卖。
+    返回 {"days": 几天没卖, "expect": 这段时间本该卖几件} 或 None。
+    标准：没卖的天数 ≥ max(7 天, 3 件 ÷ 日均) —— 真有货的话这么久一件不卖的可能只有 5% 左右；
+      快销品几天不卖就可疑，慢销品要很久不卖才算，不会误判。
+    """
+    from datetime import date, datetime as _dt
+    if not x.get("in_db", True) or float(x.get("file_qty") or 0) <= 0:
+        return None
+    inv = float(x.get("inv0") or 0)
+    d = x.get("daily0") if x.get("daily0") is not None else x.get("daily")
+    d = float(d or 0)
+    ls = x.get("last_sale")
+    if inv <= 0 or d <= 0 or not ls:
+        return None
+    try:
+        last = ls if isinstance(ls, date) else _dt.strptime(str(ls)[:10], "%Y-%m-%d").date()
+    except ValueError:
+        return None
+    days = ((today or date.today()) - last).days
+    if days >= max(PHANTOM_MIN_DAYS, PHANTOM_UNITS / d):
+        return {"days": days, "expect": d * days}
+    return None
+
+
 def init_boxes(rows, units=None, algo=None, rules=None):
     """
     检查结果按箱算（2026-10-25 用户定）：门店清单的数量一律是箱（lbox）；
@@ -178,6 +208,16 @@ def init_boxes(rows, units=None, algo=None, rules=None):
             x["protect"] = "empty"
         cyc = float(x.get("cycle") or 30) or 30.0
         cover = _cover_now(x)
+        ph = phantom_info(x)
+        x["phantom"] = ph
+        tier = (x.get("tier") or "")
+        if ph and tier in ("A", "B"):
+            # 虚库存：账面的货多半已经没了 → 库存当 0 重新算这一个周期要几箱（A 类直接相信门店清单）
+            d = float((x.get("daily0") if x.get("daily0") is not None else x.get("daily")) or 0)
+            need = max(1, int(math.ceil(d * cyc / pk - 1e-9)))
+            sys_ = max(sys_, x["lbox"] if tier == "A" else need)
+            x["protect"] = "phantom"
+            cover = 0.0                                # 少订上限也按没货算
         if sys_ <= 0 and x["lbox"] > 0 and (x.get("tier") or "") == "A" and cover < cyc:
             sys_ = 1                                   # A 类、库存不够卖一个周期、门店要：至少 1 箱
             x["protect"] = "a_low"
@@ -215,7 +255,7 @@ def _days(v):
 VERDICT_TOKEN = {"transfer": "ok", "more": "accent", "less": "warn", "none": "err", "same": "muted", "nodb": "err"}
 # 「看哪些」下拉框
 VIEWS = (("all", "全部商品"), ("changed", "只看有变化的"), ("transfer", "只看调货"), ("more", "只看多订"),
-         ("less", "只看少订"), ("none", "只看不订"))
+         ("less", "只看少订"), ("none", "只看不订"), ("phantom", "只看库存可能不准"))
 
 
 class _Sig(QObject):
@@ -931,7 +971,10 @@ class OrderCheck:
         """排序：「判断」按要看的先后（不订、少订、调货、多订 … 照清单订最后），同一类里金额大的在前"""
         x = self.rows[i]
         if c == _col(0):
-            return VERDICT_RANK.get(self._verdict(x)[0], 9) * 1e7 - min(self._amount(x), 9e6)
+            rank = VERDICT_RANK.get(self._verdict(x)[0], 9)
+            if x.get("phantom"):
+                rank = min(rank, 2.5)                  # 库存可能不准：排在前面要看的里
+            return rank * 1e7 - min(self._amount(x), 9e6)
         if c == AMOUNT_COL:
             return self._amount(x)
         return None
@@ -973,6 +1016,15 @@ class OrderCheck:
             lines.insert(0, tr("缺货保护：店里已经没货，门店又点名要，至少订 1 箱"))
         elif x.get("protect") == "a_low":
             lines.insert(0, tr("A 类保护：卖得好的商品，库存不够卖一个订货周期，至少订 1 箱"))
+        ph = x.get("phantom")
+        if ph:
+            line = tr("库存可能不准：账面有 {0:g} 件，但已经 {1} 天一件没卖（平时这段时间能卖 {2:.0f} 件），门店又点名要，货架上多半没货了",
+                      float(x.get("inv0") or 0), ph["days"], ph["expect"])
+            if x.get("protect") == "phantom":
+                line += "；" + (tr("A 类：按门店清单订") if (x.get("tier") or "") == "A" else tr("库存按 0 重新算"))
+            else:
+                line += "；" + tr("C 类卖得慢，只提醒，订多少你决定")
+            lines.insert(0, line)
         if x.get("limited"):
             rr = review_rules(self.cfg)
             lines.append(tr("系统算出来只要 {0:,} 箱；门店清单要 {1:,} 箱有它的原因，少订最多砍掉 {2:.0%}，按 {3:,} 箱订（库存够卖 {4:g} 个订货周期以上才会砍得更多）",
@@ -986,10 +1038,16 @@ class OrderCheck:
         return lines
 
     def _marks(self, x):
-        """判断后面的提醒（只提醒）：新算法订了一箱要卖半年以上 → 慢销；库存是负数 → 库存不准"""
+        """判断后面的提醒：慢销（订了要卖很久）；库存可能不准（虚库存）"""
         if not x.get("in_db", True):
             return []
-        return R.review_marks(x.get("target") is not None, x["final"] > 0, self._arrive_days(x), x.get("store_inv"))
+        out = R.review_marks(x.get("target") is not None, x["final"] > 0, self._arrive_days(x), x.get("store_inv"))
+        ph = x.get("phantom")
+        if ph:
+            out.append(("phantom", tr("库存可能不准"),
+                        tr("账面有 {0:g} 件，但已经 {1} 天一件没卖（平时能卖 {2:.0f} 件），货架上多半没货了", float(x.get("inv0") or 0),
+                           ph["days"], ph["expect"])))
+        return out
 
     def _arrive_days(self, x):
         """
@@ -1550,6 +1608,7 @@ class OrderCheck:
         """「看哪些」下拉框里带上个数：只看多订（12）"""
         n = {"all": len(self.rows), "changed": sum(cnt.get(k, 0) for k in ("transfer", "more", "less", "none"))}
         n.update(cnt)
+        n["phantom"] = sum(1 for x in self.rows if x.get("phantom") and not _problem(x))
         for k in range(self.view.count()):
             key = self.view.itemData(k)
             text = tr(dict(VIEWS)[key])
@@ -1591,7 +1650,8 @@ class OrderCheck:
         view = self.view.currentData()
         kind = self._verdict(x)[0]
         hide = (view == "changed" and kind not in ("transfer", "more", "less", "none")) or \
-            (view in ("transfer", "more", "less", "none") and kind != view)
+            (view in ("transfer", "more", "less", "none") and kind != view) or \
+            (view == "phantom" and not x.get("phantom"))
         return hide or \
                (bool(text) and text not in f"{x['code']} {x['ean']} {x['name']} {x.get('sup_code') or ''} {x.get('sup_name') or ''}".lower())
 

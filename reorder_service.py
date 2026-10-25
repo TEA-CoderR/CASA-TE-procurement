@@ -637,6 +637,22 @@ def _val(row, key, default=None):
     return v
 
 
+def _date_text(v):
+    """数据库日期 → 'YYYY-MM-DD'（存快照用文字）；没有返回 None"""
+    if v is None:
+        return None
+    try:
+        if v != v:                      # NaN / NaT
+            return None
+    except Exception:
+        pass
+    try:
+        import pandas as pd
+        return pd.Timestamp(v).strftime("%Y-%m-%d")
+    except Exception:
+        return None
+
+
 def to_rows(result_df, file_rows=None, days_list=None):
     """
     把计算结果整理成界面 / 导出 / 主订单用的行；file_rows 是订货清单（用来带上原数量）。
@@ -686,6 +702,7 @@ def to_rows(result_df, file_rows=None, days_list=None):
             "target": _val(r, "target_stock"),
             "inv0": max(0.0, float(_val(r, "store_inventory", 0) or 0)),
             "daily0": daily_of(r, days_list),
+            "last_sale": _date_text(_val(r, "LastSaleDate")),     # 最后一次卖出的日期（判断库存是不是虚的）
         })
     out.sort(key=lambda x: (-(x["priority"] or 0), x["code"]))
     return out

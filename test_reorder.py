@@ -356,3 +356,30 @@ def test_check_boxes_a_protection_and_cut_limit():
     rows2 = [dict(rows[3])]
     OC.init_boxes(rows2, None, algo, {"max_cut": 1.0})                            # 不限制
     assert rows2[0]["fbox"] == 1
+
+
+def test_phantom_stock():
+    """
+    虚库存（2026-10-25）：账面有货、门店点名要，但按平时卖法早该卖出 3 件以上却一件没卖
+    → A 类按清单订、B 类库存按 0 重算、C 类只提醒
+    """
+    from datetime import date, timedelta
+    import order_check as OC
+    today = date.today()
+    ago = lambda n: (today - timedelta(days=n)).strftime("%Y-%m-%d")
+    base = {"in_db": True, "pack": 6, "store": 1, "cycle": 30, "daily": None, "sales": [30, 60, 90, 180],
+            "file_qty": 3, "suggested": 0, "inv0": 20, "daily0": 0.5}
+    # 日均 0.5：3 件 ÷ 0.5 = 6 天，至少 7 天 → 7 天没卖就可疑
+    assert OC.phantom_info(dict(base, last_sale=ago(8)), today)["days"] == 8
+    assert OC.phantom_info(dict(base, last_sale=ago(5)), today) is None
+    assert OC.phantom_info(dict(base, last_sale=ago(8), daily0=0.05), today) is None     # 慢销：要 60 天没卖才算
+    assert OC.phantom_info(dict(base, last_sale=ago(8), file_qty=0), today) is None      # 门店没要
+    assert OC.phantom_info(dict(base, last_sale=ago(8), inv0=0), today) is None          # 本来就没货（缺货保护管）
+    rows = [dict(base, last_sale=ago(10), tier="A"),           # A：按清单 3 箱
+            dict(base, last_sale=ago(10), tier="B"),           # B：库存按 0：0.5 × 30 = 15 件 → 3 箱
+            dict(base, last_sale=ago(10), tier="C"),           # C：只提醒（库存够卖 40 天 < 60 → 少订上限 2 箱）
+            dict(base, last_sale=ago(2), tier="A")]            # 最近还在卖：正常（库存 40 天 → 上限 2 箱）
+    OC.init_boxes(rows, None, {"engine": "v1"})
+    assert [x["fbox"] for x in rows] == [3, 3, 2, 2]
+    assert rows[0]["protect"] == "phantom" and rows[1]["protect"] == "phantom"
+    assert rows[2]["phantom"] and rows[2].get("protect") != "phantom" and not rows[3]["phantom"]
