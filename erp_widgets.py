@@ -1413,15 +1413,222 @@ class RowSorter(QObject):
             self.on_sorted()
 
     def _marks(self):
+        flt = getattr(self, "filtered", ())          # HeaderFilter 筛选了的列：保留 ⏷
         for c, title in enumerate(self.titles):
             it = self.t.horizontalHeaderItem(c)
             if it is not None:
-                it.setText(title + ((" ↓" if self.desc else " ↑") if c == self.col else ""))
+                it.setText(title + (" ⏷" if c in flt else "") +
+                           ((" ↓" if self.desc else " ↑") if c == self.col else ""))
 
     def set_title(self, c, text):
         if 0 <= c < len(self.titles):
             self.titles[c] = text
             self._marks()
+
+
+class HeaderFilter(QObject):
+    """
+    右键表头按这一列筛选（像 Excel）：给「一次填好、用隐藏行来筛选」的表格用（订货明细、缺失商品等）。
+      页面自己还有筛选（搜索框、下拉）时：传 apply = 页面的筛选函数，它在判断每一行时加上 `not hf.accepts(r)`；
+        base_hidden(r) = 只按页面自己的筛选这一行藏不藏（列出可选的值用，和 Excel 一样只列看得到的）。
+      页面没有别的筛选：不传 apply，这里自己藏行。
+      pin_last：最后一行（合计）不参与筛选；skip：不能筛选的列（勾选框等）。
+      sorter：表格的 RowSorter（菜单里的升序 / 降序用它排；表头 ⏷ 标记和它的箭头一起显示）。
+      extra：菜单最后再加的项 [(文字, 函数)]；own_menu=False 时由页面自己在表头右键里调用 menu()。
+    """
+    changed = Signal()
+
+    def __init__(self, table, apply=None, base_hidden=None, pin_last=False, skip=(), sorter=None, extra=None,
+                 own_menu=True, sort=None):
+        super().__init__(table)
+        self.t, self.apply_cb, self.base_hidden = table, apply, base_hidden
+        self.pin_last, self.skip, self.sorter, self.extra, self.sort_cb = pin_last, set(skip), sorter, extra or [], sort
+        self.filters = {}            # {列: 允许的文字集合}
+        if own_menu:
+            hh = table.horizontalHeader()
+            hh.setContextMenuPolicy(Qt.CustomContextMenu)
+            hh.customContextMenuRequested.connect(lambda p: self.menu(hh.logicalIndexAt(p), hh.mapToGlobal(p)))
+            tip = hh.toolTip()
+            hh.setToolTip((tip + "；" if tip else "") + tr("右键点表头按这一列筛选"))
+
+    # ---- 给页面用 ----
+    def _n(self):
+        n = self.t.rowCount()
+        return n - 1 if self.pin_last and n else n
+
+    def text(self, r, c):
+        it = self.t.item(r, c)
+        if it is not None:
+            return it.text().strip()
+        w = self.t.cellWidget(r, c)
+        return w.text().strip() if w is not None and hasattr(w, "text") else ""
+
+    def accepts(self, r, skip_col=None):
+        """这一行能不能通过表头筛选（合计行永远可以）"""
+        if self.pin_last and r == self.t.rowCount() - 1:
+            return True
+        return all(self.text(r, c) in a for c, a in self.filters.items() if c != skip_col)
+
+    def active(self):
+        return bool(self.filters)
+
+    def clear(self, refresh=True):
+        self.filters = {}
+        if refresh:
+            self._changed()
+
+    def set_filter(self, c, values=None):
+        if values:
+            self.filters[c] = set(values)
+        else:
+            self.filters.pop(c, None)
+        self._changed()
+
+    def reapply(self):
+        """没有页面筛选时：按表头筛选藏 / 显示行（表格重新填过以后调用）"""
+        t = self.t
+        n = self._n()
+        for r in range(n):
+            hide = (self.base_hidden(r) if self.base_hidden else False) or not self.accepts(r)
+            t.setRowHidden(r, hide)
+
+    def _changed(self):
+        self._marks()
+        if self.apply_cb:
+            self.apply_cb()
+        else:
+            self.reapply()
+        self.changed.emit()
+
+    def _marks(self):
+        if self.sorter is not None:
+            self.sorter.filtered = set(self.filters)
+            self.sorter._marks()
+            return
+        for c in range(self.t.columnCount()):
+            it = self.t.horizontalHeaderItem(c)
+            if it is None:
+                continue
+            base = it.text().replace(" ⏷", "")
+            it.setText(base + (" ⏷" if c in self.filters else ""))
+
+    def values_of(self, c):
+        """这一列可选的值和行数：只算其他条件（页面筛选 + 别的列）之后还看得到的行"""
+        vals = {}
+        for r in range(self._n()):
+            if self.base_hidden and self.base_hidden(r):
+                continue
+            if not self.accepts(r, skip_col=c):
+                continue
+            v = self.text(r, c)
+            vals[v] = vals.get(v, 0) + 1
+        return vals
+
+    def menu(self, c, gpos):
+        from PySide6.QtWidgets import QMenu, QWidgetAction, QLineEdit, QListWidget, QListWidgetItem
+        if c is None or c < 0:
+            return
+        m = QMenu(self.t)
+        a_up = a_down = None
+        if self.sorter is not None or self.sort_cb is not None:
+            a_up = m.addAction(tr("升序排序"))
+            a_down = m.addAction(tr("降序排序"))
+            m.addSeparator()
+        can = c not in self.skip
+        lst = search = None
+        keys = []
+        if can:
+            vals = self.values_of(c)
+            keys = sorted(vals, key=_sort_key)
+            allowed = self.filters.get(c)
+            box = QWidget()
+            bv = QVBoxLayout(box)
+            bv.setContentsMargins(8, 4, 8, 4)
+            bv.setSpacing(4)
+            search = QLineEdit()
+            search.setPlaceholderText(tr("搜索这一列"))
+            bv.addWidget(search)
+            lst = QListWidget()
+            lst.setMinimumWidth(260)
+            lst.setMaximumHeight(300)
+            for v in keys[:3000]:
+                li = QListWidgetItem(f"{v if v != '' else tr('（空白）')}   ({vals[v]})")
+                li.setData(Qt.UserRole, v)
+                li.setFlags(li.flags() | Qt.ItemIsUserCheckable)
+                li.setCheckState(Qt.Checked if (allowed is None or v in allowed) else Qt.Unchecked)
+                lst.addItem(li)
+            bv.addWidget(lst)
+            row = QHBoxLayout()
+            b_all, b_none, b_ok = QPushButton(tr("全选")), QPushButton(tr("全不选")), QPushButton(tr("确定"))
+            b_ok.setObjectName("Primary")
+            for b in (b_all, b_none):
+                b.setObjectName("Link")
+            row.addWidget(b_all)
+            row.addWidget(b_none)
+            row.addStretch()
+            row.addWidget(b_ok)
+            bv.addLayout(row)
+
+            def shown_items():
+                return [lst.item(k) for k in range(lst.count()) if not lst.item(k).isHidden()]
+
+            def do_search(text):
+                text = text.strip().lower()
+                for k in range(lst.count()):
+                    it = lst.item(k)
+                    it.setHidden(bool(text) and text not in str(it.data(Qt.UserRole)).lower())
+
+            search.textChanged.connect(do_search)
+            b_all.clicked.connect(lambda: [it.setCheckState(Qt.Checked) for it in shown_items()])
+            b_none.clicked.connect(lambda: [it.setCheckState(Qt.Unchecked) for it in shown_items()])
+
+            def apply():
+                text = search.text().strip()
+                picked = {lst.item(k).data(Qt.UserRole) for k in range(lst.count())
+                          if lst.item(k).checkState() == Qt.Checked and (not text or not lst.item(k).isHidden())}
+                m.close()
+                if len(picked) == len(keys) and not text:
+                    self.set_filter(c, None)
+                else:
+                    self.filters[c] = picked
+                    self._changed()
+
+            b_ok.clicked.connect(apply)
+            search.returnPressed.connect(apply)
+            wa = QWidgetAction(m)
+            wa.setDefaultWidget(box)
+            m.addAction(wa)
+            m.addSeparator()
+        a_clear = m.addAction(tr("清除这一列的筛选"))
+        a_clear.setEnabled(c in self.filters)
+        a_clear_all = m.addAction(tr("清除全部筛选"))
+        a_clear_all.setEnabled(bool(self.filters))
+        extra = []
+        if self.extra:
+            m.addSeparator()
+            extra = [(m.addAction(txt), fn) for txt, fn in self.extra]
+        if search is not None:
+            search.setFocus()
+        self.last_pos = gpos
+        got = m.exec(gpos)
+        if got is None:
+            return
+        if got in (a_up, a_down) and got is not None:
+            desc = got == a_down
+            if self.sort_cb is not None:
+                self.sort_cb(c, desc)
+            else:
+                self.sorter.col, self.sorter.desc = c, desc
+                self.sorter.apply()
+        elif got == a_clear:
+            self.set_filter(c, None)
+        elif got == a_clear_all:
+            self.clear()
+        else:
+            for a, fn in extra:
+                if got == a:
+                    fn()
+                    break
 
 
 class TableSortFilter(QObject):

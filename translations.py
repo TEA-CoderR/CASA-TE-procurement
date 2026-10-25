@@ -2397,4 +2397,6 @@ TRANSLATIONS = {
     '⚠ 几家门店一起查没成功，改成一家家查：{0}': ('⚠ Querying the stores together failed, querying them one by one: {0}', '⚠ Interrogazione dei negozi insieme non riuscita, li interrogo uno alla volta: {0}'),
     '[检查清单] 数据库查询用了 {0:.0f} 秒': ('[Check list] Database queries took {0:.0f} s', '[Lista di controllo] Interrogazioni al database: {0:.0f} s'),
     '[检查清单] 读报价用了 {0:.0f} 秒（和数据库同时读）': ('[Check list] Reading quotes took {0:.0f} s (together with the database)', '[Lista di controllo] Lettura listini: {0:.0f} s (insieme al database)'),
+    '右键点表头按这一列筛选': ('Right-click a header to filter by that column', "Clic destro sull'intestazione per filtrare la colonna"),
+    '点表头排序；右键表头按这一列筛选；拖动表头可以换列的位置': ('Click a header to sort; right-click to filter by that column; drag headers to move columns', "Clic sull'intestazione per ordinare; clic destro per filtrare la colonna; trascina per spostare le colonne"),
 }

@@ -351,6 +351,8 @@ class OrderCheck:
             for c, wd in ((0, 90), (1, 130), (3, 140), (4, 76), (5, 90)):
                 t.setColumnWidth(c, wd)
             t.itemChanged.connect(lambda it, k=kind: self._prob_edited(k, it))
+            from erp_widgets import HeaderFilter      # 右键表头按列筛选
+            t._hf = HeaderFilter(t)
             close = QPushButton(tr("关闭"))
             close.clicked.connect(dlg.accept)
             bb = QHBoxLayout()
@@ -1270,6 +1272,8 @@ class OrderCheck:
                     else:
                         it.setFlags(it.flags() & ~Qt.ItemIsEditable)
             t.blockSignals(False)
+            if getattr(t, "_hf", None) is not None and t._hf.active():
+                t._hf.reapply()
             t.setColumnHidden(0, len((self.meta or {}).get("stores") or []) < 2)
         self._prob_filling = False
 

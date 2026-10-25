@@ -3524,6 +3524,9 @@ class MainWindow(QMainWindow):
         self.chg_table.setItemDelegateForColumn(9, StatusDelegate(self.chg_table))
         self.chg_table.setMinimumHeight(320)
         self.chg_sorter = RowSorter(self.chg_table)
+        from erp_widgets import HeaderFilter          # 右键表头按列筛选（和搜索框一起生效）
+        self.chg_hf = HeaderFilter(self.chg_table, apply=lambda: self._filter_changes(self.chg_filter.text()),
+                                   sorter=self.chg_sorter, base_hidden=lambda r: self._chg_base(r))
         pc.lay.addWidget(self.chg_table)
         self.chg_empty = QLabel(tr("这次没有改动，所有商品都按最低价选的供应商。"))
         self.chg_empty.setObjectName("Muted")
@@ -3532,12 +3535,17 @@ class MainWindow(QMainWindow):
         lay.addStretch()
         return w
 
-    def _filter_changes(self, text):
-        text = text.strip().lower()
+    def _chg_base(self, r):
+        text = self.chg_filter.text().strip().lower()
         t = self.chg_table
+        hay = " ".join(t.item(r, c).text() for c in (1, 2, 4, 6) if t.item(r, c)).lower()
+        return bool(text) and text not in hay
+
+    def _filter_changes(self, text):
+        t = self.chg_table
+        hf = getattr(self, "chg_hf", None)
         for r in range(t.rowCount()):
-            hay = " ".join(t.item(r, c).text() for c in (1, 2, 4, 6) if t.item(r, c)).lower()
-            t.setRowHidden(r, bool(text) and text not in hay)
+            t.setRowHidden(r, self._chg_base(r) or (hf is not None and not hf.accepts(r)))
 
     def export_changes(self):
         t = self.chg_table
@@ -3884,6 +3892,9 @@ class MainWindow(QMainWindow):
         self.miss_table.setWordWrap(True)
         from erp_widgets import RowSorter
         self.miss_sorter = RowSorter(self.miss_table)
+        from erp_widgets import HeaderFilter          # 右键表头按列筛选（和搜索框一起生效）
+        self.miss_hf = HeaderFilter(self.miss_table, apply=lambda: self._filter_missing(self.miss_filter.text()),
+                                    sorter=self.miss_sorter, base_hidden=lambda r: self._miss_base(r))
         p.lay.addWidget(self.miss_table)
         lay.addWidget(p, 1)
         return w
@@ -5543,12 +5554,17 @@ class MainWindow(QMainWindow):
         self._filter_missing(self.miss_filter.text())
         self.go_page("search")
 
-    def _filter_missing(self, text):
-        text = text.strip().lower()
+    def _miss_base(self, r):
+        text = self.miss_filter.text().strip().lower()
         t = self.miss_table
+        row_text = " ".join((t.item(r, c).text() if t.item(r, c) else "") for c in (0, 1, 7)).lower()
+        return bool(text) and text not in row_text
+
+    def _filter_missing(self, text):
+        t = self.miss_table
+        hf = getattr(self, "miss_hf", None)
         for r in range(t.rowCount()):
-            row_text = " ".join((t.item(r, c).text() if t.item(r, c) else "") for c in (0, 1, 7)).lower()
-            t.setRowHidden(r, bool(text) and text not in row_text)
+            t.setRowHidden(r, self._miss_base(r) or (hf is not None and not hf.accepts(r)))
 
     def run_web(self):
         from matcher import search_web_ean

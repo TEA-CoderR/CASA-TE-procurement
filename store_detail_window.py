@@ -197,6 +197,10 @@ class AddItemsDialog(QDialog):
                                    QAbstractItemView.EditKeyPressed | QAbstractItemView.AnyKeyPressed)
         self.table.horizontalHeaderItem(self.ADD).setToolTip(tr("双击填要加几箱，0 = 不加"))
         self.table.itemChanged.connect(self._edited)
+        from erp_widgets import HeaderFilter        # 右键表头按列筛选（和搜索框、两个勾选一起生效）
+        self._base_hide = {}
+        self.hf = HeaderFilter(self.table, apply=self._filter,
+                               base_hidden=lambda r: self._base_hide.get(r, False))
         lay.addWidget(self.table, 1)
         tip = QLabel(tr("按日均销量从高到低排：卖得快、加了以后也不会压太久的排前面。「按销量推荐」只加加完后库存够卖不超过 {0} 天的商品（配货设置里的凑单天数）。",
                         int(self.page.fill_cfg().get("max_stock_days") or 60)))
@@ -301,6 +305,7 @@ class AddItemsDialog(QDialog):
         q = self.search.text().strip().lower()
         sc, sid = self._sc(), self.c_store.currentData()
         by_row = {c["row"]: c for c in self.cands}
+        base = {}
         for r in range(self.table.rowCount()):
             c = by_row.get(self.table.item(r, 0).data(DI_ROLE))
             if c is None:
@@ -314,7 +319,11 @@ class AddItemsDialog(QDialog):
                 hide = True
             if q and q not in f"{S.item_code(it)} {it.get('ean', '')} {it['desc']}".lower():
                 hide = True
+            base[r] = hide
+            if not hide and self.hf.active():
+                hide = not self.hf.accepts(r)
             self.table.setRowHidden(r, hide)
+        self._base_hide = base
 
     def _edited(self, item):
         if self._filling or item.column() != self.ADD:
@@ -635,7 +644,7 @@ class DetailWindow(ToolWindow):
         hh.sectionResized.connect(lambda *_: self._col_timer.start())
         hh.setContextMenuPolicy(Qt.CustomContextMenu)
         hh.customContextMenuRequested.connect(self._header_menu)
-        hh.setToolTip(tr("拖动表头可以换列的位置，下次打开保持；右键可以恢复默认顺序、选显示哪些列"))
+        hh.setToolTip(tr("点表头排序；右键表头按这一列筛选；拖动表头可以换列的位置"))
         from erp_widgets import ColumnChooser
         self.cols = ColumnChooser(self.table, self.page.cfg, "detail_cols", _ORDER, lambda: save_settings(self.page.settings),
                                   _DEFAULT_HIDDEN, ver=4)
@@ -643,6 +652,13 @@ class DetailWindow(ToolWindow):
         hh.setSortIndicatorShown(True)
         hh.setSortIndicator(0, Qt.AscendingOrder)
         hh.sectionClicked.connect(self._sort_by)
+        # 右键表头：按这一列筛选（像 Excel），和上面的门店按钮 / 搜索 / 「看哪些」一起生效
+        from erp_widgets import HeaderFilter
+        self._base_hide = {}
+        self.hf = HeaderFilter(self.table, apply=self._filter, own_menu=False, sort=self._sort_menu,
+                               base_hidden=lambda r: self._base_hide.get(r, False),
+                               extra=[(tr("恢复默认列顺序"), self._reset_order),
+                                      (tr("显示哪些列…"), lambda: self.cols.menu(self.hf.last_pos))])
         self.table.itemChanged.connect(self._cell_edited)
         self.table.currentCellChanged.connect(lambda r, c, pr, pc: self._select_row(r))
         mid.addWidget(self.table, 1)
@@ -695,23 +711,32 @@ class DetailWindow(ToolWindow):
         save_settings(self.page.settings)
 
     def _header_menu(self, pos):
-        m = QMenu(self)
-        a = m.addAction(tr("恢复默认列顺序"))
-        b = m.addAction(tr("显示哪些列…"))
-        got = m.exec(self.table.horizontalHeader().mapToGlobal(pos))
-        if got == b:
-            self.cols.menu(self.table.horizontalHeader().mapToGlobal(pos))
+        hh = self.table.horizontalHeader()
+        if self._loading:
+            self.flash(tr("还在载入，稍等一下"))
             return
-        if got == a:
-            hh = self.table.horizontalHeader()
-            hh.blockSignals(True)
-            for c in range(self.table.columnCount()):
-                cur = hh.visualIndex(c)
-                if cur != c:
-                    hh.moveSection(cur, c)
-            hh.blockSignals(False)
-            self.page.cfg.pop("detail_columns", None)
-            save_settings(self.page.settings)
+        self.hf.menu(hh.logicalIndexAt(pos), hh.mapToGlobal(pos))
+
+    def _reset_order(self):
+        hh = self.table.horizontalHeader()
+        hh.blockSignals(True)
+        for c in range(self.table.columnCount()):
+            cur = hh.visualIndex(c)
+            if cur != c:
+                hh.moveSection(cur, c)
+        hh.blockSignals(False)
+        self.page.cfg.pop("detail_columns", None)
+        save_settings(self.page.settings)
+
+    def _sort_menu(self, col, desc):
+        if not self.detail or self._loading:
+            return
+        self.sort_col = col
+        self.sort_order = Qt.DescendingOrder if desc else Qt.AscendingOrder
+        self.table.setUpdatesEnabled(False)
+        self._apply_sort()
+        self.table.setUpdatesEnabled(True)
+        self._filter()
 
     def _visual_cols(self):
         hh = self.table.horizontalHeader()
@@ -1471,6 +1496,8 @@ class DetailWindow(ToolWindow):
         calc = self.page.calc
         shown = 0
         self.table.setUpdatesEnabled(False)
+        base = {}
+        hf = self.hf if self.hf.active() else None
         for i, (sc, it, sid) in enumerate(self.detail):
             key = (sc["path"], sid, it["row"])
             hide = (sup not in (None, ALL) and sc["path"] != sup) or (store not in (None, ALL) and sid != store)
@@ -1488,8 +1515,13 @@ class DetailWindow(ToolWindow):
                 hide = not (x and "🔴" in (x["decision"] or ""))
             if not hide and text:
                 hide = text not in f"{S.item_code(it)} {it['ean']} {it['desc']}".lower()
-            self.table.setRowHidden(self.pos[i], hide)
+            r = self.pos[i]
+            base[r] = hide
+            if not hide and hf is not None:
+                hide = not hf.accepts(r)                # 右键表头的列筛选
+            self.table.setRowHidden(r, hide)
             shown += not hide
+        self._base_hide = base
         self.table.setUpdatesEnabled(True)
         self._shown = shown
         self._update_status()
@@ -1521,7 +1553,7 @@ class DetailWindow(ToolWindow):
         ws = wb.active
         ws.title = "订货明细"
         cols = [c for c in self._visual_cols() if not self.table.isColumnHidden(c)]   # 按现在看到的列导出
-        heads = [self.table.horizontalHeaderItem(c).text().replace(" ✎", "") for c in cols]
+        heads = [self.table.horizontalHeaderItem(c).text().replace(" ✎", "").replace(" ⏷", "") for c in cols]
         ws.append(heads)
         for c in ws[1]:
             c.font = Font(bold=True)
