@@ -522,7 +522,7 @@ class Sparkline(QWidget):
 
 class MonthGrid(QWidget):
     """
-    近两年每月销量（1–12 月方框）：去年一块、今年一块，每块两行 × 6 个月（1–6 月、7–12 月），方框里写销量，
+    近两年每月销量（1–12 月方框）：今年一块（上）、去年一块（下），每块两行 × 6 个月（1–6 月、7–12 月），方框里写销量，
     同一个月上下对齐好对比；卖得越多底色越深。今年还没到的月份空着，本月是到今天为止的数。
     set_data(values, keys)：values 每月销量（从旧到新），keys 对应的 (年, 月)。悬停显示和去年同月的对比。
     """
@@ -562,7 +562,7 @@ class MonthGrid(QWidget):
         w = self.width()
         bw = (w - 5 * self.GAP) / 6.0
         top = 0
-        for y in (self.year - 1, self.year):
+        for y in (self.year, self.year - 1):          # 今年在上、去年在下
             top += self.LABEL_H
             for half in range(2):
                 for j in range(6):
@@ -617,7 +617,7 @@ class MonthGrid(QWidget):
         bold.setBold(True)
         # 年份标题
         top = 0
-        for y in (self.year - 1, self.year):
+        for y in (self.year, self.year - 1):
             p.setFont(bold)
             p.setPen(QColor(T("text")))
             p.drawText(QRectF(0, top, self.width(), self.LABEL_H), Qt.AlignLeft | Qt.AlignVCenter, str(y))

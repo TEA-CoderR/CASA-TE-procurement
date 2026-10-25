@@ -2441,4 +2441,11 @@ TRANSLATIONS = {
     '去年全年 {0:g} 件 · * 本月到今天': ('Last year total {0:g} pcs · * this month so far', 'Totale anno scorso {0:g} pz · * mese in corso'),
     '去年同期 {0:g} 件（{1:+.0%}）': ('Same period last year {0:g} pcs ({1:+.0%})', "Stesso periodo dell'anno scorso {0:g} pz ({1:+.0%})"),
     '去年同期没卖': ('No sales in the same period last year', "Nessuna vendita nello stesso periodo dell'anno scorso"),
+    '少订最多': ('Max cut', 'Riduzione max'),
+    '系统建议比门店清单少订时，最多砍掉清单的几成（默认 50%：清单 4 箱最少订 2 箱）。门店报的数量有它的原因（促销、陈列等），改得太狠反而不好。下次检查生效': ("When the suggestion is below the store list, cut at most this share of the list (default 50%: list 4 cases → at least 2). The store's quantity has its reasons (promotions, display…), cutting too hard backfires. Applies from the next check", 'Quando il suggerimento è inferiore alla lista del negozio, ridurre al massimo questa quota (predefinito 50%: lista 4 colli → almeno 2). La quantità del negozio ha le sue ragioni (promozioni, esposizione…). Vale dal prossimo controllo'),
+    '库存多可不订': ('Big stock: may skip', 'Molta giacenza: si può saltare'),
+    '现在的库存够卖这么多个订货周期以上，才可以不受上面的限制（少订更多或不订）。默认 2 个周期。下次检查生效': ('Only when current stock covers at least this many order cycles may the suggestion cut more or skip the item. Default 2 cycles. Applies from the next check', "Solo se la giacenza copre almeno questi cicli d'ordine si può ridurre di più o non ordinare. Predefinito 2 cicli. Vale dal prossimo controllo"),
+    '个周期': ('cycles', 'cicli'),
+    '系统算出来只要 {0:,} 箱；门店清单要 {1:,} 箱有它的原因，少订最多砍掉 {2:.0%}，按 {3:,} 箱订（库存够卖 {4:g} 个订货周期以上才会砍得更多）': ('The system needs only {0:,} cases; the store list asks {1:,} for a reason, so at most {2:.0%} is cut: ordering {3:,} cases (more is cut only when stock covers {4:g} order cycles or more)', 'Il sistema calcola solo {0:,} colli; la lista ne chiede {1:,} per un motivo, quindi si riduce al massimo del {2:.0%}: si ordinano {3:,} colli (si riduce di più solo se la giacenza copre {4:g} cicli o più)'),
+    'A 类保护：卖得好的商品，库存不够卖一个订货周期，至少订 1 箱': ('Class A protection: a good seller whose stock does not cover one order cycle — order at least 1 case', 'Protezione classe A: articolo che vende bene e la giacenza non copre un ciclo — almeno 1 collo'),
 }

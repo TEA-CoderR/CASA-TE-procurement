@@ -324,14 +324,35 @@ def test_check_boxes_no_more_than_list_and_new_item_protection():
     algo = {"engine": "v1"}
     base = {"in_db": True, "pack": 12, "store": 1, "inv0": 0, "daily": None, "sales": [30, 60, 90, 180]}
     rows = [dict(base, file_qty=2, suggested=200),                       # 系统要 17 箱 → 按清单 2 箱
-            dict(base, file_qty=3, suggested=5),                         # 系统要 5 件（不到一箱）→ 1 箱
+            dict(base, file_qty=3, suggested=5),                         # 系统要 5 件（不到一箱）→ 1 箱，但少订最多一半 → 2 箱
             dict(base, file_qty=1, suggested=0, inv0=50),                # 库存够 → 不订
             dict(base, file_qty=2, suggested=0, sales=[3, 5, 5, 5]),      # 两个月前还没卖过 → 新品，按清单
             dict(base, file_qty=1, suggested=0, sales=[0, 0, 0, 0]),      # 从没卖过 → 新品，按清单
             dict(base, file_qty=4, in_db=False, pack=0)]                 # 数据库没有 → 清单
     OC.init_boxes(rows, None, algo)
-    assert [x["fbox"] for x in rows] == [2, 1, 0, 2, 1, 4]
+    assert [x["fbox"] for x in rows] == [2, 2, 0, 2, 1, 4]
     assert rows[0]["sys_box"] == 17 and rows[3].get("protect") == "new" and rows[2].get("protect") is None
-    empty = [dict(base, file_qty=3, suggested=0, inv0=-2, sales=[0, 1, 2, 4])]   # 没货了、门店要 → 至少 1 箱
+    empty = [dict(base, file_qty=3, suggested=0, inv0=-2, sales=[0, 1, 2, 4])]   # 没货了、门店要 → 至少 1 箱（少订最多一半 → 2 箱）
     OC.init_boxes(empty, None, algo)
-    assert empty[0]["fbox"] == 1 and empty[0]["protect"] == "empty"
+    assert empty[0]["fbox"] == 2 and empty[0]["protect"] == "empty"
+
+
+def test_check_boxes_a_protection_and_cut_limit():
+    """
+    2026-10-25 用户定：A 类、库存不够卖一个周期、门店要了 → 至少 1 箱；
+    少订最多砍掉清单一半，除非库存已经够卖 2 个订货周期以上
+    """
+    import order_check as OC
+    algo = {"engine": "v1"}
+    base = {"in_db": True, "pack": 12, "store": 1, "cycle": 30, "daily": None, "sales": [30, 60, 90, 180]}
+    rows = [dict(base, file_qty=1, suggested=0, inv0=6, daily0=0.5, tier="A"),     # 够卖 12 天 < 30 → A 类保护 1 箱
+            dict(base, file_qty=1, suggested=0, inv0=6, daily0=0.5, tier="C"),     # C 类：不保护，但少订上限 → 1 箱（清单 1 箱一半向上取整）
+            dict(base, file_qty=1, suggested=0, inv0=60, daily0=0.5, tier="A"),    # 够卖 120 天 ≥ 2 周期 → 可以不订
+            dict(base, file_qty=8, suggested=12, inv0=20, daily0=0.5, tier="B"),   # 系统 1 箱，清单 8 → 最少 4 箱
+            dict(base, file_qty=8, suggested=12, inv0=40, daily0=0.5, tier="B")]   # 够卖 80 天 ≥ 60 → 按系统 1 箱
+    OC.init_boxes(rows, None, algo)
+    assert [x["fbox"] for x in rows] == [1, 1, 0, 4, 1]
+    assert rows[0]["protect"] == "a_low" and rows[3].get("limited") and not rows[4].get("limited")
+    rows2 = [dict(rows[3])]
+    OC.init_boxes(rows2, None, algo, {"max_cut": 1.0})                            # 不限制
+    assert rows2[0]["fbox"] == 1

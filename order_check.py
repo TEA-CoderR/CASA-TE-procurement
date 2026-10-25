@@ -117,16 +117,46 @@ def is_new_item(x):
     return float(s[3]) <= 0 or float(s[3]) - float(s[1]) <= 0
 
 
-def init_boxes(rows, units=None, algo=None):
+REVIEW_DEFAULTS = {"max_cut": 0.5, "free_cut_cycles": 2.0}
+
+
+def review_rules(cfg=None):
+    """检查清单的两条限制（批发商比价「设置」里改）：少订最多砍掉清单的几成；库存够卖几个订货周期以上才可以砍得更多 / 不订"""
+    c = dict(REVIEW_DEFAULTS)
+    for k in c:
+        try:
+            if cfg and cfg.get(k) is not None:
+                c[k] = float(cfg[k])
+        except (TypeError, ValueError):
+            pass
+    return c
+
+
+def _cover_now(x):
+    """现在的库存够卖几天（负库存当 0；没销量但有库存 = 无限；都没有 = 0）"""
+    d = x.get("daily0") if x.get("daily0") is not None else x.get("daily")
+    d = float(d or 0)
+    inv = max(0.0, float(x.get("inv0") or 0))
+    if d <= 0:
+        return float("inf") if inv > 0 else 0.0
+    return inv / d
+
+
+def init_boxes(rows, units=None, algo=None, rules=None):
     """
     检查结果按箱算（2026-10-25 用户定）：门店清单的数量一律是箱（lbox）；
       sys_box 系统算出来的箱数；sbox 建议箱数 = 系统算的，但**不多于门店清单**（先不做多订）；
       系统算出来要订（哪怕不到一箱）就至少 1 箱，不因为凑不成整箱砍成 0；
       新品（is_new_item）按门店清单订（protect = "new"）；fbox 确定箱数默认 = 建议；数据库没有 / 没有箱规的 = 清单。
     units 不再用（以前分箱 / 件）；algo：新算法参数（凑整箱用 forecast.to_packs）
+    2026-10-25 第二次（用户定）：
+      A 类保护：A 类商品、库存不够卖一个订货周期、门店要了 → 至少 1 箱（protect = "a_low"）；
+      少订有上限：清单要的数量有它的原因（促销、陈列、门店知道的情况），系统最多砍掉清单的 max_cut（默认一半），
+        除非现在的库存已经够卖 free_cut_cycles 个订货周期以上（库存明显多）才可以砍得更多 / 不订（limited = True 表示被这条拦住了）
     """
     import forecast as F
     v2 = bool(algo) and algo.get("engine") == "v2"
+    rr = review_rules(rules)
     for x in rows:
         pk = _pk(x)
         x["lbox"] = int(math.ceil(float(x.get("file_qty") or 0) - 1e-9))
@@ -146,12 +176,23 @@ def init_boxes(rows, units=None, algo=None):
         if sys_ <= 0 and float(x.get("inv0") or 0) <= 0 and x["lbox"] > 0:
             sys_ = 1                                   # 店里已经没货、门店又点名要：至少 1 箱（缺货保护）
             x["protect"] = "empty"
+        cyc = float(x.get("cycle") or 30) or 30.0
+        cover = _cover_now(x)
+        if sys_ <= 0 and x["lbox"] > 0 and (x.get("tier") or "") == "A" and cover < cyc:
+            sys_ = 1                                   # A 类、库存不够卖一个周期、门店要：至少 1 箱
+            x["protect"] = "a_low"
         x["sys_box"] = sys_
+        x.pop("limited", None)
         if is_new_item(x):
             x["protect"] = "new"
             x["sbox"] = x["lbox"]
         else:
-            x["sbox"] = min(sys_, x["lbox"])           # 先不多订：最多订到门店清单的箱数
+            sb = min(sys_, x["lbox"])                  # 先不多订：最多订到门店清单的箱数
+            floor = int(math.ceil(x["lbox"] * (1 - rr["max_cut"]) - 1e-9))
+            if sb < floor and cover < rr["free_cut_cycles"] * cyc:
+                sb = floor                             # 少订不超过上限（库存不是明显多）
+                x["limited"] = True
+            x["sbox"] = sb
         _set_box(x, x["sbox"])
 AFTER_COL = _col(20)          # 确定订后够卖（跟着确定件数变）
 LIST_AFTER_COL = _col(21)     # 清单订后够卖（按门店清单原来的数量订）
@@ -283,6 +324,32 @@ class OrderCheck:
         r3.addWidget(self.btn_run)
         self.btn_run.hide()                  # 页面上的「开始」按钮代替它
         pv.addLayout(r3)
+        # 少订的上限（2026-10-25 用户定：清单数量有它的原因，系统不要改得太狠）
+        from erp_widgets import tip_label
+        from PySide6.QtWidgets import QDoubleSpinBox
+        rr = review_rules(self.cfg)
+        r4 = QHBoxLayout()
+        r4.setSpacing(10)
+        r4.addWidget(tip_label(tr("少订最多"), tr("系统建议比门店清单少订时，最多砍掉清单的几成（默认 50%：清单 4 箱最少订 2 箱）。门店报的数量有它的原因（促销、陈列等），改得太狠反而不好。下次检查生效")))
+        self.max_cut = QSpinBox()
+        self.max_cut.setRange(0, 100)
+        self.max_cut.setSingleStep(10)
+        self.max_cut.setSuffix(" %")
+        self.max_cut.setValue(int(round(rr["max_cut"] * 100)))
+        self.max_cut.valueChanged.connect(lambda v: (self.cfg.__setitem__("max_cut", v / 100.0), save_settings(self.settings)))
+        r4.addWidget(self.max_cut)
+        r4.addSpacing(12)
+        r4.addWidget(tip_label(tr("库存多可不订"), tr("现在的库存够卖这么多个订货周期以上，才可以不受上面的限制（少订更多或不订）。默认 2 个周期。下次检查生效")))
+        self.free_cut = QDoubleSpinBox()
+        self.free_cut.setRange(0.5, 12)
+        self.free_cut.setSingleStep(0.5)
+        self.free_cut.setDecimals(1)
+        self.free_cut.setSuffix(" " + tr("个周期"))
+        self.free_cut.setValue(rr["free_cut_cycles"])
+        self.free_cut.valueChanged.connect(lambda v: (self.cfg.__setitem__("free_cut_cycles", float(v)), save_settings(self.settings)))
+        r4.addWidget(self.free_cut)
+        r4.addStretch()
+        pv.addLayout(r4)
         p.lay.addWidget(self.params_box)
         self.msg = QLabel("")
         self.msg.setObjectName("Muted")
@@ -795,7 +862,7 @@ class OrderCheck:
             self.msg.setText(tr("计算失败"))
             self.win.notify(tr("检查清单失败：{0}", err))
             return
-        init_boxes(rows, None, self._algo())
+        init_boxes(rows, None, self._algo(), self.cfg)
         self.rows, self.meta = rows, meta
         # 人工改的调货 {(门店, 商品编号): {"from", "pieces", "auto"} 或 0 = 不调}；改过一次就冻结（别的行不再跟着变）
         self.transfer_ov = {}
@@ -904,6 +971,12 @@ class OrderCheck:
             lines.insert(0, tr("新品保护：近两个月才开始卖（或还没卖过），销量还说明不了什么，按门店清单订"))
         elif x.get("protect") == "empty":
             lines.insert(0, tr("缺货保护：店里已经没货，门店又点名要，至少订 1 箱"))
+        elif x.get("protect") == "a_low":
+            lines.insert(0, tr("A 类保护：卖得好的商品，库存不够卖一个订货周期，至少订 1 箱"))
+        if x.get("limited"):
+            rr = review_rules(self.cfg)
+            lines.append(tr("系统算出来只要 {0:,} 箱；门店清单要 {1:,} 箱有它的原因，少订最多砍掉 {2:.0%}，按 {3:,} 箱订（库存够卖 {4:g} 个订货周期以上才会砍得更多）",
+                            x.get("sys_box") or 0, x["lbox"], rr["max_cut"], x["sbox"], rr["free_cut_cycles"]))
         elif x.get("sys_box") is not None and x["sys_box"] > x["lbox"]:
             lines.append(tr("系统算出来要 {0:,} 箱，多于门店清单，按清单 {1:,} 箱订（先不多订）", x["sys_box"], x["lbox"]))
         if x.get("in_db", True) and x.get("sbox") is not None and x["lbox"] != x["sbox"]:
@@ -1261,7 +1334,7 @@ class OrderCheck:
             bits.append((tr("订后够卖 {0} 天", text) if self._arrive_days(x) is not None else tr("现在的库存够卖 {0} 天", text)))
         if amt > 0:
             bits.append(f"€{amt:,.2f}")
-        self.d_after.setText(" · ".join(bits) + (f"\n{tip}" if tip else ""))
+        self.d_after.setText(" · ".join(bits) + (f"\n{tip}" if tip and tok in ("err", "warn") else ""))
         self.d_after.setStyleSheet(f"color:{T(tok) if tok in ('err', 'warn') else T('text')};")
         (a1, a2), (b1, b2), (c1, c2) = self.minis
         if x.get("in_db", True):
@@ -1321,7 +1394,7 @@ class OrderCheck:
         """按现在的确定箱数重新算门店间调货（改了以后稍等一下再算，不卡）"""
         missing = [x for x in self.rows if "fbox" not in x]
         if missing:                                    # 还没按箱整理过的行（保险）
-            init_boxes(missing, None, self._algo())
+            init_boxes(missing, None, self._algo(), self.cfg)
         self._moves_in, self._moves_out = {}, {}
         self._moves = []
         if self.rows and self.meta.get("snap"):
@@ -1525,7 +1598,7 @@ class OrderCheck:
     def _fill(self):
         missing = [x for x in self.rows if "fbox" not in x]
         if missing:
-            init_boxes(missing, None, self._algo())
+            init_boxes(missing, None, self._algo(), self.cfg)
         self.ctl.render()
         self._summary()
 
