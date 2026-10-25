@@ -41,7 +41,7 @@ class DatabaseManager:
             # MySQL 特定优化
             connect_args={
                 'connect_timeout': 10,  # 连接超时（秒）
-                'read_timeout': 30,     # 读取超时（秒）
+                'read_timeout': 120,    # 读取超时（秒）；几家门店同时查时单条查询会慢一点，留够时间
                 'write_timeout': 30,    # 写入超时（秒）
             }
         )
@@ -479,11 +479,21 @@ class DatabaseManager:
             WHERE p.CodArticolo IN ({placeholders})
             GROUP BY p.CodArticolo
         """
-        inventory_df = pd.read_sql(inventory_query, self.engine, params=tuple(clean_product_codes))
-        # ⭐ 额外去重：如果数据库中有重复记录，取第一条
-        if len(inventory_df) > len(clean_product_codes):
-            inventory_df = inventory_df.drop_duplicates(subset=['CodArticolo'], keep='first')
-        result = {'inventory': inventory_df}
+        # ⭐ 速度：下面几条查询互不相关，同时发给数据库（结果和一条条查一样）
+        from concurrent.futures import ThreadPoolExecutor
+        _pool = ThreadPoolExecutor(max_workers=5, thread_name_prefix="dbq")
+        try:
+            return self._query_reorder_parallel(_pool, inventory_query, clean_product_codes, store_id, sales_table,
+                                                placeholders, days_list, supplier_ids, start_date, end_date)
+        finally:
+            _pool.shutdown(wait=False, cancel_futures=True)
+
+    def _query_reorder_parallel(self, _pool, inventory_query, clean_product_codes, store_id, sales_table,
+                                placeholders, days_list, supplier_ids, start_date, end_date):
+        f_inv = _pool.submit(pd.read_sql, inventory_query, self.engine, params=tuple(clean_product_codes))
+        f_after = _pool.submit(self.get_sales_after_last_receipt, store_id, clean_product_codes)
+        f_last = _pool.submit(self.get_last_sale_date, store_id, clean_product_codes)
+        result = {}
         
         # 2️⃣ 查询供应商映射
         supplier_query = f"""
@@ -496,12 +506,12 @@ class DatabaseManager:
             if clean_supplier_ids:
                 supplier_ph = self._build_in_placeholders(len(clean_supplier_ids))
                 supplier_query += f" AND IDFornitore IN ({supplier_ph})"
-                result['suppliers'] = pd.read_sql(supplier_query, self.engine, 
-                                                 params=tuple(clean_product_codes + clean_supplier_ids))
+                f_sup = _pool.submit(pd.read_sql, supplier_query, self.engine,
+                                     params=tuple(clean_product_codes + clean_supplier_ids))
             else:
-                result['suppliers'] = pd.read_sql(supplier_query, self.engine, params=tuple(clean_product_codes))
+                f_sup = _pool.submit(pd.read_sql, supplier_query, self.engine, params=tuple(clean_product_codes))
         else:
-            result['suppliers'] = pd.read_sql(supplier_query, self.engine, params=tuple(clean_product_codes))
+            f_sup = _pool.submit(pd.read_sql, supplier_query, self.engine, params=tuple(clean_product_codes))
         
         # 3️⃣ ⭐ 性能优化：合并查询所有周期的销售和毛利数据（使用 UNION ALL）
         all_sales_query_parts = []
@@ -549,7 +559,14 @@ class DatabaseManager:
         combined_query = f"SELECT * FROM ({combined_query}) AS combined"
         
         # 执行合并查询
-        combined_df = pd.read_sql(combined_query, self.engine, params=tuple(all_params))
+        f_comb = _pool.submit(pd.read_sql, combined_query, self.engine, params=tuple(all_params))
+        inventory_df = f_inv.result()
+        # ⭐ 额外去重：如果数据库中有重复记录，取第一条
+        if len(inventory_df) > len(clean_product_codes):
+            inventory_df = inventory_df.drop_duplicates(subset=['CodArticolo'], keep='first')
+        result['inventory'] = inventory_df
+        result['suppliers'] = f_sup.result()
+        combined_df = f_comb.result()
         
         # 拆分结果到各个周期（⭐ 用 period_index 序号区分，避免 period_days 值重复时串数据）
         for i, days in enumerate(days_list, 1):
@@ -558,10 +575,10 @@ class DatabaseManager:
             result[f'margin_{i}'] = period_df[['CodArticolo', 'total_guadagno', 'total_net_sales']]
         
         # ⭐ 新增：获取最后一次进货后的销售件数
-        result['sales_after_last_in'] = self.get_sales_after_last_receipt(store_id, clean_product_codes)
+        result['sales_after_last_in'] = f_after.result()
         
         # ⭐ 新增：获取最后一次销售日期
-        result['last_sale_date'] = self.get_last_sale_date(store_id, clean_product_codes)
+        result['last_sale_date'] = f_last.result()
         
         return result
     

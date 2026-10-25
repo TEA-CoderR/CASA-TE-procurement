@@ -292,6 +292,39 @@ def extract_products(db, store_id, day, query_days, supplier_groups=None):
     return codes, supplier_ids
 
 
+DB_WORKERS = 3          # 几家门店同时查数据库（每家店里面还会同时发几条查询，3 家 × 7 条以内，不超过连接池）
+
+
+def per_store(stores, fn, on_store=None, workers=DB_WORKERS):
+    """
+    几家门店同时跑 fn(门店号)（查数据库大部分时间在等服务器，同时查快很多）。返回 {门店号: 结果}，和一家家查结果一样。
+    on_store(k, 门店号)：进度（k = 已经查完几家；一开始先报 0）；它抛异常（例如取消）就停下。
+    """
+    stores = list(stores)
+    if workers <= 1 or len(stores) <= 1:
+        out = {}
+        for k, sid in enumerate(stores):
+            if on_store:
+                on_store(k, sid)
+            out[sid] = fn(sid)
+        return out
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    if on_store:
+        on_store(0, stores[0])
+    ex = ThreadPoolExecutor(max_workers=min(workers, len(stores)), thread_name_prefix="db")
+    try:
+        futs = {ex.submit(fn, sid): sid for sid in stores}
+        out, done = {}, 0
+        for f in as_completed(futs):
+            out[futs[f]] = f.result()
+            done += 1
+            if on_store and done < len(stores):
+                on_store(done, futs[f])
+        return {sid: out[sid] for sid in stores}
+    finally:
+        ex.shutdown(wait=False, cancel_futures=True)
+
+
 def compute_suggestions(db, store_id, product_codes, days_list=None, reorder_cycle=30, supplier_ids=None,
                         use_supplier_cycles=True, round_to_db_pack=True, algo=None, groups=None, want_raw=False):
     """
@@ -325,7 +358,18 @@ def compute_suggestions(db, store_id, product_codes, days_list=None, reorder_cyc
             seen.add(k)
             codes.append(c)
     product_codes = codes
-    data = db.query_reorder_data(store_id, product_codes, days_list, supplier_ids)
+    pre = None
+    if use_v2:      # 新算法要的周销量、全店销售额：和下面的查询同时查（结果一样，只是不用排队等）
+        from concurrent.futures import ThreadPoolExecutor
+        pre = ThreadPoolExecutor(max_workers=2, thread_name_prefix="dbv2")
+        f_week = pre.submit(query_weekly_sales, db, store_id, product_codes)
+        f_rev = pre.submit(query_store_revenue, db, store_id)
+    try:
+        data = db.query_reorder_data(store_id, product_codes, days_list, supplier_ids)
+    except Exception:
+        if pre is not None:
+            pre.shutdown(wait=False, cancel_futures=True)
+        raise
     # 新算法：负库存（盘点误差等）事先当 0，不然库存天数是负数，建议量也会把负数补上。
     # 原程序算法：库存原样交给原程序 —— 原程序自己在算订货量时把负库存当 0
     #   （fenpei/models.py process_reorder_data：store_inv_for_calc = np.maximum(0, store_inv)），
@@ -424,7 +468,14 @@ def compute_suggestions(db, store_id, product_codes, days_list=None, reorder_cyc
                     memo[sid] = AppConfig.get_supplier_reorder_cycle(sid, fallback=base)
                 return memo[sid]
             cycles = [cyc(s) for s in result_df["IDFornitore"].tolist()]
-        result_df = apply_v2(db, store_id, result_df, algo, cycles=cycles)
+        def got(f):         # 提前查的没成功：交给 apply_v2 自己再查（和以前一样）
+            try:
+                return f.result()
+            except Exception:
+                return None
+        result_df = apply_v2(db, store_id, result_df, algo, weekly=got(f_week), revenue=got(f_rev), cycles=cycles)
+    if pre is not None:
+        pre.shutdown(wait=False)
     return result_df
 
 
@@ -456,8 +507,24 @@ def query_weekly_sales(db, store_id, codes, weeks=None):
     return out
 
 
+_REV_CACHE = {}         # (数据库, 门店, 天数, 日期) → (查的时间, 结果)：全店 91 天销售额，同一批检查 / 配货里各处都要用
+REV_TTL = 600           # 10 分钟内再要直接用（ABC 按 91 天销售额排，几分钟里的新销售不会改变排名）
+
+
 def query_store_revenue(db, store_id, days=91):
     """本店近 days 天每个商品的销售额（不含税），用于 ABC；查不了返回 None"""
+    import time
+    key = (str(getattr(getattr(db, "engine", None), "url", "")), int(store_id), int(days), datetime.now().date())
+    hit = _REV_CACHE.get(key)
+    if hit and time.time() - hit[0] < REV_TTL:
+        return hit[1]
+    res = _query_store_revenue(db, store_id, days)
+    if res is not None:
+        _REV_CACHE[key] = (time.time(), res)
+    return res
+
+
+def _query_store_revenue(db, store_id, days=91):
     import pandas as pd
     since = datetime.now().date() - timedelta(days=days)
     try:
@@ -773,17 +840,14 @@ def stock_snapshot(db, codes, days_list, reorder_cycle, stores, use_supplier_cyc
     几家门店同一批商品的库存和日均：{门店号: {商品编号: {inv, daily, cycle, ean}}}。
     own / own_df：本店已经算过的结果，直接用，不再查。
     """
-    snap = {}
-    for k, sid in enumerate(stores):
-        if on_store:
-            on_store(k, sid)
+    def one(sid):
         if sid == own and own_df is not None:
             df = own_df
         else:
             df = compute_suggestions(db, sid, codes, days_list, reorder_cycle, None,
                                      use_supplier_cycles=use_supplier_cycles, algo=algo)
-        snap[sid] = stock_of(df, days_list)
-    return snap
+        return stock_of(df, days_list)
+    return per_store(stores, one, on_store)
 
 
 def snapshot_path(main_order_path):

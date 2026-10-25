@@ -2394,4 +2394,7 @@ TRANSLATIONS = {
     '中图': ('Medium', 'Medie'),
     '大图': ('Large', 'Grandi'),
     '表格里商品图的大小（鼠标停在图上会弹出大图）；重新打开表格窗口后生效': ('Size of product images in tables (hover over an image to see it large); applies when the table window is reopened', 'Dimensione delle immagini nelle tabelle (passa il mouse sull\'immagine per vederla grande); vale alla riapertura della finestra'),
+    '⚠ 几家门店一起查没成功，改成一家家查：{0}': ('⚠ Querying the stores together failed, querying them one by one: {0}', '⚠ Interrogazione dei negozi insieme non riuscita, li interrogo uno alla volta: {0}'),
+    '[检查清单] 数据库查询用了 {0:.0f} 秒': ('[Check list] Database queries took {0:.0f} s', '[Lista di controllo] Interrogazioni al database: {0:.0f} s'),
+    '[检查清单] 读报价用了 {0:.0f} 秒': ('[Check list] Reading quotes took {0:.0f} s', '[Lista di controllo] Lettura listini: {0:.0f} s'),
 }

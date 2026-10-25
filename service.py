@@ -1508,10 +1508,48 @@ def _write_missing_report(distribuire_path, rows, assignment):
 _DESC_HEADS = ("DESCRIZIONE", "DESCRIPTION", "ARTICOLO", "PRODOTTO", "DENOMINAZIONE", "NOME")
 
 
+PRICE_CACHE_VER = 1     # 读报价的规则改了（例如找列的办法）就加 1，旧的缓存自动作废
+
+
+def _price_cache_path(path):
+    """报价读出来的结果存在 cache/quotes/：同一个文件（路径、大小、修改时间都一样）下次直接用，不用再开 Excel 算公式"""
+    import hashlib
+    from settings import app_dir
+    st = os.stat(path)
+    key = f"{PRICE_CACHE_VER}|{os.path.normcase(os.path.abspath(path))}|{st.st_size}|{st.st_mtime_ns}"
+    return os.path.join(app_dir(), "cache", "quotes", hashlib.sha1(key.encode("utf-8")).hexdigest() + ".json")
+
+
 def read_price_file(path, log=None):
     """
     一个供应商报价文件 → {EAN: {"price": 件价, "pack": 每箱件数, "desc": 品名}}（和比价时读报价同一套规则）
+    文件没改过就用上次读的结果（cache/quotes），改过（或换了文件）就重新读。
     """
+    import json
+    try:
+        cp = _price_cache_path(path)
+    except OSError:
+        cp = None
+    if cp and os.path.exists(cp):
+        try:
+            with open(cp, encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    out = _read_price_file(path, log)
+    if cp:
+        try:
+            os.makedirs(os.path.dirname(cp), exist_ok=True)
+            tmp = cp + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(out, f, ensure_ascii=False)
+            os.replace(tmp, cp)
+        except Exception:
+            pass
+    return out
+
+
+def _read_price_file(path, log=None):
     log = log or (lambda *a: None)
     wb, _, _ = safe_open(path, log)
     if not wb:

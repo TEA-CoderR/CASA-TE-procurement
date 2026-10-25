@@ -11,6 +11,7 @@
 import os
 import math
 import threading
+import time
 from datetime import datetime
 
 from PySide6.QtCore import Qt, QObject, Signal, QTimer
@@ -663,7 +664,31 @@ class OrderCheck:
                     union += [c for c in x["codes"] if c not in union]
                 dlg.post_step(0, "done", f"{len(union)}", "")
                 dlg.post_step(1, "running", "", "")
+                t0 = time.time()
+                pre_snap = None
+                others = [k for k in R.STORES if k != 0]
+                if len(lists) == 1 and lists[0]["codes"] and union:
+                    # 只有一份清单（平常都是）：这家店和其他门店（调货用）同时查，结果和一家家查一样
+                    x0 = lists[0]
+                    log(tr("[检查清单] 门店 {0}，{1} 个商品", R.STORES.get(x0["store"], x0["store"]), len(x0["codes"])))
+                    every = [x0["store"]] + [k for k in others if k != x0["store"]]
+
+                    def one(sid):
+                        return R.compute_suggestions(db, sid, x0["codes"] if sid == x0["store"] else union, days, cycle,
+                                                     None, use_supplier_cycles=use_cfg, algo=algo)
+                    try:
+                        dfs = R.per_store(every, one, lambda k, sid: (
+                            dlg.post_step(1, "running", f"{k + 1} / {len(every)}", R.STORES.get(sid, "")),
+                            dlg.post_progress(15 + 70 * k / max(1, len(every)))))
+                        x0["df"] = dfs[x0["store"]]
+                        x0["result"] = R.to_rows(x0["df"], x0["rows"], days)
+                        pre_snap = {sid: R.stock_of(dfs[sid], days) for sid in others if sid in dfs}
+                    except Exception as e:
+                        x0.pop("df", None)
+                        log(tr("⚠ 几家门店一起查没成功，改成一家家查：{0}", e))
                 for k, x in enumerate(lists):
+                    if x.get("df") is not None:
+                        continue
                     sid = x["store"]
                     log(tr("[检查清单] 门店 {0}，{1} 个商品", R.STORES.get(sid, sid), len(x["codes"])))
                     dlg.post_step(1, "running", f"{k + 1} / {len(lists)}", R.STORES.get(sid, ""))
@@ -677,8 +702,8 @@ class OrderCheck:
                 # 五家门店这批商品（所有清单合起来）的库存和日均：先算门店间调货，比价时算够卖天数（查不到不影响检查）
                 dlg.post_step(2, "running", "", "")
                 dlg.post_progress(55)
-                snap = None
-                if union:
+                snap = pre_snap
+                if union and snap is None:
                     try:
                         others = [k for k in R.STORES if k != 0]
                         one = lists[0] if len(lists) == 1 else None          # 只有一份清单：它自己那家不用再查
@@ -694,6 +719,7 @@ class OrderCheck:
                 else:
                     dlg.post_step(2, "done", "", "")
                 sup_info = R.supplier_info(db, union) if union else {}     # Codice Fornitore + 供应商名（只显示用）
+                log(tr("[检查清单] 数据库查询用了 {0:.0f} 秒", time.time() - t0))
                 db.engine.dispose()
                 rows = []
                 for x in lists:
@@ -708,7 +734,10 @@ class OrderCheck:
                 # 箱规、件价用 distribuire 里最便宜那家的报价（比价默认挑它）；报价里没有的才用数据库的
                 dlg.post_step(3, "running", "", "")
                 dlg.post_progress(86)
+                t1 = time.time()
                 n_q, n_files = self._apply_quotes(rows, price_dir, log)
+                if n_files:
+                    log(tr("[检查清单] 读报价用了 {0:.0f} 秒", time.time() - t1))
                 dlg.post_step(3, "done", tr("{0} 份报价", n_files) if n_files else tr("没有报价，用数据库"), "")
                 dlg.post_step(4, "running", "", "")
                 dlg.post_progress(95)
