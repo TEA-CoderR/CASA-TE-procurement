@@ -17,6 +17,7 @@
 - 用户和同事**共用同一个文件夹**（`procurement_system ok 2.5`）开发。请直接在这个文件夹里改代码、`git commit`、`git push`，不要只推到云端分支却把文件另外写进文件夹（之前这样做过，文件夹和 git 记录对不上，发布前得先同步）。
 
 ## 最近改动（给接手的 AI 的纸条，新的写在最上面）
+- 2026-10-25（bug 修复）：报价表头同一个名字出现两次（Petrillo：J 列「CODICE EAN」是空的，真正的条码在 P 列）→ 以前 `find_col` 取第一列，整份报价读不到（PETRILLO 一件都没分到、缺失多了）。新增 `utils.find_col_best`（同名表头选下面有内容最多的那列），service 里读报价 / 回写供应商文件的 EAN 列都用它。比价出错时 PermissionError 给出「文件被 Excel / WPS 打开」的提示（`main._friendly_error`）。
 - 2026-10-25（用户定，FOIANO 清单实测后）：检查门店订货清单 `order_check.init_boxes`：① 门店清单数量**一律是箱**（`qty_unit` 永远 colli，去掉了「数量单位」下拉）；② **先不做多订**：建议箱数 sbox = min(系统算的 sys_box, 清单箱数)；③ 系统算出要订（哪怕不到一箱）至少 1 箱；④ **新品保护** `is_new_item`（180 天没卖过，或 180 天销量全在最近 60 天）→ 按清单，protect="new"；⑤ **缺货保护**：库存 ≤ 0、门店点名要 → 至少 1 箱，protect="empty"。负库存照旧当 0（不再导致狂订，因为封顶在清单）。原因列有对应说明。
 - 2026-10-23（bug 修复）：SCHEDA 里同一编号好几行（ASS. 整箱 + 各颜色每箱 1 件、同一商品不同包装 / 颜色）：① 以前别的门店页的 rowmap 按编号对到第一次出现的行，颜色行的数量（件数当箱）写到 ASS. 那一行（LATEX：MARLIA 页 ASS. 27 箱 = 648 件）→ 现在同一行号编号对得上就一行对一行，不然第 n 次出现对第 n 次；② 以前每一行都按同一份需求算一遍建议量（订好几遍）→ `store_orders.mark_duplicates`：建议量只算在第一次出现的行，后面的行 dup_of + db_code = "dup:编号"（查不到需求），订货明细显示「同上（重复编号）」，要订自己填；显示编号用 `item_code`。
 - 2026-10-22（用户定）：门店间调货设置**门店配货和批发商比价分开**：门店配货 = settings.store_orders.transfer（默认启用，「配货设置 ③」）；批发商比价 = settings.wholesale_transfer（默认不启用，比价设置「门店间调货…」）。`transfers.wholesale_raw(settings)` 取批发商的设置（没设过 = 照抄门店配货的参数但 enabled=False）；service.transfer_status / wholesale_transfers、order_check 的调货都用它。

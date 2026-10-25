@@ -207,6 +207,29 @@ def get_last_row(ws, col):
 # =====================
 # 清理 EAN 编码
 # =====================
+def find_col_best(ws, name, max_scan=80):
+    """
+    和 find_col 一样找表头，但表头里同一个名字出现好几次时（例如 Petrillo 的报价有两列「CODICE EAN」，
+    前一列是空的），选表头下面有内容最多的那一列；都一样就用第一列。返回 (列号, 行号)
+    """
+    hits = []
+    for row_idx in range(1, min(11, ws.max_row + 1)):
+        for cell in ws[row_idx]:
+            if cell.value and str(cell.value).strip() == name:
+                hits.append((cell.column, cell.row))
+    if len(hits) <= 1:
+        return hits[0] if hits else (None, None)
+
+    def filled(col, row):
+        n = 0
+        for r in range(row + 1, min(row + 1 + max_scan, ws.max_row + 1)):
+            v = ws.cell(r, col).value
+            if v is not None and str(v).strip() and any(ch.isdigit() for ch in str(v)):
+                n += 1
+        return n
+    return max(hits, key=lambda h: (filled(*h), -h[0]))
+
+
 def clean_ean(val):
     """
     清理 EAN 编码：去除前后空格和前导零。

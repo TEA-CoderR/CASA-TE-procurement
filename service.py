@@ -8,7 +8,7 @@ from openpyxl import load_workbook
 
 from utils import (
     convert_to_xlsx, calculate_formulas, cleanup_calculated_files,
-    find_col, get_last_row, clean_ean, normalize, parse_price,
+    find_col, find_col_best, get_last_row, clean_ean, normalize, parse_price,
     is_valid_xlsx
 )
 from config import (
@@ -770,7 +770,7 @@ def run_process(ordine_file, eliminare_path, distribuire_path, log, progress=Non
 
         ws = wb.active
 
-        col_ean, row_ean = find_col(ws, COL_CODICE_EAN)
+        col_ean, row_ean = find_col_best(ws, COL_CODICE_EAN)
         col_price, row_price = find_col(ws, COL_PREZZO_NETTO)
 
         if not col_ean or not col_price:
@@ -1119,7 +1119,7 @@ def run_process(ordine_file, eliminare_path, distribuire_path, log, progress=Non
 
         ws = wb_supplier.active
 
-        col_ean, row_ean_supplier = find_col(ws, COL_CODICE_EAN)
+        col_ean, row_ean_supplier = find_col_best(ws, COL_CODICE_EAN)
         col_ord, row_ord = find_col(ws, COL_ORDINE)
 
         if not col_ean or not col_ord:
@@ -1449,7 +1449,7 @@ def _supplier_work_path(path):
 
 def _supplier_index(ws, work_path):
     """返回 (ORDINE 列号, {EAN: 行号}, 箱数写法)，找不到列返回 (None, None, None)"""
-    col_ean, row_ean = find_col(ws, COL_CODICE_EAN)
+    col_ean, row_ean = find_col_best(ws, COL_CODICE_EAN)
     col_ord, row_ord = find_col(ws, COL_ORDINE)
     if not col_ean or not col_ord:
         return None, None, None
@@ -1518,7 +1518,7 @@ def read_price_file(path, log=None):
         raise ValueError(tr("打不开报价文件：{0}", os.path.basename(path)))
     try:
         ws = wb.active
-        col_ean, row_ean = find_col(ws, COL_CODICE_EAN)
+        col_ean, row_ean = find_col_best(ws, COL_CODICE_EAN)
         col_price, row_price = find_col(ws, COL_PREZZO_NETTO)
         if not col_ean or not col_price:
             raise ValueError(tr("{0} 缺少必要列", os.path.basename(path)))

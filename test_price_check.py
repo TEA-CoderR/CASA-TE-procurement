@@ -60,3 +60,16 @@ def test_best_and_apply():
     assert rows[0]["file_pcs"] == 24                 # 清单件数不动
     assert rows[1]["pack"] == 4 and "quote_sup" not in rows[1]
     assert rows[2]["pack"] == best["2"]["pack"] and rows[2]["quote_sup"] == "MEGA CASH"   # 数据库没有的也去报价里找
+
+
+def test_duplicate_ean_header_picks_filled_column():
+    """报价表头有两列「CODICE EAN」、前一列是空的（Petrillo）：用有条码的那一列"""
+    from openpyxl import Workbook
+    import utils
+    ws = Workbook().active
+    ws.append(["Codice", "ORDINE", "DESCRIZIONE", "PZ", "PREZZO NETTO", "CODICE EAN", "FOTO", "CODICE EAN"])
+    for k in range(5):
+        ws.append([k, 0, "X", 12, 1.5, None, None, f"80000000000{k}  "])
+    assert utils.find_col_best(ws, "CODICE EAN") == (8, 1)
+    assert utils.find_col_best(ws, "PREZZO NETTO") == (5, 1)
+    assert utils.find_col_best(ws, "NIENTE") == (None, None)
