@@ -647,9 +647,15 @@ class OrderCheck:
         dlg.show()
 
         def work():
+            q_pool = None
             try:
                 dlg.post_step(0, "running", "", "")
                 dlg.post_progress(5)
+                # 报价（Excel）和数据库同时读：读报价主要用电脑，查数据库主要在等服务器，一起做省时间
+                from concurrent.futures import ThreadPoolExecutor
+                q_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="quotes")
+                t_q = time.time()
+                q_fut = q_pool.submit(self._read_quotes, price_dir, log)
                 db = R.make_db(dbs)
                 need = [r["ean"] for x in lists for r in x["rows"] if not r["code"] and r["ean"]]
                 if need:
@@ -734,10 +740,9 @@ class OrderCheck:
                 # 箱规、件价用 distribuire 里最便宜那家的报价（比价默认挑它）；报价里没有的才用数据库的
                 dlg.post_step(3, "running", "", "")
                 dlg.post_progress(86)
-                t1 = time.time()
-                n_q, n_files = self._apply_quotes(rows, price_dir, log)
+                n_q, n_files = self._apply_quotes(rows, price_dir, log, files=q_fut.result())
                 if n_files:
-                    log(tr("[检查清单] 读报价用了 {0:.0f} 秒", time.time() - t1))
+                    log(tr("[检查清单] 读报价用了 {0:.0f} 秒（和数据库同时读）", time.time() - t_q))
                 dlg.post_step(3, "done", tr("{0} 份报价", n_files) if n_files else tr("没有报价，用数据库"), "")
                 dlg.post_step(4, "running", "", "")
                 dlg.post_progress(95)
@@ -753,6 +758,9 @@ class OrderCheck:
                 log(traceback.format_exc())
                 dlg.post_finished(False, str(e))
                 self.sig.done.emit((None, str(e), None))
+            finally:
+                if q_pool is not None:
+                    q_pool.shutdown(wait=False)
 
         threading.Thread(target=work, daemon=True).start()
 
@@ -1616,11 +1624,45 @@ class OrderCheck:
         root = self.win.ws_root() if hasattr(self.win, "ws_root") else self.batch_root()
         return W.price_dir(root) if root else ""
 
-    def _apply_quotes(self, rows, price_dir, log):
-        """读 price_dir 里的报价，检查清单的行改用最便宜那家的每箱件数和件价：(改了几行, 读了几份报价)"""
+    def _read_quotes(self, price_dir, log):
+        """读 price_dir 里的全部报价：{供应商名: {条码: 报价}}；没有文件夹返回 None。可以在后台线程里跑"""
         if not price_dir or not os.path.isdir(price_dir):
+            return None
+        com = False
+        try:                        # 个别报价还要用 Excel 算公式：后台线程里先准备好 Excel 调用
+            import pythoncom
+            pythoncom.CoInitialize()
+            com = True
+        except Exception:
+            pass
+        try:
+            return self._read_quote_files(price_dir, log)
+        finally:
+            if com:
+                try:
+                    pythoncom.CoUninitialize()
+                except Exception:
+                    pass
+
+    def _apply_quotes(self, rows, price_dir, log, files=False):
+        """读 price_dir 里的报价，检查清单的行改用最便宜那家的每箱件数和件价：(改了几行, 读了几份报价)
+        files：已经提前读好的报价（_read_quotes 的结果）；不给就现在读"""
+        if files is False:
+            files = self._read_quotes(price_dir, log)
+        if files is None:
             log(tr("[检查清单] 没找到供应商报价文件夹，箱规和件价用数据库的"))
             return 0, 0
+        import price_check as PC
+        if not files:
+            log(tr("[检查清单] 供应商报价文件夹里没有报价，箱规和件价用数据库的"))
+            return 0, 0
+        n = PC.apply_quotes(rows, PC.best_quotes(files))
+        diff = sum(1 for x in rows if x.get("quote_sup") and x.get("db_pack") and abs(x["pack"] - x["db_pack"]) > 1e-9)
+        log(tr("[检查清单] {0} 份报价：{1} 个商品改用最便宜那家的箱规和件价，其中 {2} 个箱规和数据库不一样",
+               len(files), n, diff))
+        return n, len(files)
+
+    def _read_quote_files(self, price_dir, log):
         import service as SV
         import price_check as PC
         import supplier_names as SN
@@ -1635,14 +1677,7 @@ class OrderCheck:
                 files[name if name not in files else f"{name} ({SN.stem(f)})"] = SV.read_price_file(os.path.join(price_dir, f))
             except Exception as e:
                 log(tr("⚠ 报价文件读不了，跳过：{0}（{1}）", f, e))
-        if not files:
-            log(tr("[检查清单] 供应商报价文件夹里没有报价，箱规和件价用数据库的"))
-            return 0, 0
-        n = PC.apply_quotes(rows, PC.best_quotes(files))
-        diff = sum(1 for x in rows if x.get("quote_sup") and x.get("db_pack") and abs(x["pack"] - x["db_pack"]) > 1e-9)
-        log(tr("[检查清单] {0} 份报价：{1} 个商品改用最便宜那家的箱规和件价，其中 {2} 个箱规和数据库不一样",
-               len(files), n, diff))
-        return n, len(files)
+        return files
 
     def batch_root(self):
         """

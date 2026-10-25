@@ -396,6 +396,21 @@ def safe_open(path, log):
         return None, None, None
 
 
+def open_values(path, log):
+    """
+    只读不写的 Excel：返回 (wb, ws)。公式的结果文件里都存好了（Excel / WPS 保存的都是）→ 只读模式直接读值，
+    wb = None（不用关）；不然照旧用 Excel 算一遍公式（safe_open）。打不开返回 (None, None)
+    """
+    from utils import formulas_cached, read_values
+    if formulas_cached(path):
+        try:
+            return None, read_values(path)
+        except Exception:
+            pass
+    wb, _, _ = safe_open(path, log)
+    return (wb, wb.active) if wb else (None, None)
+
+
 def safe_save(wb, original_path, calc_path, log):
     """
     保存修改：直接使用 openpyxl 保存，避免 Excel COM 遍历所有单元格的性能问题。
@@ -764,18 +779,17 @@ def run_process(ordine_file, eliminare_path, distribuire_path, log, progress=Non
 
         path = os.path.join(distribuire_path, file)
 
-        wb, orig_path, calc_path_supplier = safe_open(path, log)
-        if not wb:
+        wb, ws = open_values(path, log)      # 只读报价：公式结果存在文件里就不开 Excel（结果一样）
+        if ws is None:
             continue
-
-        ws = wb.active
 
         col_ean, row_ean = find_col_best(ws, COL_CODICE_EAN)
         col_price, row_price = find_col(ws, COL_PREZZO_NETTO)
 
         if not col_ean or not col_price:
             log(tr("⚠ {0} 缺少必要列", file))
-            wb.close()
+            if wb is not None:
+                wb.close()
             continue
 
         # 数据从表头行之后开始
@@ -826,7 +840,8 @@ def run_process(ordine_file, eliminare_path, distribuire_path, log, progress=Non
         log(tr("{0} ✔ 价格:{1} 命中:{2}", short_name, len(price_map), hit_count))
         supplier_hits[file] = (len(price_map), hit_count)
 
-        wb.close()
+        if wb is not None:
+            wb.close()
         q += 1
 
     # ②.5 写入 EAN 出现次数统计
@@ -1549,13 +1564,16 @@ def read_price_file(path, log=None):
     return out
 
 
-def _read_price_file(path, log=None):
+def _read_price_file(path, log=None, fast=True):
     log = log or (lambda *a: None)
-    wb, _, _ = safe_open(path, log)
-    if not wb:
+    if fast:
+        wb, ws = open_values(path, log)     # 公式结果文件里都存好了：只读模式直接读值，不开 Excel（结果一样，快很多）
+    else:
+        wb, _, _ = safe_open(path, log)
+        ws = wb.active if wb else None
+    if ws is None:
         raise ValueError(tr("打不开报价文件：{0}", os.path.basename(path)))
     try:
-        ws = wb.active
         col_ean, row_ean = find_col_best(ws, COL_CODICE_EAN)
         col_price, row_price = find_col(ws, COL_PREZZO_NETTO)
         if not col_ean or not col_price:
@@ -1578,11 +1596,12 @@ def _read_price_file(path, log=None):
                           "desc": str(ws.cell(i, col_desc).value or "").strip() if col_desc else ""}
         return out
     finally:
-        wb.close()
-        try:
-            safe_cleanup_calculated_files(log)      # 计算公式用的临时副本（.calc.xlsx）不留在 distribuire 里
-        except Exception:
-            pass
+        if wb is not None:
+            wb.close()
+            try:
+                safe_cleanup_calculated_files(log)      # 计算公式用的临时副本（.calc.xlsx）不留在 distribuire 里
+            except Exception:
+                pass
 
 
 def new_item_candidates(price_map, order_rows):

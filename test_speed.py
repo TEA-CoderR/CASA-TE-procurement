@@ -118,13 +118,107 @@ def test_query_reorder_data_parallel_keeps_results():
         raise AssertionError(q)
     old = D.pd.read_sql
     D.pd.read_sql = fake_sql
+    D.DatabaseManager.SINGLE_PASS_PERIODS = False
     try:
         r = m.query_reorder_data(1, [1, 2], [30, 60])
     finally:
         D.pd.read_sql = old
+        D.DatabaseManager.SINGLE_PASS_PERIODS = True
     assert list(r["inventory"]["store_inventory"]) == [5, 6]
     assert list(r["suppliers"]["IDFornitore"]) == [9, 9]
     assert list(r["sales_1"]["sales_qty"]) == [3]
     assert list(r["sales_2"]["sales_qty"]) == [7, 1]
     assert list(r["sales_after_last_in"]["SalesAfterLastIn"]) == [4, 0]
     assert len(r["last_sale_date"]) == 2
+
+
+def test_period_sales_one_pass_equals_union():
+    """各周期销量一次查完（销售表只翻一遍）：和原来 UNION ALL 分开查的结果一模一样（用 sqlite 模拟销售表）"""
+    import random
+    import sqlite3
+    from datetime import datetime, timedelta
+    import pandas as pd
+    from fenpei import database as D
+    con = sqlite3.connect(":memory:", check_same_thread=False)
+    lock = threading.Lock()
+    con.execute("CREATE TABLE vendite_list_1 (CodArticolo INT, IDFornitore INT, Data TEXT, Qta REAL, Guadagno REAL,"
+                " TotRighe REAL, TotCodIva REAL)")
+    con.execute("CREATE TABLE prodotti (CodArticolo INT, Descrizione TEXT, CodBarre TEXT, ArticoloForn TEXT, PrezzoForn REAL,"
+                " PrezzoVedi1 REAL, CodIva INT, qtasmallbox INT, Categoria INT, Sottocategoria INT, IDFornitore INT)")
+    con.execute("CREATE TABLE giacenza (CodArticolo INT, G0 REAL, G1 REAL, G2 REAL, G3 REAL, G4 REAL, G5 REAL)")
+    con.execute("CREATE TABLE categorie (Categorie INT, SottoCategorie INT, Descrizione TEXT)")
+    con.execute("CREATE TABLE caricolistalist (CodArticolo INT, Cdata TEXT, Quantita REAL)")
+    for c in range(1, 61):
+        con.execute("INSERT INTO prodotti (CodArticolo) VALUES (?)", (c,))
+    rnd = random.Random(7)
+    now = datetime.now()
+    for _ in range(3000):
+        d = now - timedelta(days=rnd.randint(0, 400), hours=rnd.randint(0, 23))
+        con.execute("INSERT INTO vendite_list_1 VALUES (?,?,?,?,?,?,?)",
+                    (rnd.randint(1, 60), rnd.choice([5, 6]), d.strftime("%Y-%m-%d %H:%M:%S"),
+                     rnd.choice([1, 2, -1, 0, None]), rnd.uniform(-1, 5), rnd.uniform(0, 30), rnd.uniform(0, 5)))
+
+    old = D.pd.read_sql
+
+    def fake_sql(q, engine, params=None):
+        p = tuple(str(x) if hasattr(x, "strftime") else x for x in (params or ()))
+        with lock:
+            return old(q.replace("%s", "?"), con, params=p)
+    m = object.__new__(D.DatabaseManager)
+    m.engine = None
+    D.pd.read_sql = fake_sql
+    try:
+        for sup, days, se in ((None, [30, 60, 90, 180], (None, None)), ([5], [30, 60, 90, 180, 120], (None, None)),
+                              (None, [7, 30, 365], ((now - timedelta(days=50)).date(), (now - timedelta(days=10)).date()))):
+            outs = []
+            for single in (False, True):
+                D.DatabaseManager.SINGLE_PASS_PERIODS = single
+                r = m.query_reorder_data(1, list(range(1, 61)), days, sup, start_date=se[0], end_date=se[1])
+                outs.append(r)
+            for i in range(1, len(days) + 1):
+                for k in (f"sales_{i}", f"margin_{i}"):
+                    a = outs[0][k].sort_values("CodArticolo").reset_index(drop=True)
+                    b = outs[1][k].sort_values("CodArticolo").reset_index(drop=True)
+                    assert len(a) == len(b) and len(a) > 0, (k, len(a), len(b))
+                    pd.testing.assert_frame_equal(a, b, check_dtype=False)
+    finally:
+        D.pd.read_sql = old
+        D.DatabaseManager.SINGLE_PASS_PERIODS = True
+
+
+def test_formulas_cached_and_value_sheet():
+    """报价不开 Excel 直接读：只有公式结果都存在文件里才这样读；ValueSheet 和普通打开读到的一样"""
+    import tempfile
+    from openpyxl import Workbook, load_workbook
+    import utils as U
+    d = tempfile.mkdtemp()
+    plain, formula = os.path.join(d, "a.xlsx"), os.path.join(d, "b.xlsx")
+    wb = Workbook()
+    ws = wb.active
+    ws.append(["CODICE EAN", "PREZZO NETTO", "PZ"])
+    ws.append(["8001", 1.5, 6])
+    ws.append([8002, "2,30", None])
+    wb.save(plain)
+    ws["D2"] = "=B2*C2"            # openpyxl 保存的公式没有计算结果 → 要用 Excel 算
+    wb.save(formula)
+    assert U.formulas_cached(plain) is False          # openpyxl 存的文件要求打开时重算 → 保守，用 Excel
+    import zipfile
+    excel_like = os.path.join(d, "c.xlsx")             # 和 Excel 存的一样：不要求重算
+    with zipfile.ZipFile(plain) as zi, zipfile.ZipFile(excel_like, "w") as zo:
+        for n in zi.namelist():
+            data = zi.read(n)
+            if n == "xl/workbook.xml":
+                data = data.replace(b' fullCalcOnLoad="1"', b"")
+            zo.writestr(n, data)
+    assert U.formulas_cached(excel_like) is True
+    assert U.formulas_cached(formula) is False
+    assert U.formulas_cached(os.path.join(d, "x.xls")) is False
+    full = load_workbook(plain, data_only=True).active
+    v = U.read_values(plain)
+    assert v.max_row == full.max_row
+    for r in range(1, 5):
+        for c in range(1, 5):
+            assert v.cell(r, c).value == full.cell(r, c).value
+    assert [x.value for x in v[1]] == ["CODICE EAN", "PREZZO NETTO", "PZ"]
+    assert list(v.iter_rows(min_row=2, max_row=2, values_only=True)) == [("8001", 1.5, 6)]
+    assert U.find_col(v, "PZ") == (3, 1)

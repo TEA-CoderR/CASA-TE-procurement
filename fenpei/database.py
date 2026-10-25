@@ -558,8 +558,10 @@ class DatabaseManager:
         combined_query = " UNION ALL ".join(all_sales_query_parts)
         combined_query = f"SELECT * FROM ({combined_query}) AS combined"
         
-        # 执行合并查询
-        f_comb = _pool.submit(pd.read_sql, combined_query, self.engine, params=tuple(all_params))
+        # 执行合并查询（⭐ 速度：先试「销售表只翻一遍、同时算出每个周期」的写法，结果和上面 UNION ALL 一样；
+        #    万一数据库不认这种写法，退回 UNION ALL）
+        f_comb = _pool.submit(self._period_sales, combined_query, tuple(all_params), sales_table, placeholders,
+                              clean_product_codes, days_list, supplier_ids, start_date, end_date)
         inventory_df = f_inv.result()
         # ⭐ 额外去重：如果数据库中有重复记录，取第一条
         if len(inventory_df) > len(clean_product_codes):
@@ -582,6 +584,61 @@ class DatabaseManager:
         
         return result
     
+    SINGLE_PASS_PERIODS = True
+
+    def _period_sales(self, union_query, union_params, sales_table, placeholders, codes, days_list,
+                      supplier_ids, start_date, end_date):
+        """各周期销量 / 毛利 / 净销售额，返回和 UNION ALL 查询一样的表（period_index, CodArticolo, period_days, ...）"""
+        if self.SINGLE_PASS_PERIODS:
+            try:
+                return self._period_sales_one_pass(sales_table, placeholders, codes, days_list, supplier_ids,
+                                                   start_date, end_date)
+            except Exception as e:
+                print(f"[WARN] 一次查完各周期销量没成功，改用原来的查询：{e}")
+        return pd.read_sql(union_query, self.engine, params=union_params)
+
+    def _period_sales_one_pass(self, sales_table, placeholders, codes, days_list, supplier_ids, start_date, end_date):
+        """
+        销售表只翻一遍：每个周期用 CASE WHEN 只加自己那段日期的行（SUM 里不算的是 NULL，和分开查一样）；
+        某个商品在某个周期一行都没有 → 那个周期没有这一行（和分开查 GROUP BY 一样）。
+        """
+        conds, cond_params = [], []
+        for i, days in enumerate(days_list, 1):
+            is_period = (i == len(days_list))
+            if is_period and start_date is not None and end_date is not None:
+                end_date_excl = end_date + timedelta(days=1) if hasattr(end_date, 'strftime') else end_date
+                conds.append("(Data >= %s AND Data < %s)")
+                cond_params.append([start_date, end_date_excl])
+            else:
+                conds.append("(Data >= %s)")
+                cond_params.append([datetime.now().date() - timedelta(days=days)])
+        sel, params = [], []
+        for i, (c, cp) in enumerate(zip(conds, cond_params), 1):
+            sel.append(f"SUM(CASE WHEN {c} THEN Qta END) AS q{i}, "
+                       f"SUM(CASE WHEN {c} THEN Guadagno END) AS g{i}, "
+                       f"SUM(CASE WHEN {c} THEN TotRighe - TotCodIva END) AS n{i}, "
+                       f"SUM(CASE WHEN {c} THEN 1 ELSE 0 END) AS k{i}")
+            params += cp * 4
+        query = (f"SELECT CodArticolo, {', '.join(sel)} FROM {sales_table} "
+                 f"WHERE CodArticolo IN ({placeholders}) AND ({' OR '.join(conds)})")
+        params += list(codes)
+        for cp in cond_params:
+            params += cp
+        if supplier_ids:
+            clean_supplier_ids = self._sanitize_int_list(supplier_ids)
+            if clean_supplier_ids:
+                query += f" AND IDFornitore IN ({self._build_in_placeholders(len(clean_supplier_ids))})"
+                params += clean_supplier_ids
+        query += " GROUP BY CodArticolo"
+        wide = pd.read_sql(query, self.engine, params=tuple(params))
+        parts = []
+        for i, days in enumerate(days_list, 1):
+            w = wide[pd.to_numeric(wide[f"k{i}"], errors="coerce").fillna(0) > 0]
+            parts.append(pd.DataFrame({"period_index": i, "CodArticolo": w["CodArticolo"].values, "period_days": days,
+                                       "sales_qty": w[f"q{i}"].values, "total_guadagno": w[f"g{i}"].values,
+                                       "total_net_sales": w[f"n{i}"].values}))
+        return pd.concat(parts, ignore_index=True)
+
     def get_last_positive_receipt(self, product_codes: List[int]) -> pd.DataFrame:
         """
         获取产品最后一次正数入库记录和入库时间

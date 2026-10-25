@@ -116,6 +116,96 @@ def calculate_formulas(path):
             _safe_quit_excel(excel)
 
 
+_CELL_F = re.compile(rb"<f[\s>/]")
+_VOLATILE = (b"TODAY(", b"NOW(", b"RAND(", b"RANDBETWEEN(", b"INDIRECT(", b"OFFSET(", b"CELL(", b"INFO(")
+
+
+def formulas_cached(path):
+    """
+    .xlsx 里每个公式格子都存了计算结果（Excel / WPS 保存时都会存），而且结果不会因为「今天」或外部文件变
+    → True：直接读存好的值，和用 Excel 打开算一遍得到的一样，不用开 Excel（快很多）。
+    拿不准（没存结果、要求打开时重算、有外部链接、有 TODAY / INDIRECT 这类公式）→ False，照旧用 Excel。
+    """
+    try:
+        if not path.lower().endswith(".xlsx"):
+            return False
+        with zipfile.ZipFile(path) as z:
+            names = z.namelist()
+            if any(n.startswith("xl/externalLinks/") for n in names):
+                return False
+            wbx = z.read("xl/workbook.xml")
+            if re.search(rb'fullCalcOnLoad="(1|true)"', wbx):
+                return False
+            for n in names:
+                if not (n.startswith("xl/worksheets/") and n.endswith(".xml")):
+                    continue
+                data = z.read(n)
+                a, b = data.find(b"<sheetData"), data.find(b"</sheetData>")
+                if a == -1:
+                    continue
+                cells = data[a:b if b != -1 else len(data)]       # 只看格子（条件格式里的 <formula> 不算）
+                for m in _CELL_F.finditer(cells):
+                    end = cells.find(b"</c>", m.start())
+                    seg = cells[m.start():end if end != -1 else len(cells)]
+                    if b"<v>" not in seg or b"<v></v>" in seg:
+                        return False
+                    up = seg.upper()
+                    if any(v in up for v in _VOLATILE):
+                        return False
+        return True
+    except Exception:
+        return False
+
+
+class _VCell:
+    __slots__ = ("value", "row", "column")
+
+    def __init__(self, value, row, column):
+        self.value, self.row, self.column = value, row, column
+
+
+class ValueSheet:
+    """
+    工作表的「只有值」版本：一次把所有格子的值读进内存（openpyxl 只读模式，比普通打开快一倍），
+    提供找列 / 读格子用到的那几个用法（max_row、ws[行]、ws.cell(行, 列).value、iter_rows(values_only=True)）。
+    """
+
+    def __init__(self, rows):
+        self._rows = [tuple(r) for r in rows]
+        self.max_row = len(self._rows)
+        self.max_column = max((len(r) for r in self._rows), default=0)
+
+    def _v(self, r, c):
+        if 1 <= r <= self.max_row:
+            row = self._rows[r - 1]
+            if 1 <= c <= len(row):
+                return row[c - 1]
+        return None
+
+    def cell(self, row, column):
+        return _VCell(self._v(row, column), row, column)
+
+    def __getitem__(self, r):
+        row = self._rows[r - 1] if 1 <= r <= self.max_row else ()
+        return tuple(_VCell(v, r, c) for c, v in enumerate(row, 1))
+
+    def iter_rows(self, min_row=1, max_row=None, values_only=False):
+        max_row = self.max_row if max_row is None else min(max_row, self.max_row)
+        for r in range(min_row, max_row + 1):
+            row = self._rows[r - 1]
+            yield row if values_only else tuple(_VCell(v, r, c) for c, v in enumerate(row, 1))
+
+
+def read_values(path):
+    """只读模式读第一个（活动）工作表的值 → ValueSheet"""
+    from openpyxl import load_workbook as _lw
+    wb = _lw(path, data_only=True, read_only=True)
+    try:
+        return ValueSheet(wb.active.iter_rows(values_only=True))
+    finally:
+        wb.close()
+
+
 def cleanup_calculated_files():
     """清理临时计算公式生成的 .calc.xlsx 文件"""
     for calc_path in _calculated_cache.values():
