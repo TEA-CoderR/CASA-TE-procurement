@@ -520,6 +520,122 @@ class Sparkline(QWidget):
             p.drawText(QRectF(left, y1 + 3, 44, 14), Qt.AlignCenter, f"{a:%d/%m}")
 
 
+class MonthBars(QWidget):
+    """
+    近两年每月销量：横轴是最近 12 个月，每个月两根柱子 —— 淡的是去年同月，实的是今年（看季节、看今年比去年卖得好不好）。
+    set_data(values, keys)：values 24 个月销量（从旧到新），keys 对应的 (年, 月)。悬停显示那个月和去年同月的数。
+    """
+
+    PAD_L, PAD_R, PAD_T, PAD_B = 30, 6, 8, 20
+
+    def __init__(self, parent=None, height=150):
+        super().__init__(parent)
+        self.values, self.keys, self.hover, self.message = [], [], -1, ""
+        self.setMinimumHeight(height)
+        self.setMouseTracking(True)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
+    def set_data(self, values, keys):
+        self.values, self.keys, self.message, self.hover = list(values or []), list(keys or []), "", -1
+        self.update()
+
+    def set_message(self, text):
+        self.values, self.keys, self.message, self.hover = [], [], text, -1
+        self.update()
+
+    def _pairs(self):
+        """[(今年这个月, 去年同月, (年, 月))]，最近 12 个月"""
+        v, k = self.values, self.keys
+        n = len(v)
+        out = []
+        for j in range(max(0, n - 12), n):
+            out.append((v[j], v[j - 12] if j - 12 >= 0 else None, k[j] if j < len(k) else None))
+        return out
+
+    def totals(self):
+        """(近 12 个月合计, 再往前 12 个月合计)"""
+        v = self.values
+        return sum(v[-12:]), sum(v[-24:-12]) if len(v) >= 24 else None
+
+    def _geom(self):
+        x0, x1 = self.PAD_L, self.width() - self.PAD_R
+        y0, y1 = self.PAD_T, self.height() - self.PAD_B
+        return x0, x1, y0, y1, (x1 - x0) / 12.0
+
+    def mouseMoveEvent(self, e):
+        x0, x1, _, _, gw = self._geom()
+        x = e.position().x()
+        i = int((x - x0) / gw) if x0 <= x <= x1 and self.values else -1
+        pairs = self._pairs()
+        i = i if 0 <= i < len(pairs) else -1
+        if i != self.hover:
+            self.hover = i
+            self.update()
+        if i >= 0:
+            cur, prev, key = pairs[i]
+            name = f"{key[0]}-{key[1]:02d}" if key else ""
+            text = tr("{0}：{1:g} 件", name, round(cur, 1))
+            if prev is not None:
+                text += "\n" + tr("去年同月 {0:g} 件", round(prev, 1))
+            QToolTip.showText(e.globalPosition().toPoint(), text, self)
+        else:
+            QToolTip.hideText()
+
+    def leaveEvent(self, _):
+        self.hover = -1
+        self.update()
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        if not self.values:
+            p.setPen(QColor(T("muted")))
+            p.drawText(self.rect(), Qt.AlignCenter, self.message or tr("没有销量数据"))
+            return
+        pairs = self._pairs()
+        x0, x1, y0, y1, gw = self._geom()
+        top = Sparkline._nice_max(max([c for c, _, _ in pairs] + [pv for _, pv, _ in pairs if pv is not None] + [0]))
+        f = QFont(self.font())
+        f.setPointSizeF(max(7.0, f.pointSizeF() - 1.5))
+        p.setFont(f)
+
+        def ypos(v):
+            return y1 - (v / top) * (y1 - y0)
+        for v in (0, top / 2, top):
+            y = ypos(v)
+            p.setPen(QPen(QColor(T("line")), 1, Qt.SolidLine if v == 0 else Qt.DotLine))
+            p.drawLine(QPointF(x0, y), QPointF(x1, y))
+            p.setPen(QColor(T("faint")))
+            p.drawText(QRectF(0, y - 8, x0 - 5, 16), Qt.AlignRight | Qt.AlignVCenter, f"{v:g}")
+        bw = gw * 0.36
+        for i, (cur, prev, key) in enumerate(pairs):
+            gx = x0 + i * gw + gw * 0.12
+            dim = self.hover >= 0 and i != self.hover
+            if prev:
+                c = QColor(T("faint"))
+                c.setAlpha(70 if dim else 130)
+                y = ypos(prev)
+                p.fillRect(QRectF(gx, y, bw, y1 - y), c)
+            if cur:
+                c = QColor(T("accent"))
+                if dim:
+                    c.setAlpha(110)
+                y = ypos(cur)
+                p.fillRect(QRectF(gx + bw, y, bw, y1 - y), c)
+            if key and (i % 2 == 1 or i == len(pairs) - 1):
+                p.setPen(QColor(T("faint")))
+                cx = x0 + (i + 0.5) * gw
+                p.drawText(QRectF(cx - 20, y1 + 3, 40, 14), Qt.AlignCenter, f"{key[1]:02d}/{key[0] % 100:02d}")
+        if 0 <= self.hover < len(pairs):
+            cur = pairs[self.hover][0]
+            cx = x0 + (self.hover + 0.5) * gw
+            p.setPen(QColor(T("text")))
+            fb = QFont(f)
+            fb.setBold(True)
+            p.setFont(fb)
+            p.drawText(QRectF(cx - 30, max(y0, ypos(cur) - 16), 60, 14), Qt.AlignCenter, f"{round(cur, 1):g}")
+
+
 # =====================================================================
 # 一排小色块（表格单元格里）
 # =====================================================================

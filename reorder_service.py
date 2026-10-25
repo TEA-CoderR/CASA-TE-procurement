@@ -507,6 +507,49 @@ def query_weekly_sales(db, store_id, codes, weeks=None):
     return out
 
 
+def month_keys(n=24, today=None):
+    """最近 n 个月（含本月）：[(年, 月), …]，从旧到新"""
+    from datetime import date
+    today = today or date.today()
+    out = []
+    for k in range(n - 1, -1, -1):
+        y, m = today.year, today.month - k
+        while m <= 0:
+            m += 12
+            y -= 1
+        out.append((y, m))
+    return out
+
+
+def monthly_series(by_month, keys):
+    """{(年, 月): 销量} → 按 keys 排好的销量列表（没卖的月份 = 0）"""
+    return [float(by_month.get(k, 0) or 0) for k in keys]
+
+
+def query_monthly_sales(db, store_id, codes, months=24, today=None):
+    """本店这些商品最近 months 个月每个月的销量：{商品编号(str): {(年, 月): 件数}}（只读查询）"""
+    import pandas as pd
+    from datetime import date
+    keys = month_keys(months, today)
+    since = date(keys[0][0], keys[0][1], 1)
+    codes = sorted({int(c) for c in codes if str(c).strip().isdigit()})
+    out = {}
+    for i in range(0, len(codes), 2000):
+        chunk = codes[i:i + 2000]
+        ph = ", ".join(["%s"] * len(chunk))
+        sql = (f"SELECT CodArticolo, YEAR(Data) AS y, MONTH(Data) AS m, SUM(Qta) AS qty "
+               f"FROM vendite_list_{int(store_id)} WHERE CodArticolo IN ({ph}) AND Data >= %s "
+               f"GROUP BY CodArticolo, YEAR(Data), MONTH(Data)")
+        df = pd.read_sql(sql, db.engine, params=tuple(chunk) + (since,))
+        for _, r in df.iterrows():
+            try:
+                c, y, m = str(int(r["CodArticolo"])), int(r["y"]), int(r["m"])
+            except (TypeError, ValueError):
+                continue
+            out.setdefault(c, {})[(y, m)] = float(r["qty"] or 0)
+    return out
+
+
 _REV_CACHE = {}         # (数据库, 门店, 天数, 日期) → (查的时间, 结果)：全店 91 天销售额，同一批检查 / 配货里各处都要用
 REV_TTL = 600           # 10 分钟内再要直接用（ABC 按 91 天销售额排，几分钟里的新销售不会改变排名）
 

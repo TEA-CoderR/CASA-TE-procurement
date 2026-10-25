@@ -222,3 +222,14 @@ def test_formulas_cached_and_value_sheet():
     assert [x.value for x in v[1]] == ["CODICE EAN", "PREZZO NETTO", "PZ"]
     assert list(v.iter_rows(min_row=2, max_row=2, values_only=True)) == [("8001", 1.5, 6)]
     assert U.find_col(v, "PZ") == (3, 1)
+
+
+def test_month_keys_and_series():
+    """近两年每月销量：月份从旧到新，跨年对；没卖的月份 = 0"""
+    from datetime import date
+    k = R.month_keys(24, date(2026, 10, 25))
+    assert len(k) == 24 and k[0] == (2024, 11) and k[-1] == (2026, 10) and k[-12] == (2025, 11)
+    assert R.month_keys(3, date(2026, 1, 5)) == [(2025, 11), (2025, 12), (2026, 1)]
+    assert R.monthly_series({(2026, 10): 5, (2025, 10): 2}, k)[-1] == 5.0
+    assert R.monthly_series({(2026, 10): 5, (2025, 10): 2}, k)[-13] == 2.0
+    assert sum(R.monthly_series({}, k)) == 0

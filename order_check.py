@@ -44,13 +44,20 @@ from reorder_page import short_decision, store_label, algo_widgets
 # 2026-10-21 加了 28 月均（最长周期销量 ÷ 月数，和订货明细一样），放在日均后面
 # 2026-10-21 第六版：用户自己排好的顺序做默认：条码 供应商 Codice 名称 等级 周期 本店库存 日均 月均 够卖 30/60/90/180 天
 #   每箱件数 清单箱数 判断 确定箱数 ✎ 确定件数 调货 到货后够卖（其余收起来）
-_ORDER = [22, 2, 27, 26, 3, 16, 17, 4, 18, 28, 9, 5, 6, 7, 8, 10, 11, 0, 15, 14, 24, 20, 25, 12, 13, 19, 23, 21, 1]
+# 2026-10-25 第七版（用户：审核太累，很多列从来不看）：一行只放判断要用的 ——
+#   商品（图 + 名称）供应商 | 现在：库存 月销 现在够卖 | 订多少：每箱件数 清单 → 确定 ✎ | 结果：订后够卖 金额 | 判断 调货
+#   订后够卖一个数就能看出订得合不合理：红 = 下次到货前就卖完，黄 = 压货。30/60/90/180 天、日均、周期、等级、编号、条码收起来（详情栏里有）
+#   29 = 金额（确定箱数 × 每箱件数 × 件价，有调货的按调货以后的箱数）
+_ORDER = [22, 3, 27, 4, 28, 9, 10, 11, 15, 20, 29, 0, 24, 2, 26, 16, 17, 18, 5, 6, 7, 8, 14, 12, 13, 19, 21, 23, 25, 1]
 # 2026-10-21 第四版：窗口和订货明细一个样子（门店按钮、一行工具条、状态栏），名称显示、供应商和原因收起来（详情栏里有）：
 #   门店 条码 Codice 名称 等级 周期 本店库存 日均 库存够卖 每箱件数 | 清单 判断 确定箱数 确定件数 ✎ 调货 ✎ | 到货后够卖
-_LAYOUT_VER = 8           # 改了默认顺序就加 1
-_DEFAULT_HIDDEN = [1, 12, 13, 19, 21, 23, 25]
-_HIDDEN_VER = 6           # 改了默认藏哪些列就加 1（settings.COMPANY_DEFAULTS 里的 check_cols_hidden 一起改）
+_LAYOUT_VER = 9           # 改了默认顺序就加 1（第 9 版起列宽也一起恢复默认）
+_DEFAULT_HIDDEN = [2, 26, 16, 17, 18, 5, 6, 7, 8, 14, 12, 13, 19, 21, 23, 25, 1]
+_HIDDEN_VER = 7           # 改了默认藏哪些列就加 1（settings.COMPANY_DEFAULTS 里的 check_cols_hidden 一起改）
 CHANGE_COL, TRANSFER_COL, REASON_COL = 23, 24, 25
+AMOUNT = 29
+# 「判断」排序：要看的排前面（不订、少订、调货、多订），照清单订的放最后
+VERDICT_RANK = {"none": 0, "less": 1, "transfer": 2, "more": 3, "nodb": 4, "same": 5}
 
 
 def _col(k):
@@ -62,6 +69,7 @@ def _perm(vals):
 
 
 EDIT_COL = _col(15)           # 确定箱数 ✎（按箱审核）
+AMOUNT_COL = _col(AMOUNT)     # 金额
 PCS_COL = _col(14)            # 确定件数（= 箱数 × 每箱件数，默认收起来）
 
 
@@ -171,6 +179,7 @@ VIEWS = (("all", "全部商品"), ("changed", "只看有变化的"), ("transfer"
 
 class _Sig(QObject):
     done = Signal(object)
+    months = Signal(object)          # 近两年每月销量读好了（后台线程 → 界面）
 
 
 class OrderCheck:
@@ -185,6 +194,8 @@ class OrderCheck:
         self._filling = False
         self.sig = _Sig()
         self.sig.done.connect(self._done)
+        self.sig.months.connect(self._months_arrived)
+        self._m24, self._m24_keys, self._m24_done = {}, [], set()
 
     def build(self):
         ui = self.ui
@@ -372,12 +383,13 @@ class OrderCheck:
         more.clicked.connect(lambda: self._more_menu(more))
         tb.addWidget(more)
         bl.addWidget(bar)
-        self.table = ui.make_table(_perm([tr("判断"), tr("商品编号"), tr("条码"), tr("名称"), tr("本店库存"),
-                                          "30", "60", "90", "180", tr("库存够卖（天）"), tr("每箱件数"), tr("清单数量"),
+        self.table = ui.make_table(_perm([tr("判断"), tr("商品编号"), tr("条码"), tr("商品"), tr("库存"),
+                                          "30", "60", "90", "180", tr("现在够卖"), tr("每箱"), tr("清单数量"),
                                           tr("清单件数"), tr("建议件数"), tr("确定件数"), tr("确定箱数"), tr("等级"), tr("周期"), tr("日均"),
-                                          tr("目标库存"), tr("到货后够卖（天）"), tr("清单订后够卖（天）"), tr("门店"),
-                                          tr("变化（箱）"), tr("调货"), tr("原因"), "Codice Fornitore", tr("供应商"), tr("月均")]),
-                                   numeric_cols=[_col(k) for k in list(range(4, 16)) + [17, 18, 19, 20, 21, 23, 28]])
+                                          tr("目标库存"), tr("订后够卖"), tr("清单订后够卖（天）"), tr("门店"),
+                                          tr("变化（箱）"), tr("调货"), tr("原因"), "Codice Fornitore", tr("供应商"), tr("月销"),
+                                          tr("金额 €")]),
+                                   numeric_cols=[_col(k) for k in list(range(4, 16)) + [17, 18, 19, 20, 21, 23, 28, 29]])
         self.table.setMinimumHeight(380)
         import product_images as PI
         self.table.verticalHeader().setDefaultSectionSize(PI.row_height(self.settings))
@@ -387,20 +399,23 @@ class OrderCheck:
         hh = self.table.horizontalHeader()
         hh.setSectionResizeMode(QHeaderView.Interactive)
         hh.setStretchLastSection(False)
-        import product_images as PI          # 条码那一格左边放商品小图（只下载看得见的行）
-        self.table.setItemDelegateForColumn(_col(2), PI.ThumbDelegate(self.table, _col(2), None, self.settings))
-        for c, wd in enumerate(_perm((70, 80, PI.thumb_size(self.settings) + 120, 280, 70, 52, 52, 52, 52, 96, 52, 70, 70, 70, 76, 70, 50, 50, 60, 70, 120, 120, 96,
-                                      76, 200, 380, 110, 150, 56))):
+        import product_images as PI          # 「商品」那一格：左边商品图（条码在藏起来的条码列），右边名称
+        self.table.setItemDelegateForColumn(_col(3), PI.ThumbDelegate(self.table, _col(2), None, self.settings))
+        for c, wd in enumerate(_perm((96, 80, 130, PI.thumb_size(self.settings) + 300, 60, 52, 52, 52, 52, 76, 52, 56, 70, 70, 76,
+                                      70, 50, 50, 60, 70, 76, 120, 80, 76, 110, 380, 110, 120, 60, 76))):
             self.table.setColumnWidth(c, wd)
-        self.table.horizontalHeaderItem(_col(28)).setToolTip(tr("月均：新算法 = 日均（加权 + 季节）× 30；原程序算法 = 最长周期销量 ÷ 月数（默认 180 天 ÷ 6）"))
-        self.table.horizontalHeaderItem(EDIT_COL).setToolTip(tr("双击修改箱数，0 = 不订"))
-        self.table.horizontalHeaderItem(EDIT_COL).setText(tr("确定箱数") + " ✎")
+        self.table.horizontalHeaderItem(_col(28)).setToolTip(tr("月销：一个月大约卖几件（新算法 = 加权日均 × 30；原程序算法 = 最长周期销量 ÷ 月数）"))
+        self.table.horizontalHeaderItem(_col(4)).setToolTip(tr("本店现在的库存（件）"))
+        self.table.horizontalHeaderItem(_col(10)).setText(tr("每箱"))
+        self.table.horizontalHeaderItem(AMOUNT_COL).setToolTip(tr("金额 = 确定箱数 × 每箱件数 × 件价（有调货的按调货以后的箱数）"))
+        self.table.horizontalHeaderItem(EDIT_COL).setToolTip(tr("确定订几箱：双击修改，0 = 不订"))
+        self.table.horizontalHeaderItem(EDIT_COL).setText(tr("确定") + " ✎")
         self.table.horizontalHeaderItem(_col(10)).setToolTip(
             tr("每箱件数：按 distribuire 里最便宜那家报价的箱规（比价默认挑它）；报价里没有的用数据库箱规。蓝色 = 和数据库不一样"))
         self.table.horizontalHeaderItem(_col(9)).setToolTip(
-            tr("库存够卖 = 本店库存 ÷ 日均（账面库存是负数时按 0 算）。门店配货、检查订货清单、批发商比价都是这个算法"))
+            tr("现在够卖（天）= 本店库存 ÷ 日均（账面库存是负数时按 0 算）"))
         self.table.horizontalHeaderItem(AFTER_COL).setToolTip(
-            tr("到货后够卖 =（本店库存 + 确定件数 − 调给别的店的）÷ 日均：订的货和调进来的货都到了以后能卖几天（调进来的已经算在确定件数里）；改确定件数时跟着变，超过凑单天数标黄（可能压货）"))
+            tr("订后够卖（天）=（库存 + 订的 + 调进来的）÷ 日均，看订得合不合理就看它：红 = 不到一个订货周期，下次到货前会卖断；黄 = 超过凑单天数，可能压货。不订的显示现在的库存够卖几天"))
         self.table.horizontalHeaderItem(LIST_AFTER_COL).setToolTip(
             tr("清单订后够卖 =（本店库存 + 门店清单原来的件数）÷ 日均：门店自己报的量订完能卖几天，和「确定订后够卖」对比"))
         self.table.horizontalHeaderItem(_col(18)).setToolTip(
@@ -414,10 +429,12 @@ class OrderCheck:
         self.table.itemChanged.connect(self._edited)
         # 点表头排序、右键表头按列筛选；上面「判断」「等级」两个下拉框快速筛选
         from erp_widgets import TableSortFilter, ColumnFilterBox
-        self.ctl = TableSortFilter(self.table, lambda: len(self.rows), self._text, self._fill_row,
-                                   hide=self._hidden, numeric=tuple(_col(k) for k in list(range(4, 16)) + [17, 18, 19, 20, 21, 23, 28]))
+        self.ctl = TableSortFilter(self.table, lambda: len(self.rows), self._text, self._fill_row, key=self._key,
+                                   hide=self._hidden, numeric=tuple(_col(k) for k in list(range(4, 16)) + [17, 18, 19, 20, 21, 23, 28, 29]))
         # 列可以拖动换位置、拖宽度，下次打开照旧（右键表头是筛选，所以「恢复默认列顺序」放在下面）
         from erp_widgets import remember_columns
+        if self.cfg.get("check_columns_ver") != _LAYOUT_VER:
+            self.cfg.pop("check_widths", None)        # 第 9 版重新设计了：旧的列宽（名称列太窄等）也不用了
         self._reset_cols = remember_columns(self.table, self.cfg, "check", _ORDER, lambda: save_settings(self.settings),
                                             _LAYOUT_VER)
         # 「显示哪些列」：默认只放审核要看的，其他的勾选了才显示
@@ -454,7 +471,7 @@ class OrderCheck:
         self.count_lbl = QLabel("")
         self.count_lbl.setObjectName("StatusText")
         sh.addWidget(self.count_lbl, 1)
-        hint = QLabel(tr("双击「确定件数」修改 · Enter 确认 · Esc 取消"))
+        hint = QLabel(tr("双击「确定」改箱数 · Enter 确认 · Esc 取消"))
         hint.setObjectName("StatusText")
         sh.addWidget(hint)
         self.btn_confirm = QPushButton(tr("确认，开始比价"))
@@ -789,7 +806,8 @@ class OrderCheck:
         for i in range(4):
             self.ctl.set_title(_col(5 + i), tr("{0}天", d[i]), tr("最近 {0} 天销量", d[i]))
         # 一律按箱看：清单箱数（清单按件的折成箱）→ 确定箱数
-        self.ctl.set_title(_col(11), tr("清单箱数"))
+        self.ctl.set_title(_col(11), tr("清单"), tr("门店清单要的箱数"))
+        self.ctl.sort_col, self.ctl.sort_desc = _col(0), False     # 要看的排前面，照清单订的在最后
         self._fill_prob()
         self._build_chips(meta["stores"])
         self._fill_suppliers()
@@ -797,6 +815,7 @@ class OrderCheck:
         self.ctl.filters = {}
         self._replan(render=False)
         self._fill()
+        self._load_months()                             # 详情栏的近两年每月销量：后台读
         self.summary_row.show()
         self.window.setWindowTitle(tr("检查门店订货清单 — {0} · {1} 个商品",
                                       "、".join(store_label(k) for k in meta["stores"]), len(rows)))
@@ -821,10 +840,34 @@ class OrderCheck:
                       f"{x['cycle']:g}" if isinstance(x.get("cycle"), (int, float)) else "",
                       (f"{daily:.2f}" if daily else "0") if x.get("in_db", True) else "",
                       f"{x['target']:.0f}" if isinstance(x.get("target"), (int, float)) else "",
-                      _days(self._arrive_days(x)),
+                      self._after_info(x)[0],
                       _days(_cover(x, x["file_pcs"])) if (x.get("file_pcs") or 0) > 0 else "",
                       R.STORES.get(x.get("store"), ""), self._change_text(x), self._transfer_text(x),
-                      "；".join(self._reason_lines(x)), x.get("sup_code") or "", x.get("sup_name") or "", self._monthly(x)])
+                      "；".join(self._reason_lines(x)), x.get("sup_code") or "", x.get("sup_name") or "", self._monthly(x),
+                      self._amount_text(x)])
+
+    def _amount(self, x):
+        """这一行要花多少钱：确定箱数（有调货的按调货以后的箱数）× 每箱件数 × 件价"""
+        m = self._moves_in.get((x.get("store"), str(x.get("code"))))
+        b = m["colli_after"] if m else x.get("fbox") or 0
+        try:
+            p = float(x.get("price") or 0)
+        except (TypeError, ValueError):
+            return 0.0
+        return b * _pk(x) * (p if p == p else 0.0)
+
+    def _amount_text(self, x):
+        a = self._amount(x)
+        return f"{a:,.2f}" if a > 0 else ""
+
+    def _key(self, i, c):
+        """排序：「判断」按要看的先后（不订、少订、调货、多订 … 照清单订最后），同一类里金额大的在前"""
+        x = self.rows[i]
+        if c == _col(0):
+            return VERDICT_RANK.get(self._verdict(x)[0], 9) * 1e7 - min(self._amount(x), 9e6)
+        if c == AMOUNT_COL:
+            return self._amount(x)
+        return None
 
     def _monthly(self, x):
         """月均：新算法 = 加权日均 × 30；原程序算法 = 最长周期销量 ÷ 月数（和订货明细同一个算法，store_orders.monthly_and_need）"""
@@ -992,80 +1035,95 @@ class OrderCheck:
             return tr("调进 {0} 件 ← {1}，还订 {2} 箱", m["pieces"], R.STORES.get(m["from"], m["from"]), m["colli_after"])
         return ""
 
-    # ---------- 右边详情栏（和订货明细一致）----------
+    # ---------- 右边详情栏 ----------
+    # 2026-10-25 重新设计（用户：柱状图、服务水平这些从来不看）：只放判断这一行要用的 ——
+    #   商品图和名称 → 这一行怎么订（清单 → 确定、订后够卖、金额）→ 库存 / 月销 / 现在够卖
+    #   → 近两年每月销量（今年和去年同月对比，看季节和趋势）→ 为什么 → 其他门店
     def _build_drawer(self):
-        """右边详情栏：和门店配货的订货明细一模一样（编号、四个小卡片、26 周销量图、为什么、其他门店）"""
         from PySide6.QtWidgets import QScrollArea
-        from erp_widgets import Sparkline
+        from erp_widgets import MonthBars
         sa = QScrollArea()
         sa.setWidgetResizable(True)
-        sa.setFixedWidth(350)
-        sa.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)     # 详情栏只上下滚，内容自动换行
+        sa.setFixedWidth(360)
+        sa.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         sa.setFrameShape(QFrame.NoFrame)
         d = QWidget()
         d.setObjectName("Drawer")
         v = QVBoxLayout(d)
         v.setContentsMargins(14, 14, 14, 14)
         v.setSpacing(10)
-        self.d_over = QLabel("")
-        self.d_over.setObjectName("Faint")
-        self.d_over.setWordWrap(True)
+        self.d_img = QLabel()                     # 商品图（公司图片服务器上有这个条码的图才显示）
+        self.d_img.setAlignment(Qt.AlignCenter)
+        self.d_img.setMinimumHeight(160)
+        self.d_img.hide()
         self.d_title = QLabel(tr("选中一行查看详情"))
-        self.d_title.setStyleSheet("font-size:16px; font-weight:700;")
+        self.d_title.setStyleSheet("font-size:15px; font-weight:700;")
         self.d_title.setWordWrap(True)
         self.d_codes = QLabel("")
         self.d_codes.setObjectName("Faint")
         self.d_codes.setWordWrap(True)
-        self.d_img = QLabel()                     # 商品图（公司图片服务器上有这个条码的图才显示）
-        self.d_img.setAlignment(Qt.AlignCenter)
-        self.d_img.setMinimumHeight(180)
-        self.d_img.hide()
-        for w in (self.d_img, self.d_over, self.d_title, self.d_codes):
+        self.d_codes.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        for w in (self.d_img, self.d_title, self.d_codes):
             v.addWidget(w)
+        # 这一行怎么订：清单 3 箱 → 确定 1 箱（大字），下面一行订后够卖、金额
+        dec = QFrame()
+        dec.setObjectName("MiniCard")
+        dv = QVBoxLayout(dec)
+        dv.setContentsMargins(12, 10, 12, 10)
+        dv.setSpacing(2)
+        self.d_verdict = QLabel("")
+        self.d_verdict.setStyleSheet("font-weight:700; font-size:12px;")
+        self.d_boxes = QLabel("—")
+        self.d_boxes.setStyleSheet("font-size:20px; font-weight:700;")
+        self.d_after = QLabel("")
+        self.d_after.setWordWrap(True)
+        for w in (self.d_verdict, self.d_boxes, self.d_after):
+            dv.addWidget(w)
+        v.addWidget(dec)
         g = QGridLayout()
         g.setSpacing(8)
         self.minis = []
-        for i, lab in enumerate((tr("本店库存"), tr("加权日均"), tr("目标库存"), tr("服务水平"))):
+        for i, lab in enumerate((tr("库存"), tr("月销"), tr("现在够卖"))):
             f = QFrame()
             f.setObjectName("MiniCard")
             fv = QVBoxLayout(f)
             fv.setContentsMargins(10, 8, 10, 8)
             fv.setSpacing(1)
-            a = QLabel(lab)
-            a.setObjectName("MiniLabel")
-            b = QLabel("—")
-            b.setObjectName("MiniValue")
-            c = QLabel("")
-            c.setObjectName("MiniLabel")
-            for w in (a, b, c):
+            a_ = QLabel(lab)
+            a_.setObjectName("MiniLabel")
+            b_ = QLabel("—")
+            b_.setObjectName("MiniValue")
+            c_ = QLabel("")
+            c_.setObjectName("MiniLabel")
+            for w in (a_, b_, c_):
                 fv.addWidget(w)
-            g.addWidget(f, i // 2, i % 2)
-            self.minis.append((b, c))
+            g.addWidget(f, 0, i)
+            self.minis.append((b_, c_))
         v.addLayout(g)
         sp = QFrame()
         sp.setObjectName("MiniCard")
         spv = QVBoxLayout(sp)
         spv.setContentsMargins(12, 10, 12, 10)
         hl = QHBoxLayout()
-        t = QLabel(tr("近 26 周销量"))
+        t = QLabel(tr("近两年每月销量"))
         t.setStyleSheet("font-weight:600; font-size:12px;")
-        u = QLabel(tr("件 / 周"))
+        u = QLabel(tr("淡色 = 去年同月"))
         u.setObjectName("MiniLabel")
         hl.addWidget(t, 1)
         hl.addWidget(u)
         spv.addLayout(hl)
-        self.spark = Sparkline(height=150)
-        spv.addWidget(self.spark)
-        self.spark_note = QLabel("")
-        self.spark_note.setObjectName("MiniLabel")
-        self.spark_note.setWordWrap(True)
-        spv.addWidget(self.spark_note)
+        self.months_w = MonthBars(height=140)
+        spv.addWidget(self.months_w)
+        self.months_note = QLabel("")
+        self.months_note.setObjectName("MiniLabel")
+        self.months_note.setWordWrap(True)
+        spv.addWidget(self.months_note)
         v.addWidget(sp)
         why = QFrame()
         why.setObjectName("MiniCard")
         wv = QVBoxLayout(why)
         wv.setContentsMargins(12, 10, 12, 10)
-        self.why_t = QLabel(tr("为什么这么建议"))
+        self.why_t = QLabel(tr("为什么"))
         self.why_t.setStyleSheet("font-weight:600; font-size:12px;")
         self.why = QLabel("")
         self.why.setWordWrap(True)
@@ -1095,71 +1153,140 @@ class OrderCheck:
         self._cur_i = i
         self._show_drawer(i)
 
+    # ---------- 近两年每月销量（检查完以后后台读，不拖慢检查）----------
+    def _load_months(self):
+        """每家门店这次清单里的商品，最近 24 个月每月销量 → self._m24[(门店, 编号)]（只读查询，后台线程）"""
+        self._m24, self._m24_keys = {}, R.month_keys(24)
+        self._m24_token = getattr(self, "_m24_token", 0) + 1
+        self._m24_done = set()
+        token = self._m24_token
+        by_store = {}
+        for x in self.rows:
+            if x.get("in_db", True) and str(x.get("code") or "").isdigit():
+                by_store.setdefault(x.get("store"), set()).add(str(x["code"]))
+        if not by_store:
+            return
+        dbs = self.settings.get("db") or None
+
+        def work():
+            try:
+                db = R.make_db(dbs)
+                for sid, codes in by_store.items():
+                    try:
+                        data = R.query_monthly_sales(db, sid, codes)
+                    except Exception as e:
+                        data = {"_error": str(e)}
+                    self.sig.months.emit((token, sid, codes, data))
+                db.engine.dispose()
+            except Exception as e:
+                for sid, codes in by_store.items():
+                    self.sig.months.emit((token, sid, codes, {"_error": str(e)}))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _months_arrived(self, payload):
+        token, sid, codes, data = payload
+        if token != getattr(self, "_m24_token", None):
+            return
+        err = data.pop("_error", None) if isinstance(data, dict) else None
+        for c in codes:
+            self._m24[(sid, c)] = None if err else R.monthly_series(data.get(c, {}), self._m24_keys)
+        self._m24_done.add(sid)
+        if err:
+            self._m24_err = err
+        if self._cur_i is not None and 0 <= self._cur_i < len(self.rows) and self.rows[self._cur_i].get("store") == sid:
+            self._show_months(self.rows[self._cur_i])
+
+    def _show_months(self, x):
+        key = (x.get("store"), str(x.get("code")))
+        if not x.get("in_db", True):
+            self.months_w.set_message(tr("数据库里没有这个商品"))
+            self.months_note.setText("")
+            return
+        if x.get("store") not in getattr(self, "_m24_done", set()):
+            self.months_w.set_message(tr("正在读取…"))
+            self.months_note.setText("")
+            return
+        vals = self._m24.get(key)
+        if vals is None:
+            self.months_w.set_message(tr("没读到（数据库）"))
+            self.months_note.setText(getattr(self, "_m24_err", ""))
+            return
+        self.months_w.set_data(vals, self._m24_keys)
+        last, prev = self.months_w.totals()
+        note = tr("近 12 个月 {0:g} 件", round(last, 1))
+        if prev:
+            note += " · " + tr("前 12 个月 {0:g} 件（{1:+.0%}）", round(prev, 1), last / prev - 1)
+        elif prev is not None:
+            note += " · " + tr("去年没卖")
+        self.months_note.setText(note)
+
     def _show_drawer(self, i):
-        """详情栏内容（和订货明细同一个写法）"""
+        """详情栏：这一行怎么订 + 判断要用的几个数 + 近两年每月销量 + 为什么 + 其他门店"""
         if not (0 <= i < len(self.rows)):
             return
         T = self.ui.T
         x = self.rows[i]
         code = str(x.get("code"))
         sid = x.get("store")
-        self.d_over.setText(" · ".join(p for p in (R.STORES.get(sid, ""), x.get("sup_name") or "") if p))
         self.d_title.setText(x.get("name") or code)
         import product_images as PI
-        PI.set_label_image(self.d_img, x.get("ean"), 180, self.settings)
+        PI.set_label_image(self.d_img, x.get("ean"), 160, self.settings)
         pack = x.get("pack") or 0
         try:
             price = float(x.get("price") or 0)
             price = price if price == price else 0
         except (TypeError, ValueError):
             price = 0
-        fc = f" · Cod.Forn. {x['sup_code']}" if x.get("sup_code") else ""
-        line2 = " · ".join(p for p in (f"{pack:g} " + tr("件/箱") if pack else "",
-                                       f"€{price:.3f}/" + tr("件") if price else "",
-                                       tr("{0} 报价", x["quote_sup"]) if x.get("quote_sup") else "") if p)
-        self.d_codes.setText(f"{code} · {x.get('ean') or '—'}{fc}" + (f"\n{line2}" if line2 else ""))
-        (a1, a2), (b1, b2), (c1, c2), (d1, d2) = self.minis
+        parts1 = [p for p in (R.STORES.get(sid, ""), x.get("sup_name") or "", (x.get("tier") or "") and tr("{0} 类", x["tier"])) if p]
+        parts2 = [p for p in (code, x.get("ean") or "", f"Cod.Forn. {x['sup_code']}" if x.get("sup_code") else "") if p]
+        parts3 = [p for p in (f"{pack:g} " + tr("件/箱") if pack else "", f"€{price:.3f}/" + tr("件") if price else "",
+                              tr("{0} 报价", x["quote_sup"]) if x.get("quote_sup") else "") if p]
+        self.d_codes.setText("\n".join(" · ".join(ps) for ps in (parts1, parts2, parts3) if ps))
+        # 这一行怎么订
+        kind, vt = self._verdict(x)
+        self.d_verdict.setText(vt)
+        self.d_verdict.setStyleSheet(f"font-weight:700; font-size:12px; color:{T(VERDICT_TOKEN.get(kind, 'text'))};")
+        m_in = self._moves_in.get((sid, code))
+        boxes = tr("清单 {0:,} 箱  →  确定 {1:,} 箱", x["lbox"], x["fbox"])
+        if m_in:
+            boxes += "\n" + tr("调进 {0} 件 ← {1}，还订 {2} 箱", m_in["pieces"], R.STORES.get(m_in["from"], m_in["from"]),
+                                m_in["colli_after"])
+        self.d_boxes.setText(boxes)
+        text, tok, tip = self._after_info(x)
+        amt = self._amount(x)
+        bits = []
+        if text:
+            bits.append((tr("订后够卖 {0} 天", text) if self._arrive_days(x) is not None else tr("现在的库存够卖 {0} 天", text)))
+        if amt > 0:
+            bits.append(f"€{amt:,.2f}")
+        self.d_after.setText(" · ".join(bits) + (f"\n{tip}" if tip else ""))
+        self.d_after.setStyleSheet(f"color:{T(tok) if tok in ('err', 'warn') else T('text')};")
+        (a1, a2), (b1, b2), (c1, c2) = self.minis
         if x.get("in_db", True):
             inv = x.get("store_inv")
             inv = float(inv) if isinstance(inv, (int, float)) else 0.0     # 显示原值（计算时负数当 0）
             a1.setText(f"{inv:g}")
-            a2.setText(tr("件"))
-            daily = x.get("daily") if x.get("daily") is not None else x.get("daily0")
-            b1.setText(f"{(daily or 0):.2f}")
-            b2.setText(tr("季节系数 {0:.2f}", x.get("season") or 1) if x.get("season") else tr("件 / 天"))
-            tg = x.get("target")
-            c1.setText(f"{tg:.0f}" if isinstance(tg, (int, float)) else "—")
-            c2.setText(tr("含安全库存 {0:.0f}", x.get("safety") or 0) if tg is not None else tr("原程序算法"))
-            svc = x.get("service")
-            d1.setText(f"{svc:.1%}" if isinstance(svc, (int, float)) else "—")
-            d2.setText(tr("{0} 类商品", x.get("tier") or "?"))
-            wk = list(x.get("weekly") or [])
-            self.spark.set_values(wk, (daily or 0) * 7)
-            if wk:
-                last4 = sum(wk[-4:])
-                imax = max(range(len(wk)), key=lambda k: wk[k])
-                a, b = self.spark.week_range(imax)
-                self.spark_note.setText(tr("最近 4 周 {0:g} 件 · 26 周合计 {1:g} 件 · 最多 {2:g} 件（{3:%d/%m}–{4:%d/%m}）",
-                                           round(last4, 1), round(sum(wk), 1), round(wk[imax], 1), a, b) + "\n" +
-                                        tr("虚线：加权平均 {0:.1f} 件 / 周 · 鼠标移到柱子上看那一周", (daily or 0) * 7))
-            else:
-                self.spark_note.setText(tr("原程序算法没有周销量"))
+            a2.setText(tr("件") + ("  " + tr("（账面负数）") if inv < 0 else ""))
+            mo = self._monthly(x)
+            b1.setText(mo or "0")
+            b2.setText(tr("件 / 月"))
+            cv = _cover(x)
+            c1.setText(_days(cv) or "0")
+            cyc = x.get("cycle")
+            c2.setText(tr("天 · 周期 {0:g} 天", cyc) if isinstance(cyc, (int, float)) else tr("天"))
         else:
             for m1, m2 in self.minis:
                 m1.setText("—")
-                m1.setStyleSheet("")
                 m2.setText("")
-            self.spark.set_values([])
-            self.spark_note.setText("")
-        sugg = x.get("suggested") or 0
+        self._show_months(x)
         if not x.get("in_db", True):
-            self.why_t.setText(tr("为什么这么建议"))
-        elif sugg > 0:
-            self.why_t.setText(tr("为什么建议 {0:g} 箱", x["sbox"]) if x.get("sbox") is not None else tr("为什么建议 {0:,} 件", sugg))
+            self.why_t.setText(tr("为什么"))
+        elif x.get("sbox") is not None:
+            self.why_t.setText(tr("为什么建议 {0:g} 箱", x["sbox"]))
         else:
-            self.why_t.setText(tr("为什么不用订"))
+            self.why_t.setText(tr("为什么"))
         self.why.setText("\n".join(["· " + l for l in self._reason_lines(x)] + ["⚠ " + m[2] for m in self._marks(x)]))
-        # 其他门店：库存、够卖几天、这次定了几箱（和订货明细同一个写法）
+        # 其他门店：库存、够卖几天、这次定了几箱
         while self.others.count():
             w = self.others.takeAt(0).widget()
             if w:
@@ -1171,9 +1298,9 @@ class OrderCheck:
                 continue
             ox = self._by_key.get((osid, code))
             on = int(ox.get("fbox") or 0) if ox else 0
-            v = _cover({"in_db": True, "inv0": d.get("inv"), "daily0": d.get("daily")})
+            cv = _cover({"in_db": True, "inv0": d.get("inv"), "daily0": d.get("daily")})
             l = QLabel(f"{R.STORES.get(osid, osid)}    " +
-                       tr("库存 {0:g} · 够卖 {1} 天 · 订 {2:g} 箱", float(d.get("inv") or 0), _days(v) or "—", on))
+                       tr("库存 {0:g} · 够卖 {1} 天 · 订 {2:g} 箱", float(d.get("inv") or 0), _days(cv) or "—", on))
             l.setObjectName("Faint" if not on else "")
             self.others.addWidget(l)
         if not self.others.count():
@@ -1318,7 +1445,8 @@ class OrderCheck:
     def _apply_forced(self):
         """程序自己藏的列：清单按件时的箱数列；只有一家门店 / 只看一家门店时的「门店」列"""
         one = len((self.meta or {}).get("stores") or []) < 2 or self._store_sel() is not None
-        self._forced = set(getattr(self, "_unit_forced", set())) | ({22} if one else set())
+        off = not TR.config(TR.wholesale_raw(self.settings)).get("enabled")    # 没开调货：调货列全是「不调」，藏起来
+        self._forced = set(getattr(self, "_unit_forced", set())) | ({22} if one else set()) | ({TRANSFER_COL} if off else set())
         self.cols.apply()
 
     def _store_changed(self):
@@ -1452,6 +1580,26 @@ class OrderCheck:
             t.item(k, LIST_AFTER_COL).setToolTip(tr("订完要很久才卖得完（超过 {0} 天），可能压货", int(self._limit())))
         self._style_edit(i, k)
 
+    def _after_info(self, x):
+        """订后够卖那一格：(文字, 颜色, 鼠标提示)。不订的显示现在的库存够卖几天"""
+        if not x.get("in_db", True):
+            return "", "text", ""
+        cyc = float(x.get("cycle") or 0)
+        limit = self._limit()
+        v = self._arrive_days(x)
+        if v is None:                                  # 不订、也不调：到下次订货就靠现在的库存
+            v = _cover(x)
+            if v is None or not float(x.get("daily0") or 0):
+                return "", "text", ""
+            if cyc and v < cyc:
+                return _days(v), "err", tr("不订的话，现在的库存只够卖 {0} 天，不到一个订货周期（{1:g} 天）", _days(v), cyc)
+            return _days(v), "faint", tr("不订：现在的库存够卖 {0} 天", _days(v))
+        if cyc and v < cyc:
+            return _days(v), "err", tr("订完只够卖 {0} 天，不到一个订货周期（{1:g} 天），下次到货前可能卖断", _days(v), cyc)
+        if v > limit:
+            return _days(v), "warn", tr("订完要很久才卖得完（超过 {0} 天），可能压货", int(limit))
+        return _days(v), "text", ""
+
     def _limit(self):
         """凑单天数（配货设置）：订后够卖超过它标黄"""
         return float((self.settings.get("store_orders") or {}).get("fill", {}).get("max_stock_days") or 60)
@@ -1478,14 +1626,18 @@ class OrderCheck:
         c.setBackground(QColor(T("warn_soft")) if changed else QColor(0, 0, 0, 0))
         c.setToolTip(tr("手动改过：系统建议 {0:,} 箱", x["sbox"]) if changed else tr("双击修改箱数，0 = 不订"))
         self.table.item(k, PCS_COL).setText(f"{x['final']:,}" if _pk(x) > 0 else "")
-        # 订后够卖：跟着确定件数变；超过凑单天数标黄
+        # 订后够卖：跟着确定箱数变。红 = 不到一个订货周期（下次到货前卖断），黄 = 超过凑单天数（压货）
         a = self.table.item(k, AFTER_COL)
-        v = self._arrive_days(x)
-        a.setText(_days(v))
-        limit = self._limit()
-        over = v is not None and v > limit
-        a.setForeground(QColor(T("warn") if over else T("text")))
-        a.setToolTip(tr("订完要很久才卖得完（超过 {0} 天），可能压货", int(limit)) if over else "")
+        text, tok, tip = self._after_info(x)
+        a.setText(text)
+        a.setForeground(QColor(T(tok)))
+        f = a.font()
+        f.setBold(tok in ("err", "warn"))
+        a.setFont(f)
+        a.setToolTip(tip)
+        am = self.table.item(k, AMOUNT_COL)
+        if am is not None:
+            am.setText(self._amount_text(x))
         ch = self.table.item(k, _col(CHANGE_COL))
         if ch is not None:
             d = int(x["fbox"]) - int(x["lbox"])
