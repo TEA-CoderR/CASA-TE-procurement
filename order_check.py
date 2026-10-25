@@ -433,7 +433,7 @@ class OrderCheck:
         self._plan_timer = QTimer()
         self._plan_timer.setSingleShot(True)
         self._plan_timer.setInterval(250)
-        self._plan_timer.timeout.connect(self._replan)
+        self._plan_timer.timeout.connect(self._replan_in_place)
         self.ctl.rendered.connect(lambda n, tot: self._status(n, tot))
         # 表格 + 右边详情栏（和门店配货的订货明细一样：选中一行看为什么）
         mid = QHBoxLayout()
@@ -1180,6 +1180,13 @@ class OrderCheck:
             l = QLabel(tr("没有其他门店的数据"))
             l.setObjectName("Faint")
             self.others.addWidget(l)
+
+    def _replan_in_place(self):
+        """改了确定箱数以后重算调货，但表格不重新排序 / 筛选：改过的行留在原地（点表头或换筛选时才重排）"""
+        self._replan(render=False)
+        self._refresh_rows(list(self.ctl.visible))
+        self._fill_prob()
+        self._summary()
 
     def _replan(self, render=True):
         """按现在的确定箱数重新算门店间调货（改了以后稍等一下再算，不卡）"""
