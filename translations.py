@@ -2389,4 +2389,5 @@ TRANSLATIONS = {
     '「{0}」正在被 Excel / WPS 打开（或被别的程序占用），写不进去。关掉这个文件后再点「重新比价」。': ('"{0}" is open in Excel / WPS (or used by another program) and cannot be written. Close it and click "Compare again".', '"{0}" è aperto in Excel / WPS (o usato da un altro programma) e non si può scrivere. Chiudilo e clicca "Confronta di nuovo".'),
     '商品图片': ('Product images', 'Immagini prodotto'),
     '订货明细、检查清单的条码前面显示商品小图，详情栏显示大图（按条码从公司图片服务器取主图，存在本机，下次不用再下载）': ('Show a small product image before the barcode in the order detail and check list, and a large one in the side panel (main image by barcode from the company image server, saved on this computer)', 'Mostra una piccola immagine prima del codice a barre nel dettaglio ordine e nella lista di controllo, e una grande nel pannello laterale (immagine principale dal server aziendale, salvata su questo computer)'),
+    '点一下放大': ('Click to enlarge', 'Clicca per ingrandire'),
 }

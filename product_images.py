@@ -4,7 +4,8 @@
 
 做法（不卡界面、不重复下载）：
   · 表格只在画到那一行时才要图（看得见的才下载），后台 4 个线程下载，下载完通知表格重画那一格；
-  · 下载下来的图缩成最长边 256 的 PNG 存在程序目录 cache/images/ 里，下次打开直接读本地文件，不再联网；
+  · 下载下来的图**按原图大小**存在程序目录 cache/images/ 里（原样存 webp；Qt 读不了 webp 才转成 PNG），
+    下次打开直接读本地文件，不再联网；显示时按屏幕缩放（高分屏 ×1.5 / ×2）缩到正好的像素，不发糊；
   · 服务器上没有的（404）记一个标记，7 天内不再问；网络出错只在这次运行里不再试。
   · Qt 读不了 webp 时用 Pillow 转（打包时要带上 Pillow）。
 设置：settings["show_images"]（默认开），settings["image_url"]（图片地址模板，默认上面那个）。
@@ -20,7 +21,7 @@ from PySide6.QtWidgets import QStyledItemDelegate, QStyle, QStyleOptionViewItem,
 
 DEFAULT_URL = "https://img.casaete.top/prodotti/{ean}/01.webp"
 MISS_DAYS = 7          # 服务器上没有图：几天以后再问一次
-MAX_SIDE = 256         # 存到本地的图缩到多大（详情栏最大显示 160）
+PREVIEW = 600          # 点详情栏的图放大看：最大多少
 
 
 def norm_ean(ean):
@@ -77,11 +78,21 @@ class ImageStore(QObject):
     def _png(self, ean):
         return os.path.join(self.dir, f"{ean}.png")
 
+    def _raw(self, ean):
+        return os.path.join(self.dir, f"{ean}.webp")
+
+    def path(self, ean):
+        """本地缓存的图（原图），没有返回 None"""
+        for p in (self._raw(ean), self._png(ean)):
+            if os.path.exists(p):
+                return p
+        return None
+
     def _miss(self, ean):
         return os.path.join(self.dir, f"{ean}.none")
 
     def has_cached(self, ean):
-        return os.path.exists(self._png(ean))
+        return self.path(ean) is not None
 
     def known_missing(self, ean):
         p = self._miss(ean)
@@ -91,20 +102,34 @@ class ImageStore(QObject):
             return False
 
     # ---------- 给界面用 ----------
-    def pixmap(self, ean, size):
-        """有图返回缩好的 QPixmap；还没有返回 None（同时在后台去取，取到后发 ready）"""
+    def pixmap(self, ean, size, dpr=None):
+        """
+        有图返回缩好的 QPixmap（按屏幕缩放 dpr 缩到实际像素，高分屏也清楚）；
+        还没有返回 None（同时在后台去取，取到后发 ready）
+        """
         e = norm_ean(ean)
         if not e or not self.enabled:
             return None
-        key = (e, size)
+        if dpr is None:
+            try:
+                dpr = QApplication.primaryScreen().devicePixelRatio()
+            except Exception:
+                dpr = 1.0
+        dpr = max(1.0, float(dpr or 1.0))
+        key = (e, size, dpr)
         pm = self._mem.get(key)
         if pm is not None:
             return pm
-        if self.has_cached(e):
-            pm = QPixmap(self._png(e))
-            if pm.isNull():
+        p = self.path(e)
+        if p:
+            img = QImage(p)
+            if img.isNull():
                 return None
-            pm = pm.scaled(size, size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            px = int(round(size * dpr))
+            if max(img.width(), img.height()) > px:
+                img = img.scaled(px, px, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            pm = QPixmap.fromImage(img)
+            pm.setDevicePixelRatio(dpr)
             if len(self._mem) > 3000:
                 self._mem.clear()
             self._mem[key] = pm
@@ -137,15 +162,22 @@ class ImageStore(QObject):
             for name in candidates(ean):
                 r = self._http().get(self.url.format(ean=name), timeout=8)
                 if r.status_code == 200 and r.content:
-                    img = _decode(r.content)
-                    if img is not None:
-                        if max(img.width(), img.height()) > MAX_SIDE:
-                            img = img.scaled(MAX_SIDE, MAX_SIDE, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-                        tmp = self._png(ean) + ".tmp"
+                    if not QImage.fromData(r.content).isNull():
+                        dst, data = self._raw(ean), r.content          # Qt 能直接读：原样存（原图、最小）
+                    else:
+                        img = _decode(r.content)                       # 只能用 Pillow 读：转成原尺寸 PNG
+                        if img is None:
+                            break
+                        dst, data = self._png(ean), None
+                    tmp = dst + ".tmp"
+                    if data is not None:
+                        with open(tmp, "wb") as f:
+                            f.write(data)
+                    else:
                         img.save(tmp, "PNG")
-                        os.replace(tmp, self._png(ean))
-                        ok = True
-                        break
+                    os.replace(tmp, dst)
+                    ok = True
+                    break
                 elif r.status_code in (403, 404):
                     missing = True
                     continue
@@ -200,7 +232,9 @@ class ThumbDelegate(QStyledItemDelegate):
 
     def paint(self, p, opt, idx):
         ean = idx.sibling(idx.row(), self.ean_col).data() if self.ean_col is not None else idx.data()
-        pm = self.store.pixmap(ean, self.size) if self.store.enabled else None
+        w = opt.widget
+        dpr = w.devicePixelRatioF() if w is not None and hasattr(w, "devicePixelRatioF") else None
+        pm = self.store.pixmap(ean, self.size, dpr) if self.store.enabled else None
         if not self.store.enabled or not norm_ean(ean):
             return super().paint(p, opt, idx)
         r = opt.rect
@@ -210,9 +244,9 @@ class ThumbDelegate(QStyledItemDelegate):
         w = opt.widget
         (w.style() if w else QApplication.style()).drawPrimitive(QStyle.PE_PanelItemViewItem, bg, p, w)   # 整格背景
         if pm is not None:
-            x = box.left() + (self.size - pm.width()) // 2
-            y = box.top() + (self.size - pm.height()) // 2
-            p.drawPixmap(x, y, pm)
+            pw, ph = pm.width() / pm.devicePixelRatio(), pm.height() / pm.devicePixelRatio()
+            p.setRenderHint(QPainter.SmoothPixmapTransform)
+            p.drawPixmap(int(box.left() + (self.size - pw) / 2), int(box.top() + (self.size - ph) / 2), pm)
         else:
             p.save()
             p.setPen(Qt.NoPen)
@@ -263,3 +297,33 @@ def set_label_image(label, ean, size=150, settings=None):
                 pass
         st.ready.connect(relay)
     label._img_cb = lambda got: show() if got == e else None
+    if not getattr(label, "_img_click", False):        # 点一下放大看（原图，最大 600）
+        label._img_click = True
+        from i18n import tr
+        label.setCursor(Qt.PointingHandCursor)
+        label.setToolTip(tr("点一下放大"))
+        label.mousePressEvent = lambda ev, lb=label: preview(lb, getattr(lb, "_img_ean", None), settings)
+
+
+def preview(parent, ean, settings=None):
+    """放大看商品图（按原图，最大 PREVIEW 像素，高分屏也清楚）"""
+    from PySide6.QtWidgets import QDialog, QVBoxLayout, QLabel
+    st = store(settings)
+    p = st.path(norm_ean(ean)) if ean else None
+    if not p:
+        return
+    img = QImage(p)
+    if img.isNull():
+        return
+    side = min(PREVIEW, max(img.width(), img.height()))
+    pm = st.pixmap(ean, side, parent.devicePixelRatioF() if hasattr(parent, "devicePixelRatioF") else None)
+    dlg = QDialog(parent.window() if hasattr(parent, "window") else None)
+    dlg.setWindowTitle(str(ean))
+    lay = QVBoxLayout(dlg)
+    lay.setContentsMargins(12, 12, 12, 12)
+    lb = QLabel()
+    lb.setAlignment(Qt.AlignCenter)
+    lb.setPixmap(pm)
+    lay.addWidget(lb)
+    lb.mousePressEvent = lambda ev: dlg.accept()
+    dlg.exec()

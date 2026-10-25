@@ -978,7 +978,7 @@ class OrderCheck:
         self.d_codes.setWordWrap(True)
         self.d_img = QLabel()                     # 商品图（公司图片服务器上有这个条码的图才显示）
         self.d_img.setAlignment(Qt.AlignCenter)
-        self.d_img.setMinimumHeight(150)
+        self.d_img.setMinimumHeight(180)
         self.d_img.hide()
         for w in (self.d_img, self.d_over, self.d_title, self.d_codes):
             v.addWidget(w)
@@ -1066,7 +1066,7 @@ class OrderCheck:
         self.d_over.setText(" · ".join(p for p in (R.STORES.get(sid, ""), x.get("sup_name") or "") if p))
         self.d_title.setText(x.get("name") or code)
         import product_images as PI
-        PI.set_label_image(self.d_img, x.get("ean"), 150, self.settings)
+        PI.set_label_image(self.d_img, x.get("ean"), 180, self.settings)
         pack = x.get("pack") or 0
         try:
             price = float(x.get("price") or 0)

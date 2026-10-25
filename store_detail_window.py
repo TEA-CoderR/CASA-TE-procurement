@@ -748,7 +748,7 @@ class DetailWindow(ToolWindow):
         self.d_over.setWordWrap(True)
         self.d_img = QLabel()                     # 商品图（公司图片服务器上有这个条码的图才显示）
         self.d_img.setAlignment(Qt.AlignCenter)
-        self.d_img.setMinimumHeight(150)
+        self.d_img.setMinimumHeight(180)
         self.d_img.hide()
         v.addWidget(self.d_img)
         v.addWidget(self.d_over)
@@ -834,7 +834,7 @@ class DetailWindow(ToolWindow):
         self.d_over.setText(f"{S.STORE_SHEETS[sid]} · {sc['name']}")
         self.d_title.setText(it["desc"])
         import product_images as PI
-        PI.set_label_image(self.d_img, it.get("ean"), 150, self.page.settings)
+        PI.set_label_image(self.d_img, it.get("ean"), 180, self.page.settings)
         fc = f" · Cod.Forn. {it['sup_code']}" if it.get("sup_code") else ""
         self.d_codes.setText(f"{S.item_code(it)} · {it['ean']}{fc}\n{it['pack']:g} {tr('件/箱')} · €{it['price']:.3f}/{tr('件')}")
         (a1, a2), (b1, b2), (c1, c2), (d1, d2) = self.minis
