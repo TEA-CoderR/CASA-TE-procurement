@@ -1041,7 +1041,7 @@ class OrderCheck:
     #   → 近两年每月销量（今年和去年同月对比，看季节和趋势）→ 为什么 → 其他门店
     def _build_drawer(self):
         from PySide6.QtWidgets import QScrollArea
-        from erp_widgets import MonthBars
+        from erp_widgets import MonthGrid
         sa = QScrollArea()
         sa.setWidgetResizable(True)
         sa.setFixedWidth(360)
@@ -1107,12 +1107,12 @@ class OrderCheck:
         hl = QHBoxLayout()
         t = QLabel(tr("近两年每月销量"))
         t.setStyleSheet("font-weight:600; font-size:12px;")
-        u = QLabel(tr("淡色 = 去年同月"))
+        u = QLabel(tr("件 · 颜色越深卖得越多"))
         u.setObjectName("MiniLabel")
         hl.addWidget(t, 1)
         hl.addWidget(u)
         spv.addLayout(hl)
-        self.months_w = MonthBars(height=140)
+        self.months_w = MonthGrid()
         spv.addWidget(self.months_w)
         self.months_note = QLabel("")
         self.months_note.setObjectName("MiniLabel")
@@ -1212,12 +1212,14 @@ class OrderCheck:
             self.months_note.setText(getattr(self, "_m24_err", ""))
             return
         self.months_w.set_data(vals, self._m24_keys)
-        last, prev = self.months_w.totals()
-        note = tr("近 12 个月 {0:g} 件", round(last, 1))
+        cur, prev, full = self.months_w.ytd()
+        m = self._m24_keys[-1][1]
+        note = tr("今年 1–{0} 月 {1:g} 件", m, round(cur, 1))
         if prev:
-            note += " · " + tr("前 12 个月 {0:g} 件（{1:+.0%}）", round(prev, 1), last / prev - 1)
-        elif prev is not None:
-            note += " · " + tr("去年没卖")
+            note += " · " + tr("去年同期 {0:g} 件（{1:+.0%}）", round(prev, 1), cur / prev - 1)
+        else:
+            note += " · " + tr("去年同期没卖")
+        note += "\n" + tr("去年全年 {0:g} 件 · * 本月到今天", round(full, 1))
         self.months_note.setText(note)
 
     def _show_drawer(self, i):

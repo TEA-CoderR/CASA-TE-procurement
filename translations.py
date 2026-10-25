@@ -2432,4 +2432,13 @@ TRANSLATIONS = {
     '不订的话，现在的库存只够卖 {0} 天，不到一个订货周期（{1:g} 天）': ('If not ordered, current stock covers only {0} days, less than one order cycle ({1:g} days)', 'Se non si ordina, la giacenza copre solo {0} giorni, meno di un ciclo ({1:g} giorni)'),
     '{0} 类': ('Class {0}', 'Classe {0}'),
     '（账面负数）': ('(negative on books)', '(negativa a sistema)'),
+    '{0}-{1:02d}：{2:g} 件': ('{0}-{1:02d}: {2:g} pcs', '{0}-{1:02d}: {2:g} pz'),
+    '（本月到今天）': ('(this month so far)', '(mese in corso)'),
+    '月': ('', ''),
+    '今年同月 {0:g} 件': ('Same month this year {0:g} pcs', "Stesso mese quest'anno {0:g} pz"),
+    '今年 1–{0} 月 {1:g} 件': ('This year Jan–{0}: {1:g} pcs', "Quest'anno gen–{0}: {1:g} pz"),
+    '件 · 颜色越深卖得越多': ('pcs · darker = sold more', 'pz · più scuro = più venduto'),
+    '去年全年 {0:g} 件 · * 本月到今天': ('Last year total {0:g} pcs · * this month so far', 'Totale anno scorso {0:g} pz · * mese in corso'),
+    '去年同期 {0:g} 件（{1:+.0%}）': ('Same period last year {0:g} pcs ({1:+.0%})', "Stesso periodo dell'anno scorso {0:g} pz ({1:+.0%})"),
+    '去年同期没卖': ('No sales in the same period last year', "Nessuna vendita nello stesso periodo dell'anno scorso"),
 }
