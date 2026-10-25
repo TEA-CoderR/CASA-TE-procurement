@@ -65,7 +65,7 @@ def test_check_rows_verdicts_and_units():
         [("增加", 18, 24), ("不订", 6, 0), ("不变", 1, 1), ("数据库没有", 4, 4)]
     rows = R.check_rows(file_rows, res, "pcs")
     assert rows[0]["file_pcs"] == 3 and rows[0]["verdict"] == "增加"
-    assert R.qty_unit("COLLI") == "colli" and R.qty_unit("数量") == "pcs"
+    assert R.qty_unit("COLLI") == "colli" and R.qty_unit("数量") == "colli"     # 门店清单一律按箱
 
 
 def _neg_db():
@@ -313,3 +313,25 @@ def test_checked_order_is_by_boxes(tmp_path):
     colli = heads.index("COLLI")
     assert [r[colli] for r in ws.iter_rows(min_row=2, values_only=True)] == [2, 3]
 
+
+
+def test_check_boxes_no_more_than_list_and_new_item_protection():
+    """
+    检查门店清单（2026-10-25 用户定）：清单一律是箱；系统建议不多于清单（先不做多订）；
+    系统说要订就至少 1 箱；新品按清单订
+    """
+    import order_check as OC
+    algo = {"engine": "v1"}
+    base = {"in_db": True, "pack": 12, "store": 1, "inv0": 0, "daily": None, "sales": [30, 60, 90, 180]}
+    rows = [dict(base, file_qty=2, suggested=200),                       # 系统要 17 箱 → 按清单 2 箱
+            dict(base, file_qty=3, suggested=5),                         # 系统要 5 件（不到一箱）→ 1 箱
+            dict(base, file_qty=1, suggested=0, inv0=50),                # 库存够 → 不订
+            dict(base, file_qty=2, suggested=0, sales=[3, 5, 5, 5]),      # 两个月前还没卖过 → 新品，按清单
+            dict(base, file_qty=1, suggested=0, sales=[0, 0, 0, 0]),      # 从没卖过 → 新品，按清单
+            dict(base, file_qty=4, in_db=False, pack=0)]                 # 数据库没有 → 清单
+    OC.init_boxes(rows, None, algo)
+    assert [x["fbox"] for x in rows] == [2, 1, 0, 2, 1, 4]
+    assert rows[0]["sys_box"] == 17 and rows[3].get("protect") == "new" and rows[2].get("protect") is None
+    empty = [dict(base, file_qty=3, suggested=0, inv0=-2, sales=[0, 1, 2, 4])]   # 没货了、门店要 → 至少 1 箱
+    OC.init_boxes(empty, None, algo)
+    assert empty[0]["fbox"] == 1 and empty[0]["protect"] == "empty"

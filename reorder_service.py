@@ -677,10 +677,9 @@ def write_main_order(rows, root_folder, store_id, from_file=None, prefix="订货
 VERDICTS = ("增加", "减少", "不订", "不变", "数据库没有")
 
 
-def qty_unit(field_header):
-    """清单数量列的单位：表头里有 COLLI / 箱 → 箱，否则当件"""
-    h = _norm(field_header)
-    return "colli" if ("colli" in h or "箱" in h) else "pcs"
+def qty_unit(field_header=None):
+    """清单数量列的单位：2026-10-25 起门店清单一律按箱（不再按表头猜件 / 箱）"""
+    return "colli"
 
 
 def check_rows(file_rows, result_rows, unit="colli"):

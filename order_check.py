@@ -97,29 +97,53 @@ def _set_box(x, boxes):
     x["final"] = int(round(b * pk)) if pk > 0 else b
 
 
-def init_boxes(rows, units, algo=None):
+def is_new_item(x):
     """
-    检查结果按箱算：lbox 清单箱数、sbox 系统建议箱数、fbox 确定箱数（默认 = 建议；数据库没有 / 没有箱规的 = 清单）。
-    units {门店: "colli" / "pcs"}：清单按箱的直接用清单数量，按件的折成箱（每箱件数用报价的）
-    algo：新算法参数；新算法算的行凑不成整箱时，少订后够安全库存就少订（forecast.to_packs），其余向上取整
+    新品保护：180 天里从没卖过，或者 180 天的销量全是最近 60 天卖的（两个月前还没开始卖）→ 新品 / 刚补上货。
+    这种商品销量数据还说明不了什么，按门店清单订
+    """
+    s = x.get("sales") or []
+    if len(s) < 4 or not all(isinstance(v, (int, float)) for v in s[:4]):
+        return False
+    return float(s[3]) <= 0 or float(s[3]) - float(s[1]) <= 0
+
+
+def init_boxes(rows, units=None, algo=None):
+    """
+    检查结果按箱算（2026-10-25 用户定）：门店清单的数量一律是箱（lbox）；
+      sys_box 系统算出来的箱数；sbox 建议箱数 = 系统算的，但**不多于门店清单**（先不做多订）；
+      系统算出来要订（哪怕不到一箱）就至少 1 箱，不因为凑不成整箱砍成 0；
+      新品（is_new_item）按门店清单订（protect = "new"）；fbox 确定箱数默认 = 建议；数据库没有 / 没有箱规的 = 清单。
+    units 不再用（以前分箱 / 件）；algo：新算法参数（凑整箱用 forecast.to_packs）
     """
     import forecast as F
     v2 = bool(algo) and algo.get("engine") == "v2"
     for x in rows:
         pk = _pk(x)
-        q = float(x.get("file_qty") or 0)
-        if (units or {}).get(x.get("store")) == "colli" or pk <= 0:
-            x["lbox"] = int(math.ceil(q - 1e-9))
-        else:
-            x["lbox"] = int(math.ceil(float(x.get("file_pcs") or 0) / pk - 1e-9))
+        x["lbox"] = int(math.ceil(float(x.get("file_qty") or 0) - 1e-9))
+        x.pop("protect", None)
         if not (x.get("in_db", True) and pk > 0):
-            x["sbox"] = None
-        elif v2 and x.get("daily") is not None:
-            x["sbox"] = F.to_packs(float(x.get("suggested") or 0), pk, float(x.get("inv0") or 0),
-                                   float(x.get("daily") or 0), algo, tier=x.get("tier") or "C", cycle=x.get("cycle"))
+            x["sbox"] = x["sys_box"] = None
+            _set_box(x, x["lbox"])
+            continue
+        sugg = float(x.get("suggested") or 0)
+        if v2 and x.get("daily") is not None:
+            sys_ = F.to_packs(sugg, pk, float(x.get("inv0") or 0), float(x.get("daily") or 0), algo,
+                              tier=x.get("tier") or "C", cycle=x.get("cycle"))
         else:
-            x["sbox"] = int(math.ceil((x.get("suggested") or 0) / pk - 1e-9))
-        _set_box(x, x["sbox"] if x["sbox"] is not None else x["lbox"])
+            sys_ = int(math.ceil(sugg / pk - 1e-9))
+        if sugg > 0 and sys_ <= 0:
+            sys_ = 1                                   # 系统也说要订：至少 1 箱
+        if sys_ <= 0 and float(x.get("inv0") or 0) <= 0 and x["lbox"] > 0:
+            sys_ = 1                                   # 店里已经没货、门店又点名要：至少 1 箱（缺货保护）
+            x["protect"] = "empty"
+        x["sys_box"] = sys_
+        if is_new_item(x):
+            x["protect"] = "new"
+            x["sbox"] = x["lbox"]
+        else:
+            x["sbox"] = min(sys_, x["lbox"])           # 先不多订：最多订到门店清单的箱数
+        _set_box(x, x["sbox"])
 AFTER_COL = _col(20)          # 确定订后够卖（跟着确定件数变）
 LIST_AFTER_COL = _col(21)     # 清单订后够卖（按门店清单原来的数量订）
 
@@ -183,13 +207,13 @@ class OrderCheck:
         r1.addWidget(b_clr)
         p.lay.addLayout(r1)
         # 放进来的清单：每份一行，门店按文件名认，认不出来的自己选
-        self.list_table = ui.make_table([tr("门店"), tr("清单文件"), tr("商品数"), tr("数量单位"), ""], stretch_col=1,
+        self.list_table = ui.make_table([tr("门店"), tr("清单文件"), tr("商品数"), ""], stretch_col=1,
                                         numeric_cols=(2,))
+        self.list_table.horizontalHeaderItem(2).setToolTip(tr("门店清单的数量一律按箱"))
         self.list_table.verticalHeader().setDefaultSectionSize(36)
         self.list_table.setColumnWidth(0, 170)
         self.list_table.setColumnWidth(2, 70)
-        self.list_table.setColumnWidth(3, 90)
-        self.list_table.setColumnWidth(4, 70)
+        self.list_table.setColumnWidth(3, 70)
         self.list_table.setMaximumHeight(36 * 5 + 34)
         self.list_table.hide()
         p.lay.addWidget(self.list_table)
@@ -484,7 +508,7 @@ class OrderCheck:
                 notes.append(tr("✘ {0} 读不出来：{1}", name, e))
                 continue
             f = info["fields"]
-            unit = R.qty_unit(f["qty"]) if "qty" in f else "colli"
+            unit = "colli"                      # 门店清单的数量一律是箱（2026-10-25 用户定）
             sid = R.guess_store(path)
             if sid:
                 self.lists = [x for x in self.lists if x["store"] != sid]
@@ -525,7 +549,7 @@ class OrderCheck:
         t.setRowCount(len(self.lists))
         stores = [k for k in R.STORES if k]
         for i, x in enumerate(self.lists):
-            self.ui.table_set_row(t, i, ["", os.path.basename(x["path"]), str(len(x["info"]["rows"])), "", ""])
+            self.ui.table_set_row(t, i, ["", os.path.basename(x["path"]), str(len(x["info"]["rows"])), ""])
             t.item(i, 1).setToolTip(x["path"])
             cb = QComboBox()
             cb.addItem(tr("选择门店…"), None)
@@ -534,16 +558,10 @@ class OrderCheck:
             cb.setCurrentIndex(max(0, cb.findData(x["store"])))
             cb.currentIndexChanged.connect(lambda _, i=i, cb=cb: self._set_store(i, cb.currentData()))
             t.setCellWidget(i, 0, cb)
-            ub = QComboBox()
-            ub.addItem(tr("箱"), "colli")
-            ub.addItem(tr("件"), "pcs")
-            ub.setCurrentIndex(max(0, ub.findData(x["unit"])))
-            ub.currentIndexChanged.connect(lambda _, x=x, ub=ub: x.__setitem__("unit", ub.currentData()))
-            t.setCellWidget(i, 3, ub)
             rb = QPushButton(tr("移除"))
             rb.setObjectName("Link")
             rb.clicked.connect(lambda _=False, i=i: self._remove(i))
-            t.setCellWidget(i, 4, rb)
+            t.setCellWidget(i, 3, rb)
         t.setVisible(bool(self.lists))
         names = [R.STORES.get(x["store"]) or "?" for x in self.lists]
         self.file_edit.setText(tr("{0} 份清单：{1}", len(self.lists), "、".join(names)) if self.lists else "")
@@ -718,7 +736,7 @@ class OrderCheck:
             self.msg.setText(tr("计算失败"))
             self.win.notify(tr("检查清单失败：{0}", err))
             return
-        init_boxes(rows, meta.get("units"), self._algo())
+        init_boxes(rows, None, self._algo())
         self.rows, self.meta = rows, meta
         # 人工改的调货 {(门店, 商品编号): {"from", "pieces", "auto"} 或 0 = 不调}；改过一次就冻结（别的行不再跟着变）
         self.transfer_ov = {}
@@ -797,6 +815,12 @@ class OrderCheck:
         lines = R.plain_reason(x.get("inv0"), x.get("daily0"), x.get("cycle"), sugg,
                                boxes=math.ceil(sugg / pack) if pack > 0 and sugg > 0 else None, target=x.get("target"),
                                in_db=x.get("in_db", True), transfer=tin, pack=pack)
+        if x.get("protect") == "new":
+            lines.insert(0, tr("新品保护：近两个月才开始卖（或还没卖过），销量还说明不了什么，按门店清单订"))
+        elif x.get("protect") == "empty":
+            lines.insert(0, tr("缺货保护：店里已经没货，门店又点名要，至少订 1 箱"))
+        elif x.get("sys_box") is not None and x["sys_box"] > x["lbox"]:
+            lines.append(tr("系统算出来要 {0:,} 箱，多于门店清单，按清单 {1:,} 箱订（先不多订）", x["sys_box"], x["lbox"]))
         if x.get("in_db", True) and x.get("sbox") is not None and x["lbox"] != x["sbox"]:
             lines.append(tr("门店清单报了 {0:,} 箱", x["lbox"]))
         if x.get("sbox") is not None and x["fbox"] != x["sbox"]:
@@ -830,7 +854,8 @@ class OrderCheck:
     def _need_pcs(self, x):
         """调货用的「真正要的件数」：确定箱数没改（= 系统建议）就用系统算的件数（零头才能调），改过就按箱数 × 每箱件数"""
         if x.get("sbox") is not None and x["fbox"] == x["sbox"]:
-            return int(x.get("suggested") or 0)
+            pk = _pk(x)
+            return int(min(float(x.get("suggested") or 0), x["fbox"] * pk) if pk > 0 else (x.get("suggested") or 0))
         return int(x["final"])
 
     def _transfer_text(self, x):
@@ -1112,7 +1137,7 @@ class OrderCheck:
         """按现在的确定箱数重新算门店间调货（改了以后稍等一下再算，不卡）"""
         missing = [x for x in self.rows if "fbox" not in x]
         if missing:                                    # 还没按箱整理过的行（保险）
-            init_boxes(missing, (self.meta or {}).get("units"), self._algo())
+            init_boxes(missing, None, self._algo())
         self._moves_in, self._moves_out = {}, {}
         self._moves = []
         if self.rows and self.meta.get("snap"):
@@ -1313,7 +1338,7 @@ class OrderCheck:
     def _fill(self):
         missing = [x for x in self.rows if "fbox" not in x]
         if missing:
-            init_boxes(missing, (self.meta or {}).get("units"), self._algo())
+            init_boxes(missing, None, self._algo())
         self.ctl.render()
         self._summary()
 

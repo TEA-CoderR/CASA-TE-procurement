@@ -2382,4 +2382,8 @@ TRANSLATIONS = {
     '自己这次也要订的商品不调出': ('Items the store also orders this time are not transferred out', 'Gli articoli che il negozio ordina anche questa volta non vengono trasferiti'),
     '同上（重复编号）': ('Same item (duplicate code)', 'Stesso articolo (codice duplicato)'),
     '和「{0}」是同一个商品编号，销量和建议量只算在那一行；要订这一行（例如指定颜色）自己填箱数': ('Same item code as "{0}"; sales and the suggestion are counted on that row only. To order this row (e.g. a specific colour), enter the boxes yourself', 'Stesso codice di "{0}"; vendite e suggerimento sono solo su quella riga. Per ordinare questa riga (es. un colore) inserisci i colli a mano'),
+    '新品保护：近两个月才开始卖（或还没卖过），销量还说明不了什么，按门店清单订': ('New item protection: started selling only in the last two months (or not yet), so sales say little; order as the store list', 'Protezione novità: in vendita solo da due mesi (o non ancora), le vendite dicono poco; si ordina come la lista del negozio'),
+    '缺货保护：店里已经没货，门店又点名要，至少订 1 箱': ('Out-of-stock protection: the store has none left and asked for it, order at least 1 box', 'Protezione esaurito: il negozio non ne ha più e lo chiede, ordina almeno 1 collo'),
+    '系统算出来要 {0:,} 箱，多于门店清单，按清单 {1:,} 箱订（先不多订）': ("The system computed {0:,} boxes, more than the store list; ordering the list's {1:,} boxes (no extra for now)", 'Il sistema calcola {0:,} colli, più della lista; si ordinano i {1:,} colli della lista (per ora niente in più)'),
+    '门店清单的数量一律按箱': ('Store list quantities are always in boxes', 'Le quantità della lista negozio sono sempre in colli'),
 }
