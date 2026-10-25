@@ -2386,4 +2386,5 @@ TRANSLATIONS = {
     '缺货保护：店里已经没货，门店又点名要，至少订 1 箱': ('Out-of-stock protection: the store has none left and asked for it, order at least 1 box', 'Protezione esaurito: il negozio non ne ha più e lo chiede, ordina almeno 1 collo'),
     '系统算出来要 {0:,} 箱，多于门店清单，按清单 {1:,} 箱订（先不多订）': ("The system computed {0:,} boxes, more than the store list; ordering the list's {1:,} boxes (no extra for now)", 'Il sistema calcola {0:,} colli, più della lista; si ordinano i {1:,} colli della lista (per ora niente in più)'),
     '门店清单的数量一律按箱': ('Store list quantities are always in boxes', 'Le quantità della lista negozio sono sempre in colli'),
+    '「{0}」正在被 Excel / WPS 打开（或被别的程序占用），写不进去。关掉这个文件后再点「重新比价」。': ('"{0}" is open in Excel / WPS (or used by another program) and cannot be written. Close it and click "Compare again".', '"{0}" è aperto in Excel / WPS (o usato da un altro programma) e non si può scrivere. Chiudilo e clicca "Confronta di nuovo".'),
 }

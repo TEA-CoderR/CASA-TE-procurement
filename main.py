@@ -333,6 +333,14 @@ def make_table(headers, stretch_col=None, numeric_cols=()):
     return t
 
 
+def _friendly_error(e):
+    """出错信息说人话：文件被 Excel / WPS 开着（Windows 上写不进去）最常见"""
+    if isinstance(e, PermissionError):
+        name = os.path.basename(getattr(e, "filename", "") or "") or str(e)
+        return tr("「{0}」正在被 Excel / WPS 打开（或被别的程序占用），写不进去。关掉这个文件后再点「重新比价」。", name)
+    return str(e)
+
+
 def table_set_row(t, row, values, bold=False, color=None):
     for c, v in enumerate(values):
         it = QTableWidgetItem("" if v is None else str(v))
@@ -4799,7 +4807,7 @@ class MainWindow(QMainWindow):
             except Exception as e:
                 file_logger.error(tr("处理失败: {0}", e), exc_info=True)
                 self.log(tr("❌ 处理失败：{0}", e))
-                summary = {"ok": False, "error": str(e)}
+                summary = {"ok": False, "error": _friendly_error(e)}
             self.bridge.done.emit(summary)
 
         threading.Thread(target=work, daemon=True).start()
