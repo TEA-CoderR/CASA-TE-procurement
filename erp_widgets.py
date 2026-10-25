@@ -522,18 +522,18 @@ class Sparkline(QWidget):
 
 class MonthGrid(QWidget):
     """
-    近两年每月销量（1–12 月）：分上下两半（1–6 月、7–12 月），每半一行月份 + 今年一行 + 去年一行，
-    同一个月今年、去年上下挨着好对比。格子里写件数（0 写淡淡的「–」），卖得越多底色越深（浅色，字一直看得清）；
-    本月描边并带 *（到今天为止），今年还没到的月份空着。悬停显示具体件数和同比。
+    近两年每月销量（1–12 月方框）：今年一块（上）、去年一块（下），每块 2 行 × 6 个月（1–6 月、7–12 月）。
+    方框左上角小字写月份，中间写件数（0 写淡淡的「–」）；卖得越多底色越深（浅色，字一直看得清）；
+    本月描边并带 *（到今天为止），今年还没到的月份是虚线空框。悬停显示具体件数和同比。
     set_data(values, keys)：values 每月销量（从旧到新），keys 对应的 (年, 月)。
     """
 
-    LBL_W, HEAD_H, ROW_H, GAP, HALF_GAP = 40, 18, 26, 3, 8
+    LABEL_H, BOX_H, GAP, BLOCK_GAP = 20, 34, 5, 10
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.data, self.year, self.cur_month, self.message, self.hover = {}, None, None, "", None
-        self.setMinimumHeight(2 * (self.HEAD_H + 2 * self.ROW_H + self.GAP) + self.HALF_GAP + 4)
+        self.setMinimumHeight(2 * (self.LABEL_H + 2 * self.BOX_H + self.GAP) + self.BLOCK_GAP + 4)
         self.setMouseTracking(True)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
@@ -558,29 +558,25 @@ class MonthGrid(QWidget):
         return cur, prev, full
 
     def _layout(self):
-        """[(年, 月, 格子)]、[(月, 月份标题位置)]、[(年, 行标题位置)]"""
-        cw = (self.width() - self.LBL_W) / 6.0
-        cells, heads, labels = [], [], []
+        """[(年, 月, 方框)]、[(年, 年份标题位置)]：今年在上、去年在下"""
+        bw = (self.width() - 5 * self.GAP) / 6.0
+        cells, titles = [], []
         top = 0.0
-        for half in range(2):
-            for j in range(6):
-                m = half * 6 + j + 1
-                heads.append((m, QRectF(self.LBL_W + j * cw, top, cw, self.HEAD_H)))
-            top += self.HEAD_H
-            for y in (self.year, self.year - 1):
-                labels.append((y, QRectF(0, top, self.LBL_W - 6, self.ROW_H)))
+        for y in (self.year, self.year - 1):
+            titles.append((y, QRectF(0, top, self.width(), self.LABEL_H)))
+            top += self.LABEL_H
+            for half in range(2):
                 for j in range(6):
-                    m = half * 6 + j + 1
-                    cells.append((y, m, QRectF(self.LBL_W + j * cw + 1.5, top + 1.5, cw - 3, self.ROW_H - 3)))
-                top += self.ROW_H
-            top += self.GAP + (self.HALF_GAP if half == 0 else 0)
-        return cells, heads, labels
+                    cells.append((y, half * 6 + j + 1, QRectF(j * (bw + self.GAP), top, bw, self.BOX_H)))
+                top += self.BOX_H + (self.GAP if half == 0 else 0)
+            top += self.BLOCK_GAP
+        return cells, titles
 
     def mouseMoveEvent(self, e):
         if self.year is None:
             return
         pos = e.position()
-        cells, _, _ = self._layout()
+        cells, _ = self._layout()
         hit = next(((y, m) for y, m, r in cells if r.contains(pos)), None)
         if hit != self.hover:
             self.hover = hit
@@ -610,49 +606,52 @@ class MonthGrid(QWidget):
             p.setPen(QColor(T("muted")))
             p.drawText(self.rect(), Qt.AlignCenter, self.message or tr("没有销量数据"))
             return
-        cells, heads, labels = self._layout()
+        cells, titles = self._layout()
         top_v = max([v for (y, m), v in self.data.items() if y >= self.year - 1] + [0])
         f = QFont(self.font())
         small = QFont(f)
-        small.setPointSizeF(max(7.0, f.pointSizeF() - 1.5))
+        small.setPointSizeF(max(7.0, f.pointSizeF() - 2))
         num = QFont(f)
         num.setBold(True)
-        p.setFont(small)
-        p.setPen(QColor(T("faint")))
-        for m, r in heads:
-            p.drawText(r, Qt.AlignCenter, f"{m}" + tr("月"))
-        for y, r in labels:
+        title = QFont(f)
+        title.setBold(True)
+        for y, r in titles:
+            p.setFont(title)
             p.setPen(QColor(T("text") if y == self.year else T("muted")))
-            fb = QFont(small)
-            fb.setBold(y == self.year)
-            p.setFont(fb)
-            p.drawText(r, Qt.AlignRight | Qt.AlignVCenter, str(y))
+            p.drawText(r, Qt.AlignLeft | Qt.AlignVCenter, str(y))
         accent = QColor(T("accent"))
         for y, m, r in cells:
             future = (y, m) > (self.year, self.cur_month)
+            now = (y, m) == (self.year, self.cur_month)
+            hov = (y, m) == self.hover and not future
+            v = self.data.get((y, m), 0)
+            if future:
+                p.setPen(QPen(QColor(T("line")), 1, Qt.DashLine))
+                p.setBrush(Qt.NoBrush)
+            else:
+                if v > 0 and top_v > 0:
+                    bg = QColor(accent)
+                    bg.setAlpha(int(18 + 82 * (v / top_v)))       # 浅色底：卖得越多越深，最深也不挡字
+                else:
+                    bg = QColor(T("line"))
+                    bg.setAlpha(40)
+                p.setPen(QPen(QColor(T("accent") if (now or hov) else T("line")), 1.6 if (now or hov) else 0.8))
+                p.setBrush(bg)
+            p.drawRoundedRect(r.adjusted(0.5, 0.5, -0.5, -0.5), 5, 5)
+            p.setFont(small)
+            p.setPen(QColor(T("muted")))
+            p.drawText(r.adjusted(5, 2, -3, 0), Qt.AlignLeft | Qt.AlignTop, f"{m}" + tr("月"))
             if future:
                 continue
-            v = self.data.get((y, m), 0)
-            if v > 0 and top_v > 0:
-                bg = QColor(accent)
-                bg.setAlpha(int(18 + 82 * (v / top_v)))       # 浅色底：卖得越多越深，最深也不挡字
-            else:
-                bg = QColor(T("line"))
-                bg.setAlpha(45)
-            now = (y, m) == (self.year, self.cur_month)
-            hov = (y, m) == self.hover
-            p.setPen(QPen(QColor(T("accent") if (now or hov) else T("line")), 1.6 if (now or hov) else 0.8))
-            p.setBrush(bg)
-            p.drawRoundedRect(r, 4, 4)
             if v > 0:
                 p.setFont(num)
-                p.setPen(QColor(T("text") if y == self.year else T("muted")))
+                p.setPen(QColor(T("text")))
                 txt = f"{round(v):g}" if v >= 10 else f"{round(v, 1):g}"
             else:
                 p.setFont(small)
                 p.setPen(QColor(T("faint")))
                 txt = "–"
-            p.drawText(r, Qt.AlignCenter, txt + ("*" if now else ""))
+            p.drawText(r.adjusted(2, 10, -2, 0), Qt.AlignCenter, txt + ("*" if now else ""))
 
 
 # =====================================================================
