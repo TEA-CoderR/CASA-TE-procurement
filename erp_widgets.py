@@ -522,17 +522,18 @@ class Sparkline(QWidget):
 
 class MonthGrid(QWidget):
     """
-    近两年每月销量（1–12 月方框）：今年一块（上）、去年一块（下），每块两行 × 6 个月（1–6 月、7–12 月），方框里写销量，
-    同一个月上下对齐好对比；卖得越多底色越深。今年还没到的月份空着，本月是到今天为止的数。
-    set_data(values, keys)：values 每月销量（从旧到新），keys 对应的 (年, 月)。悬停显示和去年同月的对比。
+    近两年每月销量（1–12 月）：分上下两半（1–6 月、7–12 月），每半一行月份 + 今年一行 + 去年一行，
+    同一个月今年、去年上下挨着好对比。格子里写件数（0 写淡淡的「–」），卖得越多底色越深（浅色，字一直看得清）；
+    本月描边并带 *（到今天为止），今年还没到的月份空着。悬停显示具体件数和同比。
+    set_data(values, keys)：values 每月销量（从旧到新），keys 对应的 (年, 月)。
     """
 
-    LABEL_H, BOX_H, GAP = 18, 34, 4
+    LBL_W, HEAD_H, ROW_H, GAP, HALF_GAP = 40, 18, 26, 3, 8
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.data, self.year, self.cur_month, self.message, self.hover = {}, None, None, "", None
-        self.setMinimumHeight(2 * (self.LABEL_H + 2 * self.BOX_H + self.GAP) + 10)
+        self.setMinimumHeight(2 * (self.HEAD_H + 2 * self.ROW_H + self.GAP) + self.HALF_GAP + 4)
         self.setMouseTracking(True)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
@@ -556,46 +557,47 @@ class MonthGrid(QWidget):
         full = sum(self.data.get((y - 1, k), 0) for k in range(1, 13))
         return cur, prev, full
 
-    def _boxes(self):
-        """[(年, 月, QRectF)]：去年在上、今年在下"""
-        out = []
-        w = self.width()
-        bw = (w - 5 * self.GAP) / 6.0
-        top = 0
-        for y in (self.year, self.year - 1):          # 今年在上、去年在下
-            top += self.LABEL_H
-            for half in range(2):
+    def _layout(self):
+        """[(年, 月, 格子)]、[(月, 月份标题位置)]、[(年, 行标题位置)]"""
+        cw = (self.width() - self.LBL_W) / 6.0
+        cells, heads, labels = [], [], []
+        top = 0.0
+        for half in range(2):
+            for j in range(6):
+                m = half * 6 + j + 1
+                heads.append((m, QRectF(self.LBL_W + j * cw, top, cw, self.HEAD_H)))
+            top += self.HEAD_H
+            for y in (self.year, self.year - 1):
+                labels.append((y, QRectF(0, top, self.LBL_W - 6, self.ROW_H)))
                 for j in range(6):
                     m = half * 6 + j + 1
-                    out.append((y, m, QRectF(j * (bw + self.GAP), top, bw, self.BOX_H)))
-                top += self.BOX_H + (2 if half == 0 else 0)
-            top += self.GAP + 4
-        return out
+                    cells.append((y, m, QRectF(self.LBL_W + j * cw + 1.5, top + 1.5, cw - 3, self.ROW_H - 3)))
+                top += self.ROW_H
+            top += self.GAP + (self.HALF_GAP if half == 0 else 0)
+        return cells, heads, labels
 
     def mouseMoveEvent(self, e):
         if self.year is None:
             return
         pos = e.position()
-        hit = next(((y, m) for y, m, r in self._boxes() if r.contains(pos)), None)
+        cells, _, _ = self._layout()
+        hit = next(((y, m) for y, m, r in cells if r.contains(pos)), None)
         if hit != self.hover:
             self.hover = hit
             self.update()
-        if hit:
-            y, m = hit
-            if (y, m) > (self.year, self.cur_month):
-                QToolTip.hideText()
-                return
-            v = self.data.get((y, m), 0)
-            text = tr("{0}-{1:02d}：{2:g} 件", y, m, round(v, 1))
-            if (y, m) == (self.year, self.cur_month):
-                text += "  " + tr("（本月到今天）")
-            other = (y - 1, m) if y == self.year else (y + 1, m)
-            if other[0] == self.year - 1 or other <= (self.year, self.cur_month):
-                ov = self.data.get(other, 0)
-                text += "\n" + (tr("去年同月 {0:g} 件", round(ov, 1)) if y == self.year else tr("今年同月 {0:g} 件", round(ov, 1)))
-            QToolTip.showText(e.globalPosition().toPoint(), text, self)
-        else:
+        if not hit or hit > (self.year, self.cur_month):
             QToolTip.hideText()
+            return
+        y, m = hit
+        v = self.data.get((y, m), 0)
+        text = tr("{0}-{1:02d}：{2:g} 件", y, m, round(v, 1))
+        if (y, m) == (self.year, self.cur_month):
+            text += "  " + tr("（本月到今天）")
+        if y == self.year:
+            text += "\n" + tr("去年同月 {0:g} 件", round(self.data.get((y - 1, m), 0), 1))
+        elif (y + 1, m) <= (self.year, self.cur_month):
+            text += "\n" + tr("今年同月 {0:g} 件", round(self.data.get((y + 1, m), 0), 1))
+        QToolTip.showText(e.globalPosition().toPoint(), text, self)
 
     def leaveEvent(self, _):
         self.hover = None
@@ -608,44 +610,49 @@ class MonthGrid(QWidget):
             p.setPen(QColor(T("muted")))
             p.drawText(self.rect(), Qt.AlignCenter, self.message or tr("没有销量数据"))
             return
-        boxes = self._boxes()
+        cells, heads, labels = self._layout()
         top_v = max([v for (y, m), v in self.data.items() if y >= self.year - 1] + [0])
         f = QFont(self.font())
         small = QFont(f)
-        small.setPointSizeF(max(7.0, f.pointSizeF() - 2))
-        bold = QFont(f)
-        bold.setBold(True)
-        # 年份标题
-        top = 0
-        for y in (self.year, self.year - 1):
-            p.setFont(bold)
-            p.setPen(QColor(T("text")))
-            p.drawText(QRectF(0, top, self.width(), self.LABEL_H), Qt.AlignLeft | Qt.AlignVCenter, str(y))
-            top += self.LABEL_H + 2 * self.BOX_H + 2 + self.GAP + 4
+        small.setPointSizeF(max(7.0, f.pointSizeF() - 1.5))
+        num = QFont(f)
+        num.setBold(True)
+        p.setFont(small)
+        p.setPen(QColor(T("faint")))
+        for m, r in heads:
+            p.drawText(r, Qt.AlignCenter, f"{m}" + tr("月"))
+        for y, r in labels:
+            p.setPen(QColor(T("text") if y == self.year else T("muted")))
+            fb = QFont(small)
+            fb.setBold(y == self.year)
+            p.setFont(fb)
+            p.drawText(r, Qt.AlignRight | Qt.AlignVCenter, str(y))
         accent = QColor(T("accent"))
-        for y, m, r in boxes:
+        for y, m, r in cells:
             future = (y, m) > (self.year, self.cur_month)
+            if future:
+                continue
             v = self.data.get((y, m), 0)
-            bg = QColor(T("line"))
-            bg.setAlpha(60)
-            if not future and v > 0 and top_v > 0:
+            if v > 0 and top_v > 0:
                 bg = QColor(accent)
-                bg.setAlpha(int(25 + 150 * (v / top_v)))
-            p.setPen(QPen(QColor(T("text") if (y, m) == self.hover else T("line")), 1.4 if (y, m) == self.hover else 1,
-                          Qt.DashLine if future else Qt.SolidLine))
-            p.setBrush(bg if not future else Qt.NoBrush)
-            p.drawRoundedRect(r.adjusted(0.5, 0.5, -0.5, -0.5), 4, 4)
-            p.setFont(small)
-            p.setPen(QColor(T("faint")))
-            p.drawText(r.adjusted(4, 1, -3, 0), Qt.AlignLeft | Qt.AlignTop, f"{m}" + tr("月"))
-            if not future:
-                p.setFont(bold)
-                strong = top_v > 0 and v / top_v > 0.6
-                p.setPen(QColor(T("on_accent")) if strong else QColor(T("text") if v > 0 else T("faint")))
+                bg.setAlpha(int(18 + 82 * (v / top_v)))       # 浅色底：卖得越多越深，最深也不挡字
+            else:
+                bg = QColor(T("line"))
+                bg.setAlpha(45)
+            now = (y, m) == (self.year, self.cur_month)
+            hov = (y, m) == self.hover
+            p.setPen(QPen(QColor(T("accent") if (now or hov) else T("line")), 1.6 if (now or hov) else 0.8))
+            p.setBrush(bg)
+            p.drawRoundedRect(r, 4, 4)
+            if v > 0:
+                p.setFont(num)
+                p.setPen(QColor(T("text") if y == self.year else T("muted")))
                 txt = f"{round(v):g}" if v >= 10 else f"{round(v, 1):g}"
-                if (y, m) == (self.year, self.cur_month):
-                    txt += "*"
-                p.drawText(r.adjusted(2, 9, -2, 0), Qt.AlignCenter, txt)
+            else:
+                p.setFont(small)
+                p.setPen(QColor(T("faint")))
+                txt = "–"
+            p.drawText(r, Qt.AlignCenter, txt + ("*" if now else ""))
 
 
 # =====================================================================
