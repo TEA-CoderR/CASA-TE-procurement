@@ -56,3 +56,6 @@ update_config.json
 # 历史记录（本机数据）
 history/
 *.keys.json
+
+# 商品图片缓存（product_images.py）
+cache/

@@ -383,7 +383,9 @@ class OrderCheck:
         hh = self.table.horizontalHeader()
         hh.setSectionResizeMode(QHeaderView.Interactive)
         hh.setStretchLastSection(False)
-        for c, wd in enumerate(_perm((70, 80, 120, 280, 70, 52, 52, 52, 52, 96, 52, 70, 70, 70, 76, 70, 50, 50, 60, 70, 120, 120, 96,
+        import product_images as PI          # 条码那一格左边放商品小图（只下载看得见的行）
+        self.table.setItemDelegateForColumn(_col(2), PI.ThumbDelegate(self.table, _col(2), 26, self.settings))
+        for c, wd in enumerate(_perm((70, 80, 160, 280, 70, 52, 52, 52, 52, 96, 52, 70, 70, 70, 76, 70, 50, 50, 60, 70, 120, 120, 96,
                                       76, 200, 380, 110, 150, 56))):
             self.table.setColumnWidth(c, wd)
         self.table.horizontalHeaderItem(_col(28)).setToolTip(tr("月均：新算法 = 日均（加权 + 季节）× 30；原程序算法 = 最长周期销量 ÷ 月数（默认 180 天 ÷ 6）"))
@@ -974,7 +976,11 @@ class OrderCheck:
         self.d_codes = QLabel("")
         self.d_codes.setObjectName("Faint")
         self.d_codes.setWordWrap(True)
-        for w in (self.d_over, self.d_title, self.d_codes):
+        self.d_img = QLabel()                     # 商品图（公司图片服务器上有这个条码的图才显示）
+        self.d_img.setAlignment(Qt.AlignCenter)
+        self.d_img.setMinimumHeight(150)
+        self.d_img.hide()
+        for w in (self.d_img, self.d_over, self.d_title, self.d_codes):
             v.addWidget(w)
         g = QGridLayout()
         g.setSpacing(8)
@@ -1059,6 +1065,8 @@ class OrderCheck:
         sid = x.get("store")
         self.d_over.setText(" · ".join(p for p in (R.STORES.get(sid, ""), x.get("sup_name") or "") if p))
         self.d_title.setText(x.get("name") or code)
+        import product_images as PI
+        PI.set_label_image(self.d_img, x.get("ean"), 150, self.settings)
         pack = x.get("pack") or 0
         try:
             price = float(x.get("price") or 0)

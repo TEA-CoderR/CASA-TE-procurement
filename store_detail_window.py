@@ -591,7 +591,9 @@ class DetailWindow(ToolWindow):
         hh = self.table.horizontalHeader()
         hh.setSectionResizeMode(QHeaderView.Interactive)
         hh.setStretchLastSection(False)
-        for c, wd in enumerate(_perm((130, 92, 84, 80, 120, 270, 70, 50, 50, 50, 50, 70, 66, 62, 70, 66, 76, 80, 46, 46, 60, 70,
+        import product_images as PI          # 条码那一格左边放商品小图（只下载看得见的行）
+        self.table.setItemDelegateForColumn(_col(4), PI.ThumbDelegate(self.table, _col(4), 26, self.page.settings))
+        for c, wd in enumerate(_perm((130, 92, 84, 80, 160, 270, 70, 50, 50, 50, 50, 70, 66, 62, 70, 66, 76, 80, 46, 46, 60, 70,
                                       56, 56, 54, 54, 54, 54, 54, 54, 80, 86, 96, 190, 110, 380, 110))):
             hdr = self.table.horizontalHeaderItem(c)
             need = hh.fontMetrics().horizontalAdvance(hdr.text() if hdr else "") + 26
@@ -744,6 +746,11 @@ class DetailWindow(ToolWindow):
         self.d_codes.setFont(num_font(9))
         self.d_codes.setWordWrap(True)            # 编号一行放不下就换行（不然把详情栏撑宽，右边被切掉）
         self.d_over.setWordWrap(True)
+        self.d_img = QLabel()                     # 商品图（公司图片服务器上有这个条码的图才显示）
+        self.d_img.setAlignment(Qt.AlignCenter)
+        self.d_img.setMinimumHeight(150)
+        self.d_img.hide()
+        v.addWidget(self.d_img)
         v.addWidget(self.d_over)
         v.addWidget(self.d_title)
         v.addWidget(self.d_codes)
@@ -826,6 +833,8 @@ class DetailWindow(ToolWindow):
         x = calc["demand"].get(sid, {}).get(it.get("db_code") or it["code"])
         self.d_over.setText(f"{S.STORE_SHEETS[sid]} · {sc['name']}")
         self.d_title.setText(it["desc"])
+        import product_images as PI
+        PI.set_label_image(self.d_img, it.get("ean"), 150, self.page.settings)
         fc = f" · Cod.Forn. {it['sup_code']}" if it.get("sup_code") else ""
         self.d_codes.setText(f"{S.item_code(it)} · {it['ean']}{fc}\n{it['pack']:g} {tr('件/箱')} · €{it['price']:.3f}/{tr('件')}")
         (a1, a2), (b1, b2), (c1, c2), (d1, d2) = self.minis
