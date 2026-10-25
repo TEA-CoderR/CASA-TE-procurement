@@ -23,3 +23,13 @@ def test_missing_marker_expires(tmp_path):
     old = time.time() - (PI.MISS_DAYS + 1) * 86400
     os.utime(p, (old, old))
     assert not st.known_missing("8002910029470")                                 # 过了 7 天再问一次
+
+
+def test_thumb_size_and_row_height():
+    import product_images as PI
+    assert PI.thumb_size({}) == 64
+    assert PI.thumb_size({"image_size": "s"}) == 40
+    assert PI.thumb_size({"image_size": "l"}) == 96
+    assert PI.row_height({"image_size": "l"}) == 104
+    assert PI.row_height({"show_images": False, "image_size": "l"}) == 34
+    assert PI.row_height({"image_size": "s"}) == 48

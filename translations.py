@@ -2390,4 +2390,8 @@ TRANSLATIONS = {
     '商品图片': ('Product images', 'Immagini prodotto'),
     '订货明细、检查清单的条码前面显示商品小图，详情栏显示大图（按条码从公司图片服务器取主图，存在本机，下次不用再下载）': ('Show a small product image before the barcode in the order detail and check list, and a large one in the side panel (main image by barcode from the company image server, saved on this computer)', 'Mostra una piccola immagine prima del codice a barre nel dettaglio ordine e nella lista di controllo, e una grande nel pannello laterale (immagine principale dal server aziendale, salvata su questo computer)'),
     '点一下放大': ('Click to enlarge', 'Clicca per ingrandire'),
+    '小图': ('Small', 'Piccole'),
+    '中图': ('Medium', 'Medie'),
+    '大图': ('Large', 'Grandi'),
+    '表格里商品图的大小（鼠标停在图上会弹出大图）；重新打开表格窗口后生效': ('Size of product images in tables (hover over an image to see it large); applies when the table window is reopened', 'Dimensione delle immagini nelle tabelle (passa il mouse sull\'immagine per vederla grande); vale alla riapertura della finestra'),
 }

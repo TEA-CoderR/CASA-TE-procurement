@@ -17,6 +17,7 @@
 - 用户和同事**共用同一个文件夹**（`procurement_system ok 2.5`）开发。请直接在这个文件夹里改代码、`git commit`、`git push`，不要只推到云端分支却把文件另外写进文件夹（之前这样做过，文件夹和 git 记录对不上，发布前得先同步）。
 
 ## 最近改动（给接手的 AI 的纸条，新的写在最上面）
+- 2026-10-25：表格商品图太小（26px 看不清）→ 改成可选 小 / 中 / 大 = 40 / 64 / 96px（settings image_size，默认中；系统设置「商品图片」旁边的下拉），行高跟着变（`PI.row_height`，没开图片仍 34），条码列宽 = 图 + 120；鼠标停在小图上弹出 320px 大图（`ThumbDelegate.helpEvent`，用本机缓存的原图做 tooltip）。改大小要重新打开表格窗口。
 - 2026-10-25：商品图片 `product_images.py`：按条码取 `https://img.casaete.top/prodotti/<条码>/01.webp`（settings image_url 可改；不足 13 位再试补 0）；后台 4 线程下载、**原图**存 `cache/images/`（Qt 能读就原样存 .webp，否则 Pillow 转原尺寸 .png；.gitignore 了），显示时按屏幕缩放 dpr 缩到实际像素（高分屏不糊），404 记 `.none` 7 天内不再问；Qt 读不了 webp 用 Pillow（requirements + spec 加了 PIL）。界面：订货明细 / 检查清单的**条码列**用 `ThumbDelegate` 画 26px 小图（只下载看得见的行），两个详情栏顶上 `set_label_image` 大图 180px，点一下 `preview` 放大（最大 600）；系统设置「商品图片」开关（settings show_images）。
 - 2026-10-25（bug 修复）：报价表头同一个名字出现两次（Petrillo：J 列「CODICE EAN」是空的，真正的条码在 P 列）→ 以前 `find_col` 取第一列，整份报价读不到（PETRILLO 一件都没分到、缺失多了）。新增 `utils.find_col_best`（同名表头选下面有内容最多的那列），service 里读报价 / 回写供应商文件的 EAN 列都用它。比价出错时 PermissionError 给出「文件被 Excel / WPS 打开」的提示（`main._friendly_error`）。
 - 2026-10-25（用户定，FOIANO 清单实测后）：检查门店订货清单 `order_check.init_boxes`：① 门店清单数量**一律是箱**（`qty_unit` 永远 colli，去掉了「数量单位」下拉）；② **先不做多订**：建议箱数 sbox = min(系统算的 sys_box, 清单箱数)；③ 系统算出要订（哪怕不到一箱）至少 1 箱；④ **新品保护** `is_new_item`（180 天没卖过，或 180 天销量全在最近 60 天）→ 按清单，protect="new"；⑤ **缺货保护**：库存 ≤ 0、门店点名要 → 至少 1 箱，protect="empty"。负库存照旧当 0（不再导致狂订，因为封顶在清单）。原因列有对应说明。

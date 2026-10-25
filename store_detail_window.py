@@ -587,13 +587,14 @@ class DetailWindow(ToolWindow):
         self.table.setEditTriggers(QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed |
                                    QAbstractItemView.AnyKeyPressed)
         self.table.setFocusPolicy(Qt.StrongFocus)
-        self.table.verticalHeader().setDefaultSectionSize(34)
+        import product_images as PI
+        self.table.verticalHeader().setDefaultSectionSize(PI.row_height(self.page.settings))
         hh = self.table.horizontalHeader()
         hh.setSectionResizeMode(QHeaderView.Interactive)
         hh.setStretchLastSection(False)
         import product_images as PI          # 条码那一格左边放商品小图（只下载看得见的行）
-        self.table.setItemDelegateForColumn(_col(4), PI.ThumbDelegate(self.table, _col(4), 26, self.page.settings))
-        for c, wd in enumerate(_perm((130, 92, 84, 80, 160, 270, 70, 50, 50, 50, 50, 70, 66, 62, 70, 66, 76, 80, 46, 46, 60, 70,
+        self.table.setItemDelegateForColumn(_col(4), PI.ThumbDelegate(self.table, _col(4), None, self.page.settings))
+        for c, wd in enumerate(_perm((130, 92, 84, 80, PI.thumb_size(self.page.settings) + 120, 270, 70, 50, 50, 50, 50, 70, 66, 62, 70, 66, 76, 80, 46, 46, 60, 70,
                                       56, 56, 54, 54, 54, 54, 54, 54, 80, 86, 96, 190, 110, 380, 110))):
             hdr = self.table.horizontalHeaderItem(c)
             need = hh.fontMetrics().horizontalAdvance(hdr.text() if hdr else "") + 26

@@ -17,11 +17,23 @@ from concurrent.futures import ThreadPoolExecutor
 
 from PySide6.QtCore import QObject, Signal, Qt, QRect, QSize
 from PySide6.QtGui import QImage, QPixmap, QPainter, QColor
-from PySide6.QtWidgets import QStyledItemDelegate, QStyle, QStyleOptionViewItem, QApplication
+from PySide6.QtWidgets import QStyledItemDelegate, QStyle, QStyleOptionViewItem, QApplication, QToolTip
 
 DEFAULT_URL = "https://img.casaete.top/prodotti/{ean}/01.webp"
 MISS_DAYS = 7          # 服务器上没有图：几天以后再问一次
 PREVIEW = 600          # 点详情栏的图放大看：最大多少
+HOVER = 320            # 表格里鼠标停在小图上：弹出多大的图
+SIZES = {"s": 40, "m": 64, "l": 96}     # 表格小图：小 / 中 / 大（settings["image_size"]，默认中）
+
+
+def thumb_size(settings=None):
+    return SIZES.get((settings or {}).get("image_size") or "m", SIZES["m"])
+
+
+def row_height(settings=None, base=34):
+    """表格行高：开了图片按小图大小加高，没开照旧"""
+    s = settings or {}
+    return max(base, thumb_size(s) + 8) if s.get("show_images", True) else base
 
 
 def norm_ean(ean):
@@ -216,11 +228,12 @@ def store(settings=None):
 class ThumbDelegate(QStyledItemDelegate):
     """
     表格里在格子左边画一张小图（条码取自 ean_col 那一列）。只画看得见的行，所以只下载看得见的商品的图。
+    鼠标停在小图上弹出大图（HOVER）。size 不给 = 按设置的图片大小。
     """
 
-    def __init__(self, view, ean_col, size=26, settings=None):
+    def __init__(self, view, ean_col, size=None, settings=None):
         super().__init__(view)
-        self.view, self.ean_col, self.size = view, ean_col, size
+        self.view, self.ean_col, self.size = view, ean_col, size or thumb_size(settings)
         self.store = store(settings)
         self.store.ready.connect(self._ready)
 
@@ -231,7 +244,7 @@ class ThumbDelegate(QStyledItemDelegate):
             pass
 
     def paint(self, p, opt, idx):
-        ean = idx.sibling(idx.row(), self.ean_col).data() if self.ean_col is not None else idx.data()
+        ean = self._ean(idx)
         w = opt.widget
         dpr = w.devicePixelRatioF() if w is not None and hasattr(w, "devicePixelRatioF") else None
         pm = self.store.pixmap(ean, self.size, dpr) if self.store.enabled else None
@@ -258,6 +271,26 @@ class ThumbDelegate(QStyledItemDelegate):
         o = QStyleOptionViewItem(opt)
         o.rect = r.adjusted(self.size + 10, 0, 0, 0)
         super().paint(p, o, idx)
+
+    def _ean(self, idx):
+        return idx.sibling(idx.row(), self.ean_col).data() if self.ean_col is not None else idx.data()
+
+    def helpEvent(self, ev, view, opt, idx):
+        """鼠标停在小图上：弹出大图（只用本机已经下载好的原图）"""
+        try:
+            e = norm_ean(self._ean(idx))
+            p = self.store.path(e) if (self.store.enabled and e) else None
+            if p and ev.pos().x() <= opt.rect.left() + self.size + 8:
+                img = QImage(p)
+                if not img.isNull():
+                    k = min(1.0, HOVER / max(img.width(), img.height(), 1))
+                    url = "file:///" + p.replace("\\", "/").lstrip("/")
+                    html = f'<img src="{url}" width="{int(img.width() * k)}" height="{int(img.height() * k)}">'
+                    QToolTip.showText(ev.globalPos(), html, view)
+                    return True
+        except Exception:
+            pass
+        return super().helpEvent(ev, view, opt, idx)
 
     def sizeHint(self, opt, idx):
         s = super().sizeHint(opt, idx)

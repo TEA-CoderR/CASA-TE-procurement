@@ -376,7 +376,8 @@ class OrderCheck:
                                           tr("变化（箱）"), tr("调货"), tr("原因"), "Codice Fornitore", tr("供应商"), tr("月均")]),
                                    numeric_cols=[_col(k) for k in list(range(4, 16)) + [17, 18, 19, 20, 21, 23, 28]])
         self.table.setMinimumHeight(380)
-        self.table.verticalHeader().setDefaultSectionSize(34)
+        import product_images as PI
+        self.table.verticalHeader().setDefaultSectionSize(PI.row_height(self.settings))
         self.table.setEditTriggers(QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed |
                                    QAbstractItemView.AnyKeyPressed)
         self.table.setFocusPolicy(Qt.StrongFocus)
@@ -384,8 +385,8 @@ class OrderCheck:
         hh.setSectionResizeMode(QHeaderView.Interactive)
         hh.setStretchLastSection(False)
         import product_images as PI          # 条码那一格左边放商品小图（只下载看得见的行）
-        self.table.setItemDelegateForColumn(_col(2), PI.ThumbDelegate(self.table, _col(2), 26, self.settings))
-        for c, wd in enumerate(_perm((70, 80, 160, 280, 70, 52, 52, 52, 52, 96, 52, 70, 70, 70, 76, 70, 50, 50, 60, 70, 120, 120, 96,
+        self.table.setItemDelegateForColumn(_col(2), PI.ThumbDelegate(self.table, _col(2), None, self.settings))
+        for c, wd in enumerate(_perm((70, 80, PI.thumb_size(self.settings) + 120, 280, 70, 52, 52, 52, 52, 96, 52, 70, 70, 70, 76, 70, 50, 50, 60, 70, 120, 120, 96,
                                       76, 200, 380, 110, 150, 56))):
             self.table.setColumnWidth(c, wd)
         self.table.horizontalHeaderItem(_col(28)).setToolTip(tr("月均：新算法 = 日均（加权 + 季节）× 30；原程序算法 = 最长周期销量 ÷ 月数（默认 180 天 ÷ 6）"))
