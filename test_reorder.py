@@ -383,3 +383,28 @@ def test_phantom_stock():
     assert [x["fbox"] for x in rows] == [3, 3, 2, 2]
     assert rows[0]["protect"] == "phantom" and rows[1]["protect"] == "phantom"
     assert rows[2]["phantom"] and rows[2].get("protect") != "phantom" and not rows[3]["phantom"]
+
+
+def test_censored_demand():
+    """
+    断货补算（2026-10-26，用户的两个例子）：库存只剩 1 件、最近几周一件没卖，加权日均被拉成月销 0.2，
+    系统说够卖 182 天「不订」；过去一年其实月销 1.3 → 按一年平均算，够卖不到一个周期 → 订 1 箱
+    """
+    import forecast as F
+    import order_check as OC
+    weekly = [0.0] * 12 + [0.5, 0.5, 0.25, 0.25, 0.5, 0.25, 0.25, 0.5] * 5      # 新 → 旧：最近 12 周没卖，以前每周 0.3 件左右
+    ld, zw = F.long_rate(weekly)
+    assert zw == 12 and 0.02 < ld < 0.05
+    base = {"in_db": True, "pack": 6, "store": 1, "cycle": 30, "tier": "C", "sales": [0, 0, 1, 5],
+            "file_qty": 1, "suggested": 0, "inv0": 1, "daily0": 1 / 150, "daily": 1 / 150,
+            "long_daily": ld, "zero_weeks": zw}
+    rows = [dict(base),
+            dict(base, inv0=30),                    # 库存还多：不是断货
+            dict(base, zero_weeks=1),               # 只是上周没卖：正常
+            dict(base, file_qty=0)]                 # 门店没要
+    OC.init_boxes(rows, None, {"engine": "v1"})
+    assert rows[0]["censored"] and rows[0]["fbox"] == 1 and abs(rows[0]["daily0"] - ld) < 1e-12
+    assert not rows[1]["censored"] and rows[1]["fbox"] == 0
+    assert not rows[2]["censored"] and not rows[3]["censored"]
+    OC.init_boxes(rows[:1], None, {"engine": "v1"})                               # 重复整理：结果一样，原日均不丢
+    assert rows[0]["fbox"] == 1 and abs(rows[0]["daily0_orig"] - 1 / 150) < 1e-12

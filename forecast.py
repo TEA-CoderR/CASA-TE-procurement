@@ -103,6 +103,22 @@ def history_weeks(weekly):
     return age_weeks(w, len(w))
 
 
+def long_rate(weekly, max_weeks=52):
+    """
+    (过去一年的平均日销, 最近连续几周一件没卖)：一年 = 最近 52 周，上架不满一年的按上架以来算。
+    断货判断用：库存只剩一两件、最近几周一件没卖的，多半是货架上没货（不是卖不动了），
+    这时加权日均被最近的 0 拉低，要按一年平均看
+    """
+    w = [max(0.0, float(x or 0)) for x in (weekly or [])]
+    zero = 0
+    for x in w:
+        if x > 0:
+            break
+        zero += 1
+    n = min(max_weeks, history_weeks(w))
+    return (sum(w[:n]) / (7.0 * n) if n else 0.0), (zero if n else 0)
+
+
 def demand_rate(weekly):
     """
     weekly[0] = 最近 7 天销量，weekly[1] = 再往前 7 天 …；返回 (日均, 用了几周)

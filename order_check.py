@@ -146,6 +146,24 @@ PHANTOM_MIN_DAYS = 7          # 至少这么多天没卖才算（周末、关门
 PHANTOM_UNITS = 3.0          # 按平时的速度，这段时间本该卖出 3 件以上（真有货却一件不卖的概率 ≈ e^-3 ≈ 5%）
 
 
+def censored_info(x):
+    """
+    断货补算：门店点名要、库存只剩一点（≤ 2 件或不到一个月的量）、最近 ≥ 2 周一件没卖，
+    而过去一年明明在卖 —— 最近的 0 多半是因为货架上没货（卖不了），不是卖不动了。
+    这时加权日均被这几周的 0 拉得很低（月销 0.2、够卖 182 天），会被错判成「不用订」→ 按过去一年的平均日销算。
+    返回 {"long": 一年平均日销, "weeks": 连续几周没卖, "orig": 原来的日均} 或 None
+    """
+    if not x.get("in_db", True) or float(x.get("file_qty") or 0) <= 0:
+        return None
+    long_ = float(x.get("long_daily") or 0)
+    weeks = int(x.get("zero_weeks") or 0)
+    orig = float((x.get("daily0") if x.get("daily0") is not None else x.get("daily")) or 0)
+    inv = max(0.0, float(x.get("inv0") or 0))
+    if long_ <= 0 or weeks < 2 or orig >= long_ or inv > max(2.0, long_ * 30):
+        return None
+    return {"long": long_, "weeks": weeks, "orig": orig}
+
+
 def phantom_info(x, today=None):
     """
     虚库存（账面有货、货架上没货）：门店点名要、账面还有货，但按平时的卖法早该卖出几件了，却一件都没卖。
@@ -158,7 +176,7 @@ def phantom_info(x, today=None):
         return None
     inv = float(x.get("inv0") or 0)
     d = x.get("daily0") if x.get("daily0") is not None else x.get("daily")
-    d = float(d or 0)
+    d = max(float(d or 0), float(x.get("long_daily") or 0))     # 用一年平均：断货时加权日均被拉低
     ls = x.get("last_sale")
     if inv <= 0 or d <= 0 or not ls:
         return None
@@ -189,6 +207,9 @@ def init_boxes(rows, units=None, algo=None, rules=None):
     rr = review_rules(rules)
     for x in rows:
         pk = _pk(x)
+        for k in ("daily0", "daily"):                  # 断货补算改过日均的：重新整理前先还原
+            if k + "_orig" in x:
+                x[k] = x.pop(k + "_orig")
         x["lbox"] = int(math.ceil(float(x.get("file_qty") or 0) - 1e-9))
         x.pop("protect", None)
         if not (x.get("in_db", True) and pk > 0):
@@ -207,6 +228,16 @@ def init_boxes(rows, units=None, algo=None, rules=None):
             sys_ = 1                                   # 店里已经没货、门店又点名要：至少 1 箱（缺货保护）
             x["protect"] = "empty"
         cyc = float(x.get("cycle") or 30) or 30.0
+        # 断货补算：日均按过去一年平均（原来的记在 *_orig，循环开头已经还原）
+        cz = censored_info(x)
+        x["censored"] = cz
+        if cz:
+            for k in ("daily0", "daily"):
+                x[k + "_orig"] = x.get(k)
+                x[k] = cz["long"]
+            need = cz["long"] * cyc - max(0.0, float(x.get("inv0") or 0))
+            if need > 0:
+                sys_ = max(sys_, int(math.ceil(need / pk - 1e-9)), 1)
         cover = _cover_now(x)
         ph = phantom_info(x)
         x["phantom"] = ph
@@ -1009,6 +1040,10 @@ class OrderCheck:
             lines.insert(0, tr("缺货保护：店里已经没货，门店又点名要，至少订 1 箱"))
         elif x.get("protect") == "a_low":
             lines.insert(0, tr("A 类保护：卖得好的商品，库存不够卖一个订货周期，至少订 1 箱"))
+        cz = x.get("censored")
+        if cz:
+            lines.insert(0, tr("断货补算：最近 {0} 周一件没卖、库存只剩 {1:g} 件，多半是货架上没货（不是卖不动了）；按过去一年的平均算，月销 {2:.1f} 件（不是 {3:.1f}）",
+                               cz["weeks"], float(x.get("inv0") or 0), cz["long"] * 30, cz["orig"] * 30))
         ph = x.get("phantom")
         if ph:
             line = tr("库存可能不准：账面有 {0:g} 件，但已经 {1} 天一件没卖（平时这段时间能卖 {2:.0f} 件），门店又点名要，货架上多半没货了",
@@ -1035,6 +1070,11 @@ class OrderCheck:
         if not x.get("in_db", True):
             return []
         out = R.review_marks(x.get("target") is not None, x["final"] > 0, self._arrive_days(x), x.get("store_inv"))
+        cz = x.get("censored")
+        if cz:
+            out.append(("censored", tr("断货补算"),
+                        tr("最近 {0} 周没卖、库存只剩 {1:g} 件：按过去一年平均（月销 {2:.1f}）算", cz["weeks"],
+                           float(x.get("inv0") or 0), cz["long"] * 30)))
         ph = x.get("phantom")
         if ph:
             out.append(("phantom", tr("库存可能不准"),

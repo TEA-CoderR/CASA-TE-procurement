@@ -595,7 +595,7 @@ def apply_v2(db, store_id, result_df, algo, weekly=None, revenue=None, on_order=
     on_order = on_order or {}
     cols = {k: [] for k in ("suggested_order_qty", "decision_text", "priority", "sales_tier", "inventory_days",
                             "daily_rate", "safety_stock", "target_stock", "service_level", "season_factor",
-                            "age_weeks", "weekly_26")}
+                            "age_weeks", "weekly_26", "long_daily", "zero_weeks")}
     used = []
     for i, (_, r) in enumerate(result_df.iterrows()):
         c = int(r["CodArticolo"])
@@ -620,6 +620,9 @@ def apply_v2(db, store_id, result_df, algo, weekly=None, revenue=None, on_order=
         cols["season_factor"].append(a["season"])
         cols["age_weeks"].append(a["age_weeks"])
         cols["weekly_26"].append(list(reversed(weekly.get(c, [0.0] * F.WEEKS)[:26])))   # 旧 → 新，画图用
+        ld, zw = F.long_rate(weekly.get(c, []))
+        cols["long_daily"].append(ld)          # 过去一年（上架以来，最多 52 周）的平均日销：断货时用
+        cols["zero_weeks"].append(zw)          # 最近连续几周一件没卖
     for k, v in cols.items():
         result_df[k] = v
     result_df["reorder_cycle_used"] = used if used else int(algo.get("review_days", 7))
@@ -695,6 +698,8 @@ def to_rows(result_df, file_rows=None, days_list=None):
             "price": _val(r, "PrezzoForn"),
             "cycle": _val(r, "reorder_cycle_used"),
             "weekly": _val(r, "weekly_26"),
+            "long_daily": _val(r, "long_daily"),
+            "zero_weeks": _val(r, "zero_weeks"),
             "season": _val(r, "season_factor"),
             "service": _val(r, "service_level"),
             "safety": _val(r, "safety_stock"),
