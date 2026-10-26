@@ -3,12 +3,14 @@ import os
 import math
 import gc
 import time
+import re
+from datetime import datetime
 import win32com.client as win32
 from openpyxl import load_workbook
 
 from utils import (
     convert_to_xlsx, calculate_formulas, cleanup_calculated_files,
-    find_col, get_last_row, clean_ean, normalize, parse_price,
+    find_col, find_col_best, get_last_row, clean_ean, normalize, parse_price,
     is_valid_xlsx
 )
 from config import (
@@ -396,6 +398,21 @@ def safe_open(path, log):
         return None, None, None
 
 
+def open_values(path, log):
+    """
+    只读不写的 Excel：返回 (wb, ws)。公式的结果文件里都存好了（Excel / WPS 保存的都是）→ 只读模式直接读值，
+    wb = None（不用关）；不然照旧用 Excel 算一遍公式（safe_open）。打不开返回 (None, None)
+    """
+    from utils import formulas_cached, read_values
+    if formulas_cached(path):
+        try:
+            return None, read_values(path)
+        except Exception:
+            pass
+    wb, _, _ = safe_open(path, log)
+    return (wb, wb.active) if wb else (None, None)
+
+
 def safe_save(wb, original_path, calc_path, log):
     """
     保存修改：直接使用 openpyxl 保存，避免 Excel COM 遍历所有单元格的性能问题。
@@ -764,18 +781,17 @@ def run_process(ordine_file, eliminare_path, distribuire_path, log, progress=Non
 
         path = os.path.join(distribuire_path, file)
 
-        wb, orig_path, calc_path_supplier = safe_open(path, log)
-        if not wb:
+        wb, ws = open_values(path, log)      # 只读报价：公式结果存在文件里就不开 Excel（结果一样）
+        if ws is None:
             continue
 
-        ws = wb.active
-
-        col_ean, row_ean = find_col(ws, COL_CODICE_EAN)
+        col_ean, row_ean = find_col_best(ws, COL_CODICE_EAN)
         col_price, row_price = find_col(ws, COL_PREZZO_NETTO)
 
         if not col_ean or not col_price:
             log(tr("⚠ {0} 缺少必要列", file))
-            wb.close()
+            if wb is not None:
+                wb.close()
             continue
 
         # 数据从表头行之后开始
@@ -826,7 +842,8 @@ def run_process(ordine_file, eliminare_path, distribuire_path, log, progress=Non
         log(tr("{0} ✔ 价格:{1} 命中:{2}", short_name, len(price_map), hit_count))
         supplier_hits[file] = (len(price_map), hit_count)
 
-        wb.close()
+        if wb is not None:
+            wb.close()
         q += 1
 
     # ②.5 写入 EAN 出现次数统计
@@ -1119,7 +1136,7 @@ def run_process(ordine_file, eliminare_path, distribuire_path, log, progress=Non
 
         ws = wb_supplier.active
 
-        col_ean, row_ean_supplier = find_col(ws, COL_CODICE_EAN)
+        col_ean, row_ean_supplier = find_col_best(ws, COL_CODICE_EAN)
         col_ord, row_ord = find_col(ws, COL_ORDINE)
 
         if not col_ean or not col_ord:
@@ -1249,6 +1266,11 @@ def run_process(ordine_file, eliminare_path, distribuire_path, log, progress=Non
     log("\n" + "=" * 50)
     log(tr("[完成] 处理完成"))
     log("=" * 50)
+    try:
+        summary["orders"] = export_orders(distribuire_path, purchased_suppliers(rows_data, assignment), log,
+                                          summary.get("supplier_labels"), settings)
+    except Exception as e:
+        log(tr("⚠ 订单文件夹没生成：{0}", e))
     P(100, tr("处理完成"))
     summary["ok"] = True
     summary["elapsed"] = time.time() - t_start
@@ -1449,7 +1471,7 @@ def _supplier_work_path(path):
 
 def _supplier_index(ws, work_path):
     """返回 (ORDINE 列号, {EAN: 行号}, 箱数写法)，找不到列返回 (None, None, None)"""
-    col_ean, row_ean = find_col(ws, COL_CODICE_EAN)
+    col_ean, row_ean = find_col_best(ws, COL_CODICE_EAN)
     col_ord, row_ord = find_col(ws, COL_ORDINE)
     if not col_ean or not col_ord:
         return None, None, None
@@ -1508,17 +1530,58 @@ def _write_missing_report(distribuire_path, rows, assignment):
 _DESC_HEADS = ("DESCRIZIONE", "DESCRIPTION", "ARTICOLO", "PRODOTTO", "DENOMINAZIONE", "NOME")
 
 
+PRICE_CACHE_VER = 1     # 读报价的规则改了（例如找列的办法）就加 1，旧的缓存自动作废
+
+
+def _price_cache_path(path):
+    """报价读出来的结果存在 cache/quotes/：同一个文件（路径、大小、修改时间都一样）下次直接用，不用再开 Excel 算公式"""
+    import hashlib
+    from settings import app_dir
+    st = os.stat(path)
+    key = f"{PRICE_CACHE_VER}|{os.path.normcase(os.path.abspath(path))}|{st.st_size}|{st.st_mtime_ns}"
+    return os.path.join(app_dir(), "cache", "quotes", hashlib.sha1(key.encode("utf-8")).hexdigest() + ".json")
+
+
 def read_price_file(path, log=None):
     """
     一个供应商报价文件 → {EAN: {"price": 件价, "pack": 每箱件数, "desc": 品名}}（和比价时读报价同一套规则）
+    文件没改过就用上次读的结果（cache/quotes），改过（或换了文件）就重新读。
     """
+    import json
+    try:
+        cp = _price_cache_path(path)
+    except OSError:
+        cp = None
+    if cp and os.path.exists(cp):
+        try:
+            with open(cp, encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    out = _read_price_file(path, log)
+    if cp:
+        try:
+            os.makedirs(os.path.dirname(cp), exist_ok=True)
+            tmp = cp + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(out, f, ensure_ascii=False)
+            os.replace(tmp, cp)
+        except Exception:
+            pass
+    return out
+
+
+def _read_price_file(path, log=None, fast=True):
     log = log or (lambda *a: None)
-    wb, _, _ = safe_open(path, log)
-    if not wb:
+    if fast:
+        wb, ws = open_values(path, log)     # 公式结果文件里都存好了：只读模式直接读值，不开 Excel（结果一样，快很多）
+    else:
+        wb, _, _ = safe_open(path, log)
+        ws = wb.active if wb else None
+    if ws is None:
         raise ValueError(tr("打不开报价文件：{0}", os.path.basename(path)))
     try:
-        ws = wb.active
-        col_ean, row_ean = find_col(ws, COL_CODICE_EAN)
+        col_ean, row_ean = find_col_best(ws, COL_CODICE_EAN)
         col_price, row_price = find_col(ws, COL_PREZZO_NETTO)
         if not col_ean or not col_price:
             raise ValueError(tr("{0} 缺少必要列", os.path.basename(path)))
@@ -1540,11 +1603,12 @@ def read_price_file(path, log=None):
                           "desc": str(ws.cell(i, col_desc).value or "").strip() if col_desc else ""}
         return out
     finally:
-        wb.close()
-        try:
-            safe_cleanup_calculated_files(log)      # 计算公式用的临时副本（.calc.xlsx）不留在 distribuire 里
-        except Exception:
-            pass
+        if wb is not None:
+            wb.close()
+            try:
+                safe_cleanup_calculated_files(log)      # 计算公式用的临时副本（.calc.xlsx）不留在 distribuire 里
+            except Exception:
+                pass
 
 
 def new_item_candidates(price_map, order_rows):
@@ -1638,6 +1702,101 @@ def switch_scenario(data, idx, log, progress=None):
     log("\n" + "=" * 50)
     log(tr("[换方案] 改用：{0}", tr(scs[idx]["name"])))
     return rewrite_assignment(d2, new, sources, log, progress, force=True)
+
+
+ORDERS_DIR = "Ordini"        # 门店比价文件夹里：只放这次采购了的供应商订单（用户 2026-10-25）
+
+
+def _hide_folder(path):
+    """Windows 上把文件夹设成隐藏（distribuire 是程序的工作副本，用户只看 Ordini）；别的系统不做"""
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+        ctypes.windll.kernel32.SetFileAttributesW(str(path), 0x02)
+    except Exception:
+        pass
+
+
+def _date_tag(store_dir):
+    """比价结果\\2026-10-25\\FOIANO → 2510（日月）；看不出日期用今天"""
+    try:
+        return datetime.strptime(os.path.basename(os.path.dirname(store_dir)), "%Y-%m-%d").strftime("%d%m")
+    except ValueError:
+        return datetime.now().strftime("%d%m")
+
+
+def _safe_name(s):
+    return re.sub(r'[\\/:*?"<>|]+', " ", str(s or "")).strip()
+
+
+def order_file_name(store, supplier, tag):
+    """Ordine_门店名_供应商名_日期.xlsx（日期 = 日月，例如 2510）"""
+    return f"Ordine_{_safe_name(store)}_{_safe_name(supplier)}_{tag}.xlsx"
+
+
+def purchased_suppliers(rows, assign):
+    """这次真的订了货的供应商文件（有商品分给它、数量 > 0）"""
+    out = set()
+    for r in rows or []:
+        s_ = assign.get(r["row"])
+        if not s_:
+            continue
+        try:
+            if float(_order_qty(r, s_) or 0) > 0:
+                out.add(s_)
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def export_orders(dist, purchased, log=None, labels=None, settings=None):
+    """
+    门店比价文件夹里建 Ordini：只放采购了的供应商的订单，文件名 Ordine_门店名_供应商名_日期.xlsx；
+    没采购的供应商不放。distribuire（程序的工作副本：修改分配、重新比价要用）设成隐藏；缺失报告复制到门店文件夹。
+    每次比价 / 修改分配后重新生成（先清掉上次的 Ordine_ 文件）。返回生成的文件路径
+    """
+    import shutil
+    import supplier_names as SN
+    log = log or (lambda *a: None)
+    store_dir = os.path.dirname(os.path.abspath(dist))
+    store = os.path.basename(store_dir)
+    tag = _date_tag(store_dir)
+    dest = os.path.join(store_dir, ORDERS_DIR)
+    os.makedirs(dest, exist_ok=True)
+    for f in os.listdir(dest):
+        if f.startswith("Ordine_") and f.lower().endswith(".xlsx"):
+            try:
+                os.remove(os.path.join(dest, f))
+            except OSError as e:
+                log(tr("⚠ {0} 删不掉（可能被 Excel 打开了）：{1}", f, e))
+    settings = settings if settings is not None else load_settings()
+    out, used = [], set()
+    for f in sorted(purchased):
+        src = _supplier_work_path(os.path.join(dist, f))
+        if not src or not os.path.exists(src):
+            continue
+        name = (labels or {}).get(f) or SN.label_of(f, settings)
+        fn = order_file_name(store, name, tag)
+        k = 2
+        while fn.lower() in used:
+            fn = order_file_name(store, f"{name} ({k})", tag)
+            k += 1
+        used.add(fn.lower())
+        try:
+            shutil.copy2(src, os.path.join(dest, fn))
+            out.append(os.path.join(dest, fn))
+        except OSError as e:
+            log(tr("⚠ {0} 没复制成功：{1}", fn, e))
+    rep = os.path.join(dist, "缺失报告.xlsx")
+    if os.path.exists(rep):
+        try:
+            shutil.copy2(rep, os.path.join(store_dir, f"缺失报告_{_safe_name(store)}_{tag}.xlsx"))
+        except OSError:
+            pass
+    _hide_folder(dist)
+    log(tr("[订单] {0}：{1} 家供应商的订单放在 {2}", store, len(out), ORDERS_DIR))
+    return out
 
 
 def rewrite_assignment(data, new_assign, new_sources, log, progress=None, force=False, qty=None, new_rows=None):
@@ -1817,6 +1976,10 @@ def rewrite_assignment(data, new_assign, new_sources, log, progress=None, force=
         out["state"]["written"] = _written_fingerprints(ordine_file, dist)
     except Exception as e:
         log(tr("⚠ {0}", e))
+    try:
+        out["orders"] = export_orders(dist, purchased_suppliers(rows, new_assign), log, st.get("labels"))
+    except Exception as e:
+        log(tr("⚠ 订单文件夹没生成：{0}", e))
     _save_history(out, log, update=True)
     save_state(out)
     log(tr("[完成] 修改分配已写入"))

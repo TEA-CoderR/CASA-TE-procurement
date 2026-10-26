@@ -324,14 +324,87 @@ def test_check_boxes_no_more_than_list_and_new_item_protection():
     algo = {"engine": "v1"}
     base = {"in_db": True, "pack": 12, "store": 1, "inv0": 0, "daily": None, "sales": [30, 60, 90, 180]}
     rows = [dict(base, file_qty=2, suggested=200),                       # 系统要 17 箱 → 按清单 2 箱
-            dict(base, file_qty=3, suggested=5),                         # 系统要 5 件（不到一箱）→ 1 箱
+            dict(base, file_qty=3, suggested=5),                         # 系统要 5 件（不到一箱）→ 1 箱，但少订最多一半 → 2 箱
             dict(base, file_qty=1, suggested=0, inv0=50),                # 库存够 → 不订
             dict(base, file_qty=2, suggested=0, sales=[3, 5, 5, 5]),      # 两个月前还没卖过 → 新品，按清单
             dict(base, file_qty=1, suggested=0, sales=[0, 0, 0, 0]),      # 从没卖过 → 新品，按清单
             dict(base, file_qty=4, in_db=False, pack=0)]                 # 数据库没有 → 清单
     OC.init_boxes(rows, None, algo)
-    assert [x["fbox"] for x in rows] == [2, 1, 0, 2, 1, 4]
+    assert [x["fbox"] for x in rows] == [2, 2, 0, 2, 1, 4]
     assert rows[0]["sys_box"] == 17 and rows[3].get("protect") == "new" and rows[2].get("protect") is None
-    empty = [dict(base, file_qty=3, suggested=0, inv0=-2, sales=[0, 1, 2, 4])]   # 没货了、门店要 → 至少 1 箱
+    empty = [dict(base, file_qty=3, suggested=0, inv0=-2, sales=[0, 1, 2, 4])]   # 没货了、门店要 → 至少 1 箱（少订最多一半 → 2 箱）
     OC.init_boxes(empty, None, algo)
-    assert empty[0]["fbox"] == 1 and empty[0]["protect"] == "empty"
+    assert empty[0]["fbox"] == 2 and empty[0]["protect"] == "empty"
+
+
+def test_check_boxes_a_protection_and_cut_limit():
+    """
+    2026-10-25 用户定：A 类、库存不够卖一个周期、门店要了 → 至少 1 箱；
+    少订最多砍掉清单一半，除非库存已经够卖 2 个订货周期以上
+    """
+    import order_check as OC
+    algo = {"engine": "v1"}
+    base = {"in_db": True, "pack": 12, "store": 1, "cycle": 30, "daily": None, "sales": [30, 60, 90, 180]}
+    rows = [dict(base, file_qty=1, suggested=0, inv0=6, daily0=0.5, tier="A"),     # 够卖 12 天 < 30 → A 类保护 1 箱
+            dict(base, file_qty=1, suggested=0, inv0=6, daily0=0.5, tier="C"),     # C 类：不保护，但少订上限 → 1 箱（清单 1 箱一半向上取整）
+            dict(base, file_qty=1, suggested=0, inv0=60, daily0=0.5, tier="A"),    # 够卖 120 天 ≥ 2 周期 → 可以不订
+            dict(base, file_qty=8, suggested=12, inv0=20, daily0=0.5, tier="B"),   # 系统 1 箱，清单 8 → 最少 4 箱
+            dict(base, file_qty=8, suggested=12, inv0=40, daily0=0.5, tier="B")]   # 够卖 80 天 ≥ 60 → 按系统 1 箱
+    OC.init_boxes(rows, None, algo)
+    assert [x["fbox"] for x in rows] == [1, 1, 0, 4, 1]
+    assert rows[0]["protect"] == "a_low" and rows[3].get("limited") and not rows[4].get("limited")
+    rows2 = [dict(rows[3])]
+    OC.init_boxes(rows2, None, algo, {"max_cut": 1.0})                            # 不限制
+    assert rows2[0]["fbox"] == 1
+
+
+def test_phantom_stock():
+    """
+    虚库存（2026-10-25）：账面有货、门店点名要，但按平时卖法早该卖出 3 件以上却一件没卖
+    → A 类按清单订、B 类库存按 0 重算、C 类只提醒
+    """
+    from datetime import date, timedelta
+    import order_check as OC
+    today = date.today()
+    ago = lambda n: (today - timedelta(days=n)).strftime("%Y-%m-%d")
+    base = {"in_db": True, "pack": 6, "store": 1, "cycle": 30, "daily": None, "sales": [30, 60, 90, 180],
+            "file_qty": 3, "suggested": 0, "inv0": 20, "daily0": 0.5}
+    # 日均 0.5：3 件 ÷ 0.5 = 6 天，至少 7 天 → 7 天没卖就可疑
+    assert OC.phantom_info(dict(base, last_sale=ago(8)), today)["days"] == 8
+    assert OC.phantom_info(dict(base, last_sale=ago(5)), today) is None
+    assert OC.phantom_info(dict(base, last_sale=ago(8), daily0=0.05), today) is None     # 慢销：要 60 天没卖才算
+    assert OC.phantom_info(dict(base, last_sale=ago(8), file_qty=0), today) is None      # 门店没要
+    assert OC.phantom_info(dict(base, last_sale=ago(8), inv0=0), today) is None          # 本来就没货（缺货保护管）
+    rows = [dict(base, last_sale=ago(10), tier="A"),           # A：按清单 3 箱
+            dict(base, last_sale=ago(10), tier="B"),           # B：库存按 0：0.5 × 30 = 15 件 → 3 箱
+            dict(base, last_sale=ago(10), tier="C"),           # C：只提醒（库存够卖 40 天 < 60 → 少订上限 2 箱）
+            dict(base, last_sale=ago(2), tier="A")]            # 最近还在卖：正常（库存 40 天 → 上限 2 箱）
+    OC.init_boxes(rows, None, {"engine": "v1"})
+    assert [x["fbox"] for x in rows] == [3, 3, 2, 2]
+    assert rows[0]["protect"] == "phantom" and rows[1]["protect"] == "phantom"
+    assert rows[2]["phantom"] and rows[2].get("protect") != "phantom" and not rows[3]["phantom"]
+
+
+def test_censored_demand():
+    """
+    断货补算（2026-10-26，用户的两个例子）：库存只剩 1 件、最近几周一件没卖，加权日均被拉成月销 0.2，
+    系统说够卖 182 天「不订」；过去一年其实月销 1.3 → 按一年平均算，够卖不到一个周期 → 订 1 箱
+    """
+    import forecast as F
+    import order_check as OC
+    weekly = [0.0] * 12 + [0.5, 0.5, 0.25, 0.25, 0.5, 0.25, 0.25, 0.5] * 5      # 新 → 旧：最近 12 周没卖，以前每周 0.3 件左右
+    ld, zw = F.long_rate(weekly)
+    assert zw == 12 and 0.02 < ld < 0.05
+    base = {"in_db": True, "pack": 6, "store": 1, "cycle": 30, "tier": "C", "sales": [0, 0, 1, 5],
+            "file_qty": 1, "suggested": 0, "inv0": 1, "daily0": 1 / 150, "daily": 1 / 150,
+            "long_daily": ld, "zero_weeks": zw}
+    rows = [dict(base),
+            dict(base, inv0=30),                    # 库存还多：不是断货
+            dict(base, zero_weeks=1),               # 只是上周没卖：正常
+            dict(base, file_qty=0)]                 # 门店没要
+    OC.init_boxes(rows, None, {"engine": "v1"})
+    assert rows[0]["censored"] and rows[0]["fbox"] == 1 and abs(rows[0]["daily0"] - ld) < 1e-12
+    assert not rows[1]["censored"] and rows[1]["fbox"] == 0
+    assert not rows[2]["censored"] and not rows[3]["censored"]
+    OC.init_boxes(rows[:1], None, {"engine": "v1"})                               # 重复整理：结果一样，原日均不丢
+    assert rows[0]["fbox"] == 1 and abs(rows[0]["daily0_orig"] - 1 / 150) < 1e-12

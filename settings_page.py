@@ -142,6 +142,20 @@ class SettingsPage:
         self.theme_box.setCurrentIndex(1 if self.settings.get("theme") == "dark" else 0)
         self.theme_box.currentIndexChanged.connect(self._theme_changed)
         r.addWidget(self.theme_box)
+        r.addSpacing(16)
+        self.img_box = QCheckBox(tr("商品图片") + "  ⓘ")
+        self.img_box.setToolTip(tr("订货明细、检查清单的条码前面显示商品小图，详情栏显示大图（按条码从公司图片服务器取主图，存在本机，下次不用再下载）"))
+        self.img_box.setChecked(bool(self.settings.get("show_images", True)))
+        self.img_box.toggled.connect(self._images_toggled)
+        r.addWidget(self.img_box)
+        self.img_size = QComboBox()
+        for k, t in (("s", tr("小图")), ("m", tr("中图")), ("l", tr("大图"))):
+            self.img_size.addItem(t, k)
+        self.img_size.setCurrentIndex(max(0, self.img_size.findData(self.settings.get("image_size") or "m")))
+        self.img_size.setToolTip(tr("表格里商品图的大小（鼠标停在图上会弹出大图）；重新打开表格窗口后生效"))
+        self.img_size.setEnabled(self.img_box.isChecked())
+        self.img_size.currentIndexChanged.connect(self._image_size_changed)
+        r.addWidget(self.img_size)
         r.addStretch()
         v.addLayout(r)
         g2 = QGridLayout()
@@ -258,6 +272,17 @@ class SettingsPage:
             set_chip(ch, tag, kind)
         if hasattr(self, "db_chip"):
             self.refresh()
+
+    def _images_toggled(self, on):
+        self.settings["show_images"] = bool(on)
+        save_settings(self.settings)
+        import product_images as PI
+        PI.store(self.settings)
+        self.img_size.setEnabled(bool(on))
+
+    def _image_size_changed(self, _i):
+        self.settings["image_size"] = self.img_size.currentData() or "m"
+        save_settings(self.settings)
 
     def edit_db(self):
         from reorder_page import DbDialog

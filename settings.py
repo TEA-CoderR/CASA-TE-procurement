@@ -66,9 +66,8 @@ COMPANY_DEFAULTS = {
     # 检查门店订货清单：订货周期、销量周期、不按配置文件周期；列顺序、显示哪些列、列宽
     "reorder": {
         "cycle": 30, "days": [30, 60, 90, 180], "use_supplier_cycles": False,
-        "check_columns": [22, 2, 27, 26, 3, 16, 17, 4, 18, 28, 9, 5, 6, 7, 8, 10, 11, 0, 15, 14, 24, 20, 25, 12, 13, 19, 23, 21, 1], "check_columns_ver": 8,
-        "check_cols_hidden": [1, 12, 13, 19, 21, 23, 25], "check_cols_hidden_ver": 6,
-        "check_widths": {"22": 0, "2": 129, "26": 77, "3": 79, "27": 80, "16": 50, "17": 50, "4": 70, "18": 60, "28": 56, "9": 102, "10": 80, "11": 70, "0": 92, "15": 89, "24": 68, "20": 134, "25": 0, "12": 0, "14": 76, "13": 0, "19": 0, "23": 0, "21": 0, "5": 68, "6": 52, "7": 52, "8": 52, "1": 0},
+        "check_columns": [22, 3, 27, 4, 28, 9, 10, 11, 15, 20, 29, 0, 24, 2, 26, 16, 17, 18, 5, 6, 7, 8, 14, 12, 13, 19, 21, 23, 25, 1], "check_columns_ver": 9,
+        "check_cols_hidden": [2, 26, 16, 17, 18, 5, 6, 7, 8, 14, 12, 13, 19, 21, 23, 25, 1], "check_cols_hidden_ver": 7,
     },
     # 批发商报价文件 → 供应商名称（文件名每周变，认不出的再在程序里改）
     "supplier_names": {"(Prezzi)FlliPetrillo_Base_17_10.xlsx": "PETRILLO", "Canvass 43 New Grieco(1).xlsx": "NEW GRIECO", "Listino_01 - Offerte(1).xlsx": "MELONI", "formattato_059603(2).xlsx": "MEGA CASH", "Ordine Mega Cash Foiano 1810.xlsx": "MEGA CASH", "Ordine Meloni Foiano 1810.xlsx": "MELONI"},

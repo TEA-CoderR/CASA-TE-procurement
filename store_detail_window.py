@@ -7,7 +7,7 @@ import math
 import os
 from datetime import datetime
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFontMetrics, QFont
 from PySide6.QtWidgets import (QSizePolicy, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QPushButton, QComboBox,
                                QLineEdit, QFrame, QTableWidgetItem, QAbstractItemView, QHeaderView, QButtonGroup,
@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (QSizePolicy, QWidget, QVBoxLayout, QHBoxLayout, Q
 from i18n import tr
 from settings import save_settings
 from theme import T, num_font, NUM_FONT
-from erp_widgets import ToolWindow, Sparkline
+from erp_widgets import ToolWindow, MonthGrid
 import store_orders as S
 from reorder_page import short_decision
 import reorder_service as R
@@ -197,14 +197,15 @@ class AddItemsDialog(QDialog):
                                    QAbstractItemView.EditKeyPressed | QAbstractItemView.AnyKeyPressed)
         self.table.horizontalHeaderItem(self.ADD).setToolTip(tr("双击填要加几箱，0 = 不加"))
         self.table.itemChanged.connect(self._edited)
+        from erp_widgets import HeaderFilter        # 右键表头按列筛选（和搜索框、两个勾选一起生效）
+        self._base_hide = {}
+        self.hf = HeaderFilter(self.table, apply=self._filter,
+                               base_hidden=lambda r: self._base_hide.get(r, False))
         lay.addWidget(self.table, 1)
-        tip = QLabel(tr("按日均销量从高到低排：卖得快、加了以后也不会压太久的排前面。「按销量推荐」只加加完后库存够卖不超过 {0} 天的商品（配货设置里的凑单天数）。",
-                        int(self.page.fill_cfg().get("max_stock_days") or 60)))
-        tip.setObjectName("Faint")
-        tip.setWordWrap(True)
-        lay.addWidget(tip)
         btns = QHBoxLayout()
         b_sug = QPushButton(tr("按销量推荐补齐起订量"))
+        b_sug.setToolTip(tr("按日均销量从高到低排：卖得快、加了以后也不会压太久的排前面。「按销量推荐」只加加完后库存够卖不超过 {0} 天的商品（配货设置里的凑单天数）。",
+                            int(self.page.fill_cfg().get("max_stock_days") or 60)))
         b_sug.setObjectName("Outline")
         b_sug.clicked.connect(self.suggest)
         b_clear = QPushButton(tr("清空这家的"))
@@ -301,6 +302,7 @@ class AddItemsDialog(QDialog):
         q = self.search.text().strip().lower()
         sc, sid = self._sc(), self.c_store.currentData()
         by_row = {c["row"]: c for c in self.cands}
+        base = {}
         for r in range(self.table.rowCount()):
             c = by_row.get(self.table.item(r, 0).data(DI_ROLE))
             if c is None:
@@ -314,7 +316,11 @@ class AddItemsDialog(QDialog):
                 hide = True
             if q and q not in f"{S.item_code(it)} {it.get('ean', '')} {it['desc']}".lower():
                 hide = True
+            base[r] = hide
+            if not hide and self.hf.active():
+                hide = not self.hf.accepts(r)
             self.table.setRowHidden(r, hide)
+        self._base_hide = base
 
     def _edited(self, item):
         if self._filling or item.column() != self.ADD:
@@ -470,9 +476,14 @@ class AddItemsDialog(QDialog):
 
 
 class DetailWindow(ToolWindow):
+    months_ready = Signal(object)        # 近两年每月销量读好了（后台线程 → 界面）
+
     def __init__(self, page):
         super().__init__(page.win, tr("订货明细"), (1400, 860))
         self.page = page
+        import reorder_service as _R
+        self._m24, self._m24_state, self._m24_keys, self._m24_token = {}, {}, _R.month_keys(24), 0
+        self.months_ready.connect(self._months_arrived)
         self.ui = page.ui
         self.detail = []
         self.pos = []
@@ -587,11 +598,14 @@ class DetailWindow(ToolWindow):
         self.table.setEditTriggers(QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed |
                                    QAbstractItemView.AnyKeyPressed)
         self.table.setFocusPolicy(Qt.StrongFocus)
-        self.table.verticalHeader().setDefaultSectionSize(34)
+        import product_images as PI
+        self.table.verticalHeader().setDefaultSectionSize(PI.row_height(self.page.settings))
         hh = self.table.horizontalHeader()
         hh.setSectionResizeMode(QHeaderView.Interactive)
         hh.setStretchLastSection(False)
-        for c, wd in enumerate(_perm((130, 92, 84, 80, 120, 270, 70, 50, 50, 50, 50, 70, 66, 62, 70, 66, 76, 80, 46, 46, 60, 70,
+        import product_images as PI          # 条码那一格左边放商品小图（只下载看得见的行）
+        self.table.setItemDelegateForColumn(_col(4), PI.ThumbDelegate(self.table, _col(4), None, self.page.settings))
+        for c, wd in enumerate(_perm((130, 92, 84, 80, PI.thumb_size(self.page.settings) + 120, 270, 70, 50, 50, 50, 50, 70, 66, 62, 70, 66, 76, 80, 46, 46, 60, 70,
                                       56, 56, 54, 54, 54, 54, 54, 54, 80, 86, 96, 190, 110, 380, 110))):
             hdr = self.table.horizontalHeaderItem(c)
             need = hh.fontMetrics().horizontalAdvance(hdr.text() if hdr else "") + 26
@@ -632,7 +646,7 @@ class DetailWindow(ToolWindow):
         hh.sectionResized.connect(lambda *_: self._col_timer.start())
         hh.setContextMenuPolicy(Qt.CustomContextMenu)
         hh.customContextMenuRequested.connect(self._header_menu)
-        hh.setToolTip(tr("拖动表头可以换列的位置，下次打开保持；右键可以恢复默认顺序、选显示哪些列"))
+        hh.setToolTip(tr("点表头排序；右键表头按这一列筛选；拖动表头可以换列的位置"))
         from erp_widgets import ColumnChooser
         self.cols = ColumnChooser(self.table, self.page.cfg, "detail_cols", _ORDER, lambda: save_settings(self.page.settings),
                                   _DEFAULT_HIDDEN, ver=4)
@@ -640,6 +654,13 @@ class DetailWindow(ToolWindow):
         hh.setSortIndicatorShown(True)
         hh.setSortIndicator(0, Qt.AscendingOrder)
         hh.sectionClicked.connect(self._sort_by)
+        # 右键表头：按这一列筛选（像 Excel），和上面的门店按钮 / 搜索 / 「看哪些」一起生效
+        from erp_widgets import HeaderFilter
+        self._base_hide = {}
+        self.hf = HeaderFilter(self.table, apply=self._filter, own_menu=False, sort=self._sort_menu,
+                               base_hidden=lambda r: self._base_hide.get(r, False),
+                               extra=[(tr("恢复默认列顺序"), self._reset_order),
+                                      (tr("显示哪些列…"), lambda: self.cols.menu(self.hf.last_pos))])
         self.table.itemChanged.connect(self._cell_edited)
         self.table.currentCellChanged.connect(lambda r, c, pr, pc: self._select_row(r))
         mid.addWidget(self.table, 1)
@@ -655,7 +676,7 @@ class DetailWindow(ToolWindow):
         sh.setContentsMargins(16, 7, 16, 7)
         self.status_l = QLabel("")
         self.status_l.setObjectName("StatusText")
-        self.status_r = QLabel(tr("双击「订货箱数」修改 · Enter 确认 · Esc 取消"))
+        self.status_r = QLabel("")
         self.status_r.setObjectName("StatusText")
         sh.addWidget(self.status_l, 1)
         sh.addWidget(self.status_r)
@@ -692,23 +713,32 @@ class DetailWindow(ToolWindow):
         save_settings(self.page.settings)
 
     def _header_menu(self, pos):
-        m = QMenu(self)
-        a = m.addAction(tr("恢复默认列顺序"))
-        b = m.addAction(tr("显示哪些列…"))
-        got = m.exec(self.table.horizontalHeader().mapToGlobal(pos))
-        if got == b:
-            self.cols.menu(self.table.horizontalHeader().mapToGlobal(pos))
+        hh = self.table.horizontalHeader()
+        if self._loading:
+            self.flash(tr("还在载入，稍等一下"))
             return
-        if got == a:
-            hh = self.table.horizontalHeader()
-            hh.blockSignals(True)
-            for c in range(self.table.columnCount()):
-                cur = hh.visualIndex(c)
-                if cur != c:
-                    hh.moveSection(cur, c)
-            hh.blockSignals(False)
-            self.page.cfg.pop("detail_columns", None)
-            save_settings(self.page.settings)
+        self.hf.menu(hh.logicalIndexAt(pos), hh.mapToGlobal(pos))
+
+    def _reset_order(self):
+        hh = self.table.horizontalHeader()
+        hh.blockSignals(True)
+        for c in range(self.table.columnCount()):
+            cur = hh.visualIndex(c)
+            if cur != c:
+                hh.moveSection(cur, c)
+        hh.blockSignals(False)
+        self.page.cfg.pop("detail_columns", None)
+        save_settings(self.page.settings)
+
+    def _sort_menu(self, col, desc):
+        if not self.detail or self._loading:
+            return
+        self.sort_col = col
+        self.sort_order = Qt.DescendingOrder if desc else Qt.AscendingOrder
+        self.table.setUpdatesEnabled(False)
+        self._apply_sort()
+        self.table.setUpdatesEnabled(True)
+        self._filter()
 
     def _visual_cols(self):
         hh = self.table.horizontalHeader()
@@ -744,13 +774,18 @@ class DetailWindow(ToolWindow):
         self.d_codes.setFont(num_font(9))
         self.d_codes.setWordWrap(True)            # 编号一行放不下就换行（不然把详情栏撑宽，右边被切掉）
         self.d_over.setWordWrap(True)
+        self.d_img = QLabel()                     # 商品图（公司图片服务器上有这个条码的图才显示）
+        self.d_img.setAlignment(Qt.AlignCenter)
+        self.d_img.setMinimumHeight(180)
+        self.d_img.hide()
+        v.addWidget(self.d_img)
         v.addWidget(self.d_over)
         v.addWidget(self.d_title)
         v.addWidget(self.d_codes)
         g = QGridLayout()
         g.setSpacing(8)
         self.minis = []
-        for i, lab in enumerate((tr("本店库存"), tr("加权日均"), tr("目标库存"), tr("服务水平"))):
+        for i, lab in enumerate((tr("库存"), tr("月销"), tr("现在够卖"))):
             f = QFrame()
             f.setObjectName("MiniCard")
             fv = QVBoxLayout(f)
@@ -765,7 +800,7 @@ class DetailWindow(ToolWindow):
             fv.addWidget(a)
             fv.addWidget(b)
             fv.addWidget(c)
-            g.addWidget(f, i // 2, i % 2)
+            g.addWidget(f, 0, i)
             self.minis.append((b, c))
         v.addLayout(g)
         sp = QFrame()
@@ -773,19 +808,19 @@ class DetailWindow(ToolWindow):
         spv = QVBoxLayout(sp)
         spv.setContentsMargins(12, 10, 12, 10)
         hl = QHBoxLayout()
-        t = QLabel(tr("近 26 周销量"))
+        t = QLabel(tr("近两年每月销量"))
         t.setStyleSheet("font-weight:600; font-size:12px;")
-        u = QLabel(tr("件 / 周"))
+        u = QLabel(tr("件 · 颜色越深卖得越多"))
         u.setObjectName("MiniLabel")
         hl.addWidget(t, 1)
         hl.addWidget(u)
         spv.addLayout(hl)
-        self.spark = Sparkline(height=150)
-        spv.addWidget(self.spark)
-        self.spark_note = QLabel("")
-        self.spark_note.setObjectName("MiniLabel")
-        self.spark_note.setWordWrap(True)
-        spv.addWidget(self.spark_note)
+        self.months_w = MonthGrid()               # 1–12 月方框：今年在上、去年在下（和检查门店订货清单一样）
+        spv.addWidget(self.months_w)
+        self.months_note = QLabel("")
+        self.months_note.setObjectName("MiniLabel")
+        self.months_note.setWordWrap(True)
+        spv.addWidget(self.months_note)
         v.addWidget(sp)
         why = QFrame()
         why.setObjectName("MiniCard")
@@ -826,36 +861,29 @@ class DetailWindow(ToolWindow):
         x = calc["demand"].get(sid, {}).get(it.get("db_code") or it["code"])
         self.d_over.setText(f"{S.STORE_SHEETS[sid]} · {sc['name']}")
         self.d_title.setText(it["desc"])
+        import product_images as PI
+        PI.set_label_image(self.d_img, it.get("ean"), 180, self.page.settings)
         fc = f" · Cod.Forn. {it['sup_code']}" if it.get("sup_code") else ""
         self.d_codes.setText(f"{S.item_code(it)} · {it['ean']}{fc}\n{it['pack']:g} {tr('件/箱')} · €{it['price']:.3f}/{tr('件')}")
-        (a1, a2), (b1, b2), (c1, c2), (d1, d2) = self.minis
+        (a1, a2), (b1, b2), (c1, c2) = self.minis
         if x:
-            a1.setText(f"{x.get('inv_raw', x['inv']):g}")      # 显示原值（计算时负数当 0）
-            a2.setText(tr("件"))
-            b1.setText(f"{(x.get('daily') or 0):.2f}")
-            b2.setText(tr("季节系数 {0:.2f}", x.get("season") or 1) if x.get("season") else tr("件 / 天"))
-            c1.setText(f"{x['target']:.0f}" if isinstance(x.get("target"), (int, float)) else "—")
-            c2.setText(tr("含安全库存 {0:.0f}", x.get("safety") or 0) if x.get("target") is not None else tr("原程序算法"))
-            svc = x.get("service")
-            d1.setText(f"{svc:.1%}" if isinstance(svc, (int, float)) else "—")
-            d2.setText(tr("{0} 类商品", x.get("tier") or "?"))
-            wk = x.get("weekly") or []
-            self.spark.set_values(wk, (x.get("daily") or 0) * 7, self.page.calc.get("date"))
-            if wk:
-                last4 = sum(wk[-4:])
-                imax = max(range(len(wk)), key=lambda i: wk[i])
-                a, b = self.spark.week_range(imax)
-                self.spark_note.setText(tr("最近 4 周 {0:g} 件 · 26 周合计 {1:g} 件 · 最多 {2:g} 件（{3:%d/%m}–{4:%d/%m}）",
-                                           round(last4, 1), round(sum(wk), 1), round(wk[imax], 1), a, b) + "\n" +
-                                        tr("虚线：加权平均 {0:.1f} 件 / 周 · 鼠标移到柱子上看那一周", (x.get("daily") or 0) * 7))
-            else:
-                self.spark_note.setText(tr("原程序算法没有周销量"))
+            inv = float(x.get("inv_raw", x["inv"]) or 0)
+            a1.setText(f"{inv:g}")      # 显示原值（计算时负数当 0）
+            a2.setText(tr("件") + ("  " + tr("（账面负数）") if inv < 0 else ""))
+            try:
+                mo = S.monthly_and_need(x, calc["days"])[0]
+            except Exception:
+                mo = (x.get("daily") or 0) * 30
+            b1.setText(f"{mo:g}" if isinstance(mo, (int, float)) else "—")
+            b2.setText(tr("件 / 月"))
+            c1.setText(S.days_text(S.cover_days(x)) or "0")
+            cyc = x.get("cycle")
+            c2.setText(tr("天 · 周期 {0:g} 天", cyc) if isinstance(cyc, (int, float)) else tr("天"))
         else:
             for m1, m2 in self.minis:
                 m1.setText("—")
                 m2.setText("")
-            self.spark.set_values([])
-            self.spark_note.setText("")
+        self._show_months(sid, it.get("db_code") or it["code"], bool(x))
         n = self._cur(sc, sid, it["row"])
         orig = self._orig(sc, sid, it["row"])
         self.why_t.setText(tr("为什么建议 {0:g} 箱", orig) if orig else tr("为什么不用订"))
@@ -883,6 +911,83 @@ class DetailWindow(ToolWindow):
             l.setObjectName("Faint" if not on else "")
             self.others.addWidget(l)
 
+    # ---------- 近两年每月销量（后台按门店读，只读数据库）----------
+    def _show_months(self, sid, code, in_db=True):
+        code = str(code)
+        if not in_db or code.startswith(S.DUP_PREFIX):
+            self.months_w.set_message(tr("数据库里没有这个商品"))
+            self.months_note.setText("")
+            return
+        st = self._m24_state.get(sid)
+        if st is None:
+            self._load_months([sid])
+            st = "loading"
+        if st == "loading":
+            self.months_w.set_message(tr("正在读取…"))
+            self.months_note.setText("")
+            return
+        if st != "done":
+            self.months_w.set_message(tr("没读到（数据库）"))
+            self.months_note.setText(str(st))
+            return
+        vals = self._m24.get((sid, code)) or [0.0] * len(self._m24_keys)
+        self.months_w.set_data(vals, self._m24_keys)
+        cur, prev, full = self.months_w.ytd()
+        m = self._m24_keys[-1][1]
+        note = tr("今年 1–{0} 月 {1:g} 件", m, round(cur, 1))
+        note += " · " + (tr("去年同期 {0:g} 件（{1:+.0%}）", round(prev, 1), cur / prev - 1) if prev else tr("去年同期没卖"))
+        note += "\n" + tr("去年全年 {0:g} 件 · * 本月到今天", round(full, 1))
+        self.months_note.setText(note)
+
+    def _load_months(self, stores):
+        """这几家门店这次订货明细里的商品，最近 24 个月每月销量（一家店一条查询，后台线程）"""
+        import threading
+        import reorder_service as R
+        calc = self.page.calc or {}
+        todo = [sid for sid in stores if self._m24_state.get(sid) is None]
+        if not todo:
+            return
+        for sid in todo:
+            self._m24_state[sid] = "loading"
+        codes = {sid: [c for c in (calc.get("demand", {}).get(sid) or {}) if str(c).isdigit()] for sid in todo}
+        dbs = self.page.settings.get("db") or None
+        token = self._m24_token
+
+        def work():
+            try:
+                db = R.make_db(dbs)
+            except Exception as e:
+                for sid in todo:
+                    self.months_ready.emit((token, sid, None, str(e)))
+                return
+            for sid in todo:
+                try:
+                    self.months_ready.emit((token, sid, R.query_monthly_sales(db, sid, codes[sid]), None))
+                except Exception as e:
+                    self.months_ready.emit((token, sid, None, str(e)))
+            try:
+                db.engine.dispose()
+            except Exception:
+                pass
+        threading.Thread(target=work, daemon=True).start()
+
+    def _months_arrived(self, payload):
+        import reorder_service as R
+        token, sid, data, err = payload
+        if token != self._m24_token:
+            return
+        if err:
+            self._m24_state[sid] = err
+        else:
+            for c, by in data.items():
+                self._m24[(sid, c)] = R.monthly_series(by, self._m24_keys)
+            self._m24_state[sid] = "done"
+        if self.cur_di is not None and 0 <= self.cur_di < len(self.detail):
+            sc, it, csid = self.detail[self.cur_di]
+            if csid == sid:
+                x = self.page.calc["demand"].get(sid, {}).get(it.get("db_code") or it["code"])
+                self._show_months(sid, it.get("db_code") or it["code"], bool(x))
+
     # ---------- 填表 ----------
     def load(self):
         """
@@ -904,6 +1009,9 @@ class DetailWindow(ToolWindow):
         self.setWindowTitle(tr("订货明细 — {0} 家供应商 · {1} 家门店", len(calc["schede"]), len(stores)))
 
         self.detail = []
+        import reorder_service as _R
+        self._m24, self._m24_state, self._m24_keys = {}, {}, _R.month_keys(24)     # 重新配货：每月销量重新读
+        self._m24_token += 1
         self.sup_index = {sc["path"]: k for k, sc in enumerate(calc["schede"])}
         for sc in calc["schede"]:
             for it in sc["items"]:
@@ -946,6 +1054,7 @@ class DetailWindow(ToolWindow):
 
     def _finish_load(self):
         self._loading = False
+        self._load_months(list(self.page.calc.get("stores") or []))      # 详情栏的近两年每月销量：后台先读好
         self.load_box.hide()
         t = self.table
         t.setUpdatesEnabled(False)
@@ -1385,7 +1494,7 @@ class DetailWindow(ToolWindow):
             self._flash_timer = QTimer(self)
             self._flash_timer.setSingleShot(True)
             self._flash_timer.timeout.connect(lambda: (
-                self.status_r.setText(tr("双击「订货箱数」修改 · Enter 确认 · Esc 取消")),
+                self.status_r.setText(""),
                 self.status_r.setStyleSheet("")))
         self._flash_timer.start(6000)
 
@@ -1461,6 +1570,8 @@ class DetailWindow(ToolWindow):
         calc = self.page.calc
         shown = 0
         self.table.setUpdatesEnabled(False)
+        base = {}
+        hf = self.hf if self.hf.active() else None
         for i, (sc, it, sid) in enumerate(self.detail):
             key = (sc["path"], sid, it["row"])
             hide = (sup not in (None, ALL) and sc["path"] != sup) or (store not in (None, ALL) and sid != store)
@@ -1478,8 +1589,13 @@ class DetailWindow(ToolWindow):
                 hide = not (x and "🔴" in (x["decision"] or ""))
             if not hide and text:
                 hide = text not in f"{S.item_code(it)} {it['ean']} {it['desc']}".lower()
-            self.table.setRowHidden(self.pos[i], hide)
+            r = self.pos[i]
+            base[r] = hide
+            if not hide and hf is not None:
+                hide = not hf.accepts(r)                # 右键表头的列筛选
+            self.table.setRowHidden(r, hide)
             shown += not hide
+        self._base_hide = base
         self.table.setUpdatesEnabled(True)
         self._shown = shown
         self._update_status()
@@ -1511,7 +1627,7 @@ class DetailWindow(ToolWindow):
         ws = wb.active
         ws.title = "订货明细"
         cols = [c for c in self._visual_cols() if not self.table.isColumnHidden(c)]   # 按现在看到的列导出
-        heads = [self.table.horizontalHeaderItem(c).text().replace(" ✎", "") for c in cols]
+        heads = [self.table.horizontalHeaderItem(c).text().replace(" ✎", "").replace(" ⏷", "") for c in cols]
         ws.append(heads)
         for c in ws[1]:
             c.font = Font(bold=True)

@@ -15,7 +15,8 @@
   4. 建议件数 = S − 现有库存（负数当 0）− 在途
   5. 服务水平按 ABC：A = 目标 + 2.5%，B = 目标，C = 目标 − 5%（ABC 按本店近 13 周销售额帕累托：前 80% A，到 95% B，其余 C）
      动销兜底（2026-10-22 用户定，简单版 ABC×XYZ）：近 13 周里 ≥ abc_freq_hi 周有卖的最低算 B（天天卖的便宜货不被当 C 少订），
-     ≤ abc_freq_lo 周有卖的最高算 C（偶尔才卖的不多备）；新品按上架以来的周数折算，上架不满 13 周的不降级
+     ≤ abc_freq_lo 周有卖的最高算 C（偶尔才卖的不多备）；新品按上架以来的周数折算。
+     2026-10-26：A 类还要近 13 周 ≥ abc_freq_a（6）周有卖，上架不到 4 周的新品最多 B；新品 / 老商品按全部 60 周判断
      订货周期也按 ABC 乘系数（cycle_a / cycle_b / cycle_c，默认 1.25 / 1 / 0.75）：
      A 类多备一点（订够 1.25 个周期），C 类不必订够一个周期（0.75 个），少压货。
      只影响「要备多少天的货」；判断会不会卖断仍按实际的订货周期
@@ -39,6 +40,7 @@ DEFAULT_PARAMS = {
     "pack_threshold": 0.3,     # （旧规则，已不用）零头 ≥ 一箱的 30% 才多订一箱
     "abc_freq_hi": 10,         # 动销兜底：近 13 周 ≥ 10 周有卖 → 最低 B
     "abc_freq_lo": 3,          # 近 13 周 ≤ 3 周有卖 → 最高 C
+    "abc_freq_a": 6,           # A 类还要卖得稳：近 13 周至少 6 周有卖，不然最多 B（2026-10-26：只卖过一两次的不该是 A）
     "safety_a": 0.9,           # 凑不成整箱时：少订后的库存够卖一个周期的 90%（A 类）就少订
     "safety_b": 0.7,
     "safety_c": 0.5,
@@ -95,14 +97,44 @@ def age_weeks(weekly, horizon=26):
     return last + 1
 
 
+def history_weeks(weekly):
+    """查到的全部周数里（默认 60 周），第一次卖出到现在几周 —— 半年前就卖过的不是新品"""
+    w = [max(0.0, float(x or 0)) for x in (weekly or [])]
+    return age_weeks(w, len(w))
+
+
+def long_rate(weekly, max_weeks=52):
+    """
+    (过去一年的平均日销, 最近连续几周一件没卖)：一年 = 最近 52 周，上架不满一年的按上架以来算。
+    断货判断用：库存只剩一两件、最近几周一件没卖的，多半是货架上没货（不是卖不动了），
+    这时加权日均被最近的 0 拉低，要按一年平均看
+    """
+    w = [max(0.0, float(x or 0)) for x in (weekly or [])]
+    zero = 0
+    for x in w:
+        if x > 0:
+            break
+        zero += 1
+    n = min(max_weeks, history_weeks(w))
+    return (sum(w[:n]) / (7.0 * n) if n else 0.0), (zero if n else 0)
+
+
 def demand_rate(weekly):
-    """weekly[0] = 最近 7 天销量，weekly[1] = 再往前 7 天 …；返回 (日均, 用了几周)"""
+    """
+    weekly[0] = 最近 7 天销量，weekly[1] = 再往前 7 天 …；返回 (日均, 用了几周)
+    2026-10-26 修正：
+      · 半年前（26 周以前）就卖过的是老商品，一律按 26 周加权算（以前只看 26 周内第一次卖出，
+        老商品最近偶尔卖一件会被当成新品，1 件 ÷ 1 周 = 月销 4.3，严重高估）；
+      · 真的新品不满 4 周：至少按 4 周平均（第一周卖 3 件不等于每周 3 件）
+    """
     w = [max(0.0, float(x or 0)) for x in weekly] + [0.0] * max(0, 26 - len(weekly))
     age = age_weeks(w)
     if age == 0:
         return 0.0, 0
+    if history_weeks(w) > 26:
+        age = 26
     if age < 4:
-        rate = _mean(w[:age])
+        rate = sum(w[:age]) / 4.0
     elif age < 13:
         rate = 0.6 * _mean(w[:4]) + 0.4 * _mean(w[:age])
     else:
@@ -218,14 +250,18 @@ def adjust_tier(tier, weekly, params):
     """
     hi = float(params.get("abc_freq_hi", 10))
     lo = float(params.get("abc_freq_lo", 3))
-    age = min(13, age_weeks([float(x or 0) for x in (weekly or [])], 26))   # 半年内第一次卖到现在几周（最多算 13）
+    fa = float(params.get("abc_freq_a", 6))
+    age = min(13, history_weeks(weekly))       # 第一次卖出到现在几周（看全部 60 周，最多算 13）
     if age <= 0:
         return tier, None
     n = sold_weeks(weekly, 13)
-    if tier == "C" and n / age >= hi / 13.0:
+    ratio = n / age
+    if tier == "C" and age >= 4 and ratio >= hi / 13.0:
         return "B", "up"
-    if tier in ("A", "B") and age >= 13 and n <= lo:
-        return "C", "down"
+    if tier in ("A", "B") and age >= 4 and ratio <= lo / 13.0:
+        return "C", "down"                     # 偶尔才卖（老商品看 13 周，新品按上架周数折算）
+    if tier == "A" and (age < 4 or ratio < fa / 13.0):
+        return "B", "down"                     # A 类要卖得稳；上架不到 4 周的新品还看不出来，最多 B
     return tier, None
 
 

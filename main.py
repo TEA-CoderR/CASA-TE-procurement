@@ -333,6 +333,14 @@ def make_table(headers, stretch_col=None, numeric_cols=()):
     return t
 
 
+def _friendly_error(e):
+    """出错信息说人话：文件被 Excel / WPS 开着（Windows 上写不进去）最常见"""
+    if isinstance(e, PermissionError):
+        name = os.path.basename(getattr(e, "filename", "") or "") or str(e)
+        return tr("「{0}」正在被 Excel / WPS 打开（或被别的程序占用），写不进去。关掉这个文件后再点「重新比价」。", name)
+    return str(e)
+
+
 def table_set_row(t, row, values, bold=False, color=None):
     for c, v in enumerate(values):
         it = QTableWidgetItem("" if v is None else str(v))
@@ -1020,13 +1028,10 @@ class FillItemsDialog(QDialog):
         self.search.textChanged.connect(lambda _: self.ctl.render())
         self.only_sell.toggled.connect(lambda _: self.ctl.render())
         self.only_new.toggled.connect(lambda _: self.ctl.render())
-        tip = QLabel(tr("先列已经在订单里的，再列报价里这次没订的商品；按日均销量从高到低排。「按销量推荐」只加加完后库存够卖不超过 {0} 天的商品（配货设置里的凑单天数）。新加的商品只在这家下单，会写进主订单和这家的订单。",
-                        int(self.limit)))
-        tip.setObjectName("Faint")
-        tip.setWordWrap(True)
-        lay.addWidget(tip)
         btns = QHBoxLayout()
         b_sug = QPushButton(tr("按销量推荐补齐起订量"))
+        b_sug.setToolTip(tr("先列已经在订单里的，再列报价里这次没订的商品；按日均销量从高到低排。「按销量推荐」只加加完后库存够卖不超过 {0} 天的商品（配货设置里的凑单天数）。新加的商品只在这家下单，会写进主订单和这家的订单。",
+                            int(self.limit)))
         b_sug.setObjectName("Outline")
         b_sug.clicked.connect(lambda: self.suggest(False))
         b_clear = QPushButton(tr("全部清零"))
@@ -1345,12 +1350,9 @@ class ManualDialog(QDialog):
         t.setObjectName("PageTitle")
         t.setStyleSheet("font-size:20px;")
         lay.addWidget(t)
-        s = QLabel(tr("点「当前供应商」那一格可以改成别的报价；点「{0}」那一格可以改数量（改成 0 = 这个商品不订）。上面的起订情况和采购总额会实时更新。确认后才会写入主订单和供应商文件。",
-                      tr("件数") if self.pieces_mode else tr("箱数")) if edit_mode else
-                   tr("点「当前供应商」那一格可以改成别的报价。上面的起订情况和采购总额会实时更新。确认后才会写入主订单和供应商文件。"))
-        s.setObjectName("Muted")
-        s.setWordWrap(True)
-        lay.addWidget(s)
+        t.setToolTip(tr("点「当前供应商」那一格可以改成别的报价；点「{0}」那一格可以改数量（改成 0 = 这个商品不订）。上面的起订情况和采购总额会实时更新。确认后才会写入主订单和供应商文件。",
+                        tr("件数") if self.pieces_mode else tr("箱数")) if edit_mode else
+                     tr("点「当前供应商」那一格可以改成别的报价。上面的起订情况和采购总额会实时更新。确认后才会写入主订单和供应商文件。"))
         if notes:
             nb = Banner()
             nb.show_msg(tr("为什么打开这个窗口：{0}。程序已经给出最省钱的凑单方案，你可以按实际情况改，比如把不想换的商品改回原供应商。",
@@ -1801,13 +1803,10 @@ class PriceCheckDialog(QDialog):
             w.setObjectName("Faint")
             w.setWordWrap(True)
             lay.addWidget(w)
-        note = QLabel(tr("只读检查，不改数据库也不改报价表。百分比按「数据库有」的商品算。导出的明细里每个条码一行，可以在 Excel 里筛选。"))
-        note.setObjectName("Faint")
-        note.setWordWrap(True)
-        lay.addWidget(note)
         bb = QHBoxLayout()
         bb.addStretch()
         exp = QPushButton(tr("导出明细 Excel"))
+        exp.setToolTip(tr("只读检查，不改数据库也不改报价表。百分比按「数据库有」的商品算。导出的明细里每个条码一行，可以在 Excel 里筛选。"))
         exp.clicked.connect(self.export)
         bb.addWidget(exp)
         ok = QPushButton(tr("关闭"))
@@ -2262,9 +2261,9 @@ class ScenarioDiffDialog(QDialog):
         t.setStyleSheet("font-size:18px;")
         lay.addWidget(t)
         legend = "　".join(f"{scen_letter(i)} = {tr(r['name'])}" for i, r in enumerate(results))
-        sub = QLabel(tr("在不同方案里分给了不同供应商、或者有的方案买不到的商品。{0}。绿色 = 这几个方案里最便宜，黄色 = 买不到；鼠标停在格子上看金额。", legend))
-        sub.setObjectName("Muted")
-        sub.setWordWrap(True)
+        t.setToolTip(tr("在不同方案里分给了不同供应商、或者有的方案买不到的商品。{0}。绿色 = 这几个方案里最便宜，黄色 = 买不到；鼠标停在格子上看金额。", legend))
+        sub = QLabel(legend)
+        sub.setObjectName("Faint")
         lay.addWidget(sub)
         bar = QHBoxLayout()
         self.search = QLineEdit()
@@ -2496,9 +2495,6 @@ class ScenarioDialog(QDialog):
         self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.table.cellClicked.connect(self._clicked)
         lay.addWidget(self.table, 1)
-        hint = QLabel(tr("在上面的卡片里选方案。鼠标停在左边的项目或格子上看说明。"))
-        hint.setObjectName("Faint")
-        lay.addWidget(hint)
         btns = QHBoxLayout()
         exp = QPushButton(tr("导出对比"))
         exp.clicked.connect(self.export)
@@ -2818,15 +2814,13 @@ class MainWindow(QMainWindow):
         lay = QVBoxLayout(w)
         lay.setContentsMargins(24, 20, 24, 24)
         lay.setSpacing(14)
-        t = QLabel(title)
+        t = QLabel(title + ("  ⓘ" if sub else ""))      # 说明收进鼠标提示（界面要简洁）
         t.setObjectName("PageTitle")
-        s = QLabel(sub)
-        s.setObjectName("PageSub")
-        s.setWordWrap(True)
+        if sub:
+            t.setToolTip(sub)
         head = QVBoxLayout()
         head.setSpacing(3)
         head.addWidget(t)
-        head.addWidget(s)
         lay.addLayout(head)
         lay.addSpacing(2)
         return w, lay
@@ -3428,9 +3422,7 @@ class MainWindow(QMainWindow):
         self.k_missing.mousePressEvent = lambda _e: self.show_missing()
 
         self.scen_panel = Panel(tr("方案对比"))
-        sh = QLabel(tr("✔ 是选用的方案。点「缺失商品」的数字看缺了哪些商品；鼠标停在左边的项目上看说明。"))
-        sh.setObjectName("Faint")
-        self.scen_panel.lay.addWidget(sh)
+        self.scen_panel.setToolTip(tr("✔ 是选用的方案。点「缺失商品」的数字看缺了哪些商品；鼠标停在左边的项目上看说明。"))
         self.scen_table = make_table([""], stretch_col=None)
         self.scen_table.setSelectionBehavior(QAbstractItemView.SelectItems)
         self.scen_table.setSelectionMode(QAbstractItemView.ExtendedSelection)
@@ -3447,17 +3439,13 @@ class MainWindow(QMainWindow):
         self.scen_panel.hide()
 
         pg = Panel(tr("起订量"))
-        legend = QLabel(tr("浅色条：只按最低价时的量　实色条：最终下单量　竖线：起订线"))
-        legend.setObjectName("Faint")
-        pg.lay.addWidget(legend)
         self.gauge = MinOrderGauge()
+        self.gauge.setToolTip(tr("浅色条：只按最低价时的量　实色条：最终下单量　竖线：起订线"))
         pg.lay.addWidget(self.gauge)
         lay.addWidget(pg)
 
         pt = Panel(tr("各供应商采购量"))
-        h = QLabel(tr("「最低价」是只按最低价分配时的量，「最终」是凑单 / 你的决定 / 手动调整之后实际写入的量。"))
-        h.setObjectName("Faint")
-        pt.lay.addWidget(h)
+        pt.setToolTip(tr("「最低价」是只按最低价分配时的量，「最终」是凑单 / 你的决定 / 手动调整之后实际写入的量。"))
         self.sum_table = make_table([tr("供应商文件"), tr("商品数"), tr("最低价箱数"), tr("最终箱数"), tr("箱数变化"),
                                      tr("最低价金额 €"), tr("最终金额 €"), tr("金额变化 €"), tr("起订条件"), tr("状态")],
                                     stretch_col=None, numeric_cols=(1, 2, 3, 4, 5, 6, 7))
@@ -3516,20 +3504,28 @@ class MainWindow(QMainWindow):
         self.chg_table.setItemDelegateForColumn(9, StatusDelegate(self.chg_table))
         self.chg_table.setMinimumHeight(320)
         self.chg_sorter = RowSorter(self.chg_table)
+        from erp_widgets import HeaderFilter          # 右键表头按列筛选（和搜索框一起生效）
+        self.chg_hf = HeaderFilter(self.chg_table, apply=lambda: self._filter_changes(self.chg_filter.text()),
+                                   sorter=self.chg_sorter, base_hidden=lambda r: self._chg_base(r))
         pc.lay.addWidget(self.chg_table)
-        self.chg_empty = QLabel(tr("这次没有改动，所有商品都按最低价选的供应商。"))
+        self.chg_empty = QLabel(tr("没有改动"))
         self.chg_empty.setObjectName("Muted")
         pc.lay.addWidget(self.chg_empty)
         lay.addWidget(pc)
         lay.addStretch()
         return w
 
-    def _filter_changes(self, text):
-        text = text.strip().lower()
+    def _chg_base(self, r):
+        text = self.chg_filter.text().strip().lower()
         t = self.chg_table
+        hay = " ".join(t.item(r, c).text() for c in (1, 2, 4, 6) if t.item(r, c)).lower()
+        return bool(text) and text not in hay
+
+    def _filter_changes(self, text):
+        t = self.chg_table
+        hf = getattr(self, "chg_hf", None)
         for r in range(t.rowCount()):
-            hay = " ".join(t.item(r, c).text() for c in (1, 2, 4, 6) if t.item(r, c)).lower()
-            t.setRowHidden(r, bool(text) and text not in hay)
+            t.setRowHidden(r, self._chg_base(r) or (hf is not None and not hf.accepts(r)))
 
     def export_changes(self):
         t = self.chg_table
@@ -3605,7 +3601,7 @@ class MainWindow(QMainWindow):
         hh.setStretchLastSection(True)
         self.hist_tree.itemDoubleClicked.connect(lambda *_: self.view_history())
         p.lay.addWidget(self.hist_tree)
-        self.hist_empty = QLabel(tr("还没有历史记录。完成一次订单处理后会自动出现在这里。"))
+        self.hist_empty = QLabel(tr("还没有记录"))
         self.hist_empty.setObjectName("Muted")
         p.lay.addWidget(self.hist_empty)
         acts = QHBoxLayout()
@@ -3876,6 +3872,9 @@ class MainWindow(QMainWindow):
         self.miss_table.setWordWrap(True)
         from erp_widgets import RowSorter
         self.miss_sorter = RowSorter(self.miss_table)
+        from erp_widgets import HeaderFilter          # 右键表头按列筛选（和搜索框一起生效）
+        self.miss_hf = HeaderFilter(self.miss_table, apply=lambda: self._filter_missing(self.miss_filter.text()),
+                                    sorter=self.miss_sorter, base_hidden=lambda r: self._miss_base(r))
         p.lay.addWidget(self.miss_table)
         lay.addWidget(p, 1)
         return w
@@ -4402,7 +4401,7 @@ class MainWindow(QMainWindow):
         if not batch:
             self.batch_box.hide()
             return
-        lb = QLabel(tr("这一批的门店（点了看结果）："))
+        lb = QLabel(tr("门店"))
         lb.setObjectName("Faint")
         self.batch_lay.addWidget(lb)
         cur = os.path.normcase(os.path.abspath(path)) if path else ""
@@ -4714,9 +4713,12 @@ class MainWindow(QMainWindow):
         return (self.last_summary or {}).get("state") or {}
 
     def open_supplier_folder(self):
-        p = self._shown_state().get("distribuire_path") or \
+        """打开这家店的订单文件夹 Ordini（只有采购了的供应商）；还没生成就打开 distribuire"""
+        import service as SV
+        d = self._shown_state().get("distribuire_path") or \
             os.path.join(self.folder_edit.text().strip(), DISTRIBUTUIRE_FOLDER)
-        open_path(p)
+        o = os.path.join(os.path.dirname(os.path.abspath(d)), SV.ORDERS_DIR)
+        open_path(o if os.path.isdir(o) else d)
 
     def open_main_order(self):
         p = self._shown_state().get("ordine_file")
@@ -4799,7 +4801,7 @@ class MainWindow(QMainWindow):
             except Exception as e:
                 file_logger.error(tr("处理失败: {0}", e), exc_info=True)
                 self.log(tr("❌ 处理失败：{0}", e))
-                summary = {"ok": False, "error": str(e)}
+                summary = {"ok": False, "error": _friendly_error(e)}
             self.bridge.done.emit(summary)
 
         threading.Thread(target=work, daemon=True).start()
@@ -5535,12 +5537,17 @@ class MainWindow(QMainWindow):
         self._filter_missing(self.miss_filter.text())
         self.go_page("search")
 
-    def _filter_missing(self, text):
-        text = text.strip().lower()
+    def _miss_base(self, r):
+        text = self.miss_filter.text().strip().lower()
         t = self.miss_table
+        row_text = " ".join((t.item(r, c).text() if t.item(r, c) else "") for c in (0, 1, 7)).lower()
+        return bool(text) and text not in row_text
+
+    def _filter_missing(self, text):
+        t = self.miss_table
+        hf = getattr(self, "miss_hf", None)
         for r in range(t.rowCount()):
-            row_text = " ".join((t.item(r, c).text() if t.item(r, c) else "") for c in (0, 1, 7)).lower()
-            t.setRowHidden(r, bool(text) and text not in row_text)
+            t.setRowHidden(r, self._miss_base(r) or (hf is not None and not hf.accepts(r)))
 
     def run_web(self):
         from matcher import search_web_ean

@@ -539,9 +539,8 @@ def demand_by_store(db, schede, stores, days_list, reorder_cycle, use_supplier_c
     out = {"_missing": missing, "_algo": dict(algo) if algo else None}
     if not codes:
         return out
-    for k, sid in enumerate(stores):
-        if on_store:
-            on_store(k, sid)      # 进度：第 k 家门店开始查
+
+    def one(sid):
         # 新算法：不按数据库箱规取整，箱数按 SCHEDA 的每箱件数智能取整（colli_for）
         # 原程序算法：建议件数完全按原程序算（含按数据库箱规取整），再按 SCHEDA 每箱件数换成箱
         v2 = bool(algo) and algo.get("engine") == "v2"
@@ -575,7 +574,8 @@ def demand_by_store(db, schede, stores, days_list, reorder_cycle, use_supplier_c
                        "service": R._val(r, "service_level"),
                        "db_pack": R._val(r, "qtasmallbox"),          # 数据库箱规（和 SCHEDA 每箱件数对照用）
                        "gia_all": [R._val(r, f"Negozio{i}_Giacenza", 0) or 0 for i in range(6)]}   # GIA.0（BMS）~ GIA.5
-        out[sid] = d
+        return d
+    out.update(R.per_store(stores, one, on_store))      # 几家门店同时查（结果和一家家查一样）
     return out
 
 
@@ -1830,7 +1830,10 @@ def compute(db, schede_paths, stores, days_list, reorder_cycle, log=print, use_s
             raise InterruptedError("cancelled")
         progress(1, "running", f"{k + 1} / {len(stores)}", STORE_SHEETS.get(sid, str(sid)), 30.0 + 60.0 * k / max(1, len(stores)))
 
+    import time
+    t0 = time.time()
     demand = demand_by_store(db, schede, stores, days_list, reorder_cycle, use_supplier_cycles, algo, on_store)
+    log(f"数据库查询用了 {time.time() - t0:.0f} 秒")
     progress(1, "done", f"{len(stores)} / {len(stores)}", "", 90.0)
     progress(2, "running", "", "", 92.0)
     missing = demand.pop("_missing", [])
