@@ -13,9 +13,15 @@ def test_demand_rate_weights_and_new_products():
     rising = [14.0] * 4 + [7.0] * 22          # 最近 4 周翻倍
     d, _ = F.demand_rate(rising)
     assert 1.0 < d < 2.0                      # 加权：比 1 大，但不会直接跳到 2
-    new = [7.0, 7.0] + [0.0] * 24             # 新品，只卖了 2 周 → 按 2 周算，不被 26 周平均拉低
+    new = [7.0, 7.0] + [0.0] * 24             # 新品，只卖了 2 周 → 至少按 4 周平均（第一两周的量不代表以后）
     d, age = F.demand_rate(new)
-    assert age == 2 and abs(d - 1.0) < 1e-9
+    assert age == 2 and abs(d - 0.5) < 1e-9
+    new6 = [7.0] * 6 + [0.0] * 20             # 新品 6 周：不被 26 周平均拉低
+    d, age = F.demand_rate(new6)
+    assert age == 6 and abs(d - 1.0) < 1e-9
+    old = [1.0] + [0.0] * 29 + [1.0] + [0.0] * 29   # 老商品：半年前卖过，这周偶尔卖 1 件 → 不当新品
+    d, age = F.demand_rate(old)
+    assert age == 26 and d * 30 < 1.0         # 以前会算成月销 4.3
     assert F.demand_rate([0.0] * 26) == (0.0, 0)
 
 
@@ -119,7 +125,13 @@ def test_adjust_tier_by_sales_weeks():
     assert F.adjust_tier("A", steady, P) == ("A", None)
     assert F.adjust_tier("A", rare, P) == ("C", "down")
     assert F.adjust_tier("C", rare, P) == ("C", None)
-    new = [1.0, 1.0, 0.0] + [0.0] * 23                 # 新品：3 周里 2 周卖 → 不降级
-    assert F.adjust_tier("A", new, P) == ("A", None)
+    new = [1.0, 1.0, 0.0] + [0.0] * 23                 # 新品：3 周里 2 周卖 → 还看不出来，最多 B
+    assert F.adjust_tier("A", new, P) == ("B", "down")
+    once = [0.0] * 9 + [2.0] + [0.0] * 16              # 10 周前第一次卖、只卖过 1 次 → C（以前当新品不降级）
+    assert F.adjust_tier("A", once, P) == ("C", "down")
+    half = [1.0, 0.0] * 7 + [1.0] * 12                 # 13 周里 7 周卖：稳 → A
+    assert F.adjust_tier("A", half, P) == ("A", None)
+    some = [1.0, 0.0, 0.0] * 5 + [1.0] * 11            # 13 周里 5 周卖：A → B
+    assert F.adjust_tier("A", some, P) == ("B", "down")
     assert F.adjust_tier("C", [1.0] * 4 + [0.0] * 22, P) == ("B", "up")     # 新品每周都卖 → 升 B
     assert F.adjust_tier("B", [0.0] * 26, P) == ("B", None)                  # 没销量：不动

@@ -169,17 +169,18 @@ class AlgoDialog(QDialog):
         g.addLayout(sr, 7, 1)
         fr = QHBoxLayout()
         fr.setSpacing(6)
-        for k, pre, suf, lo_, hi_ in (("abc_freq_hi", "≥ ", tr(" 周 → B"), 1, 14), ("abc_freq_lo", "≤ ", tr(" 周 → C"), 0, 13)):
+        for k, pre, suf, lo_, hi_ in (("abc_freq_hi", "≥ ", tr(" 周 → B"), 1, 14), ("abc_freq_lo", "≤ ", tr(" 周 → C"), 0, 13),
+                                      ("abc_freq_a", "A ≥ ", tr(" 周"), 0, 13)):
             sb = QSpinBox()
             sb.setRange(lo_, hi_)
-            sb.setValue(int(p.get(k, 10 if k == "abc_freq_hi" else 3)))
+            sb.setValue(int(p.get(k, {"abc_freq_hi": 10, "abc_freq_lo": 3, "abc_freq_a": 6}[k])))
             sb.setPrefix(pre)
             sb.setSuffix(suf)
             sb.setFixedWidth(110)
             fr.addWidget(sb)
             self.w[k] = (sb, 1)
         fr.addStretch()
-        g.addWidget(tip_label(tr("动销兜底"), tr("等级先按本店近 13 周销售额排（前 80% A，到 95% B，其余 C），再看近 13 周有几周卖过：卖过的周数 ≥ 左边 → 最低算 B（天天卖的便宜货不当 C 少订）；≤ 右边 → 最高算 C（偶尔才卖的不多备）。新品按上架以来的周数折算，不降级。左边填 14 = 不升级，右边填 0 = 不降级")), 8, 0)
+        g.addWidget(tip_label(tr("动销兜底"), tr("等级先按本店近 13 周销售额排（前 80% A，到 95% B，其余 C），再看近 13 周有几周卖过：卖过的周数 ≥ 第一格 → 最低算 B（天天卖的便宜货不当 C 少订）；≤ 第二格 → 最高算 C（偶尔才卖的不多备）；A 类还要 ≥ 第三格周有卖（卖得稳），不然最多 B。新品按上架以来的周数折算，上架不到 4 周的最多 B。第一格填 14 = 不升级，第二格填 0 = 不降级")), 8, 0)
         g.addLayout(fr, 8, 1)
         self.abc = QCheckBox(tr("ABC 调整服务水平"))
         self.abc.setToolTip(tr("按 ABC 调整服务水平（A +2.5%，C −5%；ABC 按本店近 13 周销售额帕累托）"))
