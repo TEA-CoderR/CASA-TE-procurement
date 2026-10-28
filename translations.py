@@ -2525,4 +2525,10 @@ TRANSLATIONS = {
     '全部 {0:,}': ('All {0:,}', 'Tutti {0:,}'),
     '下周起显示新上架': ('Newly listed shown from next week', 'Nuovi a listino visibili dalla prossima settimana'),
     '[检查清单] 数据库响应 {0:.0f} 毫秒': ('[Check list] Database response {0:.0f} ms', '[Controllo lista] Risposta database {0:.0f} ms'),
+    '大类': ('Category', 'Categoria'),
+    '中类': ('Subcategory', 'Sottocategoria'),
+    '小类': ('Type', 'Tipologia'),
+    '供应商都没有': ('No supplier has it', 'Nessun fornitore'),
+    '在 Griglia 里（或没有 Griglia），但这次几家批发商的报价里都找不到的商品：比价时会成为缺失。可能批发商不做了、断货，或者要向别的地方订。要不要订在这里改（0 = 不订）': ("Items in the Griglia (or with no Griglia) that are in none of this week's wholesaler quotes: they will be missing in the comparison. The wholesalers may have dropped them, be out of stock, or they must be ordered elsewhere. Decide here whether to order them (0 = do not order)", 'Articoli in Griglia (o senza Griglia) che non sono in nessun listino dei grossisti di questa settimana: risulteranno mancanti nel confronto. I grossisti potrebbero non trattarli più, essere senza merce, o vanno ordinati altrove. Decidi qui se ordinarli (0 = non ordinare)'),
+    '⚠ 供应商都没有（{0}）': ('⚠ No supplier has it ({0})', '⚠ Nessun fornitore ({0})'),
 }

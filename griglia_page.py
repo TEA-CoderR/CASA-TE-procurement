@@ -158,19 +158,15 @@ class GrigliaPage:
         nb.setContentsMargins(0, 0, 0, 0)
         nb.addWidget(self.scope)
         nb.addWidget(self.min_n)
-        self.t_gone = _Tab(self, [tr("条码"), tr("名称"), tr("编号"), tr("品牌"), tr("Griglia 供应商"), tr("Griglia 价")],
-                           numeric=(5,))
-        self.t_new = None                         # 列跟着这周的批发商变，统计完再建
-        self.new_box = QWidget()
-        QVBoxLayout(self.new_box).setContentsMargins(0, 0, 0, 0)
-        self.t_price = None
-        self.price_box = QWidget()
-        QVBoxLayout(self.price_box).setContentsMargins(0, 0, 0, 0)
-        self.t_odd = _Tab(self, [tr("条码"), tr("名称"), tr("供应商"), tr("报价价"), tr("别家中间价")], numeric=(3, 4))
-        self.tabs.addTab(self.t_gone.w, tr("都不做了"))
-        self.tabs.addTab(self.new_box, tr("新品"))
-        self.tabs.addTab(self.price_box, tr("价格"))
-        self.tabs.addTab(self.t_odd.w, tr("价格可疑"))
+        # 四张表的列跟着这周的批发商变（每家一列价格），统计完再建；列可以拖动换位置，记在设置里
+        self.t_gone = self.t_new = self.t_price = self.t_odd = None
+        self.boxes = []
+        for _ in range(4):
+            bx = QWidget()
+            QVBoxLayout(bx).setContentsMargins(0, 0, 0, 0)
+            self.boxes.append(bx)
+        for bx, text in zip(self.boxes, (tr("都不做了"), tr("新品"), tr("价格"), tr("价格可疑"))):
+            self.tabs.addTab(bx, text)
         self.tabs.setTabToolTip(3, tr("报价表里明显写错的价格（低于 €0.05，或比别家中间价低 70% 以上，多半是箱价 / 件价搞混）：不拿来比最低价，请找供应商确认"))
         bv.addWidget(self.tabs, 1)
         self.stack.addWidget(body)
@@ -285,32 +281,76 @@ class GrigliaPage:
         self.tabs.setTabText(1, tr("新品"))
         self.tabs.setTabText(2, tr("价格（{0:,}）", len(st["prices"])))
         self.tabs.setTabText(3, tr("价格可疑（{0}）", len(st["odd"])))
-        # 都不做了
-        self.t_gone.set([[x["ean"], x.get("name") or "", x.get("code") or "", x.get("brand") or "", x.get("supplier") or "",
-                          _p(x.get("best") or x.get("price"))] for x in st["gone"]],
-                        [[x["ean"], (x.get("name") or "").lower(), x.get("code") or "", x.get("brand") or "",
-                          x.get("supplier") or "", x.get("best") or x.get("price") or 0] for x in st["gone"]])
-        # 新品（列：条码 名称 部门 几家 最低价 最便宜 + 各家价格）
-        self._rebuild_new(labels)
-        self._rebuild_price(labels)
-        self.t_odd.set([[x["ean"], x.get("name") or "", x["supplier"], _p(x["price"]), _p(x["others"])] for x in st["odd"]],
-                       [[x["ean"], (x.get("name") or "").lower(), x["supplier"], x["price"], x["others"] or 0] for x in st["odd"]])
+        self._build_tables(labels)
         self.stack.setCurrentIndex(1)
 
-    def _swap(self, box, tab):
+    # ---------- 表格 ----------
+    def _tab(self, idx, key, cols, data, extra=None):
+        """
+        建一张表放进第 idx 个标签页。cols = [(列编号, 表头, 类型, 取值, 颜色)]：
+        类型 "txt" 文字 / "num" 整数 / "price" 价格 / "pct" 带正负号的百分数；颜色(x) 返回颜色记号或 None。列编号固定，用来记住拖过的列顺序
+        """
+        import settings as ST
+        from erp_widgets import remember_columns
+        numeric = tuple(c for c, col in enumerate(cols) if col[2] != "txt")
+        tab = _Tab(self, [col[1] for col in cols], numeric=numeric, extra=extra)
+        rows, keys, colors = [], [], {}
+        for i, x in enumerate(data):
+            r, k = [], []
+            for c, (_fid, _h, kind, get, color) in enumerate(cols):
+                v = get(x)
+                if kind == "txt":
+                    r.append(str(v or ""))
+                    k.append(str(v or "").lower())
+                else:
+                    r.append("" if v is None else _p(v) if kind == "price" else f"{v:+.1f}" if kind == "pct" else str(v))
+                    k.append(v if isinstance(v, (int, float)) else 0)
+                tok = color(x) if color else None
+                if tok:
+                    colors.setdefault(i, []).append((c, tok))
+            rows.append(r)
+            keys.append(k)
+        cfg = self.settings.setdefault("griglia_cols", {})
+        remember_columns(tab.t, cfg, key, [col[0] for col in cols], lambda: ST.save_settings(self.settings))
+        box = self.boxes[idx]
         lay = box.layout()
         while lay.count():
             it = lay.takeAt(0)
             if it.widget():
                 it.widget().setParent(None)
         lay.addWidget(tab.w)
+        tab.rows, tab.keys, tab.colors = rows, keys, colors
+        return tab
 
-    def _rebuild_new(self, labels):
+    def _build_tables(self, labels):
+        import zlib
         st = self.st
-        heads = [tr("条码"), tr("名称"), tr("部门"), tr("几家在做"), tr("最低价"), tr("最便宜")] + labels
+        cat = lambda k: (lambda x: (x.get("cats") or ["", "", ""])[k])
+        base = [(1, tr("条码"), "txt", lambda x: x["ean"], None),
+                (2, tr("名称"), "txt", lambda x: x.get("name"), None)]
+        cats = [(5, tr("大类"), "txt", cat(0), None), (6, tr("中类"), "txt", cat(1), None),
+                (7, tr("小类"), "txt", cat(2), None),
+                (8, "FORNITORI DIRETTO", "txt", lambda x: x.get("direct"), None)]
+
+        def sup_cols():
+            return [(1000 + zlib.crc32(l.encode("utf-8")) % 1000000, l, "price",
+                     (lambda x, l=l: x["prices"].get(l)),
+                     (lambda x, l=l: "accent" if x.get("best_sup") == l else None)) for l in labels]
+        # 都不做了
+        self.t_gone = self._tab(0, "gone", base + [(3, tr("编号"), "txt", lambda x: x.get("code"), None),
+                                                   (4, tr("品牌"), "txt", lambda x: x.get("brand"), None)] + cats +
+                                [(9, tr("Griglia 供应商"), "txt", lambda x: x.get("supplier"), None),
+                                 (10, tr("Griglia 价"), "price", lambda x: x.get("best") or x.get("price"), None)],
+                                st["gone"])
+        # 新品
         if self.t_new is not None:
             self.new_bar.setParent(None)
-        self.t_new = _Tab(self, heads, numeric=tuple([3, 4] + list(range(6, 6 + len(labels)))), extra=self.new_bar)
+        self.t_new = self._tab(1, "new", base + cats +
+                               [(11, tr("部门"), "txt", lambda x: x.get("dept"), None),
+                                (12, tr("几家在做"), "num", lambda x: x["n"], None),
+                                (13, tr("最低价"), "price", lambda x: x["best"], None),
+                                (14, tr("最便宜"), "txt", lambda x: x["best_sup"], None)] + sup_cols(),
+                               st["new"], extra=self.new_bar)
         for cb in (self.min_n, self.scope):
             try:
                 cb.currentIndexChanged.disconnect()
@@ -324,47 +364,35 @@ class GrigliaPage:
         self.min_n.setCurrentIndex(0 if st["history"] else 1)
         self.scope.blockSignals(False)
         self.min_n.blockSignals(False)
-        rows, keys, colors = [], [], {}
-        for i, x in enumerate(st["new"]):
-            rows.append([x["ean"], x["name"], str(x["dept"] or ""), str(x["n"]), _p(x["best"]), x["best_sup"] or ""] +
-                        [_p(x["prices"].get(l)) for l in labels])
-            keys.append([x["ean"], x["name"].lower(), str(x["dept"] or ""), x["n"], x["best"] or 0, x["best_sup"] or ""] +
-                        [x["prices"].get(l) or 0 for l in labels])
-            if x["best_sup"] in labels:
-                colors.setdefault(i, []).append((6 + labels.index(x["best_sup"]), "accent"))
+
         def hide(i):
             x = st["new"][i]
             sc = self.scope.currentData()
             return x["n"] < (self.min_n.currentData() or 1) or (sc == "fresh" and not x["fresh"]) or \
                 (sc == "brand" and not x["brand"])
         self.t_new.hide_fn = hide
-        self._swap(self.new_box, self.t_new)
-        self.t_new.set(rows, keys, colors)
-
-    def _rebuild_price(self, labels):
-        st = self.st
-        heads = [tr("条码"), tr("名称"), tr("编号"), tr("Griglia 供应商"), tr("Griglia 价"), tr("现在最低"), tr("最便宜"),
-                 tr("变化 %")] + labels
-        self.t_price = _Tab(self, heads, numeric=tuple([4, 5, 7] + list(range(8, 8 + len(labels)))))
-        rows, keys, colors = [], [], {}
-        for i, x in enumerate(st["prices"]):
+        # 价格
+        def ch_color(x):
             ch = x["change"]
-            rows.append([x["ean"], x.get("name") or "", x.get("code") or "", x.get("supplier") or "", _p(x["ref"]),
-                         _p(x["best"]), x["best_sup"] or "", f"{ch * 100:+.1f}" if ch is not None else ""] +
-                        [_p(x["prices"].get(l)) for l in labels])
-            keys.append([x["ean"], (x.get("name") or "").lower(), x.get("code") or "", x.get("supplier") or "",
-                         x["ref"] or 0, x["best"] or 0, x["best_sup"] or "", ch if ch is not None else 0] +
-                        [x["prices"].get(l) or 0 for l in labels])
-            if ch is not None and abs(ch) >= 0.05:
-                colors.setdefault(i, []).append((7, "err" if ch > 0 else "ok"))
-            if x["moved"]:
-                colors.setdefault(i, []).append((6, "warn"))
-            if x["best_sup"] in labels:
-                colors.setdefault(i, []).append((8 + labels.index(x["best_sup"]), "accent"))
-        self.t_price.t.horizontalHeaderItem(7).setToolTip(tr("现在最低价比 Griglia 记的价（PA MIGLIORE）高（红）或低（绿）多少"))
-        self.t_price.t.horizontalHeaderItem(6).setToolTip(tr("黄色 = 现在最便宜的不是 Griglia 登记的供应商"))
-        self._swap(self.price_box, self.t_price)
-        self.t_price.set(rows, keys, colors)
+            return ("err" if ch > 0 else "ok") if ch is not None and abs(ch) >= 0.05 else None
+        pcols = base + [(3, tr("编号"), "txt", lambda x: x.get("code"), None)] + cats + \
+            [(9, tr("Griglia 供应商"), "txt", lambda x: x.get("supplier"), None),
+             (10, tr("Griglia 价"), "price", lambda x: x["ref"], None),
+             (13, tr("现在最低"), "price", lambda x: x["best"], None),
+             (14, tr("最便宜"), "txt", lambda x: x["best_sup"], lambda x: "warn" if x["moved"] else None),
+             (15, tr("变化 %"), "pct", lambda x: round(x["change"] * 100, 1) if x["change"] is not None else None,
+              ch_color)] + sup_cols()
+        self.t_price = self._tab(2, "price", pcols, st["prices"])
+        heads = [c[0] for c in pcols]
+        self.t_price.t.horizontalHeaderItem(heads.index(15)).setToolTip(
+            tr("现在最低价比 Griglia 记的价（PA MIGLIORE）高（红）或低（绿）多少"))
+        self.t_price.t.horizontalHeaderItem(heads.index(14)).setToolTip(tr("黄色 = 现在最便宜的不是 Griglia 登记的供应商"))
+        # 价格可疑
+        self.t_odd = self._tab(3, "odd", base + [(16, tr("供应商"), "txt", lambda x: x["supplier"], None),
+                                                 (17, tr("报价价"), "price", lambda x: x["price"], None),
+                                                 (18, tr("别家中间价"), "price", lambda x: x["others"], None)], st["odd"])
+        for t in (self.t_gone, self.t_new, self.t_price, self.t_odd):
+            t.ctl.render()
 
     def restyle(self):
         """换深色 / 浅色：表格里的彩色字重画一遍"""

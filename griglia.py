@@ -19,7 +19,7 @@ import hashlib
 from utils import clean_ean
 
 GRID_DIR = "0 Griglia"
-CACHE_VER = 1
+CACHE_VER = 2
 STORES = ("FOIANO", "MARLIA", "S.FILIPPO", "S.MARCO", "S.CONCORDIO")
 EXCEL = (".xlsx", ".xlsm")
 
@@ -79,7 +79,7 @@ def parse_rows(rows):
     heads = [_norm(v) for v in rows[hr]]
     col = {}
     for i, h in enumerate(heads):
-        f = _FIELDS.get(h)
+        f = _FIELDS.get(h) or ("direct" if h.startswith("FORNITOR") and "DIRETT" in h else None)
         if f and f not in col:
             col[f] = i
     sup_cols = {h: i for i, h in enumerate(heads) if h in _SUP_COLS}
@@ -97,8 +97,8 @@ def parse_rows(rows):
             code = code[:-2]
         it = {"ean": e, "code": code, "name": str(g("name") or "").strip(), "brand": str(g("brand") or "").strip(),
               "supplier": str(g("supplier") or "").strip(), "price": _num(g("price")), "best": _num(g("best")),
-              "pack": _num(g("pack")), "cat": " / ".join(str(g(c) or "").strip() for c in ("cat1", "cat2", "cat3")
-                                                         if str(g(c) or "").strip()),
+              "pack": _num(g("pack")), "cats": [str(g(c) or "").strip() for c in ("cat1", "cat2", "cat3")],
+              "direct": str(g("direct") or "").strip(),
               "prices": {h: _num(r[i]) for h, i in sup_cols.items() if i < len(r) and _num(r[i])},
               "stores": [h for h, i in store_cols.items() if i < len(r) and _num(r[i])]}
         items[e] = it
@@ -238,6 +238,51 @@ def brand_matcher(grid):
     return lambda name: bool(rx.search(str(name or "").upper()))
 
 
+def category_mapper(items, offer):
+    """
+    新品（Griglia 里没有）的类别也用 Griglia 的叫法（CAT.1 大类 / CAT 2 中类 / CAT 3 小类）：
+    看 Griglia 里的商品在报价里属于哪个组（MELONI 的 Descr.Gruppo + Sottogruppo、或部门），
+    同一个组的 Griglia 商品最常见的是哪一类，新品就算那一类。
+    依次用 组 + 小组 → 三级都有；只有组 → 大类 + 中类；只有部门 → 大类。都对不上留空
+    """
+    from collections import Counter
+    by_sub, by_grp, by_dept = {}, {}, {}
+    for e, it in items.items():
+        c = it.get("cats") or ["", "", ""]
+        if not c[0] or e not in offer:
+            continue
+        for q in offer[e].values():
+            if q.get("grp") and q.get("sgrp"):
+                by_sub.setdefault((q["grp"], q["sgrp"]), Counter())[tuple(c)] += 1
+            if q.get("grp"):
+                by_grp.setdefault(q["grp"], Counter())[(c[0], c[1])] += 1
+            if q.get("dept"):
+                by_dept.setdefault(q["dept"], Counter())[c[0]] += 1
+    MIN = 2                                       # 至少 2 个 Griglia 商品对上才算数
+
+    def top(cnt):
+        if not cnt:
+            return None
+        k, n = cnt.most_common(1)[0]
+        return k if n >= MIN else None
+
+    def cat_of(o):
+        for q in o.values():
+            k = q.get("grp") and q.get("sgrp") and top(by_sub.get((q["grp"], q["sgrp"])))
+            if k:
+                return list(k)
+        for q in o.values():
+            k = q.get("grp") and top(by_grp.get(q["grp"]))
+            if k:
+                return [k[0], k[1], ""]
+        for q in o.values():
+            k = q.get("dept") and top(by_dept.get(q["dept"]))
+            if k:
+                return [k, "", ""]
+        return ["", "", ""]
+    return cat_of
+
+
 def stats(grid, quotes, fresh=None):
     """
     Griglia 和这周报价对比。quotes = {批发商名: {条码: {"price", "pack", "desc", "dept"?}}}
@@ -247,6 +292,9 @@ def stats(grid, quotes, fresh=None):
     """
     is_brand = brand_matcher(grid)
     items = grid["items"]
+    for it in items.values():                    # 旧缓存兼容
+        it.setdefault("cats", ["", "", ""])
+        it.setdefault("direct", "")
     labels = list(quotes)
     eans = set(items)
     rel = relevant_depts(eans, quotes)
@@ -272,7 +320,14 @@ def stats(grid, quotes, fresh=None):
                 odd.append({"ean": e, "supplier": lab, "price": q["price"], "others": med,
                             "name": q.get("desc") or (items.get(e) or {}).get("name", "")})
 
-    gone = [dict(it) for e, it in items.items() if e not in offer]
+    cat_of = category_mapper(items, offer)
+
+    def direct(e, o):
+        """源头供应商：Griglia 里写了用 Griglia 的，没写用报价里的（MEGA CASH 的 ragione_sociale）"""
+        d = (items.get(e) or {}).get("direct")
+        return d or next((q["src"] for q in (o or {}).values() if q.get("src")), "")
+
+    gone = [dict(it, direct=direct(e, None)) for e, it in items.items() if e not in offer]
     new = []
     for e, o in offer.items():
         if e in eans:
@@ -289,6 +344,7 @@ def stats(grid, quotes, fresh=None):
         desc = next((q.get("desc") for q in o.values() if q.get("desc")), "")
         dept = next((q.get("dept") for q in o.values() if q.get("dept")), "")
         new.append({"ean": e, "name": desc, "dept": dept, "n": len(o), "best": p, "best_sup": lab,
+                    "cats": cat_of(o), "direct": direct(e, o),
                     "fresh": bool(fresh) and all(e in fresh.get(k, ()) for k in o), "brand": is_brand(desc),
                     "pack": o[lab].get("pack") if lab else None, "prices": {k: v["price"] for k, v in o.items()}})
     prices = []
@@ -299,6 +355,7 @@ def stats(grid, quotes, fresh=None):
         p, lab = best(o)
         ref = it.get("best") or it.get("price")
         prices.append({"ean": e, "code": it.get("code"), "name": it.get("name"), "brand": it.get("brand"),
+                       "cats": it["cats"], "direct": direct(e, o),
                        "supplier": it.get("supplier"), "ref": ref, "best": p, "best_sup": lab, "n": len(o),
                        "change": (p / ref - 1) if (p and ref) else None,
                        "moved": bool(lab and it.get("supplier") and _key(lab) not in _key(it["supplier"])
@@ -317,17 +374,21 @@ def export(st, path, labels=None):
     from openpyxl.styles import Font
     labels = labels or st["labels"]
     wb = Workbook()
-    sheets = [("都不做了", ["EAN", "Cod.Art.", "Descrizione", "Marca", "Fornitore", "Prezzo Griglia"],
-               [[x["ean"], x.get("code"), x.get("name"), x.get("brand"), x.get("supplier"), x.get("best") or x.get("price")]
-                for x in st["gone"]]),
-              ("新品", ["EAN", "Descrizione", "Reparto", "N. fornitori", "Miglior prezzo", "Fornitore", "Nuovo", "Nostra marca"]
-               + labels,
-               [[x["ean"], x["name"], x["dept"], x["n"], x["best"], x["best_sup"], "SI" if x.get("fresh") else "",
-                 "SI" if x.get("brand") else ""] + [x["prices"].get(l) for l in labels]
+    cat_h = ["CAT.1", "CAT 2", "CAT 3", "FORNITORI DIRETTO"]
+
+    def cd(x):
+        return list(x.get("cats") or ["", "", ""]) + [x.get("direct") or ""]
+    sheets = [("都不做了", ["EAN", "Cod.Art.", "Descrizione", "Marca"] + cat_h + ["Fornitore", "Prezzo Griglia"],
+               [[x["ean"], x.get("code"), x.get("name"), x.get("brand")] + cd(x) +
+                [x.get("supplier"), x.get("best") or x.get("price")] for x in st["gone"]]),
+              ("新品", ["EAN", "Descrizione"] + cat_h + ["Reparto", "N. fornitori", "Miglior prezzo", "Fornitore", "Nuovo",
+                                                       "Nostra marca"] + labels,
+               [[x["ean"], x["name"]] + cd(x) + [x["dept"], x["n"], x["best"], x["best_sup"], "SI" if x.get("fresh") else "",
+                                               "SI" if x.get("brand") else ""] + [x["prices"].get(l) for l in labels]
                 for x in st["new"]]),
-              ("价格", ["EAN", "Cod.Art.", "Descrizione", "Fornitore Griglia", "Prezzo Griglia", "Miglior prezzo",
-                        "Fornitore", "Variazione %"] + labels,
-               [[x["ean"], x["code"], x["name"], x["supplier"], x["ref"], x["best"], x["best_sup"],
+              ("价格", ["EAN", "Cod.Art.", "Descrizione"] + cat_h + ["Fornitore Griglia", "Prezzo Griglia", "Miglior prezzo",
+                                                                   "Fornitore", "Variazione %"] + labels,
+               [[x["ean"], x["code"], x["name"]] + cd(x) + [x["supplier"], x["ref"], x["best"], x["best_sup"],
                  round(x["change"] * 100, 1) if x["change"] is not None else None] + [x["prices"].get(l) for l in labels]
                 for x in st["prices"]])]
     first = True

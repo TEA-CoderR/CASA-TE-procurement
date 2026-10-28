@@ -144,3 +144,35 @@ def test_new_flags():
     assert new["7000000000001"]["fresh"] and new["7000000000001"]["brand"]
     assert not new["7000000000002"]["fresh"] and not new["7000000000002"]["brand"]   # B 早就有
     assert st["history"] and not G.stats(g, quotes)["history"]
+
+
+def test_order_check_noquote():
+    import order_check as OC
+    base = {"in_db": True, "pack": 6}
+    assert OC._problem(dict(base, in_quote=False)) == "noquote"
+    assert OC._problem(dict(base, in_quote=False, in_grid=False)) == "nogrid"      # 别的区域的优先
+    assert OC._problem(dict(base, in_quote=True)) is None
+
+
+def test_categories_and_direct():
+    g = _grid()
+    g["items"]["8000000000011"].update(cats=["CURA PERSONE", "CAPELLI", "SHAMPOO"], direct="")
+    g["items"]["8000000000028"].update(cats=["CURA PERSONE", "CAPELLI", "SHAMPOO"], direct="HENKEL")
+    q = lambda p, **k: dict(_q(p), **k)
+    quotes = {"MELONI": {"8000000000011": q(2, grp="CAPELLI", sgrp="SHAMPOO"),
+                         "8000000000028": q(1, grp="CAPELLI", sgrp="SHAMPOO"),
+                         "7000000000001": q(3, grp="CAPELLI", sgrp="SHAMPOO", desc="Nuovo")},
+              "MEGA": {"8000000000011": q(2.1, src="UNILEVER"), "7000000000001": q(3.1, src="L'OREAL")}}
+    st = G.stats(g, quotes)
+    new = {x["ean"]: x for x in st["new"]}
+    assert new["7000000000001"]["cats"] == ["CURA PERSONE", "CAPELLI", "SHAMPOO"]
+    assert new["7000000000001"]["direct"] == "L'OREAL"
+    pr = {x["ean"]: x for x in st["prices"]}
+    assert pr["8000000000011"]["direct"] == "UNILEVER" and pr["8000000000028"]["direct"] == "HENKEL"
+
+
+def test_parse_direct_and_cats():
+    g = G.parse_rows([["Codice EAN", "Descrizione prodotto", "CAT 3", "CAT 2", "CAT.1", "FORNITORI DIRETTO"],
+                      ["8000000000011", "A", "SHAMPOO", "CAPELLI", "CURA PERSONE", "HENKEL ITALIA"]])
+    it = g["items"]["8000000000011"]
+    assert it["cats"] == ["CURA PERSONE", "CAPELLI", "SHAMPOO"] and it["direct"] == "HENKEL ITALIA"

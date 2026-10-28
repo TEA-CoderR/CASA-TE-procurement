@@ -1530,7 +1530,7 @@ def _write_missing_report(distribuire_path, rows, assignment):
 _DESC_HEADS = ("DESCRIZIONE", "DESCRIPTION", "ARTICOLO", "PRODOTTO", "DENOMINAZIONE", "NOME")
 
 
-PRICE_CACHE_VER = 2     # 读报价的规则改了（例如找列的办法）就加 1，旧的缓存自动作废
+PRICE_CACHE_VER = 3     # 读报价的规则改了（例如找列的办法）就加 1，旧的缓存自动作废
 
 
 def _price_cache_path(path):
@@ -1584,6 +1584,28 @@ def _find_col_like(ws, header_row, keys, avoid=()):
     return None
 
 
+def _guess_desc_col(ws, header_row, col_ean, rows=80):
+    """没有名称表头时猜名称列：有条码的前 rows 行里，像商品名（≥ 8 个字、有字母、不是纯数字）最多的那一列"""
+    cnt = {}
+    try:
+        n = 0
+        for i in range(header_row + 1, header_row + 1 + rows * 2):
+            if not clean_ean(ws.cell(i, col_ean).value):
+                continue
+            n += 1
+            for cell in ws[i]:
+                v = cell.value
+                if cell.column != col_ean and isinstance(v, str) and len(v.strip()) >= 8 and \
+                        any(ch.isalpha() for ch in v):
+                    cnt[cell.column] = cnt.get(cell.column, 0) + 1
+            if n >= rows:
+                break
+        best = max(cnt, key=cnt.get) if cnt else None
+        return best if best and cnt[best] >= max(3, n // 2) else None
+    except Exception:
+        return None
+
+
 def _read_price_file(path, log=None, fast=True):
     log = log or (lambda *a: None)
     if fast:
@@ -1609,7 +1631,13 @@ def _read_price_file(path, log=None, fast=True):
                 break
         if not col_desc:                                       # 「ARTICOLI.descrizione」「descrizione_articolo」这种
             col_desc = _find_col_like(ws, header_row, ("DESCRI",), ("REPART", "GRUPP", "OFFERT", "SOTTOGR", "CATEG"))
+        if not col_desc:                                       # 表头没写（NEW GRIECO 的 Canvass）：有条码的行里文字最多的那一列
+            col_desc = _guess_desc_col(ws, header_row, col_ean)
         col_dept = _find_col_like(ws, header_row, ("REPART",), ("COD",))      # 部门（Griglia 统计挑「我们这几类」用）
+        # Griglia 统计用：商品组 / 小组（MELONI Listino 有）、源头供应商（MEGA CASH formattato 的 ragione_sociale）
+        extra = [(k, c) for k, c in (("grp", _find_col_like(ws, header_row, ("GRUPPO",), ("COD", "SOTTO"))),
+                                     ("sgrp", _find_col_like(ws, header_row, ("SOTTOGR",), ("COD",))),
+                                     ("src", _find_col_like(ws, header_row, ("RAGIONE",)))) if c]
         out = {}
         for i in range(header_row + 1, get_last_row(ws, col_ean) + 1):
             e = clean_ean(ws.cell(i, col_ean).value)
@@ -1619,6 +1647,10 @@ def _read_price_file(path, log=None, fast=True):
                           "desc": str(ws.cell(i, col_desc).value or "").strip() if col_desc else ""}
                 if col_dept:
                     out[e]["dept"] = str(ws.cell(i, col_dept).value or "").strip()
+                for k, c in extra:
+                    v = str(ws.cell(i, c).value or "").strip()
+                    if v:
+                        out[e][k] = v
         return out
     finally:
         if wb is not None:
