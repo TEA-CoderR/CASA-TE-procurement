@@ -81,15 +81,38 @@ def _pk(x):
     return v if v == v and v > 0 else 0.0
 
 
+def PROB_KINDS_TIPS():
+    """待核对窗口的标签页（顺序 = 显示顺序）和鼠标提示"""
+    return (("noquote", tr("在我们的 Griglia 里，但这周几家批发商的报价里都没有：比价时会缺失。可能批发商不做了、断货，或者要向别处订")),
+            ("nogrid_noq", tr("不在 Griglia（多半是门店发来的其他区域商品），批发商报价里也没有：比价时会缺失")),
+            ("nogrid", tr("不在 Griglia（多半是门店发来的其他区域商品），但批发商有报价：比价能分出去，要不要订你决定")),
+            ("nodb", tr("数据库里找不到、批发商报价里也没有：系统算不了，确定箱数默认 = 门店清单，请核对")),
+            ("nopack", tr("数据库里有，但不知道每箱几件：确定箱数默认 = 门店清单，请核对")))
+
+
+def _prob_title(kind, n, has_grid=True):
+    """标签页名字：短、一眼看懂"""
+    if kind == "noquote":
+        return tr("Griglia 商品 · 批发商都没有（{0}）", n) if has_grid else tr("批发商都没有（{0}）", n)
+    return {"nogrid_noq": tr("其他区域 · 批发商都没有（{0}）", n), "nogrid": tr("其他区域 · 批发商有（{0}）", n),
+            "nodb": tr("数据库没有（{0}）", n), "nopack": tr("没有箱规（{0}）", n)}[kind]
+
+
 def _problem(x):
     """
     要单独核对的商品：「nodb」数据库里没有、供应商报价里也找不到；「nopack」数据库有、但数据库和报价里都没有箱规。
     数据库没有但报价里找得到的（补上了箱规、件价）留在主表格。其他返回 None
     """
     if not x.get("in_db", True):
-        return None if (x.get("quote_sup") and _pk(x) > 0) else "nodb"
-    if _pk(x) <= 0:
+        if not (x.get("quote_sup") and _pk(x) > 0):
+            return "nodb"
+    elif _pk(x) <= 0:
         return "nopack"
+    # 用户定（2026-10-28）：在不在 Griglia × 有没有报价分开列，每个商品只在一个列表里
+    if x.get("in_grid") is False:                     # 不在 Griglia：多半是门店没注意发来的别的区域的商品
+        return "nogrid_noq" if x.get("in_quote") is False else "nogrid"
+    if x.get("in_quote") is False:
+        return "noquote"                              # 在 Griglia（或没放 Griglia）、几家批发商报价里都没有：比价时会成为缺失
     return None
 
 
@@ -470,44 +493,57 @@ class OrderCheck:
         self.view.setToolTip(tr("有变化 = 判断是多订、少订、不订或建议调货"))
         self.view.currentIndexChanged.connect(self._filter)
         tb.addWidget(self.view)
-        # 「全部商品」右边：数据库没有 / 没有箱规（供应商报价里也找不到的）两个按钮，点开是列表，在里面核对、改箱数
+        # 「看哪些」右边：一个「⚠ 待核对」按钮（有才显示），点开是一个窗口，按问题分标签页（用户：按钮别排一长串、名字要好懂）
+        from PySide6.QtWidgets import QTabWidget
         self.prob = {}
-        self.prob_btns = {}
         self._prob_filling = False
-        for kind, title, tip in (("nodb", tr("数据库没有"), tr("数据库里找不到、供应商报价里也没有的商品：系统算不了，确定箱数默认 = 门店清单，请核对")),
-                                 ("nopack", tr("没有箱规"), tr("数据库里有，但数据库和供应商报价里都不知道每箱几件：确定箱数默认 = 门店清单，请核对"))):
-            b = QPushButton("⚠ " + title)
-            b.setToolTip(tip + "\n" + tr("点一下打开列表"))
-            b.setStyleSheet(f"color:{ui.T('warn')};")
-            b.clicked.connect(lambda _=False, k=kind: self._open_prob(k))
-            b.hide()
-            tb.addWidget(b)
-            self.prob_btns[kind] = b
-            dlg = QDialog(self.window)
-            dlg.setWindowTitle(title)
-            dlg.resize(820, 460)
-            dv = QVBoxLayout(dlg)
-            dv.setContentsMargins(16, 14, 16, 12)
-            dv.setSpacing(8)
-            dlg.setToolTip(tip)
+        self.prob_btn = QPushButton()
+        self.prob_btn.setStyleSheet(f"color:{ui.T('warn')};")
+        self.prob_btn.clicked.connect(lambda: self._open_prob(None))
+        self.prob_btn.hide()
+        tb.addWidget(self.prob_btn)
+        dlg = QDialog(self.window)
+        dlg.setWindowTitle(tr("待核对的商品"))
+        dlg.resize(980, 560)
+        dv = QVBoxLayout(dlg)
+        dv.setContentsMargins(16, 14, 16, 12)
+        dv.setSpacing(10)
+        self.prob_tabs = QTabWidget()
+        dv.addWidget(self.prob_tabs, 1)
+        close = QPushButton(tr("关闭"))
+        close.clicked.connect(dlg.accept)
+        cb = QHBoxLayout()
+        cb.addStretch()
+        cb.addWidget(close)
+        dv.addLayout(cb)
+        self.prob_dlg = dlg
+        for kind, tip in PROB_KINDS_TIPS():
+            page = QWidget()
+            pv = QVBoxLayout(page)
+            pv.setContentsMargins(0, 8, 0, 0)
+            pv.setSpacing(8)
             t = ui.make_table([tr("门店"), tr("条码"), tr("名称"), tr("供应商"), tr("清单箱数"), tr("确定箱数") + " ✎"],
                               stretch_col=2, numeric_cols=(4, 5))
             t.verticalHeader().setDefaultSectionSize(30)
             t.setEditTriggers(QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed |
                               QAbstractItemView.AnyKeyPressed)
-            for c, wd in ((0, 90), (1, 130), (3, 140), (4, 76), (5, 90)):
+            for c, wd in ((0, 90), (1, 130), (3, 160), (4, 76), (5, 90)):
                 t.setColumnWidth(c, wd)
             t.itemChanged.connect(lambda it, k=kind: self._prob_edited(k, it))
             from erp_widgets import HeaderFilter      # 右键表头按列筛选
             t._hf = HeaderFilter(t)
-            close = QPushButton(tr("关闭"))
-            close.clicked.connect(dlg.accept)
-            bb = QHBoxLayout()
-            bb.addStretch()
-            bb.addWidget(close)
-            dv.addWidget(t, 1)
-            dv.addLayout(bb)
-            self.prob[kind] = (dlg, b, t)
+            pv.addWidget(t, 1)
+            if kind in ("nogrid", "nogrid_noq", "noquote"):
+                bb = QHBoxLayout()
+                b_none = QPushButton(tr("全部不订"))
+                b_none.setToolTip(tr("这一页的商品确定箱数都改成 0"))
+                b_none.clicked.connect(lambda _=False, k=kind: self._nogrid_none(k))
+                bb.addWidget(b_none)
+                bb.addStretch()
+                pv.addLayout(bb)
+            idx = self.prob_tabs.addTab(page, "")
+            self.prob_tabs.setTabToolTip(idx, tip)
+            self.prob[kind] = (idx, page, t)
         tb.addStretch()
         b_s = QPushButton(tr("恢复建议值"))
         b_s.setToolTip(tr("全部商品的确定件数恢复成系统建议的（人工改的调货也恢复）"))
@@ -804,9 +840,9 @@ class OrderCheck:
                 dlg.post_progress(5)
                 # 报价（Excel）和数据库同时读：读报价主要用电脑，查数据库主要在等服务器，一起做省时间
                 from concurrent.futures import ThreadPoolExecutor
-                q_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="quotes")
+                q_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="quotes")
                 t_q = time.time()
-                q_fut = q_pool.submit(self._read_quotes, price_dir, log)
+                q_fut = q_pool.submit(lambda: (self._read_quotes(price_dir, log), time.time()))   # 记下读完的时间
                 db = R.make_db(dbs)
                 need = [r["ean"] for x in lists for r in x["rows"] if not r["code"] and r["ean"]]
                 if need:
@@ -822,7 +858,12 @@ class OrderCheck:
                 dlg.post_step(0, "done", f"{len(union)}", "")
                 dlg.post_step(1, "running", "", "")
                 t0 = time.time()
+                ms = R.ping(db)
+                if ms is not None:
+                    log(tr("[检查清单] 数据库响应 {0:.0f} 毫秒", ms))
                 pre_snap = None
+                # 供应商编号（只显示用）和下面的门店查询同时查，不用排在最后等（结果一样）
+                sup_fut = q_pool.submit(R._timed, "供应商编号", None, R.supplier_info, db, union) if union else None
                 others = [k for k in R.STORES if k != 0]
                 if len(lists) == 1 and lists[0]["codes"] and union:
                     # 只有一份清单（平常都是）：这家店和其他门店（调货用）同时查，结果和一家家查一样
@@ -875,7 +916,7 @@ class OrderCheck:
                         dlg.post_step(2, "error", "", str(e))
                 else:
                     dlg.post_step(2, "done", "", "")
-                sup_info = R.supplier_info(db, union) if union else {}     # Codice Fornitore + 供应商名（只显示用）
+                sup_info = sup_fut.result() if sup_fut is not None else {}     # Codice Fornitore + 供应商名（只显示用）
                 log(tr("[检查清单] 数据库查询用了 {0:.0f} 秒", time.time() - t0))
                 db.engine.dispose()
                 rows = []
@@ -891,9 +932,22 @@ class OrderCheck:
                 # 箱规、件价用 distribuire 里最便宜那家的报价（比价默认挑它）；报价里没有的才用数据库的
                 dlg.post_step(3, "running", "", "")
                 dlg.post_progress(86)
-                n_q, n_files = self._apply_quotes(rows, price_dir, log, files=q_fut.result())
+                # Griglia：不在我们 DETERSIVI 总表里的商品单独列出来（工作文件夹「0 Griglia」里没有就不检查）
+                try:
+                    import griglia as G
+                    grid = G.load_for(os.path.dirname(price_dir)) if price_dir else None
+                except Exception as e:
+                    grid = None
+                    log(tr("⚠ Griglia 读不了：{0}", e))
+                if grid:
+                    for x in rows:
+                        x["in_grid"] = G.contains(grid, x.get("ean"), x.get("code"))
+                    log(tr("[检查清单] Griglia {0}：{1} 个商品不在里面", grid["name"],
+                           sum(1 for x in rows if x.get("in_grid") is False)))
+                q_files, q_end = q_fut.result()
+                n_q, n_files = self._apply_quotes(rows, price_dir, log, files=q_files)
                 if n_files:
-                    log(tr("[检查清单] 读报价用了 {0:.0f} 秒（和数据库同时读）", time.time() - t_q))
+                    log(tr("[检查清单] 读报价用了 {0:.0f} 秒（和数据库同时读）", q_end - t_q))
                 dlg.post_step(3, "done", tr("{0} 份报价", n_files) if n_files else tr("没有报价，用数据库"), "")
                 dlg.post_step(4, "running", "", "")
                 dlg.post_progress(95)
@@ -1549,12 +1603,18 @@ class OrderCheck:
         sid = self._store_sel()
         text = self.flt.text().strip().lower()
         self._prob_filling = True
-        for kind, (dlg, btn, t) in self.prob.items():
+        has_grid = any(x.get("in_grid") is not None for x in self.rows)
+        total, tips = 0, []
+        for kind, (ti, page, t) in self.prob.items():
             allk = [i for i, x in enumerate(self.rows) if _problem(x) == kind]
             idx = [i for i in allk if (sid is None or self.rows[i].get("store") == sid) and
                    (not text or text in f"{self.rows[i].get('code')} {self.rows[i].get('ean')} {self.rows[i].get('name')}".lower())]
-            btn.setText((tr("⚠ 数据库没有（{0}）", len(allk)) if kind == "nodb" else tr("⚠ 没有箱规（{0}）", len(allk))))
-            btn.setVisible(bool(allk))
+            title = _prob_title(kind, len(allk), has_grid)
+            self.prob_tabs.setTabText(ti, title)
+            self.prob_tabs.setTabVisible(ti, bool(allk))
+            if allk:
+                total += len(allk)
+                tips.append(title)
             t.blockSignals(True)
             t.setRowCount(len(idx))
             for r, i in enumerate(idx):
@@ -1575,12 +1635,36 @@ class OrderCheck:
             if getattr(t, "_hf", None) is not None and t._hf.active():
                 t._hf.reapply()
             t.setColumnHidden(0, len((self.meta or {}).get("stores") or []) < 2)
+        self.prob_btn.setText(tr("⚠ 待核对（{0}）", total))
+        self.prob_btn.setToolTip("\n".join(tips) + "\n" + tr("点一下打开"))
+        self.prob_btn.setVisible(bool(total))
         self._prob_filling = False
 
-    def _open_prob(self, kind):
-        """点「数据库没有 / 没有箱规」按钮：打开列表（不挡住检查窗口，可以一边对照一边改）"""
+    def _nogrid_none(self, kind="nogrid"):
+        """这个问题列表（不在 Griglia / 没报价）里的商品全部不订"""
+        n = 0
+        for x in self.rows:
+            if _problem(x) == kind and x.get("fbox"):
+                _set_box(x, 0)
+                n += 1
         self._fill_prob()
-        dlg = self.prob[kind][0]
+        self._summary()
+        self.win.show_toast(tr("{0} 个商品改成不订", n))
+
+    def _open_prob(self, kind=None):
+        """点「⚠ 待核对」：打开窗口（不挡住检查窗口，可以一边对照一边改），停在第一个有商品的标签页"""
+        self._fill_prob()
+        tabs = self.prob_tabs
+        if kind is not None and kind in self.prob:
+            tabs.setCurrentIndex(self.prob[kind][0])
+        elif not tabs.isTabVisible(tabs.currentIndex()):
+            for k in range(tabs.count()):
+                if tabs.isTabVisible(k):
+                    tabs.setCurrentIndex(k)
+                    break
+        dlg = self.prob_dlg
+        from erp_widgets import fit_to_screen
+        fit_to_screen(dlg)
         dlg.show()
         dlg.raise_()
         dlg.activateWindow()
@@ -1988,6 +2072,8 @@ class OrderCheck:
             log(tr("[检查清单] 供应商报价文件夹里没有报价，箱规和件价用数据库的"))
             return 0, 0
         n = PC.apply_quotes(rows, PC.best_quotes(files))
+        for x in rows:                                  # 这几家报价里都没有（比价时会成为缺失）
+            x["in_quote"] = bool(x.get("quote_sup"))
         diff = sum(1 for x in rows if x.get("quote_sup") and x.get("db_pack") and abs(x["pack"] - x["db_pack"]) > 1e-9)
         log(tr("[检查清单] {0} 份报价：{1} 个商品改用最便宜那家的箱规和件价，其中 {2} 个箱规和数据库不一样",
                len(files), n, diff))
