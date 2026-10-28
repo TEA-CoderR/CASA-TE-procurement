@@ -81,6 +81,23 @@ def _pk(x):
     return v if v == v and v > 0 else 0.0
 
 
+def PROB_KINDS_TIPS():
+    """待核对窗口的标签页（顺序 = 显示顺序）和鼠标提示"""
+    return (("noquote", tr("在我们的 Griglia 里，但这周几家批发商的报价里都没有：比价时会缺失。可能批发商不做了、断货，或者要向别处订")),
+            ("nogrid_noq", tr("不在 Griglia（多半是门店发来的其他区域商品），批发商报价里也没有：比价时会缺失")),
+            ("nogrid", tr("不在 Griglia（多半是门店发来的其他区域商品），但批发商有报价：比价能分出去，要不要订你决定")),
+            ("nodb", tr("数据库里找不到、批发商报价里也没有：系统算不了，确定箱数默认 = 门店清单，请核对")),
+            ("nopack", tr("数据库里有，但不知道每箱几件：确定箱数默认 = 门店清单，请核对")))
+
+
+def _prob_title(kind, n, has_grid=True):
+    """标签页名字：短、一眼看懂"""
+    if kind == "noquote":
+        return tr("Griglia 商品 · 批发商都没有（{0}）", n) if has_grid else tr("批发商都没有（{0}）", n)
+    return {"nogrid_noq": tr("其他区域 · 批发商都没有（{0}）", n), "nogrid": tr("其他区域 · 批发商有（{0}）", n),
+            "nodb": tr("数据库没有（{0}）", n), "nopack": tr("没有箱规（{0}）", n)}[kind]
+
+
 def _problem(x):
     """
     要单独核对的商品：「nodb」数据库里没有、供应商报价里也找不到；「nopack」数据库有、但数据库和报价里都没有箱规。
@@ -476,52 +493,57 @@ class OrderCheck:
         self.view.setToolTip(tr("有变化 = 判断是多订、少订、不订或建议调货"))
         self.view.currentIndexChanged.connect(self._filter)
         tb.addWidget(self.view)
-        # 「全部商品」右边：数据库没有 / 没有箱规（供应商报价里也找不到的）两个按钮，点开是列表，在里面核对、改箱数
+        # 「看哪些」右边：一个「⚠ 待核对」按钮（有才显示），点开是一个窗口，按问题分标签页（用户：按钮别排一长串、名字要好懂）
+        from PySide6.QtWidgets import QTabWidget
         self.prob = {}
-        self.prob_btns = {}
         self._prob_filling = False
-        for kind, title, tip in (("nodb", tr("数据库没有"), tr("数据库里找不到、供应商报价里也没有的商品：系统算不了，确定箱数默认 = 门店清单，请核对")),
-                                 ("nopack", tr("没有箱规"), tr("数据库里有，但数据库和供应商报价里都不知道每箱几件：确定箱数默认 = 门店清单，请核对")),
-                                 ("noquote", tr("Griglia · 没报价"), tr("在我们的 Griglia 里（没放 Griglia 时 = 全部商品），但这次几家批发商的报价里都找不到：比价时会成为缺失。可能批发商不做了、断货，或者要向别的地方订。要不要订在这里改（0 = 不订）")),
-                                 ("nogrid_noq", tr("不在 Griglia · 没报价"), tr("不在我们的 Griglia（多半是门店没注意发来的别的区域的商品），几家批发商的报价里也都没有：比价时会成为缺失。要不要订在这里改（0 = 不订）")),
-                                 ("nogrid", tr("不在 Griglia · 有报价"), tr("不在我们的 Griglia（多半是门店没注意发来的别的区域的商品），但有批发商报价，比价能分出去。要不要订在这里改（0 = 不订）"))):
-            b = QPushButton("⚠ " + title)
-            b.setToolTip(tip + "\n" + tr("点一下打开列表"))
-            b.setStyleSheet(f"color:{ui.T('warn')};")
-            b.clicked.connect(lambda _=False, k=kind: self._open_prob(k))
-            b.hide()
-            tb.addWidget(b)
-            self.prob_btns[kind] = b
-            dlg = QDialog(self.window)
-            dlg.setWindowTitle(title)
-            dlg.resize(820, 460)
-            dv = QVBoxLayout(dlg)
-            dv.setContentsMargins(16, 14, 16, 12)
-            dv.setSpacing(8)
-            dlg.setToolTip(tip)
+        self.prob_btn = QPushButton()
+        self.prob_btn.setStyleSheet(f"color:{ui.T('warn')};")
+        self.prob_btn.clicked.connect(lambda: self._open_prob(None))
+        self.prob_btn.hide()
+        tb.addWidget(self.prob_btn)
+        dlg = QDialog(self.window)
+        dlg.setWindowTitle(tr("待核对的商品"))
+        dlg.resize(980, 560)
+        dv = QVBoxLayout(dlg)
+        dv.setContentsMargins(16, 14, 16, 12)
+        dv.setSpacing(10)
+        self.prob_tabs = QTabWidget()
+        dv.addWidget(self.prob_tabs, 1)
+        close = QPushButton(tr("关闭"))
+        close.clicked.connect(dlg.accept)
+        cb = QHBoxLayout()
+        cb.addStretch()
+        cb.addWidget(close)
+        dv.addLayout(cb)
+        self.prob_dlg = dlg
+        for kind, tip in PROB_KINDS_TIPS():
+            page = QWidget()
+            pv = QVBoxLayout(page)
+            pv.setContentsMargins(0, 8, 0, 0)
+            pv.setSpacing(8)
             t = ui.make_table([tr("门店"), tr("条码"), tr("名称"), tr("供应商"), tr("清单箱数"), tr("确定箱数") + " ✎"],
                               stretch_col=2, numeric_cols=(4, 5))
             t.verticalHeader().setDefaultSectionSize(30)
             t.setEditTriggers(QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed |
                               QAbstractItemView.AnyKeyPressed)
-            for c, wd in ((0, 90), (1, 130), (3, 140), (4, 76), (5, 90)):
+            for c, wd in ((0, 90), (1, 130), (3, 160), (4, 76), (5, 90)):
                 t.setColumnWidth(c, wd)
             t.itemChanged.connect(lambda it, k=kind: self._prob_edited(k, it))
             from erp_widgets import HeaderFilter      # 右键表头按列筛选
             t._hf = HeaderFilter(t)
-            close = QPushButton(tr("关闭"))
-            close.clicked.connect(dlg.accept)
-            bb = QHBoxLayout()
+            pv.addWidget(t, 1)
             if kind in ("nogrid", "nogrid_noq", "noquote"):
+                bb = QHBoxLayout()
                 b_none = QPushButton(tr("全部不订"))
-                b_none.setToolTip(tr("这个列表里的商品确定箱数都改成 0"))
+                b_none.setToolTip(tr("这一页的商品确定箱数都改成 0"))
                 b_none.clicked.connect(lambda _=False, k=kind: self._nogrid_none(k))
                 bb.addWidget(b_none)
-            bb.addStretch()
-            bb.addWidget(close)
-            dv.addWidget(t, 1)
-            dv.addLayout(bb)
-            self.prob[kind] = (dlg, b, t)
+                bb.addStretch()
+                pv.addLayout(bb)
+            idx = self.prob_tabs.addTab(page, "")
+            self.prob_tabs.setTabToolTip(idx, tip)
+            self.prob[kind] = (idx, page, t)
         tb.addStretch()
         b_s = QPushButton(tr("恢复建议值"))
         b_s.setToolTip(tr("全部商品的确定件数恢复成系统建议的（人工改的调货也恢复）"))
@@ -1581,16 +1603,18 @@ class OrderCheck:
         sid = self._store_sel()
         text = self.flt.text().strip().lower()
         self._prob_filling = True
-        for kind, (dlg, btn, t) in self.prob.items():
+        has_grid = any(x.get("in_grid") is not None for x in self.rows)
+        total, tips = 0, []
+        for kind, (ti, page, t) in self.prob.items():
             allk = [i for i, x in enumerate(self.rows) if _problem(x) == kind]
             idx = [i for i in allk if (sid is None or self.rows[i].get("store") == sid) and
                    (not text or text in f"{self.rows[i].get('code')} {self.rows[i].get('ean')} {self.rows[i].get('name')}".lower())]
-            has_grid = any(x.get("in_grid") is not None for x in self.rows)
-            btn.setText({"nodb": tr("⚠ 数据库没有（{0}）", len(allk)), "nopack": tr("⚠ 没有箱规（{0}）", len(allk)),
-                         "noquote": tr("⚠ Griglia · 没报价（{0}）", len(allk)) if has_grid else tr("⚠ 没有报价（{0}）", len(allk)),
-                         "nogrid_noq": tr("⚠ 不在 Griglia · 没报价（{0}）", len(allk))}.get(kind) or
-                        tr("⚠ 不在 Griglia · 有报价（{0}）", len(allk)))
-            btn.setVisible(bool(allk))
+            title = _prob_title(kind, len(allk), has_grid)
+            self.prob_tabs.setTabText(ti, title)
+            self.prob_tabs.setTabVisible(ti, bool(allk))
+            if allk:
+                total += len(allk)
+                tips.append(title)
             t.blockSignals(True)
             t.setRowCount(len(idx))
             for r, i in enumerate(idx):
@@ -1611,6 +1635,9 @@ class OrderCheck:
             if getattr(t, "_hf", None) is not None and t._hf.active():
                 t._hf.reapply()
             t.setColumnHidden(0, len((self.meta or {}).get("stores") or []) < 2)
+        self.prob_btn.setText(tr("⚠ 待核对（{0}）", total))
+        self.prob_btn.setToolTip("\n".join(tips) + "\n" + tr("点一下打开"))
+        self.prob_btn.setVisible(bool(total))
         self._prob_filling = False
 
     def _nogrid_none(self, kind="nogrid"):
@@ -1624,10 +1651,20 @@ class OrderCheck:
         self._summary()
         self.win.show_toast(tr("{0} 个商品改成不订", n))
 
-    def _open_prob(self, kind):
-        """点「数据库没有 / 没有箱规」按钮：打开列表（不挡住检查窗口，可以一边对照一边改）"""
+    def _open_prob(self, kind=None):
+        """点「⚠ 待核对」：打开窗口（不挡住检查窗口，可以一边对照一边改），停在第一个有商品的标签页"""
         self._fill_prob()
-        dlg = self.prob[kind][0]
+        tabs = self.prob_tabs
+        if kind is not None and kind in self.prob:
+            tabs.setCurrentIndex(self.prob[kind][0])
+        elif not tabs.isTabVisible(tabs.currentIndex()):
+            for k in range(tabs.count()):
+                if tabs.isTabVisible(k):
+                    tabs.setCurrentIndex(k)
+                    break
+        dlg = self.prob_dlg
+        from erp_widgets import fit_to_screen
+        fit_to_screen(dlg)
         dlg.show()
         dlg.raise_()
         dlg.activateWindow()

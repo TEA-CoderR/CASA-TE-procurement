@@ -6,6 +6,7 @@
 - 用户是中文使用者：回复用中文，用业务语言解释，少用技术术语。
 - 界面文字一律 `tr("中文原文")`，新增文字在 `translations.py` 末尾补英 / 意翻译；改完运行 `python tools/check_translations.py`。
 - **界面要简洁（用户明确要求，2026-10-22）**：设置窗口、对话框只放短标签（几个字）+ 输入框 / 勾选框；说明文字一律放鼠标提示（tooltip，标题后加 ⓘ），不要在界面上放一段段说明。新加界面先想能不能少一个字、少一个按钮。
+- **界面要美观（用户明确要求，2026-10-28「设计的时候考虑美观，给我记住」）**：动手前先想整体布局再加东西：同类按钮合成一个（例如几种问题商品 → 工具条上一个「⚠ 待核对（n）」+ 窗口里分标签页，不要一排按钮）；任何东西都不能超出屏幕（按 1366 宽的笔记本屏幕设计，弹窗用 `erp_widgets.fit_to_screen`）；名字短、用业务话、一眼看懂（「其他区域 · 批发商都没有」，不要「不在 Griglia · 没报价」这种绕口的）；对齐、间距一致，颜色用主题。
 - **表格一律按这套做（用户明确要求，2026-10-28「列表以后都按之前好的经验」）**：用 `erp_widgets.TableSortFilter`（点表头排序、右键表头按列筛选 / 搜索这一列）；列宽可以手动拖（TableSortFilter 第一次填好数据后自动把按内容量宽的列改成可拖，最宽 420；自己设宽度的表用 `QHeaderView.Interactive`）；调用 `ctl.remember(cfg, key, save, fields)` → 列可以拖动换位置、顺序 / 宽度 / 显示哪些列记在设置里，右键表头有「显示哪些列…」「恢复默认列宽和顺序」；列多时默认只显示要看的。数字列右对齐，搜索框 + 「n / 总数」。参考 `griglia_page._tab`、`order_check`。
 - 颜色用 `theme.T("token")`，不要写死；页面提供 `restyle()`。耗时操作用 `erp_widgets.TaskDialog` + 线程 + Signal（参考 `import_page.py` 的 `start()`）。
 - 业务逻辑写成不依赖界面的函数并加测试；改动后跑 `python -m pytest -q test_*.py`（应全部通过）。
@@ -18,6 +19,7 @@
 - 用户和同事**共用同一个文件夹**（`procurement_system ok 2.5`）开发。请直接在这个文件夹里改代码、`git commit`、`git push`，不要只推到云端分支却把文件另外写进文件夹（之前这样做过，文件夹和 git 记录对不上，发布前得先同步）。
 
 ## 最近改动（给接手的 AI 的纸条，新的写在最上面）
+- 2026-10-28（用户：框超出屏幕、说法绕口）检查清单的五个问题按钮合成一个「⚠ 待核对（n）」（`prob_btn`，没有就不显示），点开「待核对的商品」窗口（`prob_dlg`，`fit_to_screen`），标签页：Griglia 商品 · 批发商都没有 / 其他区域 · 批发商都没有 / 其他区域 · 批发商有 / 数据库没有 / 没有箱规（`PROB_KINDS_TIPS`、`_prob_title`，空的页藏起来）。
 - 2026-10-28（用户定：Griglia 里没报价、不在 Griglia 没报价两个都要）检查清单问题列表按「在不在 Griglia × 有没有报价」分开，每个商品只在一个列表：「⚠ Griglia · 没报价」（noquote；没放 Griglia 时叫「⚠ 没有报价」）/「⚠ 不在 Griglia · 没报价」（nogrid_noq）/「⚠ 不在 Griglia · 有报价」（nogrid），都有「全部不订」。核对过 FOIANO 10-25 比价的 161 个缺失 = 147「没有任何报价」（144 不在 Griglia + 3 在 Griglia）+ 14「只有被排除的供应商有报价」（那次方案排除 MEGA）。
 - 2026-10-28（用户：「我们的品牌」去掉；列宽要能调；表格以后都按之前的好经验）Griglia 新品去掉「我们的品牌」（`brand_matcher` 删了），没有新上架记录时默认「全部 + ≥ 2 家」。`TableSortFilter` 加 `_fit`（自动宽度的列改成可拖）和 `remember()`（列顺序 / 宽度 / 显示哪些列 + 右键菜单两项），所有用 TableSortFilter 的表格列宽都能拖了；规则写在上面「表格一律按这套做」。
 - 2026-10-28（用户定）Griglia 统计页四张表加 **大类 / 中类 / 小类**（= Griglia 的 CAT.1 / CAT 2 / CAT 3）和 **FORNITORI DIRETTO**（源头供应商：Griglia 有「FORNITORI DIRETTO」列就用它，没有用 MEGA CASH formattato 的 ragione_sociale，`stats` 里 `direct`）；新品不在 Griglia，类别用 `griglia.category_mapper` 按 Griglia 的叫法推：同一个 MELONI 组 + 小组（Descr.Gruppo / Descr.Sottogruppo）里的 Griglia 商品最常见哪一类就算哪一类，退到组、部门。报价读多了 grp / sgrp / src（`PRICE_CACHE_VER` = 3），NEW GRIECO 没写名称表头的按内容猜名称列（`service._guess_desc_col`）。表格列可以拖动、记住顺序和宽度（`GrigliaPage._tab` + `remember_columns`，settings griglia_cols；批发商价格列按名字给固定编号）。检查清单问题列表加第四个「⚠ 供应商都没有」（`_problem` → noquote：报价都读了、哪家都没有这个条码，`in_quote`，排在 nogrid 后面），也有「全部不订」。
