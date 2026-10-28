@@ -150,9 +150,9 @@ class GrigliaPage:
         self.min_n.setCurrentIndex(1)
         self.min_n.setToolTip(tr("只看至少几家批发商在做的新品（几家都在做的多半是常见商品）"))
         self.scope = QComboBox()
-        for text, key in ((tr("新上架"), "fresh"), (tr("我们的品牌"), "brand"), (tr("全部"), "all")):
+        for text, key in ((tr("新上架"), "fresh"), (tr("全部"), "all")):
             self.scope.addItem(text, key)
-        self.scope.setToolTip(tr("新上架 = 批发商报价里第一次出现的（和以前读过的报价比，30 天内）；我们的品牌 = 名字里有 Griglia 里的品牌；全部 = 这几家报价里我们这几类、Griglia 里没有的"))
+        self.scope.setToolTip(tr("新上架 = 批发商报价里第一次出现的（和以前读过的报价比，30 天内）；全部 = 这几家报价里我们这几类、Griglia 里没有的"))
         self.new_bar = QWidget()
         nb = QHBoxLayout(self.new_bar)
         nb.setContentsMargins(0, 0, 0, 0)
@@ -266,7 +266,6 @@ class GrigliaPage:
                                  datetime.fromtimestamp(grid.get("mtime") or 0)))
         labels = st["labels"]
         nf = sum(1 for x in st["new"] if x["fresh"])
-        nbr = sum(1 for x in st["new"] if x["brand"] and x["n"] >= 2)
         moved = sum(1 for x in st["prices"] if x["moved"])
         vals = {"grid": (f"{len(grid['items']):,}", tr("{0} 家批发商报价", len(labels))),
                 "gone": (f"{len(st['gone']):,}", ""),
@@ -291,7 +290,6 @@ class GrigliaPage:
         类型 "txt" 文字 / "num" 整数 / "price" 价格 / "pct" 带正负号的百分数；颜色(x) 返回颜色记号或 None。列编号固定，用来记住拖过的列顺序
         """
         import settings as ST
-        from erp_widgets import remember_columns
         numeric = tuple(c for c, col in enumerate(cols) if col[2] != "txt")
         tab = _Tab(self, [col[1] for col in cols], numeric=numeric, extra=extra)
         rows, keys, colors = [], [], {}
@@ -311,7 +309,7 @@ class GrigliaPage:
             rows.append(r)
             keys.append(k)
         cfg = self.settings.setdefault("griglia_cols", {})
-        remember_columns(tab.t, cfg, key, [col[0] for col in cols], lambda: ST.save_settings(self.settings))
+        tab.ctl.remember(cfg, key, lambda: ST.save_settings(self.settings), [col[0] for col in cols])
         box = self.boxes[idx]
         lay = box.layout()
         while lay.count():
@@ -357,7 +355,7 @@ class GrigliaPage:
             except (RuntimeError, TypeError):
                 pass
             cb.currentIndexChanged.connect(lambda _: self.t_new.ctl.render())
-        # 默认：有以前的报价记录 → 新上架（几家都行）；第一次 → 我们的品牌、≥ 2 家
+        # 默认：有以前的报价记录 → 新上架（几家都行）；第一次（还没有新上架）→ 全部、≥ 2 家在做
         self.scope.blockSignals(True)
         self.min_n.blockSignals(True)
         self.scope.setCurrentIndex(0 if st["history"] else 1)
@@ -368,8 +366,7 @@ class GrigliaPage:
         def hide(i):
             x = st["new"][i]
             sc = self.scope.currentData()
-            return x["n"] < (self.min_n.currentData() or 1) or (sc == "fresh" and not x["fresh"]) or \
-                (sc == "brand" and not x["brand"])
+            return x["n"] < (self.min_n.currentData() or 1) or (sc == "fresh" and not x["fresh"])
         self.t_new.hide_fn = hide
         # 价格
         def ch_color(x):

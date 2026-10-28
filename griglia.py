@@ -228,16 +228,6 @@ def save_seen(path, seen):
         pass
 
 
-def brand_matcher(grid):
-    """Griglia 里的品牌（≥ 3 个字母）→ 判断一个商品名里有没有我们做的品牌"""
-    bs = sorted({str(i.get("brand") or "").strip().upper() for i in grid["items"].values()}, key=len, reverse=True)
-    bs = [b for b in bs if len(re.sub(r"[^A-Z0-9]", "", b)) >= 3]
-    if not bs:
-        return lambda name: False
-    rx = re.compile(r"(?<![A-Z0-9])(?:" + "|".join(re.escape(b) for b in bs) + r")(?![A-Z0-9])")
-    return lambda name: bool(rx.search(str(name or "").upper()))
-
-
 def category_mapper(items, offer):
     """
     新品（Griglia 里没有）的类别也用 Griglia 的叫法（CAT.1 大类 / CAT 2 中类 / CAT 3 小类）：
@@ -288,9 +278,8 @@ def stats(grid, quotes, fresh=None):
     Griglia 和这周报价对比。quotes = {批发商名: {条码: {"price", "pack", "desc", "dept"?}}}
     fresh = track() 给的 {批发商: 新上架的条码}（不给 = 没有记录）
     返回 {"gone": [...], "new": [...], "prices": [...], "labels": [批发商名], "odd": [...], "history": 有没有记录}
-    新品每行多两个标记：fresh = 在做的几家都是刚上架（别家早就有的不算新）；brand = 名字里有我们 Griglia 里的品牌
+    新品每行多一个标记：fresh = 在做的几家都是刚上架（别家早就有的不算新）
     """
-    is_brand = brand_matcher(grid)
     items = grid["items"]
     for it in items.values():                    # 旧缓存兼容
         it.setdefault("cats", ["", "", ""])
@@ -345,7 +334,7 @@ def stats(grid, quotes, fresh=None):
         dept = next((q.get("dept") for q in o.values() if q.get("dept")), "")
         new.append({"ean": e, "name": desc, "dept": dept, "n": len(o), "best": p, "best_sup": lab,
                     "cats": cat_of(o), "direct": direct(e, o),
-                    "fresh": bool(fresh) and all(e in fresh.get(k, ()) for k in o), "brand": is_brand(desc),
+                    "fresh": bool(fresh) and all(e in fresh.get(k, ()) for k in o),
                     "pack": o[lab].get("pack") if lab else None, "prices": {k: v["price"] for k, v in o.items()}})
     prices = []
     for e, it in items.items():
@@ -381,10 +370,9 @@ def export(st, path, labels=None):
     sheets = [("都不做了", ["EAN", "Cod.Art.", "Descrizione", "Marca"] + cat_h + ["Fornitore", "Prezzo Griglia"],
                [[x["ean"], x.get("code"), x.get("name"), x.get("brand")] + cd(x) +
                 [x.get("supplier"), x.get("best") or x.get("price")] for x in st["gone"]]),
-              ("新品", ["EAN", "Descrizione"] + cat_h + ["Reparto", "N. fornitori", "Miglior prezzo", "Fornitore", "Nuovo",
-                                                       "Nostra marca"] + labels,
-               [[x["ean"], x["name"]] + cd(x) + [x["dept"], x["n"], x["best"], x["best_sup"], "SI" if x.get("fresh") else "",
-                                               "SI" if x.get("brand") else ""] + [x["prices"].get(l) for l in labels]
+              ("新品", ["EAN", "Descrizione"] + cat_h + ["Reparto", "N. fornitori", "Miglior prezzo", "Fornitore", "Nuovo"] + labels,
+               [[x["ean"], x["name"]] + cd(x) + [x["dept"], x["n"], x["best"], x["best_sup"], "SI" if x.get("fresh") else ""] +
+                [x["prices"].get(l) for l in labels]
                 for x in st["new"]]),
               ("价格", ["EAN", "Cod.Art.", "Descrizione"] + cat_h + ["Fornitore Griglia", "Prezzo Griglia", "Miglior prezzo",
                                                                    "Fornitore", "Variazione %"] + labels,

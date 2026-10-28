@@ -2531,4 +2531,6 @@ TRANSLATIONS = {
     '供应商都没有': ('No supplier has it', 'Nessun fornitore'),
     '在 Griglia 里（或没有 Griglia），但这次几家批发商的报价里都找不到的商品：比价时会成为缺失。可能批发商不做了、断货，或者要向别的地方订。要不要订在这里改（0 = 不订）': ("Items in the Griglia (or with no Griglia) that are in none of this week's wholesaler quotes: they will be missing in the comparison. The wholesalers may have dropped them, be out of stock, or they must be ordered elsewhere. Decide here whether to order them (0 = do not order)", 'Articoli in Griglia (o senza Griglia) che non sono in nessun listino dei grossisti di questa settimana: risulteranno mancanti nel confronto. I grossisti potrebbero non trattarli più, essere senza merce, o vanno ordinati altrove. Decidi qui se ordinarli (0 = non ordinare)'),
     '⚠ 供应商都没有（{0}）': ('⚠ No supplier has it ({0})', '⚠ Nessun fornitore ({0})'),
+    '恢复默认列宽和顺序': ('Restore default column widths and order', 'Ripristina larghezza e ordine colonne'),
+    '新上架 = 批发商报价里第一次出现的（和以前读过的报价比，30 天内）；全部 = 这几家报价里我们这几类、Griglia 里没有的': ('Newly listed = first appeared in a wholesaler quote (compared with quotes read before, within 30 days); All = everything in these quotes in our categories that is not in the Griglia', 'Nuovi a listino = comparsi per la prima volta in un listino (rispetto ai listini letti prima, entro 30 giorni); Tutti = tutto ciò che nei listini è nelle nostre categorie e non è in Griglia'),
 }

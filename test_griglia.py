@@ -136,13 +136,12 @@ def test_track_fresh():
 
 def test_new_flags():
     g = _grid()
-    g["items"]["8000000000011"]["brand"] = "DASH"
     quotes = {"A": {"7000000000001": _q(1, desc="DASH POWER 20 LAV"), "7000000000002": _q(1, desc="Altro")},
               "B": {"7000000000002": _q(1, desc="Altro")}}
     st = G.stats(g, quotes, {"A": {"7000000000001", "7000000000002"}, "B": set()})
     new = {x["ean"]: x for x in st["new"]}
-    assert new["7000000000001"]["fresh"] and new["7000000000001"]["brand"]
-    assert not new["7000000000002"]["fresh"] and not new["7000000000002"]["brand"]   # B 早就有
+    assert new["7000000000001"]["fresh"]
+    assert not new["7000000000002"]["fresh"]                                         # B 早就有
     assert st["history"] and not G.stats(g, quotes)["history"]
 
 

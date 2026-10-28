@@ -1775,8 +1775,12 @@ class TableSortFilter(QObject):
       key(i, c)   → 可选，排序用的值
       hide(i)     → 可选，页面上其他筛选条件（搜索框、开关）要藏起来的行
     左键点表头：排序（再点反过来）；右键点表头：这一列的筛选菜单（勾选要显示的值 / 搜索）。
+    列宽：第一次填好数据后，按内容量好的列（ResizeToContents / Stretch）改成可以手动拖宽（_fit，最宽 420）；
+    remember(cfg, key, fields, save)：列可以拖动换位置，顺序 / 宽度 / 显示哪些列记在设置里，右键菜单里有「显示哪些列」「恢复默认」。
+    以后新表格都用它（用户 2026-10-28：列表都按之前好的经验来，列宽要能调）。
     """
     rendered = Signal(int, int)          # (显示行数, 总行数)
+    MAX_AUTO_W = 420
 
     def __init__(self, table, count, text, fill, key=None, hide=None, parent=None, numeric=()):
         super().__init__(parent or table)
@@ -1796,6 +1800,45 @@ class TableSortFilter(QObject):
         hh.customContextMenuRequested.connect(lambda p: self.filter_menu(hh.logicalIndexAt(p), hh.mapToGlobal(p)))
         hh.setToolTip(tr("点表头排序；右键点表头按这一列筛选"))
         table.setSortingEnabled(False)
+        self._fitted, self._auto_cols, self._saved_w = False, None, set()
+        self._chooser, self._reset_layout = None, None
+
+    # ---- 列宽 / 列顺序 ----
+    def _fit(self):
+        """按内容定一次列宽，然后改成可以手动拖（只管原来是自动宽度的列；页面自己设了宽度的列不动）"""
+        from PySide6.QtWidgets import QHeaderView
+        t, hh = self.t, self.t.horizontalHeader()
+        if self._auto_cols is None:
+            self._auto_cols = [c for c in range(t.columnCount())
+                               if hh.sectionResizeMode(c) in (QHeaderView.ResizeToContents, QHeaderView.Stretch)]
+            self._stretch = {c for c in self._auto_cols if hh.sectionResizeMode(c) == QHeaderView.Stretch}
+        for c in self._auto_cols:
+            hh.setSectionResizeMode(c, QHeaderView.Interactive)
+        hh.setStretchLastSection(False)
+        for c in self._auto_cols:
+            if c in self._saved_w:
+                continue
+            t.resizeColumnToContents(c)
+            w = min(max(t.columnWidth(c), 56), self.MAX_AUTO_W)
+            if c in self._stretch:
+                w = max(w, 260)
+            t.setColumnWidth(c, w)
+        self._fitted = True
+
+    def remember(self, cfg, key, save, fields=None, default_hidden=(), ver=1):
+        """列顺序 / 列宽 / 显示哪些列记在 cfg（fields = 每一列的固定编号，默认 0, 1, 2 …）"""
+        fields = list(fields if fields is not None else range(self.t.columnCount()))
+        self._saved_w = {c for c, f in enumerate(fields) if str(f) in (cfg.get(key + "_widths") or {})}
+        reset = remember_columns(self.t, cfg, key, fields, save, ver)
+        self._chooser = ColumnChooser(self.t, cfg, key + "_cols", fields, save, default_hidden, ver=ver)
+
+        def reset_all():
+            reset()
+            cfg.pop(key + "_widths", None)
+            save()
+            self._saved_w = set()
+            self._fit()
+        self._reset_layout = reset_all
 
     # ---- 排序 / 筛选 ----
     def _clicked(self, c):
@@ -1849,6 +1892,8 @@ class TableSortFilter(QObject):
                 mark += " ↓" if self.sort_desc else " ↑"
             it.setText(title + mark)
         hh.viewport().update()
+        if not self._fitted and vis:
+            self._fit()
         self.rendered.emit(len(vis), n)
 
     def set_title(self, c, text, tip=None):
@@ -1976,8 +2021,19 @@ class TableSortFilter(QObject):
         m.addSeparator()
         a_copy_col = m.addAction(tr("复制这一列（显示的行）"))
         a_copy_name = m.addAction(tr("复制列名"))
+        a_cols = a_reset = None
+        if self._chooser is not None:
+            m.addSeparator()
+            a_cols = m.addAction(tr("显示哪些列…"))
+            a_reset = m.addAction(tr("恢复默认列宽和顺序"))
         search.setFocus()
         got = m.exec(gpos)
+        if got is not None and got == a_cols:
+            self._chooser.menu(gpos)
+            return
+        if got is not None and got == a_reset:
+            self._reset_layout()
+            return
         if got == a_up:
             self.set_sort(c, False)
         elif got == a_down:
