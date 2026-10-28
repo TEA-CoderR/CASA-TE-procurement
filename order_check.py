@@ -816,7 +816,7 @@ class OrderCheck:
                 dlg.post_progress(5)
                 # 报价（Excel）和数据库同时读：读报价主要用电脑，查数据库主要在等服务器，一起做省时间
                 from concurrent.futures import ThreadPoolExecutor
-                q_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="quotes")
+                q_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="quotes")
                 t_q = time.time()
                 q_fut = q_pool.submit(lambda: (self._read_quotes(price_dir, log), time.time()))   # 记下读完的时间
                 db = R.make_db(dbs)
@@ -838,6 +838,8 @@ class OrderCheck:
                 if ms is not None:
                     log(tr("[检查清单] 数据库响应 {0:.0f} 毫秒", ms))
                 pre_snap = None
+                # 供应商编号（只显示用）和下面的门店查询同时查，不用排在最后等（结果一样）
+                sup_fut = q_pool.submit(R._timed, "供应商编号", None, R.supplier_info, db, union) if union else None
                 others = [k for k in R.STORES if k != 0]
                 if len(lists) == 1 and lists[0]["codes"] and union:
                     # 只有一份清单（平常都是）：这家店和其他门店（调货用）同时查，结果和一家家查一样
@@ -890,7 +892,7 @@ class OrderCheck:
                         dlg.post_step(2, "error", "", str(e))
                 else:
                     dlg.post_step(2, "done", "", "")
-                sup_info = R._timed("供应商编号", None, R.supplier_info, db, union) if union else {}     # Codice Fornitore + 供应商名（只显示用）
+                sup_info = sup_fut.result() if sup_fut is not None else {}     # Codice Fornitore + 供应商名（只显示用）
                 log(tr("[检查清单] 数据库查询用了 {0:.0f} 秒", time.time() - t0))
                 db.engine.dispose()
                 rows = []
