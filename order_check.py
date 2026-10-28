@@ -815,7 +815,7 @@ class OrderCheck:
                 from concurrent.futures import ThreadPoolExecutor
                 q_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="quotes")
                 t_q = time.time()
-                q_fut = q_pool.submit(self._read_quotes, price_dir, log)
+                q_fut = q_pool.submit(lambda: (self._read_quotes(price_dir, log), time.time()))   # 记下读完的时间
                 db = R.make_db(dbs)
                 need = [r["ean"] for x in lists for r in x["rows"] if not r["code"] and r["ean"]]
                 if need:
@@ -831,6 +831,9 @@ class OrderCheck:
                 dlg.post_step(0, "done", f"{len(union)}", "")
                 dlg.post_step(1, "running", "", "")
                 t0 = time.time()
+                ms = R.ping(db)
+                if ms is not None:
+                    log(tr("[检查清单] 数据库响应 {0:.0f} 毫秒", ms))
                 pre_snap = None
                 others = [k for k in R.STORES if k != 0]
                 if len(lists) == 1 and lists[0]["codes"] and union:
@@ -884,7 +887,7 @@ class OrderCheck:
                         dlg.post_step(2, "error", "", str(e))
                 else:
                     dlg.post_step(2, "done", "", "")
-                sup_info = R.supplier_info(db, union) if union else {}     # Codice Fornitore + 供应商名（只显示用）
+                sup_info = R._timed("供应商编号", None, R.supplier_info, db, union) if union else {}     # Codice Fornitore + 供应商名（只显示用）
                 log(tr("[检查清单] 数据库查询用了 {0:.0f} 秒", time.time() - t0))
                 db.engine.dispose()
                 rows = []
@@ -912,9 +915,10 @@ class OrderCheck:
                         x["in_grid"] = G.contains(grid, x.get("ean"), x.get("code"))
                     log(tr("[检查清单] Griglia {0}：{1} 个商品不在里面", grid["name"],
                            sum(1 for x in rows if x.get("in_grid") is False)))
-                n_q, n_files = self._apply_quotes(rows, price_dir, log, files=q_fut.result())
+                q_files, q_end = q_fut.result()
+                n_q, n_files = self._apply_quotes(rows, price_dir, log, files=q_files)
                 if n_files:
-                    log(tr("[检查清单] 读报价用了 {0:.0f} 秒（和数据库同时读）", time.time() - t_q))
+                    log(tr("[检查清单] 读报价用了 {0:.0f} 秒（和数据库同时读）", q_end - t_q))
                 dlg.post_step(3, "done", tr("{0} 份报价", n_files) if n_files else tr("没有报价，用数据库"), "")
                 dlg.post_step(4, "running", "", "")
                 dlg.post_progress(95)

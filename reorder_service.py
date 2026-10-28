@@ -295,6 +295,37 @@ def extract_products(db, store_id, day, query_days, supplier_groups=None):
 DB_WORKERS = 3          # 几家门店同时查数据库（每家店里面还会同时发几条查询，3 家 × 7 条以内，不超过连接池）
 
 
+def _timed(label, store_id, fn, *a, **k):
+    """跑 fn 并在日志里记一笔用了几秒（看慢在哪一条查询；不改结果）"""
+    import time
+    import logging
+    t = time.time()
+    try:
+        return fn(*a, **k)
+    finally:
+        dt = time.time() - t
+        if dt >= 1:
+            logging.getLogger("procurement").info("[数据库] %s%s：%.1f 秒",
+                                                   (str(STORES.get(store_id, store_id)) + " ") if store_id is not None else "", label, dt)
+
+
+def ping(db, n=3):
+    """数据库来回一次要多少毫秒（取 n 次里最快的）：网络 / VPN 慢的话这个数就大；查不了返回 None"""
+    import time
+    best = None
+    try:
+        from sqlalchemy import text
+        with db.engine.connect() as c:
+            for _ in range(n):
+                t = time.time()
+                c.execute(text("SELECT 1"))
+                ms = (time.time() - t) * 1000
+                best = ms if best is None else min(best, ms)
+    except Exception:
+        return None
+    return best
+
+
 def per_store(stores, fn, on_store=None, workers=DB_WORKERS):
     """
     几家门店同时跑 fn(门店号)（查数据库大部分时间在等服务器，同时查快很多）。返回 {门店号: 结果}，和一家家查结果一样。
@@ -362,10 +393,10 @@ def compute_suggestions(db, store_id, product_codes, days_list=None, reorder_cyc
     if use_v2:      # 新算法要的周销量、全店销售额：和下面的查询同时查（结果一样，只是不用排队等）
         from concurrent.futures import ThreadPoolExecutor
         pre = ThreadPoolExecutor(max_workers=2, thread_name_prefix="dbv2")
-        f_week = pre.submit(query_weekly_sales, db, store_id, product_codes)
-        f_rev = pre.submit(query_store_revenue, db, store_id)
+        f_week = pre.submit(_timed, "周销量", store_id, query_weekly_sales, db, store_id, product_codes)
+        f_rev = pre.submit(_timed, "全店销售额", store_id, query_store_revenue, db, store_id)
     try:
-        data = db.query_reorder_data(store_id, product_codes, days_list, supplier_ids)
+        data = _timed("销量 / 库存", store_id, db.query_reorder_data, store_id, product_codes, days_list, supplier_ids)
     except Exception:
         if pre is not None:
             pre.shutdown(wait=False, cancel_futures=True)

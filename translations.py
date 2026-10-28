@@ -2524,4 +2524,5 @@ TRANSLATIONS = {
     '我们的品牌': ('Our brands', 'Nostri marchi'),
     '全部 {0:,}': ('All {0:,}', 'Tutti {0:,}'),
     '下周起显示新上架': ('Newly listed shown from next week', 'Nuovi a listino visibili dalla prossima settimana'),
+    '[检查清单] 数据库响应 {0:.0f} 毫秒': ('[Check list] Database response {0:.0f} ms', '[Controllo lista] Risposta database {0:.0f} ms'),
 }
