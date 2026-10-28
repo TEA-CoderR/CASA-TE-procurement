@@ -23,7 +23,8 @@ def _load_from(content):
 
 def test_new_install_gets_company_defaults():
     data, p = _load_from(None)
-    assert data["algo"]["engine"] == "v2" and [r["keyword"] for r in data["rules"]] == ["mega", "grieco", "petrillo", "meloni"]
+    assert data["algo"]["engine"] == "v2"
+    assert [r["keyword"] for r in data["rules"]] == [r["keyword"] for r in S.COMPANY_DEFAULTS["rules"]]
     assert data["company_defaults_ver"] == S.COMPANY_DEFAULTS_VER and os.path.isfile(p)
 
 
@@ -34,7 +35,8 @@ def test_update_overrides_business_keeps_personal():
     data, _ = _load_from(old)
     assert data["algo"]["engine"] == "v2" and data["rules"][0]["name"] == "MEGA CASH"
     assert data["store_orders"]["folder"] == "D:\\\\CasaTe" and data["store_orders"]["fill"]["borrow_min_days"] == 30
-    assert data["reorder"]["last_dir"] == "D:\\\\x" and data["reorder"]["use_supplier_cycles"] is False
+    assert data["reorder"]["last_dir"] == "D:\\\\x"                      # 个人的保留
+    assert data["reorder"]["use_supplier_cycles"] is S.COMPANY_DEFAULTS["reorder"]["use_supplier_cycles"]
     assert data["language"] == "it" and data["db"] == {"host": "x"}
 
 

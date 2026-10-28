@@ -44,6 +44,7 @@ DEFAULT_SETTINGS = {
 # 新装的、或者更新到这个版本的电脑，第一次打开时都改成这套（只改一次，之后自己改的会保留）。
 # 只管业务规则和表格的列（顺序、显示哪些、列宽）；文件夹、数据库、语言这些个人的东西不动。
 # 以后要再统一推一次：改下面的值，把 COMPANY_DEFAULTS_VER 加 1。
+# 2026-10-28 起发布时自动同步：publish_update.py 用 company_sync 把发布人的 settings.json 写进 company_defaults.py（版本更高就用它）。
 # ---------------------------------------------------------------------
 COMPANY_DEFAULTS_VER = 2          # 2026-10-21：按采购部（XH 电脑）现在的设置统一一次
 COMPANY_DEFAULTS = {
@@ -83,6 +84,15 @@ COMPANY_DEFAULTS = {
          "mode": "all", "allow_drop": True, "manual_extra": 0.0, "drop_extra": 0.0},
     ],
 }
+
+
+# 发布时自动生成的公司统一设置（company_sync.py → company_defaults.py）：有就用它，代替上面写死的
+try:
+    import company_defaults as _CD
+    if int(_CD.COMPANY_DEFAULTS_VER) > COMPANY_DEFAULTS_VER and isinstance(_CD.COMPANY_DEFAULTS, dict):
+        COMPANY_DEFAULTS_VER, COMPANY_DEFAULTS = int(_CD.COMPANY_DEFAULTS_VER), _CD.COMPANY_DEFAULTS
+except Exception:
+    pass
 
 
 def apply_company_defaults(data):

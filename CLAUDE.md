@@ -14,11 +14,13 @@
 - 新增 .py 模块要加进 `采购系统v2.5.spec` 的 `hiddenimports`。
 - 保持文件原来的换行符（.py 是 LF）；Python 写文件用 `newline=""` 或二进制方式。
 - 绝对不要提交密码、令牌、`settings.json`、`publish_config.json`、`update_config.json`、真实业务 Excel。数据库只读，程序不写库。
+- **发布时同步公司统一设置（用户 2026-10-28 定）**：`publish_update.py` 打包前调用 `company_sync.sync()`，把发布人这台电脑的 settings.json 里业务规则、算法参数、起订规则、供应商名称、各表格的列顺序 / 显示哪些列 / 列宽写进 `company_defaults.py`（内容变了版本 + 1），同事更新后第一次打开时套用一次（`settings.apply_company_defaults`，个人的文件夹 / 数据库 / 语言 / 深浅色等不动；像路径的值、带 password / token 的键一律不同步，见 `company_sync.SKIP_TOP / SKIP_IN`）。不要手改 company_defaults.py；新加的设置项如果是个人的，要加进 SKIP 名单。
 - 发布新版本用 `publish_update.bat`（会检查 git、改版本号、打包、提交、推送、建 Release），不要手动改 `theme.APP_VERSION` 后单独发布。
 - 表格里可以直接编辑的格子（QStyledItemDelegate）：`setModelData` 里不要马上重画这一行（`table_set_row` 会换掉正在编辑的格子 → Qt 回头读新格子拿不到行号 → 程序卡住闪退）。先取出值，用 `QTimer.singleShot(0, ...)` 等编辑框关掉再更新；`setEditorData` 拿到的行号是 None 时直接 return。参考 `main.py` 的 `QtyDelegate` / `SupplierComboDelegate`。
 - 用户和同事**共用同一个文件夹**（`procurement_system ok 2.5`）开发。请直接在这个文件夹里改代码、`git commit`、`git push`，不要只推到云端分支却把文件另外写进文件夹（之前这样做过，文件夹和 git 记录对不上，发布前得先同步）。
 
 ## 最近改动（给接手的 AI 的纸条，新的写在最上面）
+- 2026-10-28（用户：保留现在的配置，以后每次发布都同步我的配置，包括列宽）新 `company_sync.py` + 自动生成的 `company_defaults.py`（第 3 版 = XH 电脑 10-28 的设置；settings.py 里写死的 COMPANY_DEFAULTS 只在没有这个文件时用）；`publish_update.py` 打包前同步、和 theme.py 一起提交。测试 test_company_sync；test_settings_defaults 改成按 COMPANY_DEFAULTS 比。
 - 2026-10-28（用户：Griglia 的表挤成一团、要图片）Griglia 统计页的表：每列固定默认宽度（`griglia_page._WIDTHS`，可拖、拖过的记住），「商品」列左边画商品图（`PI.ThumbDelegate`，条码取第 0 列，行高 `PI.row_height`，鼠标停在图上看大图），默认藏起 条码 / 编号 / 品牌 / 小类 / 部门（`_HIDDEN`，右键表头「显示哪些列…」打开；列设置版本 ver=2，旧的列顺序作废一次）。
 - 2026-10-28（用户：框超出屏幕、说法绕口）检查清单的五个问题按钮合成一个「⚠ 待核对（n）」（`prob_btn`，没有就不显示），点开「待核对的商品」窗口（`prob_dlg`，`fit_to_screen`），标签页：Griglia 商品 · 批发商都没有 / 其他区域 · 批发商都没有 / 其他区域 · 批发商有 / 数据库没有 / 没有箱规（`PROB_KINDS_TIPS`、`_prob_title`，空的页藏起来）。
 - 2026-10-28（用户定：Griglia 里没报价、不在 Griglia 没报价两个都要）检查清单问题列表按「在不在 Griglia × 有没有报价」分开，每个商品只在一个列表：「⚠ Griglia · 没报价」（noquote；没放 Griglia 时叫「⚠ 没有报价」）/「⚠ 不在 Griglia · 没报价」（nogrid_noq）/「⚠ 不在 Griglia · 有报价」（nogrid），都有「全部不订」。核对过 FOIANO 10-25 比价的 161 个缺失 = 147「没有任何报价」（144 不在 Griglia + 3 在 Griglia）+ 14「只有被排除的供应商有报价」（那次方案排除 MEGA）。

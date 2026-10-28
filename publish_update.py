@@ -177,6 +177,8 @@ def git_commit_release(ver, notes):
     if not in_git():
         return None
     _git("add", "theme.py")
+    if os.path.exists(os.path.join(HERE, "company_defaults.py")):
+        _git("add", "company_defaults.py")
     if _git("status", "--porcelain", "--untracked-files=no"):
         _git("commit", "-q", "-m", f"发布 {ver}\n\n{notes}")
     _git("push", "-q")                     # 推到当前分支跟踪的远程分支（一般是 origin/main）
@@ -243,6 +245,18 @@ def main():
             break
         lines.append(line)
     notes = "\n".join(lines) or "改进和修复"
+
+    # 公司统一设置：把这台电脑现在的设置（业务规则、算法、各表格的列顺序 / 列宽…）同步给大家（company_sync.py）
+    try:
+        import company_sync
+        import settings as _S
+        sp = os.path.join(HERE, "settings.json")
+        if os.path.exists(sp):
+            changed, cver = company_sync.sync(sp, os.path.join(HERE, company_sync.MODULE), _S.COMPANY_DEFAULTS_VER,
+                                              f"{ver} 发布时同步")
+            print(f"公司统一设置：{'已更新（第 ' + str(cver) + ' 版），同事更新后第一次打开时套用' if changed else '没有变化'}")
+    except Exception as e:
+        print(f"⚠ 公司统一设置没同步（不影响发布）：{e}")
 
     set_version(ver)
     with open(os.path.join(HERE, U.CONFIG_NAME), "w", encoding="utf-8") as f:
