@@ -59,6 +59,9 @@ class _Tab:
     def _fill(self, i, k):
         T = self.page.ui.T
         self.page.ui.table_set_row(self.t, k, self.rows[i])
+        it = self.t.item(k, 1)                    # 第 1 列一定是商品名（第 0 列条码）：鼠标停上去看全名和条码
+        if it is not None:
+            it.setToolTip(f"{self.rows[i][1]}\n{self.rows[i][0]}")
         for c, tok in self.colors.get(i, ()):
             it = self.t.item(k, c)
             if it is not None:
@@ -71,6 +74,13 @@ class _Tab:
     def set(self, rows, keys, colors=None):
         self.rows, self.keys, self.colors = rows, keys, colors or {}
         self.ctl.render()
+
+
+# 每列默认宽度（按列编号；批发商价格列没写 = 84）。用户拖过的宽度记在设置里，优先用
+_WIDTHS = {1: 130, 2: 330, 3: 80, 4: 120, 5: 170, 6: 170, 7: 130, 8: 210, 9: 170, 10: 84, 11: 150, 12: 72,
+           13: 84, 14: 120, 15: 76, 16: 130, 17: 84, 18: 96}
+# 默认藏起来的列（右键表头「显示哪些列…」可以打开）：条码（商品图就是按它取的，搜索框也能搜）、编号、品牌、小类（Griglia 里大多是空的）、部门
+_HIDDEN = (1, 3, 4, 7, 11)
 
 
 def _p(v):
@@ -290,8 +300,24 @@ class GrigliaPage:
         类型 "txt" 文字 / "num" 整数 / "price" 价格 / "pct" 带正负号的百分数；颜色(x) 返回颜色记号或 None。列编号固定，用来记住拖过的列顺序
         """
         import settings as ST
+        import product_images as PI
+        from PySide6.QtWidgets import QHeaderView
         numeric = tuple(c for c, col in enumerate(cols) if col[2] != "txt")
         tab = _Tab(self, [col[1] for col in cols], numeric=numeric, extra=extra)
+        t = tab.t
+        # 排版（用户：别挤成一团）：每列固定一个合适的默认宽度、可以拖；名称列左边画商品图（条码取第 0 列），行高跟着图
+        hh = t.horizontalHeader()
+        hh.setSectionResizeMode(QHeaderView.Interactive)
+        hh.setStretchLastSection(False)
+        fids = [col[0] for col in cols]
+        thumb = PI.thumb_size(self.settings) if self.settings.get("show_images", True) else 0
+        for c, f in enumerate(fids):
+            t.setColumnWidth(c, (_WIDTHS.get(f, 84) + (thumb + 10 if f == 2 else 0)))
+        if 2 in fids and 1 in fids:
+            t.setItemDelegateForColumn(fids.index(2), PI.ThumbDelegate(t, fids.index(1), None, self.settings))
+            t.verticalHeader().setDefaultSectionSize(PI.row_height(self.settings))
+        else:
+            t.verticalHeader().setDefaultSectionSize(34)
         rows, keys, colors = [], [], {}
         for i, x in enumerate(data):
             r, k = [], []
@@ -309,7 +335,8 @@ class GrigliaPage:
             rows.append(r)
             keys.append(k)
         cfg = self.settings.setdefault("griglia_cols", {})
-        tab.ctl.remember(cfg, key, lambda: ST.save_settings(self.settings), [col[0] for col in cols])
+        tab.ctl.remember(cfg, key, lambda: ST.save_settings(self.settings), fids,
+                         default_hidden=[f for f in _HIDDEN if f in fids], ver=2)
         box = self.boxes[idx]
         lay = box.layout()
         while lay.count():
@@ -325,7 +352,7 @@ class GrigliaPage:
         st = self.st
         cat = lambda k: (lambda x: (x.get("cats") or ["", "", ""])[k])
         base = [(1, tr("条码"), "txt", lambda x: x["ean"], None),
-                (2, tr("名称"), "txt", lambda x: x.get("name"), None)]
+                (2, tr("商品"), "txt", lambda x: x.get("name"), None)]
         cats = [(5, tr("大类"), "txt", cat(0), None), (6, tr("中类"), "txt", cat(1), None),
                 (7, tr("小类"), "txt", cat(2), None),
                 (8, "FORNITORI DIRETTO", "txt", lambda x: x.get("direct"), None)]
