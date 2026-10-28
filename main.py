@@ -2683,7 +2683,8 @@ class MainWindow(QMainWindow):
     ]
     # 批发商比价里面的几页：侧边栏只放「批发商比价」，进去以后顶部一排标签切换
     SUB_PAGES = {"order": [("order", tr("比价处理")), ("result", tr("比价结果")), ("history", tr("历史记录")),
-                           ("rules", tr("起订规则")), ("search", tr("缺失查找"))]}
+                           ("rules", tr("起订规则")), ("search", tr("缺失查找")),
+                           ("griglia", tr("Griglia"))]}
     SUB_PARENT = {k: parent for parent, subs in SUB_PAGES.items() for k, _ in subs}
     NAV_SIDE = [item for _, items in NAV_GROUPS for item in items]          # 侧边栏上的
     NAV = _all_pages(NAV_SIDE, SUB_PAGES)                                    # 所有页面（含标签页）
@@ -2747,6 +2748,8 @@ class MainWindow(QMainWindow):
         from import_page import ImportPage
         self.distribution = DistributionPage(self, settings, _UI)
         self.import_page = ImportPage(self, settings, _UI)
+        from griglia_page import GrigliaPage
+        self.griglia_page = GrigliaPage(self, settings, _UI)
         builders = {
             "distribution": lambda: (self.distribution.build(), True),
             "import": lambda: (self.import_page.build(), True),
@@ -2757,6 +2760,7 @@ class MainWindow(QMainWindow):
             "history": lambda: (self._page_history(), True),
             "rules": lambda: (self._page_rules(), True),
             "search": lambda: (self._page_missing(), True),
+            "griglia": lambda: (self.griglia_page.build(), False),
             "settings": lambda: (self.settings_page.build(), True),
             "log": lambda: (self._page_log(), True),
         }
@@ -3203,7 +3207,8 @@ class MainWindow(QMainWindow):
         self._set_db_state(getattr(self, "_db_ok", None))
         for pg in (getattr(self, "dashboard", None), getattr(self, "store_orders", None),
                    getattr(self, "settings_page", None), getattr(self, "order_check", None),
-                   getattr(self, "distribution", None), getattr(self, "import_page", None)):
+                   getattr(self, "distribution", None), getattr(self, "import_page", None),
+                   getattr(self, "griglia_page", None)):
             if pg is not None and hasattr(pg, "restyle"):
                 pg.restyle()
         for b in (self.banner_folder, self.banner_result, self.banner_rules):

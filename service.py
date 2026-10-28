@@ -1530,7 +1530,7 @@ def _write_missing_report(distribuire_path, rows, assignment):
 _DESC_HEADS = ("DESCRIZIONE", "DESCRIPTION", "ARTICOLO", "PRODOTTO", "DENOMINAZIONE", "NOME")
 
 
-PRICE_CACHE_VER = 1     # 读报价的规则改了（例如找列的办法）就加 1，旧的缓存自动作废
+PRICE_CACHE_VER = 2     # 读报价的规则改了（例如找列的办法）就加 1，旧的缓存自动作废
 
 
 def _price_cache_path(path):
@@ -1571,6 +1571,19 @@ def read_price_file(path, log=None):
     return out
 
 
+def _find_col_like(ws, header_row, keys, avoid=()):
+    """表头行里第一个包含 keys 之一（不分大小写）、又不包含 avoid 的列；没有返回 None"""
+    try:
+        cells = ws[header_row]
+    except Exception:
+        return None
+    for cell in cells:
+        h = str(cell.value or "").upper()
+        if h and any(k in h for k in keys) and not any(a in h for a in avoid):
+            return cell.column
+    return None
+
+
 def _read_price_file(path, log=None, fast=True):
     log = log or (lambda *a: None)
     if fast:
@@ -1594,6 +1607,9 @@ def _read_price_file(path, log=None, fast=True):
             if c:
                 col_desc = c
                 break
+        if not col_desc:                                       # 「ARTICOLI.descrizione」「descrizione_articolo」这种
+            col_desc = _find_col_like(ws, header_row, ("DESCRI",), ("REPART", "GRUPP", "OFFERT", "SOTTOGR", "CATEG"))
+        col_dept = _find_col_like(ws, header_row, ("REPART",), ("COD",))      # 部门（Griglia 统计挑「我们这几类」用）
         out = {}
         for i in range(header_row + 1, get_last_row(ws, col_ean) + 1):
             e = clean_ean(ws.cell(i, col_ean).value)
@@ -1601,6 +1617,8 @@ def _read_price_file(path, log=None, fast=True):
             if e and p is not None and e not in out:
                 out[e] = {"price": p, "pack": (parse_pack(ws.cell(i, pack_col).value) if pack_col else 1) or 1,
                           "desc": str(ws.cell(i, col_desc).value or "").strip() if col_desc else ""}
+                if col_dept:
+                    out[e]["dept"] = str(ws.cell(i, col_dept).value or "").strip()
         return out
     finally:
         if wb is not None:

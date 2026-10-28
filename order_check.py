@@ -87,9 +87,12 @@ def _problem(x):
     数据库没有但报价里找得到的（补上了箱规、件价）留在主表格。其他返回 None
     """
     if not x.get("in_db", True):
-        return None if (x.get("quote_sup") and _pk(x) > 0) else "nodb"
-    if _pk(x) <= 0:
+        if not (x.get("quote_sup") and _pk(x) > 0):
+            return "nodb"
+    elif _pk(x) <= 0:
         return "nopack"
+    if x.get("in_grid") is False:
+        return "nogrid"                               # 不在 Griglia：多半是门店没注意发来的别的区域的商品
     return None
 
 
@@ -475,7 +478,8 @@ class OrderCheck:
         self.prob_btns = {}
         self._prob_filling = False
         for kind, title, tip in (("nodb", tr("数据库没有"), tr("数据库里找不到、供应商报价里也没有的商品：系统算不了，确定箱数默认 = 门店清单，请核对")),
-                                 ("nopack", tr("没有箱规"), tr("数据库里有，但数据库和供应商报价里都不知道每箱几件：确定箱数默认 = 门店清单，请核对"))):
+                                 ("nopack", tr("没有箱规"), tr("数据库里有，但数据库和供应商报价里都不知道每箱几件：确定箱数默认 = 门店清单，请核对")),
+                                 ("nogrid", tr("不在 Griglia"), tr("不在我们的 Griglia（工作文件夹「0 Griglia」）里的商品：多半是门店没注意发来的别的区域的商品，这几家批发商一般没有，比价时会成为缺失。要不要订在这里改（0 = 不订）"))):
             b = QPushButton("⚠ " + title)
             b.setToolTip(tip + "\n" + tr("点一下打开列表"))
             b.setStyleSheet(f"color:{ui.T('warn')};")
@@ -503,6 +507,11 @@ class OrderCheck:
             close = QPushButton(tr("关闭"))
             close.clicked.connect(dlg.accept)
             bb = QHBoxLayout()
+            if kind == "nogrid":
+                b_none = QPushButton(tr("全部不订"))
+                b_none.setToolTip(tr("这个列表里的商品确定箱数都改成 0"))
+                b_none.clicked.connect(self._nogrid_none)
+                bb.addWidget(b_none)
             bb.addStretch()
             bb.addWidget(close)
             dv.addWidget(t, 1)
@@ -891,6 +900,18 @@ class OrderCheck:
                 # 箱规、件价用 distribuire 里最便宜那家的报价（比价默认挑它）；报价里没有的才用数据库的
                 dlg.post_step(3, "running", "", "")
                 dlg.post_progress(86)
+                # Griglia：不在我们 DETERSIVI 总表里的商品单独列出来（工作文件夹「0 Griglia」里没有就不检查）
+                try:
+                    import griglia as G
+                    grid = G.load_for(os.path.dirname(price_dir)) if price_dir else None
+                except Exception as e:
+                    grid = None
+                    log(tr("⚠ Griglia 读不了：{0}", e))
+                if grid:
+                    for x in rows:
+                        x["in_grid"] = G.contains(grid, x.get("ean"), x.get("code"))
+                    log(tr("[检查清单] Griglia {0}：{1} 个商品不在里面", grid["name"],
+                           sum(1 for x in rows if x.get("in_grid") is False)))
                 n_q, n_files = self._apply_quotes(rows, price_dir, log, files=q_fut.result())
                 if n_files:
                     log(tr("[检查清单] 读报价用了 {0:.0f} 秒（和数据库同时读）", time.time() - t_q))
@@ -1553,7 +1574,8 @@ class OrderCheck:
             allk = [i for i, x in enumerate(self.rows) if _problem(x) == kind]
             idx = [i for i in allk if (sid is None or self.rows[i].get("store") == sid) and
                    (not text or text in f"{self.rows[i].get('code')} {self.rows[i].get('ean')} {self.rows[i].get('name')}".lower())]
-            btn.setText((tr("⚠ 数据库没有（{0}）", len(allk)) if kind == "nodb" else tr("⚠ 没有箱规（{0}）", len(allk))))
+            btn.setText({"nodb": tr("⚠ 数据库没有（{0}）", len(allk)), "nopack": tr("⚠ 没有箱规（{0}）", len(allk))}.get(
+                kind) or tr("⚠ 不在 Griglia（{0}）", len(allk)))
             btn.setVisible(bool(allk))
             t.blockSignals(True)
             t.setRowCount(len(idx))
@@ -1576,6 +1598,17 @@ class OrderCheck:
                 t._hf.reapply()
             t.setColumnHidden(0, len((self.meta or {}).get("stores") or []) < 2)
         self._prob_filling = False
+
+    def _nogrid_none(self):
+        """不在 Griglia 的商品全部不订"""
+        n = 0
+        for x in self.rows:
+            if _problem(x) == "nogrid" and x.get("fbox"):
+                _set_box(x, 0)
+                n += 1
+        self._fill_prob()
+        self._summary()
+        self.win.show_toast(tr("{0} 个商品改成不订", n))
 
     def _open_prob(self, kind):
         """点「数据库没有 / 没有箱规」按钮：打开列表（不挡住检查窗口，可以一边对照一边改）"""

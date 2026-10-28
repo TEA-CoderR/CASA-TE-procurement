@@ -2,6 +2,7 @@
 批发商比价的工作文件夹：一个固定的根目录，程序自动建好、文件放哪一看就懂（不依赖界面，可以单独测试）。
 
   根目录\\
+    0 Griglia\\                 我们自己的 DETERSIVI 订货总表（放最新的一份，见 griglia.py）
     1 门店清单\\                门店发来的订货清单（文件名里带门店名；认不出的放进来时加上门店名）
         _已处理\\2026-10-20\\    确认生成主订单后挪到这里
     2 供应商报价\\              几家门店共用的批发商报价，每周替换（旧的进 _旧文件）
@@ -18,6 +19,7 @@ import re
 import shutil
 from datetime import datetime
 
+GRID = "0 Griglia"           # 我们的 DETERSIVI 总表（griglia.py）
 LISTS = "1 门店清单"
 PRICES = "2 供应商报价"
 ELIM = "3 扣减文件"
@@ -59,7 +61,8 @@ def ensure(root):
             notes.append(f"distribuire → {PRICES}")
         except OSError as e:                      # 文件开着等：先建新的空文件夹，旧的留着
             notes.append(f"distribuire 没能改名（{e}）")
-    for d in [lists_dir(root), price_dir(root), os.path.join(root, RESULTS)] + [elim_dir(root, s) for s in STORES]:
+    for d in [os.path.join(root, GRID), lists_dir(root), price_dir(root), os.path.join(root, RESULTS)] + \
+            [elim_dir(root, s) for s in STORES]:
         if not os.path.isdir(d):
             os.makedirs(d)
             notes.append(os.path.relpath(d, root))
