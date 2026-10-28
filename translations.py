@@ -2518,4 +2518,10 @@ TRANSLATIONS = {
     '⚠ 不在 Griglia（{0}）': ('⚠ Not in Griglia ({0})', '⚠ Non in Griglia ({0})'),
     '[检查清单] Griglia {0}：{1} 个商品不在里面': ('[Check list] Griglia {0}: {1} items not in it', '[Controllo lista] Griglia {0}: {1} articoli non presenti'),
     '⚠ Griglia 读不了：{0}': ('⚠ Cannot read the Griglia: {0}', '⚠ Impossibile leggere la Griglia: {0}'),
+    '新上架 = 批发商报价里第一次出现的（和以前读过的报价比，30 天内）；我们的品牌 = 名字里有 Griglia 里的品牌；全部 = 这几家报价里我们这几类、Griglia 里没有的': ('Newly listed = first appeared in a wholesaler quote (compared with quotes read before, within 30 days); Our brands = name contains a brand from the Griglia; All = everything in these quotes in our categories that is not in the Griglia', 'Nuovi a listino = comparsi per la prima volta in un listino (rispetto ai listini letti prima, entro 30 giorni); Nostri marchi = il nome contiene un marchio della Griglia; Tutti = tutto ciò che nei listini è nelle nostre categorie e non è in Griglia'),
+    '新上架': ('Newly listed', 'Nuovi a listino'),
+    '批发商报价里第一次出现、Griglia 里没有的商品（和以前读过的报价比，30 天内）。第一次统计只是记下现在有哪些，下次换了新报价才有': ('Items not in the Griglia that appeared for the first time in a wholesaler quote (compared with quotes read before, within 30 days). The first run only records what is there now; results appear once new quotes come in', "Articoli non in Griglia comparsi per la prima volta in un listino (rispetto ai listini letti prima, entro 30 giorni). La prima volta registra solo ciò che c'è; i risultati compaiono con i nuovi listini"),
+    '我们的品牌': ('Our brands', 'Nostri marchi'),
+    '全部 {0:,}': ('All {0:,}', 'Tutti {0:,}'),
+    '下周起显示新上架': ('Newly listed shown from next week', 'Nuovi a listino visibili dalla prossima settimana'),
 }

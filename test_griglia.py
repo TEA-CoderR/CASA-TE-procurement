@@ -121,3 +121,26 @@ def test_order_check_nogrid():
     assert OC._problem(dict(base, in_grid=True)) is None
     assert OC._problem(dict(base)) is None                         # 没有 Griglia：不判断
     assert OC._problem(dict(base, in_grid=False, in_db=False)) == "nodb"   # 数据库没有的优先
+
+
+def test_track_fresh():
+    q1 = {"A": {"1": {}, "2": {}}, "B": {"1": {}}}
+    seen, fresh = G.track({}, q1, "2026-10-01")
+    assert fresh == {"A": set(), "B": set()}                     # 第一次只是记下来
+    q2 = {"A": {"1": {}, "2": {}, "3": {}}, "B": {"1": {}, "2": {}}, "C": {"9": {}}}
+    seen, fresh = G.track(seen, q2, "2026-10-08")
+    assert fresh["A"] == {"3"} and fresh["B"] == {"2"} and fresh["C"] == set()
+    seen, fresh = G.track(seen, q2, "2026-11-20")                 # 过了 30 天不算新了
+    assert fresh["A"] == set()
+
+
+def test_new_flags():
+    g = _grid()
+    g["items"]["8000000000011"]["brand"] = "DASH"
+    quotes = {"A": {"7000000000001": _q(1, desc="DASH POWER 20 LAV"), "7000000000002": _q(1, desc="Altro")},
+              "B": {"7000000000002": _q(1, desc="Altro")}}
+    st = G.stats(g, quotes, {"A": {"7000000000001", "7000000000002"}, "B": set()})
+    new = {x["ean"]: x for x in st["new"]}
+    assert new["7000000000001"]["fresh"] and new["7000000000001"]["brand"]
+    assert not new["7000000000002"]["fresh"] and not new["7000000000002"]["brand"]   # B 早就有
+    assert st["history"] and not G.stats(g, quotes)["history"]

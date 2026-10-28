@@ -63,6 +63,8 @@ _FIELDS = {"COD.ART.": "code", "CODICE EAN": "ean", "DESCRIZIONE PRODOTTO": "nam
 _SUP_COLS = ("MELONI", "MEGA CASH", "F.LLI PETRILLO", "NEW GRIECO")
 MIN_PRICE = 0.05            # 件价低于这个当成报价表写错了（可疑价格）
 ODD_RATIO = 0.3             # 比别家中间价的 30% 还低也算可疑
+DEPT_SHARE = 0.05           # 报价的部门里 Griglia 商品占 ≥ 5% 才算「我们这几类」
+FRESH_DAYS = 30             # 「新上架」：这家报价里第一次出现的条码，30 天内都算
 
 
 def parse_rows(rows):
@@ -162,7 +164,7 @@ def contains(grid, ean=None, code=None):
 
 def relevant_depts(grid_eans, quotes):
     """
-    报价里有部门的：哪些部门算「我们这几类」（Griglia 的商品在这个部门 ≥ 10 个、占 ≥ 2%）。
+    报价里有部门的：哪些部门算「我们这几类」（Griglia 的商品在这个部门 ≥ 10 个、占 ≥ DEPT_SHARE）。
     返回 {报价名: 部门集合}；没有部门列的报价不在里面（全算）
     """
     out = {}
@@ -175,15 +177,75 @@ def relevant_depts(grid_eans, quotes):
             tot[d] = tot.get(d, 0) + 1
             hit[d] = hit.get(d, 0) + (e in grid_eans)
         if tot:
-            out[label] = {d for d in tot if hit.get(d, 0) >= 10 and hit[d] / tot[d] >= 0.02}
+            out[label] = {d for d in tot if hit.get(d, 0) >= 10 and hit[d] / tot[d] >= DEPT_SHARE}
     return out
 
 
-def stats(grid, quotes):
+def track(seen, quotes, today):
+    """
+    记下每家报价里出现过的条码，找出「新上架」的（这家报价以前没有、最近 FRESH_DAYS 天第一次出现）。
+    seen = {批发商: {"since": 第一次记录的日期, "eans": {条码: [第一次, 最后一次]}}}（日期是 YYYY-MM-DD 文字）；
+    一家批发商第一次出现时它的条码全部当成原有的（since = 今天），不算新上架。
+    返回 (更新后的 seen, {批发商: 新上架的条码集合})；180 天没再出现的条码删掉
+    """
+    from datetime import date, timedelta
+    t = date.fromisoformat(today)
+    lim = (t - timedelta(days=FRESH_DAYS)).isoformat()
+    old = (t - timedelta(days=180)).isoformat()
+    seen = dict(seen or {})
+    fresh = {}
+    for lab, qs in quotes.items():
+        rec = seen.get(lab)
+        if not rec:
+            rec = {"since": today, "eans": {}}
+        eans = {e: v for e, v in rec["eans"].items() if v[1] >= old}
+        for e in qs:
+            if e in eans:
+                eans[e] = [eans[e][0], max(eans[e][1], today)]
+            else:
+                eans[e] = [today, today]
+        rec = {"since": rec["since"], "eans": eans}
+        seen[lab] = rec
+        fresh[lab] = {e for e in qs if eans[e][0] > rec["since"] and eans[e][0] >= lim}
+    return seen, fresh
+
+
+def load_seen(path):
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def save_seen(path, seen):
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path + ".tmp", "w", encoding="utf-8") as f:
+            json.dump(seen, f)
+        os.replace(path + ".tmp", path)
+    except Exception:
+        pass
+
+
+def brand_matcher(grid):
+    """Griglia 里的品牌（≥ 3 个字母）→ 判断一个商品名里有没有我们做的品牌"""
+    bs = sorted({str(i.get("brand") or "").strip().upper() for i in grid["items"].values()}, key=len, reverse=True)
+    bs = [b for b in bs if len(re.sub(r"[^A-Z0-9]", "", b)) >= 3]
+    if not bs:
+        return lambda name: False
+    rx = re.compile(r"(?<![A-Z0-9])(?:" + "|".join(re.escape(b) for b in bs) + r")(?![A-Z0-9])")
+    return lambda name: bool(rx.search(str(name or "").upper()))
+
+
+def stats(grid, quotes, fresh=None):
     """
     Griglia 和这周报价对比。quotes = {批发商名: {条码: {"price", "pack", "desc", "dept"?}}}
-    返回 {"gone": [...], "new": [...], "prices": [...], "labels": [批发商名]}
+    fresh = track() 给的 {批发商: 新上架的条码}（不给 = 没有记录）
+    返回 {"gone": [...], "new": [...], "prices": [...], "labels": [批发商名], "odd": [...], "history": 有没有记录}
+    新品每行多两个标记：fresh = 在做的几家都是刚上架（别家早就有的不算新）；brand = 名字里有我们 Griglia 里的品牌
     """
+    is_brand = brand_matcher(grid)
     items = grid["items"]
     labels = list(quotes)
     eans = set(items)
@@ -227,6 +289,7 @@ def stats(grid, quotes):
         desc = next((q.get("desc") for q in o.values() if q.get("desc")), "")
         dept = next((q.get("dept") for q in o.values() if q.get("dept")), "")
         new.append({"ean": e, "name": desc, "dept": dept, "n": len(o), "best": p, "best_sup": lab,
+                    "fresh": bool(fresh) and all(e in fresh.get(k, ()) for k in o), "brand": is_brand(desc),
                     "pack": o[lab].get("pack") if lab else None, "prices": {k: v["price"] for k, v in o.items()}})
     prices = []
     for e, it in items.items():
@@ -244,7 +307,8 @@ def stats(grid, quotes):
     new.sort(key=lambda x: (-x["n"], x["best"] or 0))
     gone.sort(key=lambda x: (x.get("supplier") or "", x.get("name") or ""))
     prices.sort(key=lambda x: -(abs(x["change"]) if x["change"] is not None else 0))
-    return {"gone": gone, "new": new, "prices": prices, "labels": labels, "odd": odd}
+    return {"gone": gone, "new": new, "prices": prices, "labels": labels, "odd": odd,
+            "history": fresh is not None}
 
 
 def export(st, path, labels=None):
@@ -256,8 +320,10 @@ def export(st, path, labels=None):
     sheets = [("都不做了", ["EAN", "Cod.Art.", "Descrizione", "Marca", "Fornitore", "Prezzo Griglia"],
                [[x["ean"], x.get("code"), x.get("name"), x.get("brand"), x.get("supplier"), x.get("best") or x.get("price")]
                 for x in st["gone"]]),
-              ("新品", ["EAN", "Descrizione", "Reparto", "N. fornitori", "Miglior prezzo", "Fornitore"] + labels,
-               [[x["ean"], x["name"], x["dept"], x["n"], x["best"], x["best_sup"]] + [x["prices"].get(l) for l in labels]
+              ("新品", ["EAN", "Descrizione", "Reparto", "N. fornitori", "Miglior prezzo", "Fornitore", "Nuovo", "Nostra marca"]
+               + labels,
+               [[x["ean"], x["name"], x["dept"], x["n"], x["best"], x["best_sup"], "SI" if x.get("fresh") else "",
+                 "SI" if x.get("brand") else ""] + [x["prices"].get(l) for l in labels]
                 for x in st["new"]]),
               ("价格", ["EAN", "Cod.Art.", "Descrizione", "Fornitore Griglia", "Prezzo Griglia", "Miglior prezzo",
                         "Fornitore", "Variazione %"] + labels,

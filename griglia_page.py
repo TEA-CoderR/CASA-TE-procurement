@@ -132,7 +132,7 @@ class GrigliaPage:
         self.kpis = {}
         for key, label, tab, tip in (("grid", tr("Griglia 商品"), None, ""),
                                      ("gone", tr("都不做了"), 0, tr("Griglia 里有、这周所有批发商报价里都没有")),
-                                     ("new", tr("新品"), 1, tr("报价里有（我们这几类）、Griglia 里没有")),
+                                     ("new", tr("新上架"), 1, tr("批发商报价里第一次出现、Griglia 里没有的商品（和以前读过的报价比，30 天内）。第一次统计只是记下现在有哪些，下次换了新报价才有")),
                                      ("moved", tr("最低价换了供应商"), 2, tr("现在最便宜的批发商不是 Griglia 里登记的那家"))):
             f, val, sub = kpi_card(label)
             if tip:
@@ -149,6 +149,15 @@ class GrigliaPage:
             self.min_n.addItem(tr("≥ {0} 家在做", n), n)
         self.min_n.setCurrentIndex(1)
         self.min_n.setToolTip(tr("只看至少几家批发商在做的新品（几家都在做的多半是常见商品）"))
+        self.scope = QComboBox()
+        for text, key in ((tr("新上架"), "fresh"), (tr("我们的品牌"), "brand"), (tr("全部"), "all")):
+            self.scope.addItem(text, key)
+        self.scope.setToolTip(tr("新上架 = 批发商报价里第一次出现的（和以前读过的报价比，30 天内）；我们的品牌 = 名字里有 Griglia 里的品牌；全部 = 这几家报价里我们这几类、Griglia 里没有的"))
+        self.new_bar = QWidget()
+        nb = QHBoxLayout(self.new_bar)
+        nb.setContentsMargins(0, 0, 0, 0)
+        nb.addWidget(self.scope)
+        nb.addWidget(self.min_n)
         self.t_gone = _Tab(self, [tr("条码"), tr("名称"), tr("编号"), tr("品牌"), tr("Griglia 供应商"), tr("Griglia 价")],
                            numeric=(5,))
         self.t_new = None                         # 列跟着这周的批发商变，统计完再建
@@ -235,7 +244,15 @@ class GrigliaPage:
                 import workspace as W
                 grid = G.load_for(r)
                 quotes = self.win.order_check._read_quotes(W.price_dir(r), lambda *_: None) or {}
-                self.sig.done.emit((grid, G.stats(grid, quotes), None))
+                from datetime import date
+                from settings import app_dir
+                today = date.today().isoformat()
+                sp = os.path.join(app_dir(), "cache", "griglia", "seen.json")
+                seen = G.load_seen(sp)
+                hist = any(seen.get(k, {}).get("since", today) < today for k in quotes)
+                seen, fresh = G.track(seen, quotes, today)
+                G.save_seen(sp, seen)
+                self.sig.done.emit((grid, G.stats(grid, quotes, fresh if hist else None), None))
             except Exception as e:
                 self.sig.done.emit((None, None, str(e)))
         threading.Thread(target=work, daemon=True).start()
@@ -252,18 +269,20 @@ class GrigliaPage:
         self.file_lbl.setText(tr("{0} · {1:,} 个商品 · {2:%Y-%m-%d}", grid["name"], len(grid["items"]),
                                  datetime.fromtimestamp(grid.get("mtime") or 0)))
         labels = st["labels"]
-        n2 = sum(1 for x in st["new"] if x["n"] >= 2)
+        nf = sum(1 for x in st["new"] if x["fresh"])
+        nbr = sum(1 for x in st["new"] if x["brand"] and x["n"] >= 2)
         moved = sum(1 for x in st["prices"] if x["moved"])
         vals = {"grid": (f"{len(grid['items']):,}", tr("{0} 家批发商报价", len(labels))),
                 "gone": (f"{len(st['gone']):,}", ""),
-                "new": (f"{len(st['new']):,}", tr("{0:,} 个 ≥ 2 家在做", n2)),
+                "new": (f"{nf:,}" if st["history"] else "—",
+                        tr("全部 {0:,}", len(st["new"])) if st["history"] else tr("下周起显示新上架")),
                 "moved": (f"{moved:,}", tr("{0:,} 个价格可疑", len(st["odd"])) if st["odd"] else "")}
         for k, (v, sub) in vals.items():
             self.kpis[k][0].setText(v)
             self.kpis[k][1].setText(sub)
             self.kpis[k][1].setVisible(bool(sub))
         self.tabs.setTabText(0, tr("都不做了（{0}）", len(st["gone"])))
-        self.tabs.setTabText(1, tr("新品（{0:,}）", len(st["new"])))
+        self.tabs.setTabText(1, tr("新品"))
         self.tabs.setTabText(2, tr("价格（{0:,}）", len(st["prices"])))
         self.tabs.setTabText(3, tr("价格可疑（{0}）", len(st["odd"])))
         # 都不做了
@@ -290,13 +309,21 @@ class GrigliaPage:
         st = self.st
         heads = [tr("条码"), tr("名称"), tr("部门"), tr("几家在做"), tr("最低价"), tr("最便宜")] + labels
         if self.t_new is not None:
-            self.min_n.setParent(None)
-        self.t_new = _Tab(self, heads, numeric=tuple([3, 4] + list(range(6, 6 + len(labels)))), extra=self.min_n)
-        try:
-            self.min_n.currentIndexChanged.disconnect()
-        except (RuntimeError, TypeError):
-            pass
-        self.min_n.currentIndexChanged.connect(lambda _: self.t_new.ctl.render())
+            self.new_bar.setParent(None)
+        self.t_new = _Tab(self, heads, numeric=tuple([3, 4] + list(range(6, 6 + len(labels)))), extra=self.new_bar)
+        for cb in (self.min_n, self.scope):
+            try:
+                cb.currentIndexChanged.disconnect()
+            except (RuntimeError, TypeError):
+                pass
+            cb.currentIndexChanged.connect(lambda _: self.t_new.ctl.render())
+        # 默认：有以前的报价记录 → 新上架（几家都行）；第一次 → 我们的品牌、≥ 2 家
+        self.scope.blockSignals(True)
+        self.min_n.blockSignals(True)
+        self.scope.setCurrentIndex(0 if st["history"] else 1)
+        self.min_n.setCurrentIndex(0 if st["history"] else 1)
+        self.scope.blockSignals(False)
+        self.min_n.blockSignals(False)
         rows, keys, colors = [], [], {}
         for i, x in enumerate(st["new"]):
             rows.append([x["ean"], x["name"], str(x["dept"] or ""), str(x["n"]), _p(x["best"]), x["best_sup"] or ""] +
@@ -305,7 +332,12 @@ class GrigliaPage:
                         [x["prices"].get(l) or 0 for l in labels])
             if x["best_sup"] in labels:
                 colors.setdefault(i, []).append((6 + labels.index(x["best_sup"]), "accent"))
-        self.t_new.hide_fn = lambda i: st["new"][i]["n"] < (self.min_n.currentData() or 1)
+        def hide(i):
+            x = st["new"][i]
+            sc = self.scope.currentData()
+            return x["n"] < (self.min_n.currentData() or 1) or (sc == "fresh" and not x["fresh"]) or \
+                (sc == "brand" and not x["brand"])
+        self.t_new.hide_fn = hide
         self._swap(self.new_box, self.t_new)
         self.t_new.set(rows, keys, colors)
 
