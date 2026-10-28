@@ -149,7 +149,9 @@ def test_order_check_noquote():
     import order_check as OC
     base = {"in_db": True, "pack": 6}
     assert OC._problem(dict(base, in_quote=False)) == "noquote"
-    assert OC._problem(dict(base, in_quote=False, in_grid=False)) == "nogrid"      # 别的区域的优先
+    assert OC._problem(dict(base, in_quote=False, in_grid=False)) == "nogrid_noq"
+    assert OC._problem(dict(base, in_quote=True, in_grid=False)) == "nogrid"
+    assert OC._problem(dict(base, in_quote=False, in_grid=True)) == "noquote"
     assert OC._problem(dict(base, in_quote=True)) is None
 
 

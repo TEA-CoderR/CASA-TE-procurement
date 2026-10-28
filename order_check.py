@@ -91,10 +91,11 @@ def _problem(x):
             return "nodb"
     elif _pk(x) <= 0:
         return "nopack"
-    if x.get("in_grid") is False:
-        return "nogrid"                               # 不在 Griglia：多半是门店没注意发来的别的区域的商品
+    # 用户定（2026-10-28）：在不在 Griglia × 有没有报价分开列，每个商品只在一个列表里
+    if x.get("in_grid") is False:                     # 不在 Griglia：多半是门店没注意发来的别的区域的商品
+        return "nogrid_noq" if x.get("in_quote") is False else "nogrid"
     if x.get("in_quote") is False:
-        return "noquote"                              # 几家批发商报价里都没有：比价时会成为缺失
+        return "noquote"                              # 在 Griglia（或没放 Griglia）、几家批发商报价里都没有：比价时会成为缺失
     return None
 
 
@@ -481,8 +482,9 @@ class OrderCheck:
         self._prob_filling = False
         for kind, title, tip in (("nodb", tr("数据库没有"), tr("数据库里找不到、供应商报价里也没有的商品：系统算不了，确定箱数默认 = 门店清单，请核对")),
                                  ("nopack", tr("没有箱规"), tr("数据库里有，但数据库和供应商报价里都不知道每箱几件：确定箱数默认 = 门店清单，请核对")),
-                                 ("nogrid", tr("不在 Griglia"), tr("不在我们的 Griglia（工作文件夹「0 Griglia」）里的商品：多半是门店没注意发来的别的区域的商品，这几家批发商一般没有，比价时会成为缺失。要不要订在这里改（0 = 不订）")),
-                                 ("noquote", tr("供应商都没有"), tr("在 Griglia 里（或没有 Griglia），但这次几家批发商的报价里都找不到的商品：比价时会成为缺失。可能批发商不做了、断货，或者要向别的地方订。要不要订在这里改（0 = 不订）"))):
+                                 ("noquote", tr("Griglia · 没报价"), tr("在我们的 Griglia 里（没放 Griglia 时 = 全部商品），但这次几家批发商的报价里都找不到：比价时会成为缺失。可能批发商不做了、断货，或者要向别的地方订。要不要订在这里改（0 = 不订）")),
+                                 ("nogrid_noq", tr("不在 Griglia · 没报价"), tr("不在我们的 Griglia（多半是门店没注意发来的别的区域的商品），几家批发商的报价里也都没有：比价时会成为缺失。要不要订在这里改（0 = 不订）")),
+                                 ("nogrid", tr("不在 Griglia · 有报价"), tr("不在我们的 Griglia（多半是门店没注意发来的别的区域的商品），但有批发商报价，比价能分出去。要不要订在这里改（0 = 不订）"))):
             b = QPushButton("⚠ " + title)
             b.setToolTip(tip + "\n" + tr("点一下打开列表"))
             b.setStyleSheet(f"color:{ui.T('warn')};")
@@ -510,7 +512,7 @@ class OrderCheck:
             close = QPushButton(tr("关闭"))
             close.clicked.connect(dlg.accept)
             bb = QHBoxLayout()
-            if kind in ("nogrid", "noquote"):
+            if kind in ("nogrid", "nogrid_noq", "noquote"):
                 b_none = QPushButton(tr("全部不订"))
                 b_none.setToolTip(tr("这个列表里的商品确定箱数都改成 0"))
                 b_none.clicked.connect(lambda _=False, k=kind: self._nogrid_none(k))
@@ -1583,8 +1585,11 @@ class OrderCheck:
             allk = [i for i, x in enumerate(self.rows) if _problem(x) == kind]
             idx = [i for i in allk if (sid is None or self.rows[i].get("store") == sid) and
                    (not text or text in f"{self.rows[i].get('code')} {self.rows[i].get('ean')} {self.rows[i].get('name')}".lower())]
+            has_grid = any(x.get("in_grid") is not None for x in self.rows)
             btn.setText({"nodb": tr("⚠ 数据库没有（{0}）", len(allk)), "nopack": tr("⚠ 没有箱规（{0}）", len(allk)),
-                         "noquote": tr("⚠ 供应商都没有（{0}）", len(allk))}.get(kind) or tr("⚠ 不在 Griglia（{0}）", len(allk)))
+                         "noquote": tr("⚠ Griglia · 没报价（{0}）", len(allk)) if has_grid else tr("⚠ 没有报价（{0}）", len(allk)),
+                         "nogrid_noq": tr("⚠ 不在 Griglia · 没报价（{0}）", len(allk))}.get(kind) or
+                        tr("⚠ 不在 Griglia · 有报价（{0}）", len(allk)))
             btn.setVisible(bool(allk))
             t.blockSignals(True)
             t.setRowCount(len(idx))
@@ -1609,7 +1614,7 @@ class OrderCheck:
         self._prob_filling = False
 
     def _nogrid_none(self, kind="nogrid"):
-        """不在 Griglia / 供应商都没有 的商品全部不订"""
+        """这个问题列表（不在 Griglia / 没报价）里的商品全部不订"""
         n = 0
         for x in self.rows:
             if _problem(x) == kind and x.get("fbox"):
