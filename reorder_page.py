@@ -182,14 +182,38 @@ class AlgoDialog(QDialog):
         fr.addStretch()
         g.addWidget(tip_label(tr("动销兜底"), tr("等级先按本店近 13 周销售额排（前 80% A，到 95% B，其余 C），再看近 13 周有几周卖过：卖过的周数 ≥ 第一格 → 最低算 B（天天卖的便宜货不当 C 少订）；≤ 第二格 → 最高算 C（偶尔才卖的不多备）；A 类还要 ≥ 第三格周有卖（卖得稳），不然最多 B。新品按上架以来的周数折算，上架不到 4 周的最多 B。第一格填 14 = 不升级，第二格填 0 = 不降级")), 8, 0)
         g.addLayout(fr, 8, 1)
+        # 门店周期（只用在门店配货）：每家店一个系数，乘订货周期（供应商自己的周期也一起乘）。店名在上、系数在下，一行放得下
+        sg = QGridLayout()
+        sg.setHorizontalSpacing(6)
+        sg.setVerticalSpacing(2)
+        self.store_cycle = {}
+        sc = p.get("store_cycle") or {}
+        for i, (sid, name) in enumerate((k, v) for k, v in R.STORES.items() if k):
+            lb = QLabel(name)
+            lb.setObjectName("Faint")
+            sg.addWidget(lb, 0, i)
+            sb = QDoubleSpinBox()
+            sb.setDecimals(2)
+            sb.setRange(0.25, 4.0)
+            sb.setSingleStep(0.25)
+            sb.setPrefix("×")
+            sb.setValue(float(sc.get(str(sid), 1.0) or 1.0))
+            sb.setFixedWidth(76)
+            sb.valueChanged.connect(lambda _v, b=sb: self._tip_store(b))
+            self._tip_store(sb)
+            sg.addWidget(sb, 1, i)
+            self.store_cycle[sid] = sb
+        self.w["review_days"][0].valueChanged.connect(lambda _v: [self._tip_store(b) for b in self.store_cycle.values()])
+        g.addWidget(tip_label(tr("门店周期"), tr("只用在门店配货：这家店的订货周期 × 系数（配置文件里供应商自己的周期也一起乘）。销量差、凑不够起订量的店填大于 1，一次订够更久、下单次数少（例如 × 1.5：30 天 → 45 天）；销量好、补货勤的店填小于 1，少压货。1 = 和现在一样")), 9, 0)
+        g.addLayout(sg, 9, 1)
         self.abc = QCheckBox(tr("ABC 调整服务水平"))
         self.abc.setToolTip(tr("按 ABC 调整服务水平（A +2.5%，C −5%；ABC 按本店近 13 周销售额帕累托）"))
         self.abc.setChecked(bool(p["abc_service"]))
         self.season = QCheckBox(tr("季节调整"))
         self.season.setToolTip(tr("用去年同期做季节调整（数据不够一年或量太小时不调整）"))
         self.season.setChecked(bool(p["season"]))
-        g.addWidget(self.abc, 9, 0, 1, 2)
-        g.addWidget(self.season, 10, 0, 1, 2)
+        g.addWidget(self.abc, 10, 0, 1, 2)
+        g.addWidget(self.season, 11, 0, 1, 2)
         lay.addLayout(g)
         bb = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel | QDialogButtonBox.RestoreDefaults)
         bb.accepted.connect(self.save)
@@ -198,8 +222,19 @@ class AlgoDialog(QDialog):
         lay.addWidget(bb)
         self.resize(360, 0)
 
+    def _tip_store(self, sb):
+        """鼠标停在系数上：按现在的订货周期换算成天数"""
+        try:
+            base = float(self.w["review_days"][0].value()) if "review_days" in self.w else 30.0
+        except Exception:
+            base = 30.0
+        sb.setToolTip(tr("订货周期 {0:g} 天 × {1:g} = {2:g} 天（供应商自己的周期也乘 {1:g}）", base, sb.value(),
+                         round(base * sb.value())))
+
     def defaults(self):
         import forecast as F
+        for sb in getattr(self, "store_cycle", {}).values():
+            sb.setValue(1.0)
         from PySide6.QtWidgets import QSpinBox
         for k, (sb, scale) in self.w.items():
             v = F.DEFAULT_PARAMS[k] * scale
@@ -214,6 +249,7 @@ class AlgoDialog(QDialog):
             p[k] = int(v) if isinstance(p.get(k), int) and float(v).is_integer() else v
         p["abc_service"] = self.abc.isChecked()
         p["season"] = self.season.isChecked()
+        p["store_cycle"] = {str(sid): round(float(sb.value()), 2) for sid, sb in self.store_cycle.items()}
         self.settings["algo"] = p
         save_settings(self.settings)
         self.accept()
@@ -226,7 +262,20 @@ def algo_summary(p):
               p["review_days"], p["lead_days"], p["service"], tr("（按 ABC）") if p.get("abc_service") else "",
               p.get("max_safety_days", 7)) + \
         tr("，最低保障线 A {0:.0%} · B {1:.0%} · C {2:.0%}", p.get("safety_a", 0.9), p.get("safety_b", 0.7), p.get("safety_c", 0.5)) + \
-        tr("，周期系数 A ×{0:g} · B ×{1:g} · C ×{2:g}", p.get("cycle_a", 1), p.get("cycle_b", 1), p.get("cycle_c", 1))
+        tr("，周期系数 A ×{0:g} · B ×{1:g} · C ×{2:g}", p.get("cycle_a", 1), p.get("cycle_b", 1), p.get("cycle_c", 1)) + \
+        _store_cycle_text(p)
+
+
+def _store_cycle_text(p):
+    """「，门店周期 FOIANO ×1.5、…」：只列不是 1 的店"""
+    parts = []
+    for k, v in sorted((p.get("store_cycle") or {}).items()):
+        try:
+            if float(v) != 1.0:
+                parts.append(f"{R.STORES.get(int(k), k)} ×{float(v):g}")
+        except (TypeError, ValueError):
+            continue
+    return tr("，门店周期 {0}", "、".join(parts)) if parts else ""
 
 
 _ALGO_UIS = []          # 各页面的算法选择（改了一个，其他跟着变）

@@ -514,6 +514,15 @@ def item_code(it):
     return it["code"] if str(c).startswith(DUP_PREFIX) else c
 
 
+def store_cycle_factor(algo, sid):
+    """门店周期系数（算法设置 → 门店周期，只用在门店配货）：algo["store_cycle"] = {"门店号": 系数}，没设 = 1"""
+    try:
+        v = float(((algo or {}).get("store_cycle") or {}).get(str(sid), 1.0))
+        return v if v > 0 else 1.0
+    except (TypeError, ValueError):
+        return 1.0
+
+
 def demand_by_store(db, schede, stores, days_list, reorder_cycle, use_supplier_cycles=True, algo=None,
                     on_store=None):
     """
@@ -548,7 +557,7 @@ def demand_by_store(db, schede, stores, days_list, reorder_cycle, use_supplier_c
         groups = None if v2 else [sorted({it["db_code"] for it in s["items"] if it.get("db_code")}) for s in schede]
         df = R.compute_suggestions(db, sid, codes, days_list, reorder_cycle, None,
                                    use_supplier_cycles=use_supplier_cycles, round_to_db_pack=not v2, algo=algo,
-                                   groups=groups, want_raw=True)
+                                   groups=groups, want_raw=True, cycle_factor=store_cycle_factor(algo, sid))
         d = {}
         for _, r in df.iterrows():
             code = str(int(r["CodArticolo"]))

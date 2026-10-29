@@ -408,3 +408,44 @@ def test_censored_demand():
     assert not rows[2]["censored"] and not rows[3]["censored"]
     OC.init_boxes(rows[:1], None, {"engine": "v1"})                               # 重复整理：结果一样，原日均不丢
     assert rows[0]["fbox"] == 1 and abs(rows[0]["daily0_orig"] - 1 / 150) < 1e-12
+
+
+def test_store_cycle_factor(monkeypatch):
+    """门店周期系数：新算法每行周期（供应商自己的 / 默认）都乘系数；原程序算法默认周期和供应商周期也乘"""
+    import pandas as pd
+    import store_orders as SO
+    from fenpei.config import AppConfig
+    got = {}
+
+    def fake_v2(db, sid, df, algo, *a, cycles=None, **k):
+        got["cycles"] = cycles
+        return df
+    monkeypatch.setattr(R, "apply_v2", fake_v2)
+    monkeypatch.setattr(AppConfig, "get_supplier_reorder_cycle", classmethod(lambda cls, sid, fallback=None: 60 if sid == 501 else fallback))
+
+    class DB:
+        def query_reorder_data(self, store, codes, *a):
+            e = pd.DataFrame({"CodArticolo": [], "sales_qty": []})
+            return {"inventory": pd.DataFrame({"CodArticolo": [1, 2], "store_inventory": [1, 1], "total_inventory": [1, 1]}),
+                    "suppliers": pd.DataFrame({"CodArticolo": [1, 2], "IDFornitore": [501, 502]}),
+                    "sales_1": e, "sales_2": e, "sales_3": e, "sales_4": e, "margin_1": e, "margin_2": e, "margin_3": e}
+    from fenpei import models
+    monkeypatch.setattr(models.ProductDataProcessor, "process_reorder_data",
+                        staticmethod(lambda inv, sup, *a, **k: inv.merge(sup, on="CodArticolo", how="left")))
+    algo = {"engine": "v2", "review_days": 30}
+    R.compute_suggestions(DB(), 1, ["1", "2"], algo=algo, use_supplier_cycles=True)
+    assert got["cycles"] == [60, 30]
+    R.compute_suggestions(DB(), 1, ["1", "2"], algo=algo, use_supplier_cycles=True, cycle_factor=1.5)
+    assert got["cycles"] == [90, 45]
+    R.compute_suggestions(DB(), 1, ["1", "2"], algo=algo, use_supplier_cycles=False, cycle_factor=0.5)
+    assert got["cycles"] == [15, 15]
+    seen = {}
+
+    def fake_v1(inv, sup, sales, margins, avg, days, reorder_cycle=30, supplier_reorder_cycles=None):
+        seen.update(rc=reorder_cycle, sup=supplier_reorder_cycles)
+        return inv.merge(sup, on="CodArticolo", how="left")
+    monkeypatch.setattr(models.ProductDataProcessor, "process_reorder_data", staticmethod(fake_v1))
+    R.compute_suggestions(DB(), 1, ["1", "2"], reorder_cycle=30, algo={"engine": "v1"}, use_supplier_cycles=True, cycle_factor=2)
+    assert seen["rc"] == 60 and seen["sup"] == {501: 120, 502: 60}
+    assert SO.store_cycle_factor({"store_cycle": {"3": 1.5}}, 3) == 1.5
+    assert SO.store_cycle_factor({"store_cycle": {"3": 1.5}}, 2) == 1.0 and SO.store_cycle_factor(None, 1) == 1.0

@@ -357,7 +357,8 @@ def per_store(stores, fn, on_store=None, workers=DB_WORKERS):
 
 
 def compute_suggestions(db, store_id, product_codes, days_list=None, reorder_cycle=30, supplier_ids=None,
-                        use_supplier_cycles=True, round_to_db_pack=True, algo=None, groups=None, want_raw=False):
+                        use_supplier_cycles=True, round_to_db_pack=True, algo=None, groups=None, want_raw=False,
+                        cycle_factor=1.0):
     """
     原程序 Suggerimenti Ordini 的 query_reorder()：查数据 → process_reorder_data。
     返回每个商品一行的 DataFrame（suggested_order_qty = 建议件数）。
@@ -372,12 +373,18 @@ def compute_suggestions(db, store_id, product_codes, days_list=None, reorder_cyc
             数据库只查一次，查回来再按组拆开，速度不变。
     want_raw: 原程序算法按数据库箱规取整时，另外给一列 raw_order_qty = 取整之前的件数（门店间调货要知道真正要几件）。
               用同一份查回来的数据再跑一遍原程序（不取整），不多查数据库；原程序的建议件数不受影响。
+    cycle_factor: 门店周期系数（门店配货按门店设，algo["store_cycle"]）：这家店所有商品的订货周期 × 系数，
+              配置文件里供应商自己的周期也一起乘（销量差的店 > 1 一次订够更久，销量好的店 < 1 少压货）。
     """
     import pandas as pd
     from fenpei.config import AppConfig
     from fenpei.models import ProductDataProcessor
     days_list = list(days_list or DEFAULT_SALES_DAYS)
     import forecast as F
+    factor = float(cycle_factor or 1.0)
+    rc_base = reorder_cycle
+    if factor != 1.0:
+        reorder_cycle = max(1, int(round(float(reorder_cycle) * factor)))
     algo = dict(F.DEFAULT_PARAMS, **(algo or {})) if algo is not None else None
     use_v2 = bool(algo) and algo.get("engine") == "v2"
     if use_v2:
@@ -432,7 +439,8 @@ def compute_suggestions(db, store_id, product_codes, days_list=None, reorder_cyc
             for sid in part["suppliers"]["IDFornitore"].unique():
                 if pd.notna(sid):
                     sid = int(sid)
-                    supplier_reorder_cycles[sid] = AppConfig.get_supplier_reorder_cycle(sid, fallback=reorder_cycle)
+                    c0 = AppConfig.get_supplier_reorder_cycle(sid, fallback=rc_base)
+                    supplier_reorder_cycles[sid] = max(1, int(round(float(c0) * factor))) if factor != 1.0 else c0
         cycles = {int(s): supplier_reorder_cycles[int(s)] for s in part["suppliers"]["IDFornitore"].unique()
                   if pd.notna(s)} if use_supplier_cycles and "suppliers" in part and not part["suppliers"].empty else {}
         df = ProductDataProcessor.process_reorder_data(
@@ -499,6 +507,10 @@ def compute_suggestions(db, store_id, product_codes, days_list=None, reorder_cyc
                     memo[sid] = AppConfig.get_supplier_reorder_cycle(sid, fallback=base)
                 return memo[sid]
             cycles = [cyc(s) for s in result_df["IDFornitore"].tolist()]
+        if factor != 1.0:                        # 门店周期系数：供应商自己的周期 / 默认周期都乘上
+            base = float(algo.get("review_days", 7))
+            cycles = [max(1.0, round(float(c if c is not None else base) * factor))
+                      for c in (cycles or [base] * len(result_df))]
         def got(f):         # 提前查的没成功：交给 apply_v2 自己再查（和以前一样）
             try:
                 return f.result()

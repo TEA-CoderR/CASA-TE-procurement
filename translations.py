@@ -2558,4 +2558,8 @@ TRANSLATIONS = {
     '⚠ 待核对（{0}）': ('⚠ To check ({0})', '⚠ Da verificare ({0})'),
     '点一下打开': ('Click to open', 'Clicca per aprire'),
     '这一页的商品确定箱数都改成 0': ('Set the final cases of all items on this page to 0', 'Imposta a 0 i colli finali di tutti gli articoli di questa pagina'),
+    '，门店周期 {0}': (', store cycle {0}', ', ciclo negozio {0}'),
+    '订货周期 {0:g} 天 × {1:g} = {2:g} 天（供应商自己的周期也乘 {1:g}）': ('Order cycle {0:g} days × {1:g} = {2:g} days (suppliers with their own cycle are also × {1:g})', 'Ciclo di riordino {0:g} giorni × {1:g} = {2:g} giorni (anche i cicli propri dei fornitori × {1:g})'),
+    '门店周期': ('Store cycle', 'Ciclo negozio'),
+    '只用在门店配货：这家店的订货周期 × 系数（配置文件里供应商自己的周期也一起乘）。销量差、凑不够起订量的店填大于 1，一次订够更久、下单次数少（例如 × 1.5：30 天 → 45 天）；销量好、补货勤的店填小于 1，少压货。1 = 和现在一样': ("Store orders only: this store's order cycle × factor (suppliers' own cycles from the config file are multiplied too). For weaker stores that struggle to reach minimum orders use more than 1: each order covers longer and they order less often (e.g. × 1.5: 30 days → 45 days); for strong stores with frequent restocking use less than 1 to keep less stock. 1 = as now", "Solo per la distribuzione ai negozi: ciclo di riordino del negozio × fattore (anche i cicli propri dei fornitori nel file di configurazione). Per i negozi che vendono meno e faticano a raggiungere il minimo d'ordine usa più di 1: ogni ordine copre più giorni e si ordina meno spesso (es. × 1,5: 30 giorni → 45); per i negozi che vendono molto e si riforniscono spesso usa meno di 1 per tenere meno scorta. 1 = come ora"),
 }
