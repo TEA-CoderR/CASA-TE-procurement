@@ -20,6 +20,8 @@
 - 用户和同事**共用同一个文件夹**（`procurement_system ok 2.5`）开发。请直接在这个文件夹里改代码、`git commit`、`git push`，不要只推到云端分支却把文件另外写进文件夹（之前这样做过，文件夹和 git 记录对不上，发布前得先同步）。
 
 ## 最近改动（给接手的 AI 的纸条，新的写在最上面）
+- 2026-10-29（用户：算法设置看着很乱）`reorder_page.AlgoDialog` 重新排版：三块「基本 / 按 ABC / 门店周期」（Section 小标题，门店周期的说明在标题 ⓘ），一张网格对齐：第 0 列标签、后面每列一样宽（`W` = 92），单位写进框里（天 / % / 件 / 周 / ×）；按 ABC 一块表头 A B C 只写一次（周期系数、最低保障线、动销周数三行对齐；动销周数 A 列 = abc_freq_a、B 列 = abc_freq_hi、C 列 = abc_freq_lo）；门店周期表头五个店名、下面一排系数；两个勾选框放进各自那一块。参数和保存的键都没变。
+- 2026-10-29（用户：门店配货给不同门店设不同订货周期，有的店销量好有的差）算法设置加「门店周期」：每家店一个系数（algo.store_cycle = {"门店号": 系数}，默认 1，0.25–4），**只用在门店配货**（`store_orders.store_cycle_factor` → `compute_suggestions(cycle_factor=)`）：新算法每行的周期（供应商自己的 / 默认 review_days）都乘系数，原程序算法默认周期和配置文件供应商周期也乘；reorder_cycle_used / 订货明细的周期、调货留货跟着变。选系数而不是天数，因为配置文件里供应商周期有 30 / 60 / 90 天，系数能一起放大缩小。检查门店订货清单不用。界面：算法设置里店名在上、× 系数在下一排，鼠标提示换算成天数；算法说明 ⓘ 里列出不是 1 的店。测试 test_store_cycle_factor。用户已发布 v3.3.7（theme.py 从文件夹同步）。
 - 2026-10-28（用户：保留现在的配置，以后每次发布都同步我的配置，包括列宽）新 `company_sync.py` + 自动生成的 `company_defaults.py`（第 3 版 = XH 电脑 10-28 的设置；settings.py 里写死的 COMPANY_DEFAULTS 只在没有这个文件时用）；`publish_update.py` 打包前同步、和 theme.py 一起提交。测试 test_company_sync；test_settings_defaults 改成按 COMPANY_DEFAULTS 比。
 - 2026-10-28（用户：Griglia 的表挤成一团、要图片）Griglia 统计页的表：每列固定默认宽度（`griglia_page._WIDTHS`，可拖、拖过的记住），「商品」列左边画商品图（`PI.ThumbDelegate`，条码取第 0 列，行高 `PI.row_height`，鼠标停在图上看大图），默认藏起 条码 / 编号 / 品牌 / 小类 / 部门（`_HIDDEN`，右键表头「显示哪些列…」打开；列设置版本 ver=2，旧的列顺序作废一次）。
 - 2026-10-28（用户：框超出屏幕、说法绕口）检查清单的五个问题按钮合成一个「⚠ 待核对（n）」（`prob_btn`，没有就不显示），点开「待核对的商品」窗口（`prob_dlg`，`fit_to_screen`），标签页：Griglia 商品 · 批发商都没有 / 其他区域 · 批发商都没有 / 其他区域 · 批发商有 / 数据库没有 / 没有箱规（`PROB_KINDS_TIPS`、`_prob_title`，空的页藏起来）。
