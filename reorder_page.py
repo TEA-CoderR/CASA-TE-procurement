@@ -101,126 +101,141 @@ def algo_params(settings):
 
 
 class AlgoDialog(QDialog):
-    """新算法参数（存到 settings.json 的 algo 部分；门店配货和订单处理共用）"""
+    """新算法参数（存到 settings.json 的 algo 部分；门店配货和订单处理共用）
+    排版（用户 2026-10-29：看着乱）：三块 —— 基本 / 按 ABC（A B C 三列对齐）/ 门店周期（五家店五列）；
+    所有输入框一样宽、单位写在框里，说明都在 ⓘ 鼠标提示"""
+    W = 92                      # 输入框统一宽度
 
     def __init__(self, parent, settings):
-        from PySide6.QtWidgets import QSpinBox, QDoubleSpinBox, QCheckBox
+        from PySide6.QtWidgets import QSpinBox, QDoubleSpinBox, QCheckBox, QFrame
+        from PySide6.QtCore import Qt
         super().__init__(parent)
         self.setWindowTitle(tr("订货算法设置"))
         self.settings = settings
         p = algo_params(settings)
         lay = QVBoxLayout(self)
+        lay.setContentsMargins(22, 18, 22, 16)
+        lay.setSpacing(6)
         from erp_widgets import tip_label
         self.setToolTip(tr("新算法：目标库存 = 下次到货前要卖的量 + 安全库存（按销量波动和服务水平算），建议量 = 目标库存 − 现有库存。日均 = 近 4 周 50% + 13 周 30% + 26 周 20%，可按去年同期做季节调整。"))
         g = QGridLayout()
-        g.setHorizontalSpacing(14)
+        g.setHorizontalSpacing(10)
+        g.setVerticalSpacing(8)
+        g.setColumnMinimumWidth(0, 120)
         self.w = {}
+        row = [0]
 
-        def spin(key, label, lo, hi, tip, row, dec=None, scale=1):
-            g.addWidget(tip_label(label, tip), row, 0)
+        def section(text, tip=None, top=14):
+            if row[0]:
+                g.setRowMinimumHeight(row[0], top)
+                row[0] += 1
+            t = QLabel(text + ("  ⓘ" if tip else ""))
+            t.setObjectName("Section")
+            if tip:
+                t.setToolTip(tip)
+            g.addWidget(t, row[0], 0, 1, 6)
+            row[0] += 1
+
+        def mk(key, lo, hi, dec=None, scale=1, prefix="", suffix="", step=None, default=None):
+            v = p.get(key, default)
             if dec is None:
                 sb = QSpinBox()
                 sb.setRange(lo, hi)
-                sb.setValue(int(round(p[key] * scale)))
+                sb.setValue(int(round(float(v) * scale)))
             else:
                 sb = QDoubleSpinBox()
                 sb.setDecimals(dec)
                 sb.setRange(lo, hi)
-                sb.setValue(float(p[key]) * scale)
-            sb.setFixedWidth(90)
-            sb.setToolTip(tip)
-            g.addWidget(sb, row, 1)
+                sb.setValue(float(v) * scale)
+            if step:
+                sb.setSingleStep(step)
+            sb.setPrefix(prefix)
+            sb.setSuffix(suffix)
+            sb.setFixedWidth(self.W)
+            sb.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
             self.w[key] = (sb, scale)
+            return sb
 
-        spin("review_days", tr("订货周期（天）"), 1, 120, tr("多久下一次单。每周订 = 7；这次订的要卖到下次订的货到为止"), 0)
-        spin("lead_days", tr("到货天数"), 0, 60, tr("下单后几天到货（一般 2–7 天）"), 1)
-        spin("service", tr("服务水平 %"), 50, 99.5, tr("不缺货的概率。95 = 100 次里约 5 次可能卖断"), 2, dec=1, scale=100)
-        spin("max_safety_days", tr("安全库存最多（天）"), 0, 90, tr("按服务水平多备的货最多够卖几天（只限制卖得快的商品；卖得慢的按服务水平保证不断货）。A/B/C 的差别由服务水平区分"), 3)
-        spin("min_shelf", tr("最少陈列件数"), 0, 50, tr("近 13 周有销量的商品至少保留几件"), 5)
-        cr = QHBoxLayout()
-        cr.setSpacing(6)
-        for i, k in enumerate(("cycle_a", "cycle_b", "cycle_c")):
-            sb = QDoubleSpinBox()
-            sb.setDecimals(2)
-            sb.setRange(0.1, 3.0)
-            sb.setSingleStep(0.05)
-            sb.setValue(float(p.get(k, 1.0)))
-            sb.setPrefix("ABC"[i] + " ×")
-            sb.setFixedWidth(84)
-            cr.addWidget(sb)
-            self.w[k] = (sb, 1)
-        cr.addStretch()
-        g.addWidget(tip_label(tr("周期系数"), tr("按 ABC 乘订货周期：A 类多备（1.25 = 订够 1.25 个周期），C 类少备（0.75 = 订够 3/4 个周期），少压货。ABC 按本店近 13 周销售额：前 80% A，到 95% B，其余 C")), 6, 0)
-        g.addLayout(cr, 6, 1)
-        sr = QHBoxLayout()
-        sr.setSpacing(6)
-        for i, k in enumerate(("safety_a", "safety_b", "safety_c")):
-            sb = QSpinBox()
-            sb.setRange(0, 200)
-            sb.setSingleStep(5)
-            sb.setValue(int(round(float(p.get(k, 0.7)) * 100)))
-            sb.setPrefix("ABC"[i] + " ")
-            sb.setSuffix(" %")
-            sb.setFixedWidth(84)
-            sr.addWidget(sb)
-            self.w[k] = (sb, 100)
-        sr.addStretch()
-        g.addWidget(tip_label(tr("最低保障线"), tr("件数凑不成整箱时：少订（往下取整）后的库存够卖一个订货周期的这个比例，就少订，不为了一两件硬凑一箱；不够才多订一箱。（和「安全库存」不是一回事：安全库存是按服务水平多备的货）")), 7, 0)
-        g.addLayout(sr, 7, 1)
-        fr = QHBoxLayout()
-        fr.setSpacing(6)
-        for k, pre, suf, lo_, hi_ in (("abc_freq_hi", "≥ ", tr(" 周 → B"), 1, 14), ("abc_freq_lo", "≤ ", tr(" 周 → C"), 0, 13),
-                                      ("abc_freq_a", "A ≥ ", tr(" 周"), 0, 13)):
-            sb = QSpinBox()
-            sb.setRange(lo_, hi_)
-            sb.setValue(int(p.get(k, {"abc_freq_hi": 10, "abc_freq_lo": 3, "abc_freq_a": 6}[k])))
-            sb.setPrefix(pre)
-            sb.setSuffix(suf)
-            sb.setFixedWidth(110)
-            fr.addWidget(sb)
-            self.w[k] = (sb, 1)
-        fr.addStretch()
-        g.addWidget(tip_label(tr("动销兜底"), tr("等级先按本店近 13 周销售额排（前 80% A，到 95% B，其余 C），再看近 13 周有几周卖过：卖过的周数 ≥ 第一格 → 最低算 B（天天卖的便宜货不当 C 少订）；≤ 第二格 → 最高算 C（偶尔才卖的不多备）；A 类还要 ≥ 第三格周有卖（卖得稳），不然最多 B。新品按上架以来的周数折算，上架不到 4 周的最多 B。第一格填 14 = 不升级，第二格填 0 = 不降级")), 8, 0)
-        g.addLayout(fr, 8, 1)
-        # 门店周期（只用在门店配货）：每家店一个系数，乘订货周期（供应商自己的周期也一起乘）。店名在上、系数在下，一行放得下
-        sg = QGridLayout()
-        sg.setHorizontalSpacing(6)
-        sg.setVerticalSpacing(2)
-        self.store_cycle = {}
+        def line(label, tip, widgets):
+            g.addWidget(tip_label(label, tip), row[0], 0)
+            for i, wdg in enumerate(widgets):
+                g.addWidget(wdg, row[0], 1 + i)
+            row[0] += 1
+
+        def head(names):
+            for i, n in enumerate(names):
+                lb = QLabel(n)
+                lb.setObjectName("Faint")
+                lb.setAlignment(Qt.AlignCenter)
+                lb.setFixedWidth(self.W)
+                g.addWidget(lb, row[0], 1 + i)
+            row[0] += 1
+
+        # ① 基本
+        section(tr("基本"))
+        line(tr("订货周期"), tr("多久下一次单。每周订 = 7；这次订的要卖到下次订的货到为止"),
+             [mk("review_days", 1, 120, suffix=tr(" 天"))])
+        line(tr("到货"), tr("下单后几天到货（一般 2–7 天）"), [mk("lead_days", 0, 60, suffix=tr(" 天"))])
+        line(tr("服务水平"), tr("不缺货的概率。95 = 100 次里约 5 次可能卖断"),
+             [mk("service", 50, 99.5, dec=1, scale=100, suffix=" %")])
+        line(tr("安全库存最多"), tr("按服务水平多备的货最多够卖几天（只限制卖得快的商品；卖得慢的按服务水平保证不断货）。A/B/C 的差别由服务水平区分"),
+             [mk("max_safety_days", 0, 90, suffix=tr(" 天"))])
+        line(tr("最少陈列"), tr("近 13 周有销量的商品至少保留几件"), [mk("min_shelf", 0, 50, suffix=tr(" 件"))])
+        self.season = QCheckBox(tr("季节调整"))
+        self.season.setToolTip(tr("用去年同期做季节调整（数据不够一年或量太小时不调整）"))
+        self.season.setChecked(bool(p["season"]))
+        g.addWidget(self.season, row[0], 1, 1, 3)
+        row[0] += 1
+
+        # ② 按 ABC：A B C 三列对齐
+        section(tr("按 ABC"))
+        head(["A", "B", "C"])
+        line(tr("周期系数"), tr("按 ABC 乘订货周期：A 类多备（1.25 = 订够 1.25 个周期），C 类少备（0.75 = 订够 3/4 个周期），少压货。ABC 按本店近 13 周销售额：前 80% A，到 95% B，其余 C"),
+             [mk(k, 0.1, 3.0, dec=2, prefix="×", step=0.05, default=1.0) for k in ("cycle_a", "cycle_b", "cycle_c")])
+        line(tr("最低保障线"), tr("件数凑不成整箱时：少订（往下取整）后的库存够卖一个订货周期的这个比例，就少订，不为了一两件硬凑一箱；不够才多订一箱。（和「安全库存」不是一回事：安全库存是按服务水平多备的货）"),
+             [mk(k, 0, 200, scale=100, suffix=" %", step=5, default=d) for k, d in (("safety_a", 0.9), ("safety_b", 0.7), ("safety_c", 0.5))])
+        line(tr("动销周数"), tr("近 13 周有几周卖过：A 列 = A 类至少要这么多周有卖，不然最多 B；B 列 = 卖过的周数 ≥ 它 → 最低算 B（天天卖的便宜货不当 C 少订）；C 列 = ≤ 它 → 最高算 C（偶尔才卖的不多备）。新品按上架以来的周数折算，上架不到 4 周的最多 B。B 列填 14 = 不升级，C 列填 0 = 不降级"),
+             [mk("abc_freq_a", 0, 13, prefix="≥ ", suffix=tr(" 周"), default=6),
+              mk("abc_freq_hi", 1, 14, prefix="≥ ", suffix=tr(" 周"), default=10),
+              mk("abc_freq_lo", 0, 13, prefix="≤ ", suffix=tr(" 周"), default=3)])
+        self.abc = QCheckBox(tr("按 ABC 调整服务水平"))
+        self.abc.setToolTip(tr("按 ABC 调整服务水平（A +2.5%，C −5%；ABC 按本店近 13 周销售额帕累托）"))
+        self.abc.setChecked(bool(p["abc_service"]))
+        g.addWidget(self.abc, row[0], 1, 1, 3)
+        row[0] += 1
+
+        # ③ 门店周期（只用在门店配货）：五家店五列
+        section(tr("门店周期"), tr("只用在门店配货：这家店的订货周期 × 系数（配置文件里供应商自己的周期也一起乘）。销量差、凑不够起订量的店填大于 1，一次订够更久、下单次数少（例如 × 1.5：30 天 → 45 天）；销量好、补货勤的店填小于 1，少压货。1 = 和现在一样"))
+        stores = [(k, v) for k, v in R.STORES.items() if k]
+        head([v for _, v in stores])
         sc = p.get("store_cycle") or {}
-        for i, (sid, name) in enumerate((k, v) for k, v in R.STORES.items() if k):
-            lb = QLabel(name)
-            lb.setObjectName("Faint")
-            sg.addWidget(lb, 0, i)
+        self.store_cycle = {}
+        boxes = []
+        for sid, _name in stores:
             sb = QDoubleSpinBox()
             sb.setDecimals(2)
             sb.setRange(0.25, 4.0)
             sb.setSingleStep(0.25)
             sb.setPrefix("×")
             sb.setValue(float(sc.get(str(sid), 1.0) or 1.0))
-            sb.setFixedWidth(76)
+            sb.setFixedWidth(self.W)
+            sb.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
             sb.valueChanged.connect(lambda _v, b=sb: self._tip_store(b))
-            self._tip_store(sb)
-            sg.addWidget(sb, 1, i)
             self.store_cycle[sid] = sb
+            boxes.append(sb)
+        line(tr("系数"), tr("× 订货周期；鼠标停在框上看换算成几天"), boxes)
+        for b in boxes:
+            self._tip_store(b)
         self.w["review_days"][0].valueChanged.connect(lambda _v: [self._tip_store(b) for b in self.store_cycle.values()])
-        g.addWidget(tip_label(tr("门店周期"), tr("只用在门店配货：这家店的订货周期 × 系数（配置文件里供应商自己的周期也一起乘）。销量差、凑不够起订量的店填大于 1，一次订够更久、下单次数少（例如 × 1.5：30 天 → 45 天）；销量好、补货勤的店填小于 1，少压货。1 = 和现在一样")), 9, 0)
-        g.addLayout(sg, 9, 1)
-        self.abc = QCheckBox(tr("ABC 调整服务水平"))
-        self.abc.setToolTip(tr("按 ABC 调整服务水平（A +2.5%，C −5%；ABC 按本店近 13 周销售额帕累托）"))
-        self.abc.setChecked(bool(p["abc_service"]))
-        self.season = QCheckBox(tr("季节调整"))
-        self.season.setToolTip(tr("用去年同期做季节调整（数据不够一年或量太小时不调整）"))
-        self.season.setChecked(bool(p["season"]))
-        g.addWidget(self.abc, 10, 0, 1, 2)
-        g.addWidget(self.season, 11, 0, 1, 2)
+        g.setColumnStretch(6, 1)
         lay.addLayout(g)
+        lay.addSpacing(10)
         bb = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel | QDialogButtonBox.RestoreDefaults)
         bb.accepted.connect(self.save)
         bb.rejected.connect(self.reject)
         bb.button(QDialogButtonBox.RestoreDefaults).clicked.connect(self.defaults)
         lay.addWidget(bb)
-        self.resize(360, 0)
+        self.adjustSize()
 
     def _tip_store(self, sb):
         """鼠标停在系数上：按现在的订货周期换算成天数"""
