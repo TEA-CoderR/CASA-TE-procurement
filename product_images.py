@@ -20,7 +20,10 @@ from PySide6.QtGui import QImage, QPixmap, QPainter, QColor
 from PySide6.QtWidgets import QStyledItemDelegate, QStyle, QStyleOptionViewItem, QApplication, QToolTip
 
 DEFAULT_URL = "https://img.casaete.top/prodotti/{ean}/01.webp"
-MISS_DAYS = 7          # 服务器上没有图：几天以后再问一次
+MISS_DAYS = 1          # 服务器上没有图（404）：一天以后再问一次（图会陆续传上去）
+MISS_VER = 2           # 2026-10-31：以前把 403（服务器拒绝 / 限流）也记成「没有图」7 天，作废一次重新问
+UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
+      "Chrome/124.0 Safari/537.36 CasaTe-Procurement")
 PREVIEW = 600          # 点详情栏的图放大看：最大多少
 HOVER = 320            # 表格里鼠标停在小图上：弹出多大的图
 SIZES = {"s": 40, "m": 64, "l": 96}     # 表格小图：小 / 中 / 大（settings["image_size"]，默认中）
@@ -80,11 +83,33 @@ class ImageStore(QObject):
         self.url = url or DEFAULT_URL
         self.enabled = enabled
         os.makedirs(self.dir, exist_ok=True)
+        self._clear_old_misses()
         self._pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="img")
         self._pending, self._failed = set(), set()
         self._lock = threading.Lock()
         self._mem = {}             # (条码, 尺寸) → QPixmap
         self._session = None
+
+    def _clear_old_misses(self):
+        """旧版本记下的「没有图」作废一次（有的其实是服务器临时拒绝，不是真没有）"""
+        mark = os.path.join(self.dir, ".miss_ver")
+        try:
+            with open(mark, encoding="utf-8") as f:
+                if f.read().strip() == str(MISS_VER):
+                    return
+        except OSError:
+            pass
+        try:
+            for f in os.listdir(self.dir):
+                if f.endswith(".none"):
+                    try:
+                        os.remove(os.path.join(self.dir, f))
+                    except OSError:
+                        pass
+            with open(mark, "w", encoding="utf-8") as f:
+                f.write(str(MISS_VER))
+        except OSError:
+            pass
 
     # ---------- 本地缓存 ----------
     def _png(self, ean):
@@ -164,7 +189,8 @@ class ImageStore(QObject):
         if self._session is None:
             import requests
             s = requests.Session()
-            s.headers["User-Agent"] = "CasaTe-Procurement"
+            s.headers["User-Agent"] = UA                  # 像浏览器一样（有的服务器 / 防火墙拒绝不认识的程序）
+            s.headers["Accept"] = "image/webp,image/*,*/*;q=0.8"
             self._session = s
         return self._session
 
@@ -190,9 +216,12 @@ class ImageStore(QObject):
                     os.replace(tmp, dst)
                     ok = True
                     break
-                elif r.status_code in (403, 404):
+                elif r.status_code == 404:                    # 真没有：记下来，一天内不再问
                     missing = True
                     continue
+                elif r.status_code in (403, 429) or r.status_code >= 500:
+                    missing = False                            # 服务器拒绝 / 限流 / 出错：不记，下次打开再试
+                    break
                 else:
                     break
             if not ok and missing:
