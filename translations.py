@@ -2659,4 +2659,7 @@ TRANSLATIONS = {
     '每家店一个文件': ('One file per store', 'Un file per negozio'),
     '合成一个文件（每店一页）': ('One file (one sheet per store)', 'Un unico file (un foglio per negozio)'),
     '意大利文报告，可以直接发给门店（带商品照片，Excel 365 打开时从网上读）。确认生成主订单时，每家店的比价文件夹里也会自动生成一份': ('Italian report, ready to send to stores (with product photos, loaded from the internet in Excel 365). One is also created in each store folder when the master order is confirmed', "Report in italiano, pronto da inviare ai negozi (con foto degli articoli, caricate da internet in Excel 365). Viene creato anche nella cartella di ogni negozio alla conferma dell'ordine"),
+    '门店报告': ('Store report', 'Report negozio'),
+    '发给门店的意大利文报告（非 Griglia 商品下次别加、这周批发商没货的）：检查清单确认时生成在这家店的比价文件夹里': ('Italian report for the store (items not in Griglia not to add next time, items the wholesalers do not have this week): created in the store comparison folder when the list check is confirmed', 'Report in italiano per il negozio (articoli non in Griglia da non aggiungere, articoli non disponibili dai grossisti): creato nella cartella del negozio alla conferma del controllo lista'),
+    '这家店没有门店报告：检查清单里没有待核对的商品，或者这次不是从检查清单确认的。': ('No store report for this store: there were no items to check, or this comparison was not started from the list check.', "Nessun report per questo negozio: non c'erano articoli da verificare, oppure questo confronto non è partito dal controllo lista."),
 }

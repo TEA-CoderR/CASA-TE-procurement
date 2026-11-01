@@ -171,6 +171,7 @@ def write_problem_report(rows, path, store=None, url=None, when=None):
     一家店一个工作表（store = None：清单里每家有待核对商品的店各一页），每页：
       标题（门店 · 日期）→ ① Articoli non in Griglia – da non inserire nei prossimi ordini（照片 EAN 编号 名称 要的箱数 订的箱数 批发商有没有）
                          → ② Articoli Griglia non disponibili dai grossisti questa settimana（照片 EAN 编号 名称 要的箱数）
+    列：Foto EAN Cod.Art. Descrizione Fornitore（数据库登记的供应商）Colli richiesti Colli ordinati Ordinabile（Sì / No = 这周批发商有没有）。
     照片 = Excel 公式 =IMAGE("https://img.casaete.top/prodotti/<EAN>/01.webp")（Excel 365 打开时自己从网上读，文件里不放图片，很小）。
     这家店没有待核对的商品返回 None
     """
@@ -188,8 +189,9 @@ def write_problem_report(rows, path, store=None, url=None, when=None):
     box = Border(left=thin, right=thin, top=thin, bottom=thin)
     center = Alignment(horizontal="center", vertical="center", wrap_text=True)
     left = Alignment(horizontal="left", vertical="center", wrap_text=True)
-    heads = ["Foto", "EAN", "Cod. Art.", "Descrizione", "Colli richiesti", "Colli ordinati", "Grossisti"]
-    widths = (13, 16, 10, 46, 11, 11, 12)
+    # 用户 2026-11-01：加「供应商」（门店知道是哪家的货别再要）；「Grossisti」改成「可订到」= Ordinabile
+    heads = ["Foto", "EAN", "Cod. Art.", "Descrizione", "Fornitore", "Colli richiesti", "Colli ordinati", "Ordinabile"]
+    widths = (13, 16, 10, 40, 24, 10, 10, 11)
     ncol = len(heads)
     sections = (("① Articoli non in Griglia – da non inserire nei prossimi ordini", "FDECE2", "B4471A", True),
                 ("② Articoli Griglia non disponibili dai grossisti questa settimana", "E3EEFB", "1F5FA8", False))
@@ -217,7 +219,7 @@ def write_problem_report(rows, path, store=None, url=None, when=None):
         for (title, fill, ink, full), xs in zip(sections, parts):
             if not xs:
                 continue
-            cols = ncol if full else ncol - 2          # ② 不放「订的箱数」「批发商」（都是 0 / 都没有）
+            cols = ncol if full else ncol - 2          # ② 不放「订的箱数」「可订到」（都是 0 / 都订不到）
             ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=ncol)
             c = ws.cell(r, 1, f"{title}  ({len(xs)})")
             c.font = Font(size=12, bold=True, color=ink)
@@ -236,18 +238,19 @@ def write_problem_report(rows, path, store=None, url=None, when=None):
             for k, x in enumerate(xs):
                 ean = PI.norm_ean(x.get("ean"))
                 vals = [f'=_xlfn.IMAGE("{url.format(ean=ean)}")' if ean else "", ean or str(x.get("ean") or ""),
-                        str(x.get("code") or ""), str(x.get("name") or ""), int(x.get("lbox") or 0), int(x.get("fbox") or 0),
+                        str(x.get("code") or ""), str(x.get("name") or ""),
+                        str(x.get("sup_name") or x.get("quote_sup") or ""), int(x.get("lbox") or 0), int(x.get("fbox") or 0),
                         "No" if _problem(x) == "nogrid_noq" else "Sì"]
                 zebra = PatternFill("solid", fgColor="FAFBFC") if k % 2 else None
                 for j, v in enumerate(vals[:cols], 1):
                     dc = ws.cell(r, j, v)
                     dc.border = box
-                    dc.alignment = left if j == 4 else center
+                    dc.alignment = left if j in (4, 5) else center
                     dc.font = Font(size=10, color=INK, bold=(j == 4))
                     if zebra is not None:
                         dc.fill = zebra
                 if full:
-                    g = ws.cell(r, 7)
+                    g = ws.cell(r, 8)
                     g.font = Font(size=10, bold=True, color="B42318" if g.value == "No" else "2E7D32")
                 ws.row_dimensions[r].height = 60          # 照片那一格的高度（IMAGE 按格子大小缩放）
                 r += 1

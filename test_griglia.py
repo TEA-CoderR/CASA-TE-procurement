@@ -207,6 +207,7 @@ def test_problem_report(tmp_path=None):
     assert eans == ["8000000000011", "8000000000028", "8000000000035"]           # ① 非 Griglia 两个 ② Griglia 没货一个
     assert '=_xlfn.IMAGE("https://img.casaete.top/prodotti/8000000000011/01.webp")' in flat   # 照片用 IMAGE 函数读网站
     assert "No" in flat and "Sì" in flat                                         # 批发商有没有
+    assert "Fornitore" in flat and "Ordinabile" in flat and "Grossisti" not in flat
     assert not any("箱规" in str(v) for v in flat)                               # 不放无关的（没有箱规）
     assert any(str(v).startswith("① Articoli non in Griglia") for v in flat)
     p2 = OC.write_problem_report(rows, os.path.join(d, "b.xlsx"))                 # 不指定门店：每家店一页
