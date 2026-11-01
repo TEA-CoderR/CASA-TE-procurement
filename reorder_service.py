@@ -600,9 +600,10 @@ def query_monthly_sales(db, store_id, codes, months=24, today=None):
 #   会员限时价  prodotti_vip.PrezzoVedi + Prezzofine
 #   促销单      promozioni（l, Data_a, Data_f, negozio = "0,1,2,3" 空 = 全部门店）+ promozioni_list（promozioni_l, CodArticolo,
 #               Prezzo_p 促销价 / sconto 折扣 %, invalid）
-# 四种都算（用户 2026-11-01：促销在会员价里，有几百个）。促销单 / 会员限时价两张表在这个库里停在 2026-04-09（没同步），会员价和单品特价在商品表里每天同步。
+# 会员价按 prodotti_vip 的结束日期（ERP「会员价格」页面），prodotti.PrezzoVedi3 过期了也还在、不能单独用。
+# 注意：这个库里 prodotti_vip / promozioni 停在 2026-04-09（没同步），只有单品特价（商品表）是每天同步的 → query_promos 在 _warn 里提醒。
 # 今天有效、比标价便宜的都算；同一个商品几种都有，取最便宜的。查不到的表跳过（不影响别的）
-PROMO_KINDS = {"vip": "会员价", "offer": "单品特价", "vip_t": "会员限时价", "promo": "促销单"}
+PROMO_KINDS = {"vip": "会员价", "offer": "单品特价", "vip_t": "会员价", "promo": "促销单"}
 PROMO_DAYS = 7        # 详情窗口每天销量：实际卖价比标价便宜 PROMO_MIN 以上标红
 PROMO_MIN = 0.05
 
@@ -678,11 +679,18 @@ def query_promos(db, store_id, codes, today=None):
         for r in df.to_dict("records"):
             c = r["CodArticolo"]
             lists[str(int(c))] = r["PrezzoVedi1"]
-            # 会员价 PrezzoVedi3：门店的促销就做在这里（用户 2026-11-01 确认；754 个商品，万圣节服装、11 月扫墓花、OMINO BIANCO…），
-            # 商品表每天同步，是最新的
-            add(c, "vip", r.get("PrezzoVedi3"))
+            # 会员价 PrezzoVedi3 本身没有结束日期，过期了也还留着（用户 ERP 截图：OMINO 355203 会员价 4.99 到 2026-10-14 已过期，
+            # PrezzoVedi3 仍是 4.99）。结束日期在 prodotti_vip（ERP「会员价格」页面），所以会员价只按 prodotti_vip 判断（下面 vip_t）
             if _active(r.get("PrezzoVediOfferta_inizio"), r.get("PrezzoVediOfferta_fine"), today):
                 add(c, "offer", r.get("PrezzoVediOfferta"), r.get("PrezzoVediOfferta_fine"))
+        if i == 0:
+            try:
+                up = pd.read_sql("SELECT MAX(Udata) AS d FROM prodotti_vip", db.engine)
+                last = _day(up.iloc[0]["d"]) if len(up) else None
+                if last is not None and (today - last).days > 14:
+                    warn.add(f"会员价表（prodotti_vip）只更新到 {last.strftime('%d/%m/%Y')}，之后设的会员价看不到")
+            except Exception:
+                pass
         try:
             df = pd.read_sql(f"SELECT CodArticolo, PrezzoVedi, Prezzofine FROM prodotti_vip WHERE CodArticolo IN ({ph})",
                              db.engine, params=tuple(chunk))
@@ -690,7 +698,7 @@ def query_promos(db, store_id, codes, today=None):
                 if _active(None, r.get("Prezzofine"), today):
                     add(r["CodArticolo"], "vip_t", r.get("PrezzoVedi"), r.get("Prezzofine"))
         except Exception as e:
-            warn.add(f"prodotti_vip: {e}")
+            warn.add(f"促销没查到（prodotti_vip）：{e}")
         try:
             df = pd.read_sql(f"SELECT pl.CodArticolo, pl.Prezzo_p, pl.sconto, pl.invalid, pr.Data_a, pr.Data_f, pr.negozio "
                              f"FROM promozioni_list pl JOIN promozioni pr ON pr.l = pl.promozioni_l "
@@ -705,7 +713,7 @@ def query_promos(db, store_id, codes, today=None):
                     p = _num(lists.get(c)) * (1 - _num(r.get("sconto")) / 100)
                 add(c, "promo", p, r.get("Data_f"))
         except Exception as e:
-            warn.add(f"promozioni: {e}")
+            warn.add(f"促销没查到（promozioni）：{e}")
     out = {}
     for c, of in offers.items():
         p = promo_pick(lists.get(c), of)

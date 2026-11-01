@@ -32,7 +32,7 @@ def _db():
                 " PrezzoVedi1 REAL, CodIva INT, qtasmallbox INT, Categoria INT, Sottocategoria INT, IDFornitore INT,"
                 " Marca TEXT, DataCreazione TEXT, PrezzoVedi3 REAL, PrezzoVediOfferta TEXT, PrezzoVediOfferta_inizio TEXT,"
                 " PrezzoVediOfferta_fine TEXT)")
-    con.execute("CREATE TABLE prodotti_vip (CodArticolo INT, PrezzoVedi REAL, Prezzofine TEXT)")
+    con.execute("CREATE TABLE prodotti_vip (CodArticolo INT, PrezzoVedi REAL, Prezzofine TEXT, Udata TEXT)")
     con.execute("CREATE TABLE promozioni (l INT, Data_a TEXT, Data_f TEXT, negozio TEXT)")
     con.execute("CREATE TABLE promozioni_list (promozioni_l INT, CodArticolo INT, Prezzo_p REAL, sconto INT, invalid INT)")
     con.execute("CREATE TABLE fornitore (IDFornitore INT, Nome TEXT)")
@@ -47,8 +47,8 @@ def _db():
     for c in range(3, 8):
         con.execute("INSERT INTO prodotti (CodArticolo, PrezzoVedi1, PrezzoVedi3, PrezzoVediOfferta, PrezzoVediOfferta_fine)"
                     " VALUES (?, 10, 0, ?, ?)", (c, "5" if c == 3 else "", "2020-01-01" if c == 3 else None))
-    con.execute("INSERT INTO prodotti_vip VALUES (4, 7.5, '2099-01-01')")       # 会员限时价，还有效
-    con.execute("INSERT INTO prodotti_vip VALUES (5, 6.0, '2020-01-01')")       # 过期
+    con.execute("INSERT INTO prodotti_vip VALUES (4, 7.5, '2099-01-01', ?)", (str(date.today()),))   # 会员价，还没到结束日期
+    con.execute("INSERT INTO prodotti_vip VALUES (5, 6.0, '2020-01-01', '2020-01-01')")             # 过期
     con.execute("INSERT INTO promozioni VALUES (9, '2020-01-01', '2099-12-31', '0,1,2,3')")
     con.execute("INSERT INTO promozioni VALUES (10, '2020-01-01', '2099-12-31', '2')")    # 只有门店 2
     con.execute("INSERT INTO promozioni_list VALUES (9, 6, 0, 30, 0)")        # 打 7 折 → 7.0
@@ -67,6 +67,7 @@ def _db():
     con.execute("INSERT INTO caricolistalist VALUES (11,1,?,24,'CA',7,'',1,5,0.5)", (d(3),))
     con.execute("INSERT INTO caricolistalist VALUES (12,1,?,-2,'RE',7,'',1,6,0.5)", (d(1),))
     con.execute("INSERT INTO caricolistalist VALUES (13,1,?,48,'CA',7,'',2,9,0.5)", (d(2),))    # 别的门店的入库
+    con.commit()                 # 查询出错时 pandas 会回滚：先提交，测试数据不会丢
     old = R.__dict__.get("_pd_read_sql")
     import pandas as pd
     orig = pd.read_sql
@@ -85,11 +86,12 @@ def test_query_promos_and_product_card():
     pd.read_sql = fake
     try:
         pr = R.query_promos(db, 1, ["1", "2", "3", "4", "5", "6", "7", "x"])
-        assert set(pr) == {"1", "2", "4", "6"}, pr      # 1 会员价、3 特价过期、5 限时价过期、7 不是这家店
-        assert pr["1"]["kind"] == "vip" and abs(pr["1"]["price"] - 1.6) < 1e-9 and abs(pr["1"]["pct"] - 0.2) < 1e-9
+        assert set(pr) == {"2", "4", "6"}, pr      # 1 只有 PrezzoVedi3（没有结束日期，不算）、3 特价过期、5 会员价过期、7 不是这家店
         assert pr["2"]["kind"] == "offer" and pr["2"]["end"] == date(2099, 12, 31)
         assert pr["4"]["kind"] == "vip_t" and pr["6"]["kind"] == "promo" and abs(pr["6"]["price"] - 7.0) < 1e-9
         assert set(R.query_promos(db, 2, ["7"])) == {"7"}
+        con_old = R.query_promos(db, 1, ["4"], today=date(2099, 6, 1))           # 会员价表很久没更新：日志里提醒
+        assert any("prodotti_vip" in w for w in con_old.get("_warn", []))
         card = R.product_card(db, 1, days=60, store=1)
         assert not card["errors"], card["errors"]
         assert card["prod"]["FornitoreNome"] == "MEGA CASH" and card["prod"]["CategoriaNome"] == "DETERSIVI"

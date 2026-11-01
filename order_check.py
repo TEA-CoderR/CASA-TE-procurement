@@ -1525,7 +1525,7 @@ class OrderCheck:
             self.win.log(tr("⚠ 促销没查到：{0}", err))
             return
         for w in data.pop("_warn", None) or ():
-            self.win.log(tr("⚠ 促销没查到：{0}", w))
+            self.win.log("⚠ " + w)
         self.win.log(tr("[检查清单] {0}：{1} 个商品在促销", R.STORES.get(sid, sid), len(data)))
         idx = []
         for i, x in enumerate(self.rows):
