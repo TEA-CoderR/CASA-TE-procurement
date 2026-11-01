@@ -2642,4 +2642,8 @@ TRANSLATIONS = {
     '⚠ 数据库里的入库记录只到 {0}，之后的进货查不到（入库表没再同步）': ('⚠ Receipts in the database only go up to {0}; later deliveries are missing (the receipts table is no longer synced)', '⚠ I carichi nel database arrivano solo al {0}; i successivi mancano (la tabella carichi non è più sincronizzata)'),
     '（数据库里的入库记录只到 {0}）': ('(receipts in the database only go up to {0})', '(i carichi nel database arrivano solo al {0})'),
     '数据库里的入库记录只到 {0}': ('Receipts in the database only go up to {0}', 'I carichi nel database arrivano solo al {0}'),
+    '⚠ 数据只到 {0}': ('⚠ Data only up to {0}', '⚠ Dati solo fino al {0}'),
+    '数据库里最新的销售是 {0}，已经 {1} 天没同步：销量、库存都是那天的，配货和检查清单会按旧数据算。请联系负责数据库同步的人。': ('The latest sale in the database is {0}: not synced for {1} days. Sales and stock are from that day, so store orders and list checks use old data. Please contact whoever runs the database sync.', "L'ultima vendita nel database è del {0}: non sincronizzato da {1} giorni. Vendite e giacenze sono di quel giorno, quindi riordini e controllo liste usano dati vecchi. Contattare chi gestisce la sincronizzazione del database."),
+    '⚠ 数据库里最新的销售是 {0}，已经 {1} 天没同步：销量和库存都是那天的': ('⚠ The latest sale in the database is {0}: not synced for {1} days, sales and stock are from that day', "⚠ L'ultima vendita nel database è del {0}: non sincronizzato da {1} giorni, vendite e giacenze sono di quel giorno"),
+    '⚠ 数据库数据只到 {0}（{1} 天没同步）': ('⚠ Database data only up to {0} ({1} days without sync)', '⚠ Dati del database solo fino al {0} ({1} giorni senza sincronizzazione)'),
 }

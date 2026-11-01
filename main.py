@@ -3101,14 +3101,36 @@ class MainWindow(QMainWindow):
     # ---------- 数据库状态 ----------
     def _set_db_state(self, ok, sub=None):
         self._db_ok = ok
-        color = T("ok") if ok else ("#E7A23A" if ok is None else T("err"))
+        import reorder_service as R
+        upto = getattr(self, "_db_sales_upto", None) if ok else None
+        late = R.stale_days(upto)
+        stale = late is not None and late > R.STALE_DAYS
+        color = (T("warn") if stale else T("ok")) if ok else ("#E7A23A" if ok is None else T("err"))
         self.db_dot.setStyleSheet(f"background:{color}; border-radius:4px;")
-        self.db_title.setText(tr("数据库已连接") if ok else (tr("正在检查数据库…") if ok is None else tr("数据库未连接")))
+        if stale:            # 连上了，但数据停在几天前（诊断 36：同步停了一周，配货 / 检查清单都会用旧销量、旧库存）
+            self.db_title.setText(tr("⚠ 数据只到 {0}", upto.strftime("%d/%m")))
+            self.db_title.setStyleSheet(f"color:{T('warn')};")
+            self.db_title.setToolTip(tr("数据库里最新的销售是 {0}，已经 {1} 天没同步：销量、库存都是那天的，配货和检查清单会按旧数据算。请联系负责数据库同步的人。",
+                                        upto.strftime("%d/%m/%Y %H:%M"), late))
+        else:
+            self.db_title.setText(tr("数据库已连接") if ok else (tr("正在检查数据库…") if ok is None else tr("数据库未连接")))
+            self.db_title.setStyleSheet("")
+            self.db_title.setToolTip("")
         if sub is not None:
             self.db_sub.setText(sub)
 
     def _on_db_state(self, ok):
         self._set_db_state(ok)
+        import reorder_service as R
+        upto = getattr(self, "_db_sales_upto", None)
+        late = R.stale_days(upto) if ok else None
+        if late is not None and late > R.STALE_DAYS and not getattr(self, "_stale_warned", False):
+            self._stale_warned = True
+            self.log(tr("⚠ 数据库里最新的销售是 {0}，已经 {1} 天没同步：销量和库存都是那天的", upto.strftime("%d/%m/%Y %H:%M"), late))
+            try:
+                self.show_toast(tr("⚠ 数据库数据只到 {0}（{1} 天没同步）", upto.strftime("%d/%m"), late))
+            except Exception:
+                pass
         if hasattr(self, "dashboard"):
             self.dashboard.set_db(ok)
         if hasattr(self, "settings_page"):
@@ -3132,6 +3154,10 @@ class MainWindow(QMainWindow):
                     self._db_account = R.account_info(db)
                 except Exception:
                     self._db_account = None
+                try:                                   # 数据库是不是停止同步了：最新一条销售是哪天
+                    self._db_sales_upto = R.sales_latest(db)
+                except Exception:
+                    self._db_sales_upto = None
                 db.engine.dispose()
                 ok = True
             except Exception:

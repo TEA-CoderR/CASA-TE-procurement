@@ -956,6 +956,13 @@ class OrderCheck:
                 ms = R.ping(db)
                 if ms is not None:
                     log(tr("[检查清单] 数据库响应 {0:.0f} 毫秒", ms))
+                try:
+                    upto = R.sales_latest(db)
+                    late = R.stale_days(upto)
+                    if late is not None and late > R.STALE_DAYS:
+                        log(tr("⚠ 数据库里最新的销售是 {0}，已经 {1} 天没同步：销量和库存都是那天的", upto.strftime("%d/%m/%Y %H:%M"), late))
+                except Exception:
+                    pass
                 pre_snap = None
                 # 供应商编号（只显示用）和下面的门店查询同时查，不用排在最后等（结果一样）
                 sup_fut = q_pool.submit(R._timed, "供应商编号", None, R.supplier_info, db, union) if union else None

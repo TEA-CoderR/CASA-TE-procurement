@@ -940,6 +940,33 @@ def product_card(db, code, days=60, stores=None, today=None, store=None):
     return out
 
 
+STALE_DAYS = 2           # 销售最后一条比今天早超过 2 天 = 数据库没同步（每天早上 6 点同步前一天的）
+
+
+def sales_latest(db, stores=None):
+    """
+    数据库里最新的一条销售是什么时候（五家门店里最晚的那条）：判断数据库是不是停止同步了
+    （诊断 36，2026-11-01：数据库时间 11-01，销售只到 10-24 20:10 → 一周没同步，配货 / 检查清单都在用旧数据）
+    """
+    import pandas as pd
+    stores = [s for s in (stores or STORES) if s != 0]
+    sql = " UNION ALL ".join(f"SELECT MAX(Data) AS d FROM vendite_list_{int(s)}" for s in stores)
+    df = pd.read_sql(sql, db.engine)
+    vals = [v for v in df["d"].tolist() if v is not None and str(v) not in ("NaT", "nan", "None")]
+    if not vals:
+        return None
+    best = max(pd.Timestamp(v) for v in vals)
+    return best.to_pydatetime()
+
+
+def stale_days(latest, now=None):
+    """最新销售离今天几天（latest 是 None 返回 None）；> STALE_DAYS 就要提醒"""
+    if latest is None:
+        return None
+    now = now or datetime.now()
+    return (now.date() - latest.date()).days
+
+
 _RC_LATEST = {}          # 数据库 → (查的时间, 入库表最新日期)
 
 

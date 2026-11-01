@@ -118,3 +118,17 @@ def test_receipt_columns_unknown_kept_after_known():
     assert [(c, h) for c, h, _t in cols] == [("Cdata", "日期"), ("Quantita", "数量"), ("Prezzo", "进价"),
                                              ("ID", "ID"), ("Utente", "Utente")]
     assert R.card_fields({"CodArticolo": 5, "Marca": float("nan"), "CodIva": None}) == [("编号", "5")]
+
+
+def test_sales_latest_and_stale_days():
+    """数据库停止同步时（诊断 36：销售只到 10-24、今天 11-01）能看出来"""
+    import pandas as pd
+    db, fake, orig, _ = _db()
+    pd.read_sql = fake
+    try:
+        up = R.sales_latest(db)
+        assert up is not None and up.date() == date.today()          # 测试数据里今天有销售
+    finally:
+        pd.read_sql = orig
+    assert R.stale_days(datetime(2026, 10, 24, 20, 10), datetime(2026, 11, 1, 13, 3)) == 8
+    assert R.stale_days(None) is None
