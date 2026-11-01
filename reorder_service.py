@@ -869,14 +869,27 @@ def product_card(db, code, days=60, stores=None, today=None, store=None):
 
     def q_receipts():
         # 只看这家门店的（用户 2026-11-01）：入库表里认出门店那一列（Negozio…）就按它筛；认不出来照旧全部，receipts_all = True
-        scol = receipt_store_col(db) if store is not None else None
-        if scol is not None:
-            df = pd.read_sql(f"SELECT * FROM caricolistalist WHERE CodArticolo = %s AND `{scol}` = %s "
-                             f"ORDER BY Cdata DESC LIMIT 300", db.engine, params=(code, int(store)))
-        else:
-            df = pd.read_sql("SELECT * FROM caricolistalist WHERE CodArticolo = %s ORDER BY Cdata DESC LIMIT 300",
-                             db.engine, params=(code,))
-        out["receipts_all"] = scol is None
+        # 入库表的真实结构（用户诊断 21–23，2026-11-01）：caricolistalist 每行一个商品（Cdata 入库日、Quantita 件数、Tipo 如 CA、
+        # Fornitore 供应商编号、Prezzo_A 进价、Negozio 门店、ListaId → caricolista 入库单：Fnumero 发票号、Fdata 发票日期）
+        try:
+            where, params = "l.CodArticolo = %s", [code]
+            if store is not None:
+                where += " AND l.Negozio = %s"
+                params.append(int(store))
+            df = pd.read_sql("SELECT l.Cdata, l.Quantita, l.Tipo, l.Fornitore, c.Fnumero AS Fattura, l.Prezzo_A AS Prezzo, "
+                             "l.Negozio, l.Ddt, l.ListaId FROM caricolistalist l "
+                             "LEFT JOIN caricolista c ON c.ListaId = l.ListaId "
+                             f"WHERE {where} ORDER BY l.Cdata DESC, l.l DESC LIMIT 300", db.engine, params=tuple(params))
+            scol = "Negozio"
+        except Exception:            # 别的数据库结构：照旧按列名认
+            scol = receipt_store_col(db) if store is not None else None
+            if scol is not None:
+                df = pd.read_sql(f"SELECT * FROM caricolistalist WHERE CodArticolo = %s AND `{scol}` = %s "
+                                 f"ORDER BY Cdata DESC LIMIT 300", db.engine, params=(code, int(store)))
+            else:
+                df = pd.read_sql("SELECT * FROM caricolistalist WHERE CodArticolo = %s ORDER BY Cdata DESC LIMIT 300",
+                                 db.engine, params=(code,))
+        out["receipts_all"] = store is not None and scol is None
         cols = receipt_columns(list(df.columns))
         rows = df.to_dict("records")
         sup = next((c for c, _h, tag in cols if tag == "sup"), None)
