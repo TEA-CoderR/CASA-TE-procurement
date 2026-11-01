@@ -168,11 +168,11 @@ def write_problem_report(rows, path, store=None, url=None, when=None, sources=No
     """
     发给门店的意大利文报告（2026-11-01 用户：格式漂亮、不要无关的数据、用 IMAGE 函数读我们网站的图片、文件要小）。
     一家店一个工作表（store = None：清单里每家有待核对商品的店各一页），每页：
-      标题（门店 · 日期）→ ① Articoli non in Griglia – da non inserire nei prossimi ordini（照片 EAN 编号 名称 要的箱数 订的箱数 批发商有没有）
+      标题（门店 · 日期）→ ① Articoli non in Griglia – si consiglia di non ordinarli（照片 EAN 编号 名称 要的箱数 订的箱数 批发商有没有）
                          → ② Articoli Griglia non disponibili dai grossisti questa settimana（照片 EAN 编号 名称 要的箱数）
-    列：Foto EAN Cod.Art. Descrizione Fornitore（数据库登记的供应商）Colli richiesti Colli ordinati Ordinabile（Sì / No = 这周批发商有没有）。
+    列：Foto EAN Cod.Art. Descrizione Fornitore（数据库登记的供应商）Colli richiesti Colli ordinati Disponibile（Sì / No = 这周批发商有没有；用户 11-01 从 Ordinabile 改名）。
     照片 = Excel 公式 =IMAGE("https://img.casaete.top/prodotti/<EAN>/01.webp")（Excel 365 打开时自己从网上读，文件里不放图片，很小）。
-    sources = 这次读的几家批发商报价的名字（MELONI、MEGA CASH…）：每段标题下面写一行「Ordinabile = 在这几家的报价里」，
+    sources = 这次读的几家批发商报价的名字（MELONI、MEGA CASH…）：每段标题下面写一行「Disponibile = 在这几家的报价里」，
     门店才知道「No」是这几家订不到、不是哪儿都没有（用户 2026-11-01）。
     这家店没有待核对的商品返回 None
     """
@@ -192,14 +192,14 @@ def write_problem_report(rows, path, store=None, url=None, when=None, sources=No
     center = Alignment(horizontal="center", vertical="center", wrap_text=True)
     left = Alignment(horizontal="left", vertical="center", wrap_text=True, indent=1)
     # 用户 2026-11-01：加「供应商」（门店知道是哪家的货别再要）；「Grossisti」改成「可订到」= Ordinabile
-    heads = ["Foto", "EAN", "Cod. Art.", "Descrizione", "Fornitore", "Colli richiesti", "Colli ordinati", "Ordinabile"]
+    heads = ["Foto", "EAN", "Cod. Art.", "Descrizione", "Fornitore", "Colli richiesti", "Colli ordinati", "Disponibile"]
     widths = (9, 16, 10, 40, 24, 10, 10, 11)
     IMG = 48                      # 照片显示 48 × 48 像素（用户：不用那么大），行高跟着小
     ncol = len(heads)
     names = " · ".join(str(s) for s in (sources or []) if str(s).strip())
     who = names or "i nostri grossisti"
-    sections = (("Articoli non in Griglia – da non inserire nei prossimi ordini", "FDECE2", "B4471A", True,
-                 f"Ordinabile = presente nei listini di questa settimana di {who}. «No» vale solo per questi grossisti."),)
+    sections = (("Articoli non in Griglia – si consiglia di non ordinarli", "FDECE2", "B4471A", True,
+                 f"Disponibile = presente nei listini di questa settimana di {who}. «No» vale solo per questi grossisti."),)
     for sid in stores:
         parts = _report_rows(rows, sid)
         if not any(parts):

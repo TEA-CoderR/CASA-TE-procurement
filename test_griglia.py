@@ -207,12 +207,12 @@ def test_problem_report(tmp_path=None):
     assert eans == ["8000000000011", "8000000000028"]                            # 只有非 Griglia 商品（Griglia 没货的不发）
     assert '=_xlfn.IMAGE("https://img.casaete.top/prodotti/8000000000011/01.webp","",3,48,48)' in flat   # 照片 48 像素
     assert "No" in flat and "Sì" in flat                                         # 批发商有没有
-    assert "Fornitore" in flat and "Ordinabile" in flat and "Grossisti" not in flat
+    assert "Fornitore" in flat and "Disponibile" in flat and "Ordinabile" not in flat and "Grossisti" not in flat
     row_a = next(r for r in vals if r[1] == "8000000000011")                     # 订不到（No）：清单 2 箱、确定 2 箱
     assert row_a[7] == "No" and row_a[6] == 0                                    # 门店一件也收不到 → 订的箱数写 0
     assert any("MELONI · MEGA CASH" in str(v) for v in flat)                      # 写明是哪几家批发商订不到
     assert not any("箱规" in str(v) for v in flat)                               # 不放无关的（没有箱规）
-    assert any(str(v).startswith("Articoli non in Griglia") for v in flat)
+    assert any(str(v).startswith("Articoli non in Griglia – si consiglia di non ordinarli") for v in flat)
     assert ws.auto_filter.ref and ws.auto_filter.ref.startswith("B") and ws.freeze_panes      # 带好筛选、表头冻结
     p2 = OC.write_problem_report(rows, os.path.join(d, "b.xlsx"))                 # 不指定门店：每家店一页
     assert load_workbook(p2).sheetnames == ["FOIANO", "MARLIA"]
