@@ -238,6 +238,7 @@ def write_problem_report(rows, path, store=None, url=None, when=None, sources=No
             nc.alignment = Alignment(horizontal="left", vertical="center", indent=1)
             ws.row_dimensions[r].height = 16
             r += 1
+            hr = r                                         # 表头行：筛选按钮、冻结窗格从这里
             for j, h in enumerate(heads[:cols], 1):
                 hc = ws.cell(r, j, h)
                 hc.font = Font(size=10, bold=True, color=INK)
@@ -266,6 +267,9 @@ def write_problem_report(rows, path, store=None, url=None, when=None, sources=No
                     g.font = Font(size=10, bold=True, color="B42318" if g.value == "No" else "2E7D32")
                 ws.row_dimensions[r].height = 42          # 放得下 48 像素的照片
                 r += 1
+            # 直接带好筛选（用户：不想自己再加）：EAN 到最后一列都有下拉，照片列不用；表头冻结，往下翻也看得到
+            ws.auto_filter.ref = f"B{hr}:{get_column_letter(cols)}{r - 1}"
+            ws.freeze_panes = f"A{hr + 1}"
             r += 1
         foot = ws.cell(r, 1, "Foto: si caricano da internet in Excel 365.")
         foot.font = Font(size=9, italic=True, color=MUTED)

@@ -211,6 +211,7 @@ def test_problem_report(tmp_path=None):
     assert any("MELONI · MEGA CASH" in str(v) for v in flat)                      # 写明是哪几家批发商订不到
     assert not any("箱规" in str(v) for v in flat)                               # 不放无关的（没有箱规）
     assert any(str(v).startswith("Articoli non in Griglia") for v in flat)
+    assert ws.auto_filter.ref and ws.auto_filter.ref.startswith("B") and ws.freeze_panes      # 带好筛选、表头冻结
     p2 = OC.write_problem_report(rows, os.path.join(d, "b.xlsx"))                 # 不指定门店：每家店一页
     assert load_workbook(p2).sheetnames == ["FOIANO", "MARLIA"]
     assert OC.write_problem_report([rows[4]], os.path.join(d, "c.xlsx")) is None
