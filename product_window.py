@@ -366,12 +366,17 @@ class ProductWindow(QDialog):
             self.title.setToolTip(tr("数据库里这个商品的全部字段：") + "\n" + raw)
         self._fill_stock(res.get("stock") or {}, res.get("daily") or {})
         self._rec_all = bool(res.get("receipts_all"))
+        up = res.get("receipts_upto")
+        self._rec_old = up if (up is not None and (date.today() - up).days > 14) else None
         self._fill_receipts(*(res.get("receipts") or ([], [])))
         self._fill_daily(res.get("daily") or {}, prod)
         errs = list(res.get("errors") or [])
+        if self._rec_old is not None:
+            errs.insert(0, tr("⚠ 数据库里的入库记录只到 {0}，之后的进货查不到（入库表没再同步）", self._rec_old.strftime("%d/%m/%Y")))
         if self._rec_all and res.get("receipts", ([], []))[1]:
             errs.append(tr("入库记录分不出门店，显示的是全部门店"))
         self.msg.setText("；".join(errs))
+        self.msg.setStyleSheet(f"color:{self.ui.T('warn')};" if self._rec_old is not None else "")
 
     def _fill_stock(self, stock, daily):
         """各店库存 + 近 30 天销量（本店加粗）"""
@@ -408,8 +413,11 @@ class ProductWindow(QDialog):
         save_settings(self.settings)
 
     def _fill_receipts(self, cols, rows):
-        if not cols:
-            self._placeholder(self.rec_box, tr("没有入库记录"))
+        old = getattr(self, "_rec_old", None)
+        if not cols or not rows:
+            self._placeholder(self.rec_box, tr("没有入库记录") + (
+                "\n" + tr("（数据库里的入库记录只到 {0}）", old.strftime("%d/%m/%Y")) if old else ""))
+            self.tabs.setTabText(0, tr("入库记录") + (" ⚠" if old else ""))
             return
         heads = [tr(h) if tag else h for _c, h, tag in cols]
         fids = [_fid(c, tag) for c, _h, tag in cols]
@@ -438,9 +446,11 @@ class ProductWindow(QDialog):
             out.append(t)
             keys.append(kk)
         self.rec.set(out, keys, colors)
-        self.tabs.setTabText(0, tr("入库记录（{0}）", len(rows)) if len(rows) < 300 else tr("入库记录（最近 300 条）"))
-        self.tabs.setTabToolTip(0, tr("全部门店（数据库入库表里分不出门店）") if self._rec_all else
-                                tr("只有 {0} 的入库", R.STORES.get(self.x.get("store"), "")))
+        self.tabs.setTabText(0, (tr("入库记录（{0}）", len(rows)) if len(rows) < 300 else tr("入库记录（最近 300 条）")) +
+                             (" ⚠" if old else ""))
+        self.tabs.setTabToolTip(0, (tr("全部门店（数据库入库表里分不出门店）") if self._rec_all else
+                                    tr("只有 {0} 的入库", R.STORES.get(self.x.get("store"), ""))) +
+                                ("\n" + tr("数据库里的入库记录只到 {0}", old.strftime("%d/%m/%Y")) if old else ""))
 
     def _fill_daily(self, daily, prod):
         stores = [s for s in sorted(R.STORES) if s != 0]

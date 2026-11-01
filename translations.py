@@ -2639,4 +2639,7 @@ TRANSLATIONS = {
     '全部门店（数据库入库表里分不出门店）': ('All stores (the receipts table has no store column)', 'Tutti i negozi (la tabella carichi non indica il negozio)'),
     '只有 {0} 的入库': ('Receipts of {0} only', 'Solo i carichi di {0}'),
     '入库记录分不出门店，显示的是全部门店': ('Receipts cannot be split by store: showing all stores', 'I carichi non indicano il negozio: mostrati tutti i negozi'),
+    '⚠ 数据库里的入库记录只到 {0}，之后的进货查不到（入库表没再同步）': ('⚠ Receipts in the database only go up to {0}; later deliveries are missing (the receipts table is no longer synced)', '⚠ I carichi nel database arrivano solo al {0}; i successivi mancano (la tabella carichi non è più sincronizzata)'),
+    '（数据库里的入库记录只到 {0}）': ('(receipts in the database only go up to {0})', '(i carichi nel database arrivano solo al {0})'),
+    '数据库里的入库记录只到 {0}': ('Receipts in the database only go up to {0}', 'I carichi nel database arrivano solo al {0}'),
 }

@@ -916,7 +916,9 @@ def product_card(db, code, days=60, stores=None, today=None, store=None):
             except (TypeError, ValueError):
                 continue
         return m
-    jobs = {"prod": q_prod, "stock": q_stock, "receipts": q_receipts, "daily": q_daily}
+    def q_upto():
+        return receipts_latest(db)
+    jobs = {"prod": q_prod, "stock": q_stock, "receipts": q_receipts, "daily": q_daily, "receipts_upto": q_upto}
     with ThreadPoolExecutor(max_workers=len(jobs), thread_name_prefix="card") as ex:
         futs = {k: ex.submit(f) for k, f in jobs.items()}
         for k, f in futs.items():
@@ -925,6 +927,23 @@ def product_card(db, code, days=60, stores=None, today=None, store=None):
             except Exception as e:
                 out["errors"].append(f"{k}: {e}")
     return out
+
+
+_RC_LATEST = {}          # 数据库 → (查的时间, 入库表最新日期)
+
+
+def receipts_latest(db):
+    """入库表里最新的入库日期（诊断 24：这个库的入库表停在 2026-04-09，销售照常更新）；一小时查一次"""
+    import time
+    import pandas as pd
+    key = str(getattr(getattr(db, "engine", None), "url", ""))
+    hit = _RC_LATEST.get(key)
+    if hit and time.time() - hit[0] < 3600:
+        return hit[1]
+    df = pd.read_sql("SELECT MAX(Cdata) AS d FROM caricolistalist", db.engine)
+    d = _day(df.iloc[0]["d"]) if len(df) else None
+    _RC_LATEST[key] = (time.time(), d)
+    return d
 
 
 _RC_COLS = {}            # 数据库 → 入库表的门店列名（None = 没有）：只查一次表头

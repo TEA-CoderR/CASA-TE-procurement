@@ -96,6 +96,7 @@ def test_query_promos_and_product_card():
         cols, rows = card["receipts"]
         assert [h for _c, h, _t in cols][:5] == ["日期", "数量", "类型", "商家", "发票"]
         assert len(rows) == 2 and not card["receipts_all"]                # 只有门店 1 的入库
+        assert card["receipts_upto"] == date.today() - timedelta(days=1)   # 入库表最新的日期（数据库停更时窗口里提醒）
         assert len(R.product_card(db, 1, days=60)["receipts"][1]) == 3    # 不给门店：全部
         assert rows[0]["Quantita"] == -2 and rows[1]["Fornitore"] == "MEGA CASH" and rows[1]["Fattura"] == "FT 12"   # 新的在前，商家换成名字，发票号来自入库单
         assert sum(q for q, _t in card["daily"][1].values()) == 8 and sum(q for q, _t in card["daily"][2].values()) == 4
