@@ -4,7 +4,7 @@
 """
 import json
 
-COMPANY_DEFAULTS_VER = 5          # v3.3.9 发布时同步
+COMPANY_DEFAULTS_VER = 6          # v3.3.10 发布时同步
 
 COMPANY_DEFAULTS = json.loads(r'''
 {
@@ -171,6 +171,60 @@ COMPANY_DEFAULTS = json.loads(r'''
  "match_threshold": 0.6,
  "min_order_enabled": true,
  "reorder": {
+  "card_day_cols_hidden": [],
+  "card_day_cols_hidden_ver": 1,
+  "card_day_columns_ver": 1,
+  "card_rec_cols_hidden": [
+   6,
+   7,
+   25634,
+   28034,
+   1177,
+   85196,
+   9363,
+   96515,
+   54686,
+   7168,
+   31284
+  ],
+  "card_rec_cols_hidden_ver": 2,
+  "card_rec_columns": [
+   1,
+   2,
+   3,
+   4,
+   5,
+   6,
+   7,
+   25634,
+   28034,
+   1177,
+   85196,
+   9363,
+   96515,
+   54686,
+   7168,
+   31284
+  ],
+  "card_rec_columns_ver": 2,
+  "card_rec_widths": {
+   "1": 100,
+   "1177": 0,
+   "2": 70,
+   "25634": 0,
+   "28034": 0,
+   "3": 70,
+   "31284": 0,
+   "4": 240,
+   "5": 150,
+   "54686": 0,
+   "6": 0,
+   "7": 0,
+   "7168": 0,
+   "85196": 0,
+   "9363": 0,
+   "96515": 0
+  },
   "check_cols_hidden": [
    1,
    5,
@@ -201,6 +255,7 @@ COMPANY_DEFAULTS = json.loads(r'''
    11,
    21,
    0,
+   30,
    15,
    20,
    29,
@@ -235,16 +290,17 @@ COMPANY_DEFAULTS = json.loads(r'''
    "19": 0,
    "2": 130,
    "20": 76,
-   "21": 142,
+   "21": 104,
    "22": 0,
    "23": 0,
    "24": 0,
    "25": 0,
    "26": 0,
-   "27": 287,
+   "27": 203,
    "28": 60,
    "29": 71,
    "3": 297,
+   "30": 180,
    "4": 60,
    "5": 0,
    "6": 0,
@@ -435,7 +491,7 @@ COMPANY_DEFAULTS = json.loads(r'''
    "merge_direct": true
   },
   "transfer": {
-   "enabled": true,
+   "enabled": false,
    "exclude_stores": [
     1
    ],
