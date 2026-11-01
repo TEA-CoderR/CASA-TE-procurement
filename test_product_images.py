@@ -33,3 +33,28 @@ def test_thumb_size_and_row_height():
     assert PI.row_height({"image_size": "l"}) == 104
     assert PI.row_height({"show_images": False, "image_size": "l"}) == 34
     assert PI.row_height({"image_size": "s"}) == 48
+
+
+def test_403_not_marked_missing_and_old_markers_cleared(tmp_path):
+    d = str(tmp_path)
+    open(os.path.join(d, "8002910029470.none"), "w").close()          # 旧版本记下的「没有图」
+    st = PI.ImageStore(d, enabled=True)
+    assert not os.path.exists(os.path.join(d, "8002910029470.none"))  # 作废一次
+    PI.ImageStore(d, enabled=True)                                     # 第二次打开不再清
+
+    class R:
+        def __init__(self, code):
+            self.status_code, self.content = code, b""
+
+    class S:
+        def __init__(self, code):
+            self.code = code
+
+        def get(self, url, timeout=0):
+            return R(self.code)
+    st._session = S(403)
+    st._fetch("8002910029471")
+    assert not st.known_missing("8002910029471")                       # 服务器拒绝：不当成没有图
+    st._session = S(404)
+    st._fetch("8002910029472")
+    assert st.known_missing("8002910029472")                           # 真没有：记一天
