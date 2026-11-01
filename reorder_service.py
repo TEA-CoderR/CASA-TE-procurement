@@ -600,9 +600,10 @@ def query_monthly_sales(db, store_id, codes, months=24, today=None):
 #   会员限时价  prodotti_vip.PrezzoVedi + Prezzofine
 #   促销单      promozioni（l, Data_a, Data_f, negozio = "0,1,2,3" 空 = 全部门店）+ promozioni_list（promozioni_l, CodArticolo,
 #               Prezzo_p 促销价 / sconto 折扣 %, invalid）
-# 只算有时间限制的（单品特价、会员限时价、促销单；用户 2026-11-01 定），会员价不算。
+# 会员价按 prodotti_vip 的结束日期（ERP「会员价格」页面），prodotti.PrezzoVedi3 过期了也还在、不能单独用。
+# 注意：这个库里 prodotti_vip / promozioni 停在 2026-04-09（没同步），只有单品特价（商品表）是每天同步的 → query_promos 在 _warn 里提醒。
 # 今天有效、比标价便宜的都算；同一个商品几种都有，取最便宜的。查不到的表跳过（不影响别的）
-PROMO_KINDS = {"vip": "会员价", "offer": "单品特价", "vip_t": "会员限时价", "promo": "促销单"}
+PROMO_KINDS = {"vip": "会员价", "offer": "单品特价", "vip_t": "会员价", "promo": "促销单"}
 PROMO_DAYS = 7        # 详情窗口每天销量：实际卖价比标价便宜 PROMO_MIN 以上标红
 PROMO_MIN = 0.05
 
@@ -678,9 +679,18 @@ def query_promos(db, store_id, codes, today=None):
         for r in df.to_dict("records"):
             c = r["CodArticolo"]
             lists[str(int(c))] = r["PrezzoVedi1"]
-            # 会员价 PrezzoVedi3 没有时间限制：不算促销（用户 2026-11-01：只要有时间限制的），只在详情窗口显示
+            # 会员价 PrezzoVedi3 本身没有结束日期，过期了也还留着（用户 ERP 截图：OMINO 355203 会员价 4.99 到 2026-10-14 已过期，
+            # PrezzoVedi3 仍是 4.99）。结束日期在 prodotti_vip（ERP「会员价格」页面），所以会员价只按 prodotti_vip 判断（下面 vip_t）
             if _active(r.get("PrezzoVediOfferta_inizio"), r.get("PrezzoVediOfferta_fine"), today):
                 add(c, "offer", r.get("PrezzoVediOfferta"), r.get("PrezzoVediOfferta_fine"))
+        if i == 0:
+            try:
+                up = pd.read_sql("SELECT MAX(Udata) AS d FROM prodotti_vip", db.engine)
+                last = _day(up.iloc[0]["d"]) if len(up) else None
+                if last is not None and (today - last).days > 14:
+                    warn.add(f"会员价表（prodotti_vip）只更新到 {last.strftime('%d/%m/%Y')}，之后设的会员价看不到")
+            except Exception:
+                pass
         try:
             df = pd.read_sql(f"SELECT CodArticolo, PrezzoVedi, Prezzofine FROM prodotti_vip WHERE CodArticolo IN ({ph})",
                              db.engine, params=tuple(chunk))
@@ -688,7 +698,7 @@ def query_promos(db, store_id, codes, today=None):
                 if _active(None, r.get("Prezzofine"), today):
                     add(r["CodArticolo"], "vip_t", r.get("PrezzoVedi"), r.get("Prezzofine"))
         except Exception as e:
-            warn.add(f"prodotti_vip: {e}")
+            warn.add(f"促销没查到（prodotti_vip）：{e}")
         try:
             df = pd.read_sql(f"SELECT pl.CodArticolo, pl.Prezzo_p, pl.sconto, pl.invalid, pr.Data_a, pr.Data_f, pr.negozio "
                              f"FROM promozioni_list pl JOIN promozioni pr ON pr.l = pl.promozioni_l "
@@ -703,7 +713,7 @@ def query_promos(db, store_id, codes, today=None):
                     p = _num(lists.get(c)) * (1 - _num(r.get("sconto")) / 100)
                 add(c, "promo", p, r.get("Data_f"))
         except Exception as e:
-            warn.add(f"promozioni: {e}")
+            warn.add(f"促销没查到（promozioni）：{e}")
     out = {}
     for c, of in offers.items():
         p = promo_pick(lists.get(c), of)
@@ -768,7 +778,7 @@ def _blank(v):
 def card_fields(prod):
     """商品表一行（dict）→ 详情窗口要显示的 [(标签, 文字)]（数据库里没有的就不显示）"""
     def num(v, fmt="{0:g}"):
-        if _blank(v):
+        if _blank(v) or _num(v) == 0:
             return ""
         try:
             return fmt.format(float(v))
@@ -781,7 +791,8 @@ def card_fields(prod):
         return v.strftime("%d/%m/%Y") if hasattr(v, "strftime") else str(v)[:10]
 
     def txt(v):
-        return "" if _blank(v) else str(v).strip()
+        s = "" if _blank(v) else str(v).strip()
+        return "" if s in ("0", "0.0") else s           # 数据库里没填的常常是 0（品牌 0、箱装数 0）
     p = prod or {}
     out = [("编号", txt(p.get("CodArticolo"))), ("条码", txt(p.get("CodBarre"))),
            ("商家", " · ".join(x for x in (txt(p.get("IDFornitore")), txt(p.get("FornitoreNome"))) if x)),
@@ -827,7 +838,7 @@ def daily_sales_table(per_store, days=60, today=None):
     return rows
 
 
-def product_card(db, code, days=60, stores=None, today=None):
+def product_card(db, code, days=60, stores=None, today=None, store=None):
     """
     双击商品看的详情（只读查询，几条同时查）：
       prod     商品表这一行（+ 供应商名、大类 / 中类名）
@@ -868,8 +879,28 @@ def product_card(db, code, days=60, stores=None, today=None):
         return st
 
     def q_receipts():
-        df = pd.read_sql("SELECT * FROM caricolistalist WHERE CodArticolo = %s ORDER BY Cdata DESC LIMIT 300",
-                         db.engine, params=(code,))
+        # 只看这家门店的（用户 2026-11-01）：入库表里认出门店那一列（Negozio…）就按它筛；认不出来照旧全部，receipts_all = True
+        # 入库表的真实结构（用户诊断 21–23，2026-11-01）：caricolistalist 每行一个商品（Cdata 入库日、Quantita 件数、Tipo 如 CA、
+        # Fornitore 供应商编号、Prezzo_A 进价、Negozio 门店、ListaId → caricolista 入库单：Fnumero 发票号、Fdata 发票日期）
+        try:
+            where, params = "l.CodArticolo = %s", [code]
+            if store is not None:
+                where += " AND l.Negozio = %s"
+                params.append(int(store))
+            df = pd.read_sql("SELECT l.Cdata, l.Quantita, l.Tipo, l.Fornitore, c.Fnumero AS Fattura, l.Prezzo_A AS Prezzo, "
+                             "l.Negozio FROM caricolistalist l "
+                             "LEFT JOIN caricolista c ON c.ListaId = l.ListaId "
+                             f"WHERE {where} ORDER BY l.Cdata DESC, l.l DESC LIMIT 300", db.engine, params=tuple(params))
+            scol = "Negozio"
+        except Exception:            # 别的数据库结构：照旧按列名认
+            scol = receipt_store_col(db) if store is not None else None
+            if scol is not None:
+                df = pd.read_sql(f"SELECT * FROM caricolistalist WHERE CodArticolo = %s AND `{scol}` = %s "
+                                 f"ORDER BY Cdata DESC LIMIT 300", db.engine, params=(code, int(store)))
+            else:
+                df = pd.read_sql("SELECT * FROM caricolistalist WHERE CodArticolo = %s ORDER BY Cdata DESC LIMIT 300",
+                                 db.engine, params=(code,))
+        out["receipts_all"] = store is not None and scol is None
         cols = receipt_columns(list(df.columns))
         rows = df.to_dict("records")
         sup = next((c for c, _h, tag in cols if tag == "sup"), None)
@@ -896,7 +927,9 @@ def product_card(db, code, days=60, stores=None, today=None):
             except (TypeError, ValueError):
                 continue
         return m
-    jobs = {"prod": q_prod, "stock": q_stock, "receipts": q_receipts, "daily": q_daily}
+    def q_upto():
+        return receipts_latest(db)
+    jobs = {"prod": q_prod, "stock": q_stock, "receipts": q_receipts, "daily": q_daily, "receipts_upto": q_upto}
     with ThreadPoolExecutor(max_workers=len(jobs), thread_name_prefix="card") as ex:
         futs = {k: ex.submit(f) for k, f in jobs.items()}
         for k, f in futs.items():
@@ -905,6 +938,62 @@ def product_card(db, code, days=60, stores=None, today=None):
             except Exception as e:
                 out["errors"].append(f"{k}: {e}")
     return out
+
+
+STALE_DAYS = 2           # 销售最后一条比今天早超过 2 天 = 数据库没同步（每天早上 6 点同步前一天的）
+
+
+def sales_latest(db, stores=None):
+    """
+    数据库里最新的一条销售是什么时候（五家门店里最晚的那条）：判断数据库是不是停止同步了
+    （诊断 36，2026-11-01：数据库时间 11-01，销售只到 10-24 20:10 → 一周没同步，配货 / 检查清单都在用旧数据）
+    """
+    import pandas as pd
+    stores = [s for s in (stores or STORES) if s != 0]
+    sql = " UNION ALL ".join(f"SELECT MAX(Data) AS d FROM vendite_list_{int(s)}" for s in stores)
+    df = pd.read_sql(sql, db.engine)
+    vals = [v for v in df["d"].tolist() if v is not None and str(v) not in ("NaT", "nan", "None")]
+    if not vals:
+        return None
+    best = max(pd.Timestamp(v) for v in vals)
+    return best.to_pydatetime()
+
+
+def stale_days(latest, now=None):
+    """最新销售离今天几天（latest 是 None 返回 None）；> STALE_DAYS 就要提醒"""
+    if latest is None:
+        return None
+    now = now or datetime.now()
+    return (now.date() - latest.date()).days
+
+
+_RC_LATEST = {}          # 数据库 → (查的时间, 入库表最新日期)
+
+
+def receipts_latest(db):
+    """入库表里最新的入库日期（诊断 24：这个库的入库表停在 2026-04-09，销售照常更新）；一小时查一次"""
+    import time
+    import pandas as pd
+    key = str(getattr(getattr(db, "engine", None), "url", ""))
+    hit = _RC_LATEST.get(key)
+    if hit and time.time() - hit[0] < 3600:
+        return hit[1]
+    df = pd.read_sql("SELECT MAX(Cdata) AS d FROM caricolistalist", db.engine)
+    d = _day(df.iloc[0]["d"]) if len(df) else None
+    _RC_LATEST[key] = (time.time(), d)
+    return d
+
+
+_RC_COLS = {}            # 数据库 → 入库表的门店列名（None = 没有）：只查一次表头
+
+
+def receipt_store_col(db):
+    import pandas as pd
+    key = str(getattr(getattr(db, "engine", None), "url", ""))
+    if key not in _RC_COLS:
+        cols = list(pd.read_sql("SELECT * FROM caricolistalist LIMIT 0", db.engine).columns)
+        _RC_COLS[key] = next((c for c, _h, tag in receipt_columns(cols) if tag == "store"), None)
+    return _RC_COLS[key]
 
 
 _SUP_NAMES = {}          # 数据库 → (查的时间, {供应商编号: 名字})：入库记录里的商家编号换成名字，一小时查一次

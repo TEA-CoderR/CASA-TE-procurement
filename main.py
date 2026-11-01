@@ -3101,14 +3101,36 @@ class MainWindow(QMainWindow):
     # ---------- 数据库状态 ----------
     def _set_db_state(self, ok, sub=None):
         self._db_ok = ok
-        color = T("ok") if ok else ("#E7A23A" if ok is None else T("err"))
+        import reorder_service as R
+        upto = getattr(self, "_db_sales_upto", None) if ok else None
+        late = R.stale_days(upto)
+        stale = late is not None and late > R.STALE_DAYS
+        color = (T("warn") if stale else T("ok")) if ok else ("#E7A23A" if ok is None else T("err"))
         self.db_dot.setStyleSheet(f"background:{color}; border-radius:4px;")
-        self.db_title.setText(tr("数据库已连接") if ok else (tr("正在检查数据库…") if ok is None else tr("数据库未连接")))
+        if stale:            # 连上了，但数据停在几天前（诊断 36：同步停了一周，配货 / 检查清单都会用旧销量、旧库存）
+            self.db_title.setText(tr("⚠ 数据只到 {0}", upto.strftime("%d/%m")))
+            self.db_title.setStyleSheet(f"color:{T('warn')};")
+            self.db_title.setToolTip(tr("数据库里最新的销售是 {0}，已经 {1} 天没同步：销量、库存都是那天的，配货和检查清单会按旧数据算。请联系负责数据库同步的人。",
+                                        upto.strftime("%d/%m/%Y %H:%M"), late))
+        else:
+            self.db_title.setText(tr("数据库已连接") if ok else (tr("正在检查数据库…") if ok is None else tr("数据库未连接")))
+            self.db_title.setStyleSheet("")
+            self.db_title.setToolTip("")
         if sub is not None:
             self.db_sub.setText(sub)
 
     def _on_db_state(self, ok):
         self._set_db_state(ok)
+        import reorder_service as R
+        upto = getattr(self, "_db_sales_upto", None)
+        late = R.stale_days(upto) if ok else None
+        if late is not None and late > R.STALE_DAYS and not getattr(self, "_stale_warned", False):
+            self._stale_warned = True
+            self.log(tr("⚠ 数据库里最新的销售是 {0}，已经 {1} 天没同步：销量和库存都是那天的", upto.strftime("%d/%m/%Y %H:%M"), late))
+            try:
+                self.show_toast(tr("⚠ 数据库数据只到 {0}（{1} 天没同步）", upto.strftime("%d/%m"), late))
+            except Exception:
+                pass
         if hasattr(self, "dashboard"):
             self.dashboard.set_db(ok)
         if hasattr(self, "settings_page"):
@@ -3132,6 +3154,10 @@ class MainWindow(QMainWindow):
                     self._db_account = R.account_info(db)
                 except Exception:
                     self._db_account = None
+                try:                                   # 数据库是不是停止同步了：最新一条销售是哪天
+                    self._db_sales_upto = R.sales_latest(db)
+                except Exception:
+                    self._db_sales_upto = None
                 db.engine.dispose()
                 ok = True
             except Exception:
@@ -3482,6 +3508,10 @@ class MainWindow(QMainWindow):
         acts.addWidget(b1)
         acts.addWidget(self.btn_edit)
         acts.addWidget(self.btn_missing)
+        b_rep = QPushButton(tr("门店报告"))
+        b_rep.setToolTip(tr("发给门店的意大利文报告（非 Griglia 商品，下次别加）：检查清单确认时生成在这家店的比价文件夹里"))
+        b_rep.clicked.connect(self.open_store_report)
+        acts.addWidget(b_rep)
         acts.addWidget(self.btn_transfers)
         acts.addWidget(b2)
         acts.addWidget(self.btn_backup)
@@ -4724,6 +4754,18 @@ class MainWindow(QMainWindow):
             os.path.join(self.folder_edit.text().strip(), DISTRIBUTUIRE_FOLDER)
         o = os.path.join(os.path.dirname(os.path.abspath(d)), SV.ORDERS_DIR)
         open_path(o if os.path.isdir(o) else d)
+
+    def open_store_report(self):
+        """打开这家店的门店报告（Articoli_da_verificare_门店_日月.xlsx，检查清单确认时写在比价文件夹里，取最新的）"""
+        import glob
+        d = self._shown_state().get("distribuire_path")
+        folder = os.path.dirname(os.path.abspath(d)) if d else self.folder_edit.text().strip()
+        files = sorted(glob.glob(os.path.join(folder, "Articoli_da_verificare_*.xlsx")) if folder else [],
+                       key=os.path.getmtime)
+        if files:
+            open_path(files[-1])
+        else:
+            QMessageBox.information(self, APP_NAME, tr("这家店没有门店报告：清单里没有非 Griglia 商品，或者这次不是从检查清单确认的。"))
 
     def open_main_order(self):
         p = self._shown_state().get("ordine_file")

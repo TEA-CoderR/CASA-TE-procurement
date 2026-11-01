@@ -95,7 +95,7 @@ def _prob_title(kind, n, has_grid=True):
     """标签页名字：短、一眼看懂"""
     if kind == "noquote":
         return tr("Griglia 商品 · 批发商都没有（{0}）", n) if has_grid else tr("批发商都没有（{0}）", n)
-    return {"nogrid_noq": tr("非 Griglia 商品 · 批发商都没有（{0}）", n), "nogrid": tr("非 Griglia 商品 · 批发商有（{0}）", n)}[kind]
+    return tr("非 Griglia 商品（{0}）", n)
 
 
 def _issue(x):
@@ -141,42 +141,145 @@ def _problem(x):
     return None
 
 
-def write_problem_report(rows, path, store=None, for_store=False, has_grid=True):
+# 待核对窗口的标签页（2026-11-01 用户：两个「非 Griglia」页合成一页，单独一列「批发商」体现区别）
+def PROB_TABS():
+    return (("noquote", tr("在我们的 Griglia 里，但这周几家批发商的报价里都没有：比价时会缺失。可能批发商不做了、断货，或者要向别处订")),
+            ("nogrid", tr("非 Griglia 商品（多半是门店发来的别的区域的商品）：「批发商」列 = 这周报价里有没有。有的比价能分出去，要不要订你决定；都没有的比价时会缺失")))
+
+
+def _tab_of(kind):
+    """_problem 的细分 → 待核对窗口的哪一页"""
+    return "nogrid" if kind in ("nogrid", "nogrid_noq") else kind
+
+
+def _report_rows(rows, store):
+    """发给门店的报告里这家店的商品：只有非 Griglia 商品（下次别加）。
+    原来的第 ② 段「Griglia 商品这周批发商都没有」用户 2026-11-01 说不用发给门店，去掉了"""
+    rs = [x for x in rows if x.get("store") == store and _tab_of(_problem(x)) == "nogrid"]
+    return (sorted(rs, key=lambda y: str(y.get("name") or "").lower()),)
+
+
+def report_name(store, when=None):
+    """发给门店的报告文件名（意大利文）：Articoli_da_verificare_FOIANO_0111.xlsx"""
+    return f"Articoli_da_verificare_{R.STORES.get(store, store)}_{(when or datetime.now()):%d%m}.xlsx"
+
+
+def write_problem_report(rows, path, store=None, url=None, when=None, sources=None):
     """
-    待核对商品导出 Excel。for_store = 发给门店的提醒（只放这家店）：
-      ① 「非 Griglia 商品，下次别加」= 不在 Griglia 的（批发商有 / 没有都算）；② 「这次批发商没货」= Griglia 商品批发商都没有（只是告知）。
-    不是给门店的：三页和窗口一样。表头中文 + 意大利文（门店同事看得懂）。没有商品返回 None
+    发给门店的意大利文报告（2026-11-01 用户：格式漂亮、不要无关的数据、用 IMAGE 函数读我们网站的图片、文件要小）。
+    一家店一个工作表（store = None：清单里每家有待核对商品的店各一页），每页：
+      标题（门店 · 日期）→ ① Articoli non in Griglia – da non inserire nei prossimi ordini（照片 EAN 编号 名称 要的箱数 订的箱数 批发商有没有）
+                         → ② Articoli Griglia non disponibili dai grossisti questa settimana（照片 EAN 编号 名称 要的箱数）
+    列：Foto EAN Cod.Art. Descrizione Fornitore（数据库登记的供应商）Colli richiesti Colli ordinati Ordinabile（Sì / No = 这周批发商有没有）。
+    照片 = Excel 公式 =IMAGE("https://img.casaete.top/prodotti/<EAN>/01.webp")（Excel 365 打开时自己从网上读，文件里不放图片，很小）。
+    sources = 这次读的几家批发商报价的名字（MELONI、MEGA CASH…）：每段标题下面写一行「Ordinabile = 在这几家的报价里」，
+    门店才知道「No」是这几家订不到、不是哪儿都没有（用户 2026-11-01）。
+    这家店没有待核对的商品返回 None
     """
     from openpyxl import Workbook
-    from openpyxl.styles import Font, PatternFill
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
     from openpyxl.utils import get_column_letter
-    rs = [x for x in rows if (store is None or x.get("store") == store) and _problem(x)]
-    if not rs:
-        return None
-    if for_store:
-        groups = [(tr("非 Griglia 商品，下次别加") + " Non in Griglia", [x for x in rs if _problem(x) in ("nogrid_noq", "nogrid")]),
-                  (tr("这次批发商没货") + " Non disponibili", [x for x in rs if _problem(x) == "noquote"])]
-    else:
-        groups = [(_prob_title(k, 0, has_grid).split("（")[0], [x for x in rs if _problem(x) == k])
-                  for k, _ in PROB_KINDS_TIPS()]
-    heads = [tr("门店") + " Negozio", tr("编号") + " Cod.Art.", tr("条码") + " EAN", tr("名称") + " Descrizione",
-             tr("供应商") + " Fornitore", tr("备注") + " Note", tr("清单箱数") + " Colli lista", tr("确定箱数") + " Colli ordinati"]
+    import product_images as PI
+    url = url or PI.DEFAULT_URL
+    when = when or datetime.now()
+    stores = [store] if store is not None else \
+        sorted({x.get("store") for x in rows if _tab_of(_problem(x)) == "nogrid"}, key=lambda v: v or 0)
     wb = Workbook()
     wb.remove(wb.active)
-    for title, xs in groups:
-        if not xs:
+    INK, MUTED, LINE = "1F2A37", "6B7280", "E5E7EB"
+    thin = Side(style="thin", color=LINE)
+    box = Border(left=thin, right=thin, top=thin, bottom=thin)
+    center = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    left = Alignment(horizontal="left", vertical="center", wrap_text=True, indent=1)
+    # 用户 2026-11-01：加「供应商」（门店知道是哪家的货别再要）；「Grossisti」改成「可订到」= Ordinabile
+    heads = ["Foto", "EAN", "Cod. Art.", "Descrizione", "Fornitore", "Colli richiesti", "Colli ordinati", "Ordinabile"]
+    widths = (9, 16, 10, 40, 24, 10, 10, 11)
+    IMG = 48                      # 照片显示 48 × 48 像素（用户：不用那么大），行高跟着小
+    ncol = len(heads)
+    names = " · ".join(str(s) for s in (sources or []) if str(s).strip())
+    who = names or "i nostri grossisti"
+    sections = (("Articoli non in Griglia – da non inserire nei prossimi ordini", "FDECE2", "B4471A", True,
+                 f"Ordinabile = presente nei listini di questa settimana di {who}. «No» vale solo per questi grossisti."),)
+    for sid in stores:
+        parts = _report_rows(rows, sid)
+        if not any(parts):
             continue
-        ws = wb.create_sheet(title[:31].replace("/", "-").replace("·", "-"))
-        ws.append(heads)
-        for c in ws[1]:
-            c.font = Font(bold=True)
-            c.fill = PatternFill("solid", fgColor="EEF2F7")
-        for x in sorted(xs, key=lambda y: (y.get("store") or 0, str(y.get("name") or ""))):
-            ws.append([R.STORES.get(x.get("store"), ""), x.get("code") or "", x.get("ean") or "", x.get("name") or "",
-                       x.get("sup_name") or "", _issue_text(x), x.get("lbox") or 0, x.get("fbox") or 0])
-        for i, w in enumerate((12, 12, 16, 46, 30, 14, 12, 14), 1):
+        ws = wb.create_sheet(str(R.STORES.get(sid, sid))[:31])
+        ws.sheet_view.showGridLines = False
+        for i, w in enumerate(widths, 1):
             ws.column_dimensions[get_column_letter(i)].width = w
-        ws.freeze_panes = "A2"
+        last = get_column_letter(ncol)
+        ws.merge_cells(f"A1:{last}1")
+        ws["A1"] = f"Articoli da verificare – {R.STORES.get(sid, sid)}"
+        ws["A1"].font = Font(size=16, bold=True, color="FFFFFF")
+        ws["A1"].fill = PatternFill("solid", fgColor="1F3A5F")
+        ws["A1"].alignment = Alignment(horizontal="left", vertical="center", indent=1)
+        ws.row_dimensions[1].height = 32
+        ws.merge_cells(f"A2:{last}2")
+        ws["A2"] = f"CASA&TE · {when:%d/%m/%Y} · {sum(len(p) for p in parts)} articoli"
+        ws["A2"].font = Font(size=10, italic=True, color=MUTED)
+        ws["A2"].alignment = Alignment(horizontal="left", vertical="center", indent=1)
+        ws.row_dimensions[2].height = 20
+        r = 4
+        for (title, fill, ink, full, note), xs in zip(sections, parts):
+            if not xs:
+                continue
+            cols = ncol if full else ncol - 2          # ② 不放「订的箱数」「可订到」（都是 0 / 都订不到）
+            ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=ncol)
+            c = ws.cell(r, 1, f"{title}  ({len(xs)})")
+            c.font = Font(size=12, bold=True, color=ink)
+            c.fill = PatternFill("solid", fgColor=fill)
+            c.alignment = Alignment(horizontal="left", vertical="center", indent=1)
+            ws.row_dimensions[r].height = 24
+            r += 1
+            ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=ncol)
+            nc = ws.cell(r, 1, note)                       # 是哪几家批发商（「No」只是这几家订不到）
+            nc.font = Font(size=9, italic=True, color=ink)
+            nc.alignment = Alignment(horizontal="left", vertical="center", indent=1)
+            ws.row_dimensions[r].height = 16
+            r += 1
+            hr = r                                         # 表头行：筛选按钮、冻结窗格从这里
+            for j, h in enumerate(heads[:cols], 1):
+                hc = ws.cell(r, j, h)
+                hc.font = Font(size=10, bold=True, color=INK)
+                hc.fill = PatternFill("solid", fgColor="F3F4F6")
+                hc.alignment = center
+                hc.border = box
+            ws.row_dimensions[r].height = 20
+            r += 1
+            for k, x in enumerate(xs):
+                ean = PI.norm_ean(x.get("ean"))
+                # IMAGE(网址, 替代文字, 3 = 自定大小, 高, 宽)：显示成 48 像素的小图
+                vals = [f'=_xlfn.IMAGE("{url.format(ean=ean)}","",3,{IMG},{IMG})' if ean else "", ean or str(x.get("ean") or ""),
+                        str(x.get("code") or ""), str(x.get("name") or ""),
+                        str(x.get("sup_name") or x.get("quote_sup") or ""), int(x.get("lbox") or 0), int(x.get("fbox") or 0),
+                        "No" if _problem(x) == "nogrid_noq" else "Sì"]
+                zebra = PatternFill("solid", fgColor="FAFBFC") if k % 2 else None
+                for j, v in enumerate(vals[:cols], 1):
+                    dc = ws.cell(r, j, v)
+                    dc.border = box
+                    dc.alignment = left if j in (4, 5) else center
+                    dc.font = Font(size=10, color=INK, bold=(j == 4))
+                    if zebra is not None:
+                        dc.fill = zebra
+                if full:
+                    g = ws.cell(r, 8)
+                    g.font = Font(size=10, bold=True, color="B42318" if g.value == "No" else "2E7D32")
+                ws.row_dimensions[r].height = 42          # 放得下 48 像素的照片
+                r += 1
+            # 直接带好筛选（用户：不想自己再加）：EAN 到最后一列都有下拉，照片列不用；表头冻结，往下翻也看得到
+            ws.auto_filter.ref = f"B{hr}:{get_column_letter(cols)}{r - 1}"
+            ws.freeze_panes = f"A{hr + 1}"
+            r += 1
+        foot = ws.cell(r, 1, "Foto: si caricano da internet in Excel 365.")
+        foot.font = Font(size=9, italic=True, color=MUTED)
+        ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=ncol)
+        ws.page_setup.orientation = "portrait"
+        ws.page_setup.fitToWidth = 1
+        ws.page_setup.fitToHeight = 0
+        ws.sheet_properties.pageSetUpPr.fitToPage = True
+        ws.print_options.horizontalCentered = True
+        ws.page_margins.left = ws.page_margins.right = 0.4
     if not wb.sheetnames:
         return None
     wb.save(path)
@@ -591,9 +694,12 @@ class OrderCheck:
         dv.addWidget(self.prob_tabs, 1)
         close = QPushButton(tr("关闭"))
         close.clicked.connect(dlg.accept)
-        exp = QPushButton(tr("导出 Excel"))
-        exp.setToolTip(tr("三页一起导出（全部门店）；确认生成主订单时，每家店的比价文件夹里也会自动生成一份「门店提醒」，可以直接发给门店"))
-        exp.clicked.connect(self._export_prob)
+        exp = QPushButton(tr("导出门店报告") + " ▾")
+        exp.setToolTip(tr("意大利文报告，可以直接发给门店（带商品照片，Excel 365 打开时从网上读）。确认生成主订单时，每家店的比价文件夹里也会自动生成一份"))
+        em = QMenu(exp)                               # 两种导出放在一个按钮的下拉里（用户：每店一个 / 合成一个都要）
+        em.addAction(tr("每家店一个文件"), self._export_prob)
+        em.addAction(tr("合成一个文件（每店一页）"), self._export_prob_one)
+        exp.setMenu(em)
         cb = QHBoxLayout()
         cb.addWidget(exp)
         cb.addStretch()
@@ -604,24 +710,25 @@ class OrderCheck:
         self._sum_timer.setSingleShot(True)
         self._sum_timer.setInterval(300)
         self._sum_timer.timeout.connect(self._summary)
-        for kind, tip in PROB_KINDS_TIPS():
+        for kind, tip in PROB_TABS():
             page = QWidget()
             pv = QVBoxLayout(page)
             pv.setContentsMargins(0, 8, 0, 0)
             pv.setSpacing(8)
-            t = ui.make_table([tr("门店"), tr("条码"), tr("名称"), tr("供应商"), tr("备注"), tr("清单箱数"), tr("确定箱数") + " ✎"],
+            t = ui.make_table([tr("门店"), tr("条码"), tr("名称"), tr("供应商"), tr("批发商"), tr("清单箱数"), tr("确定箱数") + " ✎"],
                               stretch_col=2, numeric_cols=(5, 6))
             t.verticalHeader().setDefaultSectionSize(30)
             t.setEditTriggers(QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed |
                               QAbstractItemView.AnyKeyPressed)
             for c, wd in ((0, 90), (1, 130), (3, 170), (4, 86), (5, 76), (6, 90)):
                 t.setColumnWidth(c, wd)
-            t.horizontalHeaderItem(4).setToolTip(tr("数据库没有 / 没有箱规：系统算不了，确定箱数默认 = 门店清单"))
+            t.horizontalHeaderItem(4).setToolTip(tr("这周几家批发商的报价里有没有这个商品：都没有 = 比价时会缺失"))
+            t.setColumnHidden(4, kind == "noquote")       # Griglia 那页全是「都没有」，不用这一列
             t.itemChanged.connect(lambda it, k=kind: self._prob_edited(k, it))
             from erp_widgets import HeaderFilter      # 右键表头按列筛选
             t._hf = HeaderFilter(t)
             pv.addWidget(t, 1)
-            if kind in ("nogrid", "nogrid_noq", "noquote"):
+            if True:
                 bb = QHBoxLayout()
                 b_none = QPushButton(tr("全部不订"))
                 b_none.setToolTip(tr("这一页的商品确定箱数都改成 0"))
@@ -956,6 +1063,13 @@ class OrderCheck:
                 ms = R.ping(db)
                 if ms is not None:
                     log(tr("[检查清单] 数据库响应 {0:.0f} 毫秒", ms))
+                try:
+                    upto = R.sales_latest(db)
+                    late = R.stale_days(upto)
+                    if late is not None and late > R.STALE_DAYS:
+                        log(tr("⚠ 数据库里最新的销售是 {0}，已经 {1} 天没同步：销量和库存都是那天的", upto.strftime("%d/%m/%Y %H:%M"), late))
+                except Exception:
+                    pass
                 pre_snap = None
                 # 供应商编号（只显示用）和下面的门店查询同时查，不用排在最后等（结果一样）
                 sup_fut = q_pool.submit(R._timed, "供应商编号", None, R.supplier_info, db, union) if union else None
@@ -1051,6 +1165,7 @@ class OrderCheck:
                                                      units={x["store"]: x["unit"] for x in lists},
                                                      files={x["store"]: x["path"] for x in lists}, snap=snap,
                                                      quoted=n_q, quote_files=n_files,
+                                                     quote_labels=list(q_files.keys()) if q_files else [],
                                                      store=lists[0]["store"])))
             except Exception as e:
                 import traceback
@@ -1525,7 +1640,7 @@ class OrderCheck:
             self.win.log(tr("⚠ 促销没查到：{0}", err))
             return
         for w in data.pop("_warn", None) or ():
-            self.win.log(tr("⚠ 促销没查到：{0}", w))
+            self.win.log("⚠ " + w)
         self.win.log(tr("[检查清单] {0}：{1} 个商品在促销", R.STORES.get(sid, sid), len(data)))
         idx = []
         for i, x in enumerate(self.rows):
@@ -1773,7 +1888,7 @@ class OrderCheck:
         has_grid = any(x.get("in_grid") is not None for x in self.rows)
         total, tips = 0, []
         for kind, (ti, page, t) in self.prob.items():
-            allk = [i for i, x in enumerate(self.rows) if _problem(x) == kind]
+            allk = [i for i, x in enumerate(self.rows) if _tab_of(_problem(x)) == kind]
             idx = [i for i in allk if (sid is None or self.rows[i].get("store") == sid) and
                    (not text or text in f"{self.rows[i].get('code')} {self.rows[i].get('ean')} {self.rows[i].get('name')}".lower())]
             title = _prob_title(kind, len(allk), has_grid)
@@ -1786,12 +1901,14 @@ class OrderCheck:
             t.setRowCount(len(idx))
             for r, i in enumerate(idx):
                 x = self.rows[i]
+                none = _problem(x) in ("noquote", "nogrid_noq")
                 self.ui.table_set_row(t, r, [R.STORES.get(x.get("store"), ""), x.get("ean") or "", x.get("name") or "",
-                                             x.get("sup_name") or "", _issue_text(x), f"{x['lbox']:,}", f"{x['fbox']:,}"])
+                                             x.get("sup_name") or "", tr("都没有") if none else tr("有"),
+                                             f"{x['lbox']:,}", f"{x['fbox']:,}"])
                 t.item(r, 0).setData(Qt.UserRole, i)
-                t.item(r, 2).setToolTip(f"{x.get('name') or ''}\n{x.get('code') or ''} · {x.get('ean') or ''}")
-                if _issue(x):
-                    t.item(r, 4).setForeground(QColor(self.ui.T("warn")))
+                t.item(r, 2).setToolTip(f"{x.get('name') or ''}\n{x.get('code') or ''} · {x.get('ean') or ''}" +
+                                        ("\n" + _issue_text(x) if _issue(x) else ""))
+                t.item(r, 4).setForeground(QColor(self.ui.T("err") if none else self.ui.T("ok")))
                 for c in range(t.columnCount()):
                     it = t.item(r, c)
                     if c == 6:
@@ -1813,7 +1930,7 @@ class OrderCheck:
         """这个问题列表（不在 Griglia / 没报价）里的商品全部不订"""
         n, idx = 0, []
         for i, x in enumerate(self.rows):
-            if _problem(x) == kind and x.get("fbox"):
+            if _tab_of(_problem(x)) == kind and x.get("fbox"):
                 _set_box(x, 0)
                 n += 1
                 idx.append(i)
@@ -1880,19 +1997,52 @@ class OrderCheck:
         it.setForeground(QColor(T("warn") if ch else T("accent") if x["fbox"] > 0 else T("faint")))
         it.setBackground(QColor(T("warn_soft")) if ch else QColor(0, 0, 0, 0))
 
-    def _export_prob(self):
-        """待核对窗口「导出 Excel」：三页一起（全部门店）"""
-        path, _ = QFileDialog.getSaveFileName(self.prob_dlg, tr("导出 Excel"), os.path.join(
-            self.win.ws_root() if hasattr(self.win, "ws_root") else "", f"待核对_{datetime.now():%Y%m%d_%H%M}.xlsx"),
-            tr("Excel 文件 (*.xlsx)"))
+    def _export_prob_one(self):
+        """导出门店报告：五家店合成一个文件，每家店一个工作表（发到大家都在的群里用）"""
+        start = self.win.ws_root() if hasattr(self.win, "ws_root") else ""
+        path, _ = QFileDialog.getSaveFileName(self.prob_dlg, tr("导出门店报告"), os.path.join(
+            start or "", f"Articoli_da_verificare_{datetime.now():%d%m}.xlsx"), tr("Excel 文件 (*.xlsx)"))
         if not path:
             return
         try:
-            has_grid = any(x.get("in_grid") is not None for x in self.rows)
-            if write_problem_report(self.rows, path, has_grid=has_grid):
-                self.win.show_toast(tr("已导出：{0}", os.path.basename(path)))
+            p = write_problem_report(self.rows, path, store=None, url=self.settings.get("image_url") or None,
+                                     sources=self.meta.get("quote_labels"))
         except Exception as e:
-            QMessageBox.warning(self.prob_dlg, tr("导出 Excel"), tr("导出失败：{0}", e))
+            QMessageBox.warning(self.prob_dlg, tr("导出门店报告"), tr("导出失败：{0}", e))
+            return
+        if p:
+            self.win.log(tr("✔ 门店报告：{0}", p))
+            self.win.show_toast(tr("已导出：{0}", os.path.basename(p)))
+            try:
+                os.startfile(os.path.dirname(p))
+            except Exception:
+                pass
+
+    def _export_prob(self):
+        """待核对窗口「导出门店报告」：选一个文件夹，每家店一个意大利文报告（可以直接发给门店）"""
+        start = self.win.ws_root() if hasattr(self.win, "ws_root") else ""
+        folder = QFileDialog.getExistingDirectory(self.prob_dlg, tr("导出门店报告"), start or "")
+        if not folder:
+            return
+        url = self.settings.get("image_url") or None
+        done, errs = [], []
+        for sid in sorted({x.get("store") for x in self.rows if _problem(x)}, key=lambda v: v or 0):
+            try:
+                p = write_problem_report(self.rows, os.path.join(folder, report_name(sid)), store=sid, url=url,
+                                         sources=self.meta.get("quote_labels"))
+                if p:
+                    done.append(p)
+                    self.win.log(tr("✔ 门店报告：{0}", p))
+            except Exception as e:
+                errs.append(f"{R.STORES.get(sid, sid)}：{e}")
+        if errs:
+            QMessageBox.warning(self.prob_dlg, tr("导出门店报告"), tr("导出失败：{0}", "\n".join(errs)))
+        if done:
+            self.win.show_toast(tr("已导出 {0} 家门店的报告", len(done)))
+            try:
+                os.startfile(folder)                    # Windows：打开文件夹，方便直接发
+            except Exception:
+                pass
 
     def _store_sel(self):
         b = self.store_group.checkedButton() if hasattr(self, "store_group") else None
@@ -2413,10 +2563,10 @@ class OrderCheck:
                 except Exception as e:
                     problems.append(tr("{0}：门店库存快照没存上：{1}", R.STORES.get(sid), e))
             try:                                       # 发给门店的提醒：非 Griglia 商品下次别加、这次批发商没货的
-                rep = write_problem_report(self.rows, os.path.join(
-                    root, f"门店提醒_{R.STORES.get(sid)}_{datetime.now():%d%m}.xlsx"), store=sid, for_store=True)
+                rep = write_problem_report(self.rows, os.path.join(root, report_name(sid)), store=sid,
+                                           url=self.settings.get("image_url") or None, sources=self.meta.get("quote_labels"))
                 if rep:
-                    self.win.log(tr("✔ 门店提醒：{0}", rep))
+                    self.win.log(tr("✔ 门店报告：{0}", rep))
             except Exception as e:
                 problems.append(tr("{0}：门店提醒没写上：{1}", R.STORES.get(sid), e))
             self.win.log(tr("✔ 采购主订单：{0}（{1} 个商品）", path, written))
