@@ -4,7 +4,7 @@
 """
 import json
 
-COMPANY_DEFAULTS_VER = 6          # v3.3.10 发布时同步
+COMPANY_DEFAULTS_VER = 7          # v3.3.11 发布时同步
 
 COMPANY_DEFAULTS = json.loads(r'''
 {
@@ -195,35 +195,17 @@ COMPANY_DEFAULTS = json.loads(r'''
    4,
    5,
    6,
-   7,
-   25634,
-   28034,
-   1177,
-   85196,
-   9363,
-   96515,
-   54686,
-   7168,
-   31284
+   7
   ],
   "card_rec_columns_ver": 2,
   "card_rec_widths": {
    "1": 100,
-   "1177": 0,
    "2": 70,
-   "25634": 0,
-   "28034": 0,
    "3": 70,
-   "31284": 0,
    "4": 240,
    "5": 150,
-   "54686": 0,
    "6": 0,
-   "7": 0,
-   "7168": 0,
-   "85196": 0,
-   "9363": 0,
-   "96515": 0
+   "7": 0
   },
   "check_cols_hidden": [
    1,
