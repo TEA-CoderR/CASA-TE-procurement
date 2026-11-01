@@ -778,7 +778,7 @@ def _blank(v):
 def card_fields(prod):
     """商品表一行（dict）→ 详情窗口要显示的 [(标签, 文字)]（数据库里没有的就不显示）"""
     def num(v, fmt="{0:g}"):
-        if _blank(v):
+        if _blank(v) or _num(v) == 0:
             return ""
         try:
             return fmt.format(float(v))
@@ -791,7 +791,8 @@ def card_fields(prod):
         return v.strftime("%d/%m/%Y") if hasattr(v, "strftime") else str(v)[:10]
 
     def txt(v):
-        return "" if _blank(v) else str(v).strip()
+        s = "" if _blank(v) else str(v).strip()
+        return "" if s in ("0", "0.0") else s           # 数据库里没填的常常是 0（品牌 0、箱装数 0）
     p = prod or {}
     out = [("编号", txt(p.get("CodArticolo"))), ("条码", txt(p.get("CodBarre"))),
            ("商家", " · ".join(x for x in (txt(p.get("IDFornitore")), txt(p.get("FornitoreNome"))) if x)),
@@ -887,7 +888,7 @@ def product_card(db, code, days=60, stores=None, today=None, store=None):
                 where += " AND l.Negozio = %s"
                 params.append(int(store))
             df = pd.read_sql("SELECT l.Cdata, l.Quantita, l.Tipo, l.Fornitore, c.Fnumero AS Fattura, l.Prezzo_A AS Prezzo, "
-                             "l.Negozio, l.Ddt, l.ListaId FROM caricolistalist l "
+                             "l.Negozio FROM caricolistalist l "
                              "LEFT JOIN caricolista c ON c.ListaId = l.ListaId "
                              f"WHERE {where} ORDER BY l.Cdata DESC, l.l DESC LIMIT 300", db.engine, params=tuple(params))
             scol = "Negozio"
