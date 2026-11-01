@@ -48,7 +48,7 @@ from reorder_page import short_decision, store_label, algo_widgets
 #   商品（图 + 名称）供应商 | 现在：库存 月销 现在够卖 | 订多少：每箱件数 清单 → 确定 ✎ | 结果：订后够卖 金额 | 判断 调货
 #   订后够卖一个数就能看出订得合不合理：红 = 下次到货前就卖完，黄 = 压货。30/60/90/180 天、日均、周期、等级、编号、条码收起来（详情栏里有）
 #   29 = 金额（确定箱数 × 每箱件数 × 件价，有调货的按调货以后的箱数）
-#   2026-11-01 加 30 = 情况（Griglia 商品 · 批发商都没有 / 其他区域 · 批发商都没有 / 其他区域 · 批发商有），放在判断后面，
+#   2026-11-01 加 30 = 情况（Griglia 商品 · 批发商都没有 / 非 Griglia 商品 · 批发商都没有 / 非 Griglia 商品 · 批发商有），放在判断后面，
 #   待核对的商品也在主表格里显示，右键表头按「情况」筛选、直接改（用户：在列表里直接判断和修改）
 _ORDER = [22, 3, 27, 4, 28, 9, 10, 11, 15, 20, 29, 0, 30, 24, 2, 26, 16, 17, 18, 5, 6, 7, 8, 14, 12, 13, 19, 21, 23, 25, 1]
 SITU = 30
@@ -87,15 +87,15 @@ def _pk(x):
 def PROB_KINDS_TIPS():
     """待核对窗口的标签页（顺序 = 显示顺序）和鼠标提示"""
     return (("noquote", tr("在我们的 Griglia 里，但这周几家批发商的报价里都没有：比价时会缺失。可能批发商不做了、断货，或者要向别处订")),
-            ("nogrid_noq", tr("不在 Griglia（多半是门店发来的其他区域商品），批发商报价里也没有：比价时会缺失")),
-            ("nogrid", tr("不在 Griglia（多半是门店发来的其他区域商品），但批发商有报价：比价能分出去，要不要订你决定")))
+            ("nogrid_noq", tr("非 Griglia 商品（多半是门店发来的别的区域的商品），批发商报价里也没有：比价时会缺失")),
+            ("nogrid", tr("非 Griglia 商品（多半是门店发来的别的区域的商品），但批发商有报价：比价能分出去，要不要订你决定")))
 
 
 def _prob_title(kind, n, has_grid=True):
     """标签页名字：短、一眼看懂"""
     if kind == "noquote":
         return tr("Griglia 商品 · 批发商都没有（{0}）", n) if has_grid else tr("批发商都没有（{0}）", n)
-    return {"nogrid_noq": tr("其他区域 · 批发商都没有（{0}）", n), "nogrid": tr("其他区域 · 批发商有（{0}）", n)}[kind]
+    return {"nogrid_noq": tr("非 Griglia 商品 · 批发商都没有（{0}）", n), "nogrid": tr("非 Griglia 商品 · 批发商有（{0}）", n)}[kind]
 
 
 def _issue(x):
@@ -114,7 +114,7 @@ def _situation(x):
     k = _problem(x)
     if k == "noquote":
         return tr("Griglia 商品 · 批发商都没有") if x.get("in_grid") else tr("批发商都没有")
-    return {"nogrid_noq": tr("其他区域 · 批发商都没有"), "nogrid": tr("其他区域 · 批发商有")}.get(k, "")
+    return {"nogrid_noq": tr("非 Griglia 商品 · 批发商都没有"), "nogrid": tr("非 Griglia 商品 · 批发商有")}.get(k, "")
 
 
 def _edited(x):
@@ -144,7 +144,7 @@ def _problem(x):
 def write_problem_report(rows, path, store=None, for_store=False, has_grid=True):
     """
     待核对商品导出 Excel。for_store = 发给门店的提醒（只放这家店）：
-      ① 「其他区域，下次别加」= 不在 Griglia 的（批发商有 / 没有都算）；② 「这次批发商没货」= Griglia 商品批发商都没有（只是告知）。
+      ① 「非 Griglia 商品，下次别加」= 不在 Griglia 的（批发商有 / 没有都算）；② 「这次批发商没货」= Griglia 商品批发商都没有（只是告知）。
     不是给门店的：三页和窗口一样。表头中文 + 意大利文（门店同事看得懂）。没有商品返回 None
     """
     from openpyxl import Workbook
@@ -154,7 +154,7 @@ def write_problem_report(rows, path, store=None, for_store=False, has_grid=True)
     if not rs:
         return None
     if for_store:
-        groups = [(tr("其他区域，下次别加") + " Altri reparti", [x for x in rs if _problem(x) in ("nogrid_noq", "nogrid")]),
+        groups = [(tr("非 Griglia 商品，下次别加") + " Non in Griglia", [x for x in rs if _problem(x) in ("nogrid_noq", "nogrid")]),
                   (tr("这次批发商没货") + " Non disponibili", [x for x in rs if _problem(x) == "noquote"])]
     else:
         groups = [(_prob_title(k, 0, has_grid).split("（")[0], [x for x in rs if _problem(x) == k])
@@ -684,7 +684,7 @@ class OrderCheck:
         if isinstance(saved, list) and saved and SITU not in saved:     # 新加的「情况」列：插在判断后面，原来排好的不动
             saved.insert(saved.index(0) + 1 if 0 in saved else len(saved), SITU)
         self.table.horizontalHeaderItem(_col(SITU)).setToolTip(
-            tr("待核对的商品属于哪一类：Griglia 商品批发商都没有 / 其他区域批发商都没有 / 其他区域批发商有；正常的空着。右键表头可以只看某一类"))
+            tr("待核对的商品属于哪一类：Griglia 商品批发商都没有 / 非 Griglia 商品批发商都没有 / 非 Griglia 商品批发商有；正常的空着。右键表头可以只看某一类"))
         if self.cfg.get("check_columns_ver") != _LAYOUT_VER:
             self.cfg.pop("check_widths", None)        # 第 9 版重新设计了：旧的列宽（名称列太窄等）也不用了
         self._reset_cols = remember_columns(self.table, self.cfg, "check", _ORDER, lambda: save_settings(self.settings),
@@ -2315,7 +2315,7 @@ class OrderCheck:
                     R.save_snapshot(path, sid, self.meta.get("snap") or {}, rows, transfers=mine, transfers_file=tf)
                 except Exception as e:
                     problems.append(tr("{0}：门店库存快照没存上：{1}", R.STORES.get(sid), e))
-            try:                                       # 发给门店的提醒：其他区域的商品下次别加、这次批发商没货的
+            try:                                       # 发给门店的提醒：非 Griglia 商品下次别加、这次批发商没货的
                 rep = write_problem_report(self.rows, os.path.join(
                     root, f"门店提醒_{R.STORES.get(sid)}_{datetime.now():%d%m}.xlsx"), store=sid, for_store=True)
                 if rep:

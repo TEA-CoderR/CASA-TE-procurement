@@ -200,7 +200,7 @@ def test_problem_report(tmp_path=None):
     p = OC.write_problem_report(rows, os.path.join(d, "a.xlsx"), store=1, for_store=True)
     wb = load_workbook(p)
     s1, s2 = wb.worksheets
-    assert [r[2].value for r in s1.iter_rows(min_row=2)] == ["8000000000011", "8000000000028"]   # 其他区域（只有 FOIANO）
+    assert [r[2].value for r in s1.iter_rows(min_row=2)] == ["8000000000011", "8000000000028"]   # 非 Griglia 商品（只有 FOIANO）
     assert [(r[2].value, r[5].value) for r in s2.iter_rows(min_row=2)] == [("8000000000035", "没有箱规")]
     p2 = OC.write_problem_report(rows, os.path.join(d, "b.xlsx"))
     assert len(load_workbook(p2).sheetnames) == 3
@@ -211,8 +211,8 @@ def test_situation_and_edited():
     import order_check as OC
     base = {"in_db": True, "pack": 6, "lbox": 2, "fbox": 2, "sbox": 1}
     assert OC._situation(dict(base, in_grid=True, in_quote=False)) == "Griglia 商品 · 批发商都没有"
-    assert OC._situation(dict(base, in_grid=False, in_quote=False)) == "其他区域 · 批发商都没有"
-    assert OC._situation(dict(base, in_grid=False, in_quote=True)) == "其他区域 · 批发商有"
+    assert OC._situation(dict(base, in_grid=False, in_quote=False)) == "非 Griglia 商品 · 批发商都没有"
+    assert OC._situation(dict(base, in_grid=False, in_quote=True)) == "非 Griglia 商品 · 批发商有"
     assert OC._situation(dict(base, in_grid=True, in_quote=True)) == ""
     assert OC._situation(dict(base, in_quote=False)) == "批发商都没有"              # 没放 Griglia
     assert OC._edited(base)                                                         # 和系统建议 1 箱比

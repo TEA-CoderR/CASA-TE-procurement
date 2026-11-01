@@ -2585,4 +2585,12 @@ TRANSLATIONS = {
     '其他区域 · 批发商有': ('Other area · quoted', 'Altro reparto · a listino'),
     '情况': ('Status', 'Situazione'),
     '手动改过：门店清单 {0:,} 箱': ('Edited manually: store list {0:,} cases', 'Modificato a mano: lista negozio {0:,} colli'),
+    '非 Griglia 商品（多半是门店发来的别的区域的商品），批发商报价里也没有：比价时会缺失': ('Not a Griglia item (usually sent by the store from another area) and in no wholesaler quote: will be missing in the comparison', 'Articolo non in Griglia (di solito inviato dal negozio da un altro reparto) e in nessun listino: mancherà nel confronto'),
+    '非 Griglia 商品（多半是门店发来的别的区域的商品），但批发商有报价：比价能分出去，要不要订你决定': ('Not a Griglia item (usually sent by the store from another area), but a wholesaler quotes it: the comparison can assign it, you decide whether to order', 'Articolo non in Griglia (di solito inviato dal negozio da un altro reparto), ma un grossista lo ha a listino: il confronto può assegnarlo, decidi tu se ordinarlo'),
+    '非 Griglia 商品 · 批发商都没有（{0}）': ('Not in Griglia · no wholesaler ({0})', 'Non in Griglia · nessun grossista ({0})'),
+    '非 Griglia 商品 · 批发商有（{0}）': ('Not in Griglia · quoted ({0})', 'Non in Griglia · a listino ({0})'),
+    '待核对的商品属于哪一类：Griglia 商品批发商都没有 / 非 Griglia 商品批发商都没有 / 非 Griglia 商品批发商有；正常的空着。右键表头可以只看某一类': ('Which group an item to check belongs to: Griglia item no wholesaler / not in Griglia no wholesaler / not in Griglia quoted; empty = normal. Right-click the header to show one group only', "Gruppo dell'articolo da verificare: articolo Griglia nessun grossista / non in Griglia nessun grossista / non in Griglia a listino; vuoto = normale. Clic destro sull'intestazione per vedere un solo gruppo"),
+    '非 Griglia 商品 · 批发商都没有': ('Not in Griglia · no wholesaler', 'Non in Griglia · nessun grossista'),
+    '非 Griglia 商品 · 批发商有': ('Not in Griglia · quoted', 'Non in Griglia · a listino'),
+    '非 Griglia 商品，下次别加': ('Not in Griglia, do not add next time', 'Non in Griglia, non aggiungere'),
 }
