@@ -153,10 +153,14 @@ def _tab_of(kind):
 
 
 def _report_rows(rows, store):
-    """发给门店的报告里这家店的商品：只有非 Griglia 商品（下次别加）。
-    原来的第 ② 段「Griglia 商品这周批发商都没有」用户 2026-11-01 说不用发给门店，去掉了"""
-    rs = [x for x in rows if x.get("store") == store and _tab_of(_problem(x)) == "nogrid"]
-    return (sorted(rs, key=lambda y: str(y.get("name") or "").lower()),)
+    """发给门店的报告里这家店的商品：(① Griglia 商品这周批发商都没有, ② 非 Griglia 商品)。
+    ① 用户 2026-11-01 又要回来、放在最上面（一般很少；有的是供应商不做了，有的是换了规格 / 条码，留一列手填新条码）；
+    ② 批发商有货的排前面，再按品牌供应商有没有、名称"""
+    mine = [x for x in rows if x.get("store") == store]
+    a = sorted((x for x in mine if _problem(x) == "noquote"), key=lambda y: str(y.get("name") or "").lower())
+    b = sorted((x for x in mine if _tab_of(_problem(x)) == "nogrid"),
+               key=lambda y: (_problem(y) == "nogrid_noq", not y.get("brand"), str(y.get("name") or "").lower()))
+    return a, b
 
 
 def report_name(store, when=None):
@@ -164,42 +168,60 @@ def report_name(store, when=None):
     return f"Articoli_da_verificare_{R.STORES.get(store, store)}_{(when or datetime.now()):%d%m}.xlsx"
 
 
+def _advice(x):
+    """门店报告「Consiglio」列：(文字, 颜色)。品牌供应商有 → 建议直接向它订（用户 2026-11-01）"""
+    if x.get("brand"):
+        return f"Ordinare direttamente da {x['brand']}", "GREEN"
+    if _problem(x) != "nogrid_noq":
+        return "Sconsigliato: articolo fuori Griglia", "AMBER"
+    return "Non disponibile: non ordinare", "RED"
+
+
 def write_problem_report(rows, path, store=None, url=None, when=None, sources=None):
     """
-    发给门店的意大利文报告（2026-11-01 用户：格式漂亮、不要无关的数据、用 IMAGE 函数读我们网站的图片、文件要小）。
-    一家店一个工作表（store = None：清单里每家有待核对商品的店各一页），每页：
-      标题（门店 · 日期）→ ① Articoli non in Griglia – si consiglia di non ordinarli（照片 EAN 编号 名称 要的箱数 订的箱数 批发商有没有）
-                         → ② Articoli Griglia non disponibili dai grossisti questa settimana（照片 EAN 编号 名称 要的箱数）
-    列：Foto EAN Cod.Art. Descrizione Fornitore（数据库登记的供应商）Colli richiesti Colli ordinati Disponibile（Sì / No = 这周批发商有没有；用户 11-01 从 Ordinabile 改名）。
-    照片 = Excel 公式 =IMAGE("https://img.casaete.top/prodotti/<EAN>/01.webp")（Excel 365 打开时自己从网上读，文件里不放图片，很小）。
-    sources = 这次读的几家批发商报价的名字（MELONI、MEGA CASH…）：每段标题下面写一行「Disponibile = 在这几家的报价里」，
-    门店才知道「No」是这几家订不到、不是哪儿都没有（用户 2026-11-01）。
-    这家店没有待核对的商品返回 None
+    发给门店的意大利文报告（2026-11-01 用户：格式漂亮、颜色、不要无关的数据、IMAGE 函数读我们网站的图片、文件要小）。
+    一家店一个工作表（store = None：每家有待核对商品的店各一页），每页：
+      标题（门店 · 日期）
+      ① Articoli Griglia non disponibili dai grossisti questa settimana：Foto EAN Cod.Art. Descrizione Fornitore
+         Colli richiesti + EAN alternativo（空着、浅黄，用户自己填新条码：换了规格 / 条码的）
+      ② Articoli non in Griglia – si consiglia di non ordinarli：… Colli ordinati、Disp. grossisti（这周几家批发商报价里有没有）、
+         Disp. fornitore diretto（门店配货的品牌供应商 SCHEDA 里有没有，x["brand"]）、Consiglio（品牌供应商有 → 直接向它订）
+    照片 = =IMAGE("https://img.casaete.top/prodotti/<EAN>/01.webp","",3,48,48)（Excel 365 打开时自己读，文件里不放图）。
+    每段是一个 Excel 表格（自带筛选按钮，一页里两段都能筛）。这家店没有待核对的商品返回 None
     """
     from openpyxl import Workbook
     from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
     from openpyxl.utils import get_column_letter
+    from openpyxl.worksheet.table import Table, TableStyleInfo
     import product_images as PI
     url = url or PI.DEFAULT_URL
     when = when or datetime.now()
     stores = [store] if store is not None else \
-        sorted({x.get("store") for x in rows if _tab_of(_problem(x)) == "nogrid"}, key=lambda v: v or 0)
+        sorted({x.get("store") for x in rows if _tab_of(_problem(x)) in ("nogrid", "noquote")}, key=lambda v: v or 0)
     wb = Workbook()
     wb.remove(wb.active)
     INK, MUTED, LINE = "1F2A37", "6B7280", "E5E7EB"
+    COLORS = {"GREEN": ("E7F5EC", "1E7A3C"), "AMBER": ("FFF4E0", "A15C07"), "RED": ("FDECEC", "B42318")}
     thin = Side(style="thin", color=LINE)
     box = Border(left=thin, right=thin, top=thin, bottom=thin)
     center = Alignment(horizontal="center", vertical="center", wrap_text=True)
     left = Alignment(horizontal="left", vertical="center", wrap_text=True, indent=1)
-    # 用户 2026-11-01：加「供应商」（门店知道是哪家的货别再要）；「Grossisti」改成「可订到」= Ordinabile
-    heads = ["Foto", "EAN", "Cod. Art.", "Descrizione", "Fornitore", "Colli richiesti", "Colli ordinati", "Disponibile"]
-    widths = (9, 16, 10, 40, 24, 10, 10, 11)
-    IMG = 48                      # 照片显示 48 × 48 像素（用户：不用那么大），行高跟着小
-    ncol = len(heads)
+    widths = (9, 16, 10, 36, 20, 10, 16, 12, 14, 32)
+    ncol = len(widths)
+    IMG = 48                      # 照片显示 48 × 48 像素
     names = " · ".join(str(s) for s in (sources or []) if str(s).strip())
     who = names or "i nostri grossisti"
-    sections = (("Articoli non in Griglia – si consiglia di non ordinarli", "FDECE2", "B4471A", True,
-                 f"Disponibile = presente nei listini di questa settimana di {who}. «No» vale solo per questi grossisti."),)
+    base = ["Foto", "EAN", "Cod. Art.", "Descrizione", "Fornitore", "Colli richiesti"]
+    sec_a = dict(title="Articoli Griglia non disponibili dai grossisti questa settimana", fill="FFF4E0", ink="A15C07",
+                 note=f"Non presenti nei listini di questa settimana di {who}. Se l'articolo ha un nuovo codice, "
+                      f"scrivere l'EAN nella colonna «EAN alternativo».",
+                 heads=base + ["EAN alternativo"])
+    sec_b = dict(title="Articoli non in Griglia – si consiglia di non ordinarli", fill="FDECE2", ink="B4471A",
+                 note=f"Disp. grossisti = presente nei listini di questa settimana di {who}. "
+                      f"Disp. fornitore diretto = presente nelle schede d'ordine dei fornitori diretti.",
+                 heads=base + ["Colli ordinati", "Disp. grossisti", "Disp. fornitore diretto", "Consiglio"])
+    head_fill = {7: "FEF9C3"}                       # 表头颜色：要手填的黄、两列「有没有」青、建议绿
+    n_tab = 0
     for sid in stores:
         parts = _report_rows(rows, sid)
         if not any(parts):
@@ -220,65 +242,78 @@ def write_problem_report(rows, path, store=None, url=None, when=None, sources=No
         ws["A2"].font = Font(size=10, italic=True, color=MUTED)
         ws["A2"].alignment = Alignment(horizontal="left", vertical="center", indent=1)
         ws.row_dimensions[2].height = 20
+        ws.freeze_panes = "A3"                       # 标题一直看得到；每段的表头往下翻时 Excel 显示在列号上
         r = 4
-        for (title, fill, ink, full, note), xs in zip(sections, parts):
+        for sec, xs in ((sec_a, parts[0]), (sec_b, parts[1])):
             if not xs:
                 continue
-            cols = ncol if full else ncol - 2          # ② 不放「订的箱数」「可订到」（都是 0 / 都订不到）
+            heads = sec["heads"]
+            cols = len(heads)
             ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=ncol)
-            c = ws.cell(r, 1, f"{title}  ({len(xs)})")
-            c.font = Font(size=12, bold=True, color=ink)
-            c.fill = PatternFill("solid", fgColor=fill)
+            c = ws.cell(r, 1, f"{sec['title']}  ({len(xs)})")
+            c.font = Font(size=12, bold=True, color=sec["ink"])
+            c.fill = PatternFill("solid", fgColor=sec["fill"])
             c.alignment = Alignment(horizontal="left", vertical="center", indent=1)
             ws.row_dimensions[r].height = 24
             r += 1
             ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=ncol)
-            nc = ws.cell(r, 1, note)                       # 是哪几家批发商（「No」只是这几家订不到）
-            nc.font = Font(size=9, italic=True, color=ink)
-            nc.alignment = Alignment(horizontal="left", vertical="center", indent=1)
-            ws.row_dimensions[r].height = 16
+            nc = ws.cell(r, 1, sec["note"])
+            nc.font = Font(size=9, italic=True, color=sec["ink"])
+            nc.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True, indent=1)
+            ws.row_dimensions[r].height = 28
             r += 1
-            hr = r                                         # 表头行：筛选按钮、冻结窗格从这里
-            for j, h in enumerate(heads[:cols], 1):
+            hr = r
+            for j, h in enumerate(heads, 1):
                 hc = ws.cell(r, j, h)
+                fill = head_fill.get(j) if sec is sec_a else \
+                    ("DDF3F1" if j in (8, 9) else "E7F5EC" if j == 10 else None)
                 hc.font = Font(size=10, bold=True, color=INK)
-                hc.fill = PatternFill("solid", fgColor="F3F4F6")
+                hc.fill = PatternFill("solid", fgColor=fill or "F3F4F6")
                 hc.alignment = center
                 hc.border = box
-            ws.row_dimensions[r].height = 20
+            ws.row_dimensions[r].height = 30
             r += 1
             for k, x in enumerate(xs):
                 ean = PI.norm_ean(x.get("ean"))
-                # 批发商都订不到的：确定箱数虽然写进了主订单，但比价时哪家都分不出去（进缺失报告），门店一件也收不到 → 报告里写 0
-                # （用户 2026-11-01：都订不到了 Colli ordinati 还大于 0）
-                can = _problem(x) != "nogrid_noq"
-                sent = int(x.get("fbox") or 0) if can else 0
-                # IMAGE(网址, 替代文字, 3 = 自定大小, 高, 宽)：显示成 48 像素的小图
                 vals = [f'=_xlfn.IMAGE("{url.format(ean=ean)}","",3,{IMG},{IMG})' if ean else "", ean or str(x.get("ean") or ""),
                         str(x.get("code") or ""), str(x.get("name") or ""),
-                        str(x.get("sup_name") or x.get("quote_sup") or ""), int(x.get("lbox") or 0), sent,
-                        "Sì" if can else "No"]
-                zebra = PatternFill("solid", fgColor="FAFBFC") if k % 2 else None
-                for j, v in enumerate(vals[:cols], 1):
+                        str(x.get("sup_name") or x.get("quote_sup") or ""), int(x.get("lbox") or 0)]
+                tags = {}
+                if sec is sec_a:
+                    vals.append(None)                   # EAN alternativo：用户手填
+                else:
+                    # 批发商都订不到的：比价时哪家都分不出去（进缺失报告），门店一件也收不到 → 订的箱数写 0
+                    can = _problem(x) != "nogrid_noq"
+                    adv, tone = _advice(x)
+                    vals += [int(x.get("fbox") or 0) if can else 0, "Sì" if can else "No",
+                             "Sì" if x.get("brand") else "No", adv]
+                    tags = {8: "GREEN" if can else "RED", 9: "GREEN" if x.get("brand") else "RED", 10: tone}
+                zebra = "FAFBFC" if k % 2 else None
+                for j, v in enumerate(vals, 1):
                     dc = ws.cell(r, j, v)
                     dc.border = box
-                    dc.alignment = left if j in (4, 5) else center
+                    dc.alignment = left if j in (4, 5, 10) else center
                     dc.font = Font(size=10, color=INK, bold=(j == 4))
-                    if zebra is not None:
-                        dc.fill = zebra
-                if full:
-                    g = ws.cell(r, 8)
-                    g.font = Font(size=10, bold=True, color="B42318" if g.value == "No" else "2E7D32")
+                    bg = zebra
+                    if j in tags:
+                        bg, ink = COLORS[tags[j]]
+                        dc.font = Font(size=10, bold=True, color=ink)
+                    elif sec is sec_a and j == 7:
+                        bg = "FFFBEB"                   # 要手填的格：浅黄
+                    if bg:
+                        dc.fill = PatternFill("solid", fgColor=bg)
                 ws.row_dimensions[r].height = 42          # 放得下 48 像素的照片
                 r += 1
-            # 直接带好筛选（用户：不想自己再加）：EAN 到最后一列都有下拉，照片列不用；表头冻结，往下翻也看得到
-            ws.auto_filter.ref = f"B{hr}:{get_column_letter(cols)}{r - 1}"
-            ws.freeze_panes = f"A{hr + 1}"
+            # 每段一个 Excel 表格：自带筛选按钮（一页两段都能筛；工作表的「筛选」一页只能有一个），照片列不放进去
+            n_tab += 1
+            t = Table(displayName=f"Articoli{n_tab}", ref=f"B{hr}:{get_column_letter(cols)}{r - 1}")
+            t.tableStyleInfo = TableStyleInfo(name="TableStyleLight1", showRowStripes=False)
+            ws.add_table(t)
             r += 1
         foot = ws.cell(r, 1, "Foto: si caricano da internet in Excel 365.")
         foot.font = Font(size=9, italic=True, color=MUTED)
         ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=ncol)
-        ws.page_setup.orientation = "portrait"
+        ws.page_setup.orientation = "landscape"
         ws.page_setup.fitToWidth = 1
         ws.page_setup.fitToHeight = 0
         ws.sheet_properties.pageSetUpPr.fitToPage = True
@@ -1157,6 +1192,20 @@ class OrderCheck:
                         x["in_grid"] = G.contains(grid, x.get("ean"), x.get("code"))
                     log(tr("[检查清单] Griglia {0}：{1} 个商品不在里面", grid["name"],
                            sum(1 for x in rows if x.get("in_grid") is False)))
+                # 非 Griglia 商品能不能直接向品牌供应商订：到门店配货的 SCHEDA 里找（门店报告用；读不了不影响检查）
+                try:
+                    import store_orders as SO
+                    from settings import app_dir
+                    sroot = (self.settings.get("store_orders") or {}).get("folder") or ""
+                    if sroot and any(x.get("in_grid") is False for x in rows):
+                        idx = SO.scheda_index(sroot, os.path.join(app_dir(), "cache", "schede_index.json"), log)
+                        for x in rows:
+                            if x.get("in_grid") is False:
+                                x["brand"] = SO.brand_supplier(idx, x.get("ean"), x.get("code"))
+                        log(tr("[检查清单] 品牌供应商配单文件 {0} 份：{1} 个非 Griglia 商品可以直接向品牌供应商订", idx["files"],
+                               sum(1 for x in rows if x.get("brand"))))
+                except Exception as e:
+                    log(tr("⚠ 品牌供应商配单文件读不了：{0}", e))
                 q_files, q_end = q_fut.result()
                 n_q, n_files = self._apply_quotes(rows, price_dir, log, files=q_files)
                 if n_files:

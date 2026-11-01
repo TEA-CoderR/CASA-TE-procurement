@@ -327,6 +327,76 @@ def list_schede(root, day=None):
     return out
 
 
+def _ean_key(v):
+    s = str(v or "").strip()
+    if s.endswith(".0"):
+        s = s[:-2]
+    return s.lstrip("0") if s.isdigit() else ""
+
+
+def scheda_index(root, cache_path=None, log=None):
+    """
+    品牌供应商（直接下单的供应商）的采购配单文件 SCHEDA 里有哪些商品（2026-11-01 用户：门店报告里写明非 Griglia 商品
+    能不能直接向品牌供应商订）→ {"ean": {条码: 供应商名}, "code": {我们的编号: 供应商名}, "files": n}。
+    读「采购配单文件夹」周一 – 周五所有 SCHEDA；每个文件按 路径 + 大小 + 修改时间 缓存（cache_path，JSON），没改过不再打开
+    """
+    import json
+    out = {"ean": {}, "code": {}, "files": 0}
+    if not root or not os.path.isdir(root):
+        return out
+    old = {}
+    if cache_path and os.path.exists(cache_path):
+        try:
+            with open(cache_path, encoding="utf-8") as f:
+                old = json.load(f)
+        except Exception:
+            old = {}
+    new = {}
+    for _d, p in list_schede(root):
+        try:
+            st = os.stat(p)
+        except OSError:
+            continue
+        key = f"{os.path.normcase(os.path.abspath(p))}|{st.st_size}|{st.st_mtime_ns}"
+        ent = old.get(key)
+        if ent is None:
+            try:
+                info = parse_scheda(p)
+                ent = {"name": info["name"], "eans": sorted({_ean_key(i["ean"]) for i in info["items"]} - {""}),
+                       "codes": sorted({str(i["code"]).strip() for i in info["items"]} - {""})}
+            except Exception as e:
+                if log:
+                    log(f"⚠ {os.path.basename(p)}：{e}")
+                continue
+        new[key] = ent
+        out["files"] += 1
+        for e in ent["eans"]:
+            out["ean"].setdefault(e, ent["name"])
+        for c in ent["codes"]:
+            out["code"].setdefault(c, ent["name"])
+    if cache_path and new != old:
+        try:
+            os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+            tmp = cache_path + ".tmp"
+            with open(tmp, "w", encoding="utf-8", newline="") as f:
+                json.dump(new, f, ensure_ascii=False)
+            os.replace(tmp, cache_path)
+        except OSError:
+            pass
+    return out
+
+
+def brand_supplier(index, ean, code):
+    """这个商品在哪家品牌供应商的 SCHEDA 里（先按条码，再按我们的编号）；没有 None"""
+    if not index:
+        return None
+    k = _ean_key(ean)
+    if k and k in index["ean"]:
+        return index["ean"][k]
+    c = str(code or "").strip()
+    return index["code"].get(c) if c else None
+
+
 # =====================================================================
 # 读取 SCHEDA
 # =====================================================================
