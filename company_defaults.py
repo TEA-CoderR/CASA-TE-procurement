@@ -4,7 +4,7 @@
 """
 import json
 
-COMPANY_DEFAULTS_VER = 3          # 2026-10-28 按采购部（XH 电脑）现在的设置
+COMPANY_DEFAULTS_VER = 4          # v3.3.8 发布时同步
 
 COMPANY_DEFAULTS = json.loads(r'''
 {
@@ -236,9 +236,9 @@ COMPANY_DEFAULTS = json.loads(r'''
    "2": 130,
    "20": 76,
    "21": 142,
-   "22": 0,
+   "22": 80,
    "23": 0,
-   "24": 0,
+   "24": 110,
    "25": 0,
    "26": 0,
    "27": 287,

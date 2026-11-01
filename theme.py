@@ -11,7 +11,7 @@ from PySide6.QtCore import Qt, QByteArray
 from PySide6.QtGui import QColor, QPainter, QPen, QIcon, QPixmap, QLinearGradient, QFont
 from PySide6.QtSvg import QSvgRenderer
 
-APP_VERSION = "v3.3.7"
+APP_VERSION = "v3.3.8"
 UI_FONT = "Microsoft YaHei UI"
 NUM_FONT = "Bahnschrift"
 
