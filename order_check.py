@@ -165,7 +165,7 @@ def report_name(store, when=None):
     return f"Articoli_da_verificare_{R.STORES.get(store, store)}_{(when or datetime.now()):%d%m}.xlsx"
 
 
-def write_problem_report(rows, path, store=None, url=None, when=None):
+def write_problem_report(rows, path, store=None, url=None, when=None, sources=None):
     """
     发给门店的意大利文报告（2026-11-01 用户：格式漂亮、不要无关的数据、用 IMAGE 函数读我们网站的图片、文件要小）。
     一家店一个工作表（store = None：清单里每家有待核对商品的店各一页），每页：
@@ -173,6 +173,8 @@ def write_problem_report(rows, path, store=None, url=None, when=None):
                          → ② Articoli Griglia non disponibili dai grossisti questa settimana（照片 EAN 编号 名称 要的箱数）
     列：Foto EAN Cod.Art. Descrizione Fornitore（数据库登记的供应商）Colli richiesti Colli ordinati Ordinabile（Sì / No = 这周批发商有没有）。
     照片 = Excel 公式 =IMAGE("https://img.casaete.top/prodotti/<EAN>/01.webp")（Excel 365 打开时自己从网上读，文件里不放图片，很小）。
+    sources = 这次读的几家批发商报价的名字（MELONI、MEGA CASH…）：每段标题下面写一行「Ordinabile = 在这几家的报价里」，
+    门店才知道「No」是这几家订不到、不是哪儿都没有（用户 2026-11-01）。
     这家店没有待核对的商品返回 None
     """
     from openpyxl import Workbook
@@ -193,8 +195,12 @@ def write_problem_report(rows, path, store=None, url=None, when=None):
     heads = ["Foto", "EAN", "Cod. Art.", "Descrizione", "Fornitore", "Colli richiesti", "Colli ordinati", "Ordinabile"]
     widths = (13, 16, 10, 40, 24, 10, 10, 11)
     ncol = len(heads)
-    sections = (("① Articoli non in Griglia – da non inserire nei prossimi ordini", "FDECE2", "B4471A", True),
-                ("② Articoli Griglia non disponibili dai grossisti questa settimana", "E3EEFB", "1F5FA8", False))
+    names = " · ".join(str(s) for s in (sources or []) if str(s).strip())
+    who = names or "i nostri grossisti"
+    sections = (("① Articoli non in Griglia – da non inserire nei prossimi ordini", "FDECE2", "B4471A", True,
+                 f"Ordinabile = presente nei listini di questa settimana di {who}. «No» vale solo per questi grossisti."),
+                ("② Articoli Griglia non disponibili dai grossisti questa settimana", "E3EEFB", "1F5FA8", False,
+                 f"Non presenti nei listini di questa settimana di {who}."))
     for sid in stores:
         parts = _report_rows(rows, sid)
         if not any(parts):
@@ -216,7 +222,7 @@ def write_problem_report(rows, path, store=None, url=None, when=None):
         ws["A2"].alignment = Alignment(horizontal="left", vertical="center", indent=1)
         ws.row_dimensions[2].height = 20
         r = 4
-        for (title, fill, ink, full), xs in zip(sections, parts):
+        for (title, fill, ink, full, note), xs in zip(sections, parts):
             if not xs:
                 continue
             cols = ncol if full else ncol - 2          # ② 不放「订的箱数」「可订到」（都是 0 / 都订不到）
@@ -226,6 +232,12 @@ def write_problem_report(rows, path, store=None, url=None, when=None):
             c.fill = PatternFill("solid", fgColor=fill)
             c.alignment = Alignment(horizontal="left", vertical="center", indent=1)
             ws.row_dimensions[r].height = 24
+            r += 1
+            ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=ncol)
+            nc = ws.cell(r, 1, note)                       # 是哪几家批发商（「No」只是这几家订不到）
+            nc.font = Font(size=9, italic=True, color=ink)
+            nc.alignment = Alignment(horizontal="left", vertical="center", indent=1)
+            ws.row_dimensions[r].height = 16
             r += 1
             for j, h in enumerate(heads[:cols], 1):
                 hc = ws.cell(r, j, h)
@@ -255,7 +267,7 @@ def write_problem_report(rows, path, store=None, url=None, when=None):
                 ws.row_dimensions[r].height = 60          # 照片那一格的高度（IMAGE 按格子大小缩放）
                 r += 1
             r += 1
-        foot = ws.cell(r, 1, "Foto: si caricano da internet in Excel 365. Ordinare questi articoli solo se indicati in Griglia.")
+        foot = ws.cell(r, 1, "Foto: si caricano da internet in Excel 365.")
         foot.font = Font(size=9, italic=True, color=MUTED)
         ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=ncol)
         ws.page_setup.orientation = "portrait"
@@ -1149,6 +1161,7 @@ class OrderCheck:
                                                      units={x["store"]: x["unit"] for x in lists},
                                                      files={x["store"]: x["path"] for x in lists}, snap=snap,
                                                      quoted=n_q, quote_files=n_files,
+                                                     quote_labels=list(q_files.keys()) if q_files else [],
                                                      store=lists[0]["store"])))
             except Exception as e:
                 import traceback
@@ -1988,7 +2001,8 @@ class OrderCheck:
         if not path:
             return
         try:
-            p = write_problem_report(self.rows, path, store=None, url=self.settings.get("image_url") or None)
+            p = write_problem_report(self.rows, path, store=None, url=self.settings.get("image_url") or None,
+                                     sources=self.meta.get("quote_labels"))
         except Exception as e:
             QMessageBox.warning(self.prob_dlg, tr("导出门店报告"), tr("导出失败：{0}", e))
             return
@@ -2010,7 +2024,8 @@ class OrderCheck:
         done, errs = [], []
         for sid in sorted({x.get("store") for x in self.rows if _problem(x)}, key=lambda v: v or 0):
             try:
-                p = write_problem_report(self.rows, os.path.join(folder, report_name(sid)), store=sid, url=url)
+                p = write_problem_report(self.rows, os.path.join(folder, report_name(sid)), store=sid, url=url,
+                                         sources=self.meta.get("quote_labels"))
                 if p:
                     done.append(p)
                     self.win.log(tr("✔ 门店报告：{0}", p))
@@ -2545,7 +2560,7 @@ class OrderCheck:
                     problems.append(tr("{0}：门店库存快照没存上：{1}", R.STORES.get(sid), e))
             try:                                       # 发给门店的提醒：非 Griglia 商品下次别加、这次批发商没货的
                 rep = write_problem_report(self.rows, os.path.join(root, report_name(sid)), store=sid,
-                                           url=self.settings.get("image_url") or None)
+                                           url=self.settings.get("image_url") or None, sources=self.meta.get("quote_labels"))
                 if rep:
                     self.win.log(tr("✔ 门店报告：{0}", rep))
             except Exception as e:

@@ -197,7 +197,7 @@ def test_problem_report(tmp_path=None):
             {"store": 1, "code": "5", "ean": "8000000000059", "name": "E", "in_db": True, "pack": 6, "in_grid": True,
              "in_quote": True, "lbox": 1, "fbox": 1}]
     d = tempfile.mkdtemp()
-    p = OC.write_problem_report(rows, os.path.join(d, "a.xlsx"), store=1)          # 发给 FOIANO 的意大利文报告
+    p = OC.write_problem_report(rows, os.path.join(d, "a.xlsx"), store=1, sources=["MELONI", "MEGA CASH"])   # 发给 FOIANO
     wb = load_workbook(p)
     assert wb.sheetnames == ["FOIANO"]
     ws = wb["FOIANO"]
@@ -208,6 +208,7 @@ def test_problem_report(tmp_path=None):
     assert '=_xlfn.IMAGE("https://img.casaete.top/prodotti/8000000000011/01.webp")' in flat   # 照片用 IMAGE 函数读网站
     assert "No" in flat and "Sì" in flat                                         # 批发商有没有
     assert "Fornitore" in flat and "Ordinabile" in flat and "Grossisti" not in flat
+    assert any("MELONI · MEGA CASH" in str(v) for v in flat)                      # 写明是哪几家批发商订不到
     assert not any("箱规" in str(v) for v in flat)                               # 不放无关的（没有箱规）
     assert any(str(v).startswith("① Articoli non in Griglia") for v in flat)
     p2 = OC.write_problem_report(rows, os.path.join(d, "b.xlsx"))                 # 不指定门店：每家店一页
