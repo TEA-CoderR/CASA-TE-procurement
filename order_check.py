@@ -249,11 +249,15 @@ def write_problem_report(rows, path, store=None, url=None, when=None, sources=No
             r += 1
             for k, x in enumerate(xs):
                 ean = PI.norm_ean(x.get("ean"))
+                # 批发商都订不到的：确定箱数虽然写进了主订单，但比价时哪家都分不出去（进缺失报告），门店一件也收不到 → 报告里写 0
+                # （用户 2026-11-01：都订不到了 Colli ordinati 还大于 0）
+                can = _problem(x) != "nogrid_noq"
+                sent = int(x.get("fbox") or 0) if can else 0
                 # IMAGE(网址, 替代文字, 3 = 自定大小, 高, 宽)：显示成 48 像素的小图
                 vals = [f'=_xlfn.IMAGE("{url.format(ean=ean)}","",3,{IMG},{IMG})' if ean else "", ean or str(x.get("ean") or ""),
                         str(x.get("code") or ""), str(x.get("name") or ""),
-                        str(x.get("sup_name") or x.get("quote_sup") or ""), int(x.get("lbox") or 0), int(x.get("fbox") or 0),
-                        "No" if _problem(x) == "nogrid_noq" else "Sì"]
+                        str(x.get("sup_name") or x.get("quote_sup") or ""), int(x.get("lbox") or 0), sent,
+                        "Sì" if can else "No"]
                 zebra = PatternFill("solid", fgColor="FAFBFC") if k % 2 else None
                 for j, v in enumerate(vals[:cols], 1):
                     dc = ws.cell(r, j, v)
