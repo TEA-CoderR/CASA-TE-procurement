@@ -85,35 +85,85 @@ def PROB_KINDS_TIPS():
     """待核对窗口的标签页（顺序 = 显示顺序）和鼠标提示"""
     return (("noquote", tr("在我们的 Griglia 里，但这周几家批发商的报价里都没有：比价时会缺失。可能批发商不做了、断货，或者要向别处订")),
             ("nogrid_noq", tr("不在 Griglia（多半是门店发来的其他区域商品），批发商报价里也没有：比价时会缺失")),
-            ("nogrid", tr("不在 Griglia（多半是门店发来的其他区域商品），但批发商有报价：比价能分出去，要不要订你决定")),
-            ("nodb", tr("数据库里找不到、批发商报价里也没有：系统算不了，确定箱数默认 = 门店清单，请核对")),
-            ("nopack", tr("数据库里有，但不知道每箱几件：确定箱数默认 = 门店清单，请核对")))
+            ("nogrid", tr("不在 Griglia（多半是门店发来的其他区域商品），但批发商有报价：比价能分出去，要不要订你决定")))
 
 
 def _prob_title(kind, n, has_grid=True):
     """标签页名字：短、一眼看懂"""
     if kind == "noquote":
         return tr("Griglia 商品 · 批发商都没有（{0}）", n) if has_grid else tr("批发商都没有（{0}）", n)
-    return {"nogrid_noq": tr("其他区域 · 批发商都没有（{0}）", n), "nogrid": tr("其他区域 · 批发商有（{0}）", n),
-            "nodb": tr("数据库没有（{0}）", n), "nopack": tr("没有箱规（{0}）", n)}[kind]
+    return {"nogrid_noq": tr("其他区域 · 批发商都没有（{0}）", n), "nogrid": tr("其他区域 · 批发商有（{0}）", n)}[kind]
 
 
-def _problem(x):
-    """
-    要单独核对的商品：「nodb」数据库里没有、供应商报价里也找不到；「nopack」数据库有、但数据库和报价里都没有箱规。
-    数据库没有但报价里找得到的（补上了箱规、件价）留在主表格。其他返回 None
-    """
+def _issue(x):
+    """系统算不了的原因（待核对窗口「备注」列）：nodb 数据库里没有 / nopack 不知道每箱几件；能算返回 None。
+    这两种都说明哪家批发商报价里都没有（报价里有就会补上箱规），所以归在「批发商都没有」的页里"""
     if not x.get("in_db", True):
         if not (x.get("quote_sup") and _pk(x) > 0):
             return "nodb"
     elif _pk(x) <= 0:
         return "nopack"
-    # 用户定（2026-10-28）：在不在 Griglia × 有没有报价分开列，每个商品只在一个列表里
+    return None
+
+
+def _issue_text(x):
+    return {"nodb": tr("数据库没有"), "nopack": tr("没有箱规")}.get(_issue(x), "")
+
+
+def _problem(x):
+    """
+    要单独核对的商品（不在主表格，在「⚠ 待核对」窗口）：按「在不在 Griglia × 批发商有没有」分三页，每个商品只在一页。
+    数据库没有 / 没有箱规的（_issue）一定是批发商都没有的，放进对应的「批发商都没有」页，备注列写原因（用户 2026-11-01）。
+    数据库没有但报价里找得到的（补上了箱规、件价）留在主表格。其他返回 None
+    """
+    no_q = x.get("in_quote") is False or _issue(x) is not None
     if x.get("in_grid") is False:                     # 不在 Griglia：多半是门店没注意发来的别的区域的商品
-        return "nogrid_noq" if x.get("in_quote") is False else "nogrid"
-    if x.get("in_quote") is False:
+        return "nogrid_noq" if no_q else "nogrid"
+    if no_q:
         return "noquote"                              # 在 Griglia（或没放 Griglia）、几家批发商报价里都没有：比价时会成为缺失
     return None
+
+
+def write_problem_report(rows, path, store=None, for_store=False, has_grid=True):
+    """
+    待核对商品导出 Excel。for_store = 发给门店的提醒（只放这家店）：
+      ① 「其他区域，下次别加」= 不在 Griglia 的（批发商有 / 没有都算）；② 「这次批发商没货」= Griglia 商品批发商都没有（只是告知）。
+    不是给门店的：三页和窗口一样。表头中文 + 意大利文（门店同事看得懂）。没有商品返回 None
+    """
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill
+    from openpyxl.utils import get_column_letter
+    rs = [x for x in rows if (store is None or x.get("store") == store) and _problem(x)]
+    if not rs:
+        return None
+    if for_store:
+        groups = [(tr("其他区域，下次别加") + " Altri reparti", [x for x in rs if _problem(x) in ("nogrid_noq", "nogrid")]),
+                  (tr("这次批发商没货") + " Non disponibili", [x for x in rs if _problem(x) == "noquote"])]
+    else:
+        groups = [(_prob_title(k, 0, has_grid).split("（")[0], [x for x in rs if _problem(x) == k])
+                  for k, _ in PROB_KINDS_TIPS()]
+    heads = [tr("门店") + " Negozio", tr("编号") + " Cod.Art.", tr("条码") + " EAN", tr("名称") + " Descrizione",
+             tr("供应商") + " Fornitore", tr("备注") + " Note", tr("清单箱数") + " Colli lista", tr("确定箱数") + " Colli ordinati"]
+    wb = Workbook()
+    wb.remove(wb.active)
+    for title, xs in groups:
+        if not xs:
+            continue
+        ws = wb.create_sheet(title[:31].replace("/", "-").replace("·", "-"))
+        ws.append(heads)
+        for c in ws[1]:
+            c.font = Font(bold=True)
+            c.fill = PatternFill("solid", fgColor="EEF2F7")
+        for x in sorted(xs, key=lambda y: (y.get("store") or 0, str(y.get("name") or ""))):
+            ws.append([R.STORES.get(x.get("store"), ""), x.get("code") or "", x.get("ean") or "", x.get("name") or "",
+                       x.get("sup_name") or "", _issue_text(x), x.get("lbox") or 0, x.get("fbox") or 0])
+        for i, w in enumerate((12, 12, 16, 46, 30, 14, 12, 14), 1):
+            ws.column_dimensions[get_column_letter(i)].width = w
+        ws.freeze_panes = "A2"
+    if not wb.sheetnames:
+        return None
+    wb.save(path)
+    return path
 
 
 def _can_transfer(x):
@@ -512,23 +562,32 @@ class OrderCheck:
         dv.addWidget(self.prob_tabs, 1)
         close = QPushButton(tr("关闭"))
         close.clicked.connect(dlg.accept)
+        exp = QPushButton(tr("导出 Excel"))
+        exp.setToolTip(tr("三页一起导出（全部门店）；确认生成主订单时，每家店的比价文件夹里也会自动生成一份「门店提醒」，可以直接发给门店"))
+        exp.clicked.connect(self._export_prob)
         cb = QHBoxLayout()
+        cb.addWidget(exp)
         cb.addStretch()
         cb.addWidget(close)
         dv.addLayout(cb)
         self.prob_dlg = dlg
+        self._sum_timer = QTimer(dlg)                 # 改了箱数：合计等停手 0.3 秒再算（连着改不卡）
+        self._sum_timer.setSingleShot(True)
+        self._sum_timer.setInterval(300)
+        self._sum_timer.timeout.connect(self._summary)
         for kind, tip in PROB_KINDS_TIPS():
             page = QWidget()
             pv = QVBoxLayout(page)
             pv.setContentsMargins(0, 8, 0, 0)
             pv.setSpacing(8)
-            t = ui.make_table([tr("门店"), tr("条码"), tr("名称"), tr("供应商"), tr("清单箱数"), tr("确定箱数") + " ✎"],
-                              stretch_col=2, numeric_cols=(4, 5))
+            t = ui.make_table([tr("门店"), tr("条码"), tr("名称"), tr("供应商"), tr("备注"), tr("清单箱数"), tr("确定箱数") + " ✎"],
+                              stretch_col=2, numeric_cols=(5, 6))
             t.verticalHeader().setDefaultSectionSize(30)
             t.setEditTriggers(QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed |
                               QAbstractItemView.AnyKeyPressed)
-            for c, wd in ((0, 90), (1, 130), (3, 160), (4, 76), (5, 90)):
+            for c, wd in ((0, 90), (1, 130), (3, 170), (4, 86), (5, 76), (6, 90)):
                 t.setColumnWidth(c, wd)
+            t.horizontalHeaderItem(4).setToolTip(tr("数据库没有 / 没有箱规：系统算不了，确定箱数默认 = 门店清单"))
             t.itemChanged.connect(lambda it, k=kind: self._prob_edited(k, it))
             from erp_widgets import HeaderFilter      # 右键表头按列筛选
             t._hf = HeaderFilter(t)
@@ -1620,12 +1679,14 @@ class OrderCheck:
             for r, i in enumerate(idx):
                 x = self.rows[i]
                 self.ui.table_set_row(t, r, [R.STORES.get(x.get("store"), ""), x.get("ean") or "", x.get("name") or "",
-                                             x.get("sup_name") or "", f"{x['lbox']:,}", f"{x['fbox']:,}"])
+                                             x.get("sup_name") or "", _issue_text(x), f"{x['lbox']:,}", f"{x['fbox']:,}"])
                 t.item(r, 0).setData(Qt.UserRole, i)
                 t.item(r, 2).setToolTip(f"{x.get('name') or ''}\n{x.get('code') or ''} · {x.get('ean') or ''}")
+                if _issue(x):
+                    t.item(r, 4).setForeground(QColor(self.ui.T("warn")))
                 for c in range(t.columnCount()):
                     it = t.item(r, c)
-                    if c == 5:
+                    if c == 6:
                         it.setFlags(it.flags() | Qt.ItemIsEditable)
                         it.setToolTip(tr("双击修改箱数，0 = 不订"))
                         it.setForeground(QColor(self.ui.T("accent") if x["fbox"] > 0 else self.ui.T("faint")))
@@ -1670,8 +1731,9 @@ class OrderCheck:
         dlg.activateWindow()
 
     def _prob_edited(self, kind, item):
-        """顶上小表格里改了确定箱数：等编辑框关掉再刷新（编辑中途重画会卡住）"""
-        if self._prob_filling or item.column() != 5:
+        """待核对窗口里改了确定箱数：只更新这一格（不重画整张表，改得快），合计停手 0.3 秒再算。
+        等编辑框关掉再改格子（编辑中途重画会卡住）"""
+        if self._prob_filling or item.column() != 6:
             return
         t = self.prob[kind][2]
         first = t.item(item.row(), 0)
@@ -1685,7 +1747,34 @@ class OrderCheck:
             _set_box(self.rows[i], int(n))
         except ValueError:
             self.win.show_toast(tr("箱数要填 0 或正整数"))
-        QTimer.singleShot(0, lambda: (self._fill_prob(), self._summary()))
+        row, x = item.row(), self.rows[i]
+
+        def later():
+            cell = t.item(row, 6)
+            if cell is None:
+                return
+            self._prob_filling = True
+            t.blockSignals(True)
+            cell.setText(f"{x['fbox']:,}")
+            cell.setForeground(QColor(self.ui.T("accent") if x["fbox"] > 0 else self.ui.T("faint")))
+            t.blockSignals(False)
+            self._prob_filling = False
+            self._sum_timer.start()
+        QTimer.singleShot(0, later)
+
+    def _export_prob(self):
+        """待核对窗口「导出 Excel」：三页一起（全部门店）"""
+        path, _ = QFileDialog.getSaveFileName(self.prob_dlg, tr("导出 Excel"), os.path.join(
+            self.win.ws_root() if hasattr(self.win, "ws_root") else "", f"待核对_{datetime.now():%Y%m%d_%H%M}.xlsx"),
+            tr("Excel 文件 (*.xlsx)"))
+        if not path:
+            return
+        try:
+            has_grid = any(x.get("in_grid") is not None for x in self.rows)
+            if write_problem_report(self.rows, path, has_grid=has_grid):
+                self.win.show_toast(tr("已导出：{0}", os.path.basename(path)))
+        except Exception as e:
+            QMessageBox.warning(self.prob_dlg, tr("导出 Excel"), tr("导出失败：{0}", e))
 
     def _store_sel(self):
         b = self.store_group.checkedButton() if hasattr(self, "store_group") else None
@@ -2191,6 +2280,13 @@ class OrderCheck:
                     R.save_snapshot(path, sid, self.meta.get("snap") or {}, rows, transfers=mine, transfers_file=tf)
                 except Exception as e:
                     problems.append(tr("{0}：门店库存快照没存上：{1}", R.STORES.get(sid), e))
+            try:                                       # 发给门店的提醒：其他区域的商品下次别加、这次批发商没货的
+                rep = write_problem_report(self.rows, os.path.join(
+                    root, f"门店提醒_{R.STORES.get(sid)}_{datetime.now():%d%m}.xlsx"), store=sid, for_store=True)
+                if rep:
+                    self.win.log(tr("✔ 门店提醒：{0}", rep))
+            except Exception as e:
+                problems.append(tr("{0}：门店提醒没写上：{1}", R.STORES.get(sid), e))
             self.win.log(tr("✔ 采购主订单：{0}（{1} 个商品）", path, written))
             if skipped:
                 self.win.log(tr("⚠ {0} 个商品没有条码，没写进主订单：{1}", len(skipped),

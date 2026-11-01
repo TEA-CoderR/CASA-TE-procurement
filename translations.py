@@ -2572,4 +2572,10 @@ TRANSLATIONS = {
     '按 ABC 调整服务水平': ('Adjust service level by ABC', 'Adatta il livello di servizio per ABC'),
     '系数': ('Factor', 'Fattore'),
     '× 订货周期；鼠标停在框上看换算成几天': ('× order cycle; hover a box to see the days', '× ciclo di riordino; passa sopra una casella per vedere i giorni'),
+    '三页一起导出（全部门店）；确认生成主订单时，每家店的比价文件夹里也会自动生成一份「门店提醒」，可以直接发给门店': ('Exports all three pages (all stores); when the main orders are generated, each store\'s comparison folder also gets a "store reminder" file you can send to the store', 'Esporta le tre pagine (tutti i negozi); quando si generano gli ordini principali, nella cartella di ogni negozio viene creato anche un "promemoria negozio" da inviare al negozio'),
+    '数据库没有 / 没有箱规：系统算不了，确定箱数默认 = 门店清单': ('Not in database / no case size: cannot be calculated, final cases default to the store list', 'Non nel database / senza pezzi per collo: non calcolabile, i colli finali sono quelli della lista'),
+    '其他区域，下次别加': ('Other areas, do not add next time', 'Altri reparti, non aggiungere'),
+    '这次批发商没货': ('Wholesalers out of stock this time', 'Grossisti senza merce questa volta'),
+    '✔ 门店提醒：{0}': ('✔ Store reminder: {0}', '✔ Promemoria negozio: {0}'),
+    '{0}：门店提醒没写上：{1}': ('{0}: store reminder not written: {1}', '{0}: promemoria negozio non scritto: {1}'),
 }
