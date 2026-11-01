@@ -4,7 +4,7 @@
 """
 import json
 
-COMPANY_DEFAULTS_VER = 7          # v3.3.11 发布时同步
+COMPANY_DEFAULTS_VER = 8          # v3.3.12 发布时同步
 
 COMPANY_DEFAULTS = json.loads(r'''
 {
@@ -173,7 +173,27 @@ COMPANY_DEFAULTS = json.loads(r'''
  "reorder": {
   "card_day_cols_hidden": [],
   "card_day_cols_hidden_ver": 1,
+  "card_day_columns": [
+   1,
+   11,
+   12,
+   13,
+   14,
+   15,
+   2,
+   3
+  ],
   "card_day_columns_ver": 1,
+  "card_day_widths": {
+   "1": 110,
+   "11": 90,
+   "12": 90,
+   "13": 90,
+   "14": 90,
+   "15": 108,
+   "2": 70,
+   "3": 90
+  },
   "card_rec_cols_hidden": [
    6,
    7,
@@ -202,7 +222,7 @@ COMPANY_DEFAULTS = json.loads(r'''
    "1": 100,
    "2": 70,
    "3": 70,
-   "4": 240,
+   "4": 165,
    "5": 150,
    "6": 0,
    "7": 0
