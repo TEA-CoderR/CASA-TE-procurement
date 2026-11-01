@@ -22,7 +22,7 @@ import reorder_service as R
 DAYS = 60
 CACHE_TTL = 600         # 同一个商品 10 分钟内再打开直接用上次查的
 _TAG_FID = {"date": 1, "qty": 2, "type": 3, "sup": 4, "doc": 5, "price": 6, "store": 7}
-_TAG_W = {"date": 100, "qty": 70, "type": 70, "sup": 240, "doc": 150, "price": 80, "store": 100}
+_TAG_W = {"date": 130, "qty": 80, "type": 80, "sup": 80, "doc": 100, "price": 80, "store": 100}
 
 
 def _fid(col, tag):
@@ -34,12 +34,12 @@ def _blank(v):
 
 
 def fmt_cell(v, tag=None):
-    """入库记录一格 → (显示文字, 排序值)"""
+    """入库记录一格 → (显示文字, 排序值)。日期写成 2026-10-19（和 ERP 一样）"""
     if _blank(v):
         return "", ""
     if hasattr(v, "strftime"):
         try:
-            return v.strftime("%d/%m/%Y"), v.isoformat()
+            return v.strftime("%Y-%m-%d"), v.isoformat()
         except (ValueError, AttributeError):
             return str(v), str(v)
     if tag == "store":
@@ -71,8 +71,9 @@ class _Sig(QObject):
 class _Grid:
     """一张表 + 搜索框 + 「n / 总数」：rows[i] = 显示文字列表，keys[i] = 排序值列表，colors = {(i, c): 颜色记号}"""
 
-    def __init__(self, ui, heads, numeric, cfg, key, save, fids, hidden=(), widths=None, ver=1):
+    def __init__(self, ui, heads, numeric, cfg, key, save, fids, hidden=(), widths=None, ver=1, erp=False):
         self.ui, self.rows, self.keys, self.colors, self.tips = ui, [], [], {}, {}
+        self.erp = erp
         self.w = QWidget()
         v = QVBoxLayout(self.w)
         v.setContentsMargins(0, 8, 0, 0)
@@ -94,6 +95,8 @@ class _Grid:
         hh.setStretchLastSection(False)
         for c, f in enumerate(fids):
             self.t.setColumnWidth(c, (widths or {}).get(f, 90))
+        if erp:                                  # 和 ERP 的入库记录一个样子（用户 2026-11-01）：横竖格线、浅蓝表头、居中
+            self.restyle()
         v.addWidget(self.t, 1)
         from erp_widgets import TableSortFilter
         self.ctl = TableSortFilter(self.t, lambda: len(self.rows), lambda i, c: self.rows[i][c], self._fill,
@@ -101,6 +104,15 @@ class _Grid:
         self.ctl.rendered.connect(lambda n, tot: self.count.setText(tr("{0:,} / {1:,}", n, tot)))
         self.ctl.remember(cfg, key, save, fids, default_hidden=list(hidden), ver=ver)
         self.search.textChanged.connect(lambda _: self.ctl.render())
+
+    def restyle(self):
+        T = self.ui.T
+        self.t.setShowGrid(True)
+        self.t.horizontalHeader().setDefaultAlignment(Qt.AlignCenter)
+        self.t.setStyleSheet(
+            f"QTableWidget {{ gridline-color: {T('far')}; border: 1px solid {T('far')}; }}"
+            f"QHeaderView::section {{ background: {T('accent_soft')}; color: {T('text')}; border: none;"
+            f" border-right: 1px solid {T('far')}; border-bottom: 1px solid {T('far')}; padding: 5px 4px; }}")
 
     def _hidden(self, i):
         q = self.search.text().strip().lower()
@@ -114,6 +126,8 @@ class _Grid:
             it = self.t.item(k, c)
             if it is None:
                 continue
+            if self.erp:
+                it.setTextAlignment(Qt.AlignCenter)
             if tok:
                 it.setForeground(QColor(T(tok)))
             tip = self.tips.get((i, c))
@@ -431,10 +445,11 @@ class ProductWindow(QDialog):
                 it.widget().setParent(None)
         widths = {_fid(c, tag): _TAG_W.get(tag, 110) for c, _h, tag in cols}
         self.rec = _Grid(self.ui, heads, numeric, self.cfg, "card_rec", self._save, fids, default_hidden_cols(cols), widths,
-                         ver=2)
+                         ver=2, erp=True)
         lay.addWidget(self.rec.w)
-        out, keys, colors = [], [], {}
+        out, keys, colors, tips = [], [], {}, {}
         qcol = next((k for k, (_c, _h, tag) in enumerate(cols) if tag == "qty"), None)
+        scol = next((k for k, (_c, _h, tag) in enumerate(cols) if tag == "sup"), None)
         for i, r in enumerate(rows):
             t, kk = [], []
             for c, _h, tag in cols:
@@ -443,9 +458,11 @@ class ProductWindow(QDialog):
                 kk.append(b)
             if qcol is not None and isinstance(kk[qcol], float) and kk[qcol] < 0:
                 colors[(i, qcol)] = "warn"           # 退货 / 出库
+            if scol is not None and r.get("_sup_name"):
+                tips[(i, scol)] = r["_sup_name"]     # 商家写编号（和 ERP 一样），名字在鼠标提示里
             out.append(t)
             keys.append(kk)
-        self.rec.set(out, keys, colors)
+        self.rec.set(out, keys, colors, tips)
         self.tabs.setTabText(0, (tr("入库记录（{0}）", len(rows)) if len(rows) < 300 else tr("入库记录（最近 300 条）")) +
                              (" ⚠" if old else ""))
         self.tabs.setTabToolTip(0, (tr("全部门店（数据库入库表里分不出门店）") if self._rec_all else
