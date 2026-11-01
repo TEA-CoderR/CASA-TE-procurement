@@ -593,54 +593,121 @@ def query_monthly_sales(db, store_id, codes, months=24, today=None):
     return out
 
 
-# ---------- 门店自己在做的促销（2026-11-01 用户：检查清单里促销的商品条码标红）----------
-# 数据库里没有单独的促销表，看实际卖价：近 PROMO_DAYS 天本店卖出的件数里，一半以上的成交价（TotRighe ÷ Qta，含税）
-# 比标价（prodotti.PrezzoVedi1，含税）便宜 ≥ PROMO_MIN → 算在促销。标价如果是不含税的，就一个都不会标（不会乱标）
-PROMO_DAYS = 7
+# ---------- 门店在做的促销（2026-11-01 用户：检查清单里促销的商品条码标红；促销在会员价里）----------
+# 数据库里四种（用户以前诊断过，D:\CasaTeCopy\erp-agent\query）：
+#   会员价      prodotti.PrezzoVedi3（> 0 且比标价 PrezzoVedi1 便宜；一直有效）
+#   单品特价    prodotti.PrezzoVediOfferta + PrezzoVediOfferta_inizio / _fine（文字格式的日期）
+#   会员限时价  prodotti_vip.PrezzoVedi + Prezzofine
+#   促销单      promozioni（l, Data_a, Data_f, negozio = "0,1,2,3" 空 = 全部门店）+ promozioni_list（promozioni_l, CodArticolo,
+#               Prezzo_p 促销价 / sconto 折扣 %, invalid）
+# 今天有效、比标价便宜的都算；同一个商品几种都有，取最便宜的。查不到的表跳过（不影响别的）
+PROMO_KINDS = {"vip": "会员价", "offer": "单品特价", "vip_t": "会员限时价", "promo": "促销单"}
+PROMO_DAYS = 7        # 详情窗口每天销量：实际卖价比标价便宜 PROMO_MIN 以上标红
 PROMO_MIN = 0.05
-PROMO_SHARE = 0.5
 
 
-def promo_info(qty, total, disc_qty, list_price, last=None):
-    """一个商品近几天的销售合计 → 促销信息 {"list", "sold", "pct", "share", "qty", "last"}；不算促销返回 None"""
+def _num(v):
     try:
-        q, t, dq, lp = float(qty or 0), float(total or 0), float(disc_qty or 0), float(list_price or 0)
+        f = float(str(v).replace(",", ".")) if v is not None else 0.0
+        return f if f == f else 0.0
     except (TypeError, ValueError):
-        return None
-    if q != q or t != t or lp != lp or dq != dq or not (q > 0 and t > 0 and lp > 0):
-        return None
-    unit = t / q
-    pct = 1 - unit / lp
-    share = min(1.0, dq / q)
-    if pct < PROMO_MIN or share < PROMO_SHARE:
-        return None
-    return {"list": lp, "sold": unit, "pct": pct, "share": share, "qty": q, "last": last}
+        return 0.0
 
 
-def query_promos(db, store_id, codes, days=PROMO_DAYS, today=None):
-    """本店这些商品里正在促销的：{商品编号(str): promo_info}（只读查询）"""
+def _day(v):
+    """数据库里的日期（date / datetime / 'YYYY-MM-DD' 文字）→ date；空的、0000-00-00 → None"""
+    from datetime import date as _date
+    if v is None or (isinstance(v, float) and v != v):
+        return None
+    if hasattr(v, "date") and callable(v.date):
+        try:
+            return v.date()
+        except (TypeError, ValueError):
+            return None
+    if isinstance(v, _date):
+        return v
+    s = str(v).strip()[:10]
+    try:
+        return _date.fromisoformat(s) if s and not s.startswith("0000") else None
+    except ValueError:
+        return None
+
+
+def _active(start, end, today):
+    a, b = _day(start), _day(end)
+    return (a is None or a <= today) and (b is None or b >= today)
+
+
+def _in_store(negozio, store_id):
+    s = str(negozio if negozio is not None else "").strip()
+    if not s or s.lower() in ("nan", "none"):
+        return True
+    return str(int(store_id)) in [x.strip() for x in s.replace(";", ",").split(",")]
+
+
+def promo_pick(list_price, offers):
+    """offers = [(种类, 价格, 结束日期)] → 最便宜、比标价便宜的那个 {"kind", "label", "list", "price", "pct", "end"}；没有 None"""
+    lp = _num(list_price)
+    best = None
+    for kind, price, end in offers:
+        p = _num(price)
+        if lp <= 0 or not (0 < p < lp * 0.995):
+            continue
+        if best is None or p < best["price"]:
+            best = {"kind": kind, "label": PROMO_KINDS.get(kind, kind), "list": lp, "price": p, "pct": 1 - p / lp,
+                    "end": _day(end)}
+    return best
+
+
+def query_promos(db, store_id, codes, today=None):
+    """本店这些商品里今天在促销的：{商品编号(str): promo_pick}（只读查询）"""
     import pandas as pd
     from datetime import date as _date
-    since = (today or _date.today()) - timedelta(days=int(days))
+    today = today or _date.today()
     codes = sorted({int(c) for c in codes if str(c).strip().isdigit()})
-    out = {}
+    offers, lists = {}, {}
+
+    def add(c, kind, price, end=None):
+        offers.setdefault(str(int(c)), []).append((kind, price, end))
     for i in range(0, len(codes), 2000):
         chunk = codes[i:i + 2000]
         ph = ", ".join(["%s"] * len(chunk))
-        sql = (f"SELECT v.CodArticolo AS c, SUM(v.Qta) AS q, SUM(v.TotRighe) AS t, "
-               f"SUM(CASE WHEN v.TotRighe < v.Qta * p.PrezzoVedi1 * %s THEN v.Qta ELSE 0 END) AS dq, "
-               f"MAX(p.PrezzoVedi1) AS lp, MAX(v.Data) AS last "
-               f"FROM vendite_list_{int(store_id)} v JOIN prodotti p ON p.CodArticolo = v.CodArticolo "
-               f"WHERE v.CodArticolo IN ({ph}) AND v.Data >= %s AND v.Qta > 0 GROUP BY v.CodArticolo")
-        df = pd.read_sql(sql, db.engine, params=(1 - PROMO_MIN,) + tuple(chunk) + (since,))
-        for _, r in df.iterrows():
-            try:
-                c = str(int(r["c"]))
-            except (TypeError, ValueError):
-                continue
-            info = promo_info(r["q"], r["t"], r["dq"], r["lp"], r["last"])
-            if info:
-                out[c] = info
+        df = pd.read_sql(f"SELECT CodArticolo, PrezzoVedi1, PrezzoVedi3, PrezzoVediOfferta, PrezzoVediOfferta_inizio, "
+                         f"PrezzoVediOfferta_fine FROM prodotti WHERE CodArticolo IN ({ph})", db.engine, params=tuple(chunk))
+        for r in df.to_dict("records"):
+            c = r["CodArticolo"]
+            lists[str(int(c))] = r["PrezzoVedi1"]
+            add(c, "vip", r.get("PrezzoVedi3"))
+            if _active(r.get("PrezzoVediOfferta_inizio"), r.get("PrezzoVediOfferta_fine"), today):
+                add(c, "offer", r.get("PrezzoVediOfferta"), r.get("PrezzoVediOfferta_fine"))
+        try:
+            df = pd.read_sql(f"SELECT CodArticolo, PrezzoVedi, Prezzofine FROM prodotti_vip WHERE CodArticolo IN ({ph})",
+                             db.engine, params=tuple(chunk))
+            for r in df.to_dict("records"):
+                if _active(None, r.get("Prezzofine"), today):
+                    add(r["CodArticolo"], "vip_t", r.get("PrezzoVedi"), r.get("Prezzofine"))
+        except Exception:
+            pass
+        try:
+            df = pd.read_sql(f"SELECT pl.CodArticolo, pl.Prezzo_p, pl.sconto, pl.invalid, pr.Data_a, pr.Data_f, pr.negozio "
+                             f"FROM promozioni_list pl JOIN promozioni pr ON pr.l = pl.promozioni_l "
+                             f"WHERE pl.CodArticolo IN ({ph})", db.engine, params=tuple(chunk))
+            for r in df.to_dict("records"):
+                if _num(r.get("invalid")) or not _active(r.get("Data_a"), r.get("Data_f"), today) or \
+                        not _in_store(r.get("negozio"), store_id):
+                    continue
+                c = str(int(r["CodArticolo"]))
+                p = _num(r.get("Prezzo_p"))
+                if p <= 0 and _num(r.get("sconto")) > 0:
+                    p = _num(lists.get(c)) * (1 - _num(r.get("sconto")) / 100)
+                add(c, "promo", p, r.get("Data_f"))
+        except Exception:
+            pass
+    out = {}
+    for c, of in offers.items():
+        p = promo_pick(lists.get(c), of)
+        if p:
+            out[c] = p
     return out
 
 
@@ -720,6 +787,11 @@ def card_fields(prod):
     if k2:
         out.append(("箱装数", num(box)))
     out += [("进价", num(p.get("PrezzoForn"), "€{0:.3f}")), ("售价", num(p.get("PrezzoVedi1"), "€{0:.2f}"))]
+    if _num(p.get("PrezzoVedi3")) > 0:
+        out.append(("会员价", num(p.get("PrezzoVedi3"), "€{0:.2f}")))
+    if _num(p.get("PrezzoVediOfferta")) > 0:
+        span = " – ".join(x for x in (day(_day(p.get("PrezzoVediOfferta_inizio"))), day(_day(p.get("PrezzoVediOfferta_fine")))) if x)
+        out.append(("单品特价", "€{0:.2f}".format(_num(p.get("PrezzoVediOfferta"))) + (f"（{span}）" if span else "")))
     out.append(("类别", " / ".join(x for x in (txt(p.get("CategoriaNome")), txt(p.get("SottocategoriaNome"))) if x)))
     _k, cr = _find(p, r"crea", r"inserim", r"datains")
     _k, md = _find(p, r"modific", r"aggiorn", r"update", r"datamod")

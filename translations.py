@@ -2627,4 +2627,12 @@ TRANSLATIONS = {
     '创建 / 修改': ('Created / modified', 'Creato / modificato'),
     '类型': ('Type', 'Tipo'),
     '发票': ('Invoice', 'Fattura'),
+    '{0} €{1:.2f}（标价 €{2:.2f}，−{3:.0%}）': ('{0} €{1:.2f} (list €{2:.2f}, −{3:.0%})', '{0} €{1:.2f} (listino €{2:.2f}, −{3:.0%})'),
+    '到 {0}': ('until {0}', 'fino al {0}'),
+    '促销期间销量会偏高': ('Sales are higher during the promotion', 'Durante la promozione le vendite sono più alte'),
+    '会员价': ('Member price', 'Prezzo VIP'),
+    '单品特价': ('Special price', 'Prezzo offerta'),
+    '会员限时价': ('Limited member price', 'Prezzo VIP a tempo'),
+    '促销单': ('Promotion', 'Promozione'),
+    '促销': ('Promotion', 'Promozione'),
 }

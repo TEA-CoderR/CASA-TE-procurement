@@ -259,8 +259,8 @@ class ProductWindow(QDialog):
 
     def _show_promo(self, p):
         if p:
-            self.promo.setText(tr("促销中 −{0:.0%} · 标价 €{1:.2f} → 实卖 €{2:.2f}", p["pct"], p["list"], p["sold"]))
-            self.promo.setToolTip(tr("近 {0} 天本店卖出的 {1:g} 件里 {2:.0%} 是打折价", R.PROMO_DAYS, p["qty"], p["share"]))
+            from order_check import promo_text
+            self.promo.setText("🏷 " + promo_text(p))
             self.promo.show()
             self.title.setStyleSheet(f"font-size:16px; font-weight:700; color:{self.ui.T('err')};")
         else:

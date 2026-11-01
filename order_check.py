@@ -380,6 +380,14 @@ VIEWS = (("all", "全部商品"), ("changed", "只看有变化的"), ("transfer"
          ("promo", "只看促销"))
 
 
+def promo_text(p):
+    """「会员价 €4.99（标价 €6.49，−23%）· 到 31/12/2026」"""
+    s = tr("{0} €{1:.2f}（标价 €{2:.2f}，−{3:.0%}）", tr(p.get("label") or "促销"), p["price"], p["list"], p["pct"])
+    if p.get("end"):
+        s += " · " + tr("到 {0}", p["end"].strftime("%d/%m/%Y"))
+    return s
+
+
 class _Sig(QObject):
     done = Signal(object)
     months = Signal(object)          # 近两年每月销量读好了（后台线程 → 界面）
@@ -1528,8 +1536,7 @@ class OrderCheck:
         p = x.get("promo")
         if not p:
             return ""
-        return tr("促销中：标价 €{0:.2f} → 近 {1} 天实卖 €{2:.2f}（−{3:.0%}），促销期间销量会偏高",
-                  p["list"], R.PROMO_DAYS, p["sold"], p["pct"])
+        return promo_text(p) + "\n" + tr("促销期间销量会偏高")
 
     def _open_card(self, k, c):
         """双击商品 / 条码 / 编号：打开商品详情窗口（入库记录、每天销量、各店库存…）"""
