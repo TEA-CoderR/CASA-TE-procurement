@@ -148,10 +148,20 @@ class ProductWindow(QDialog):
         # ---- 上面：图 | 名称 + 资料 | 各店库存 ----
         top = QHBoxLayout()
         top.setSpacing(16)
+        # 图片位置固定 150 × 150（没图时显示「没有图片」，不会跳版面）
+        box = QFrame()
+        box.setObjectName("MiniCard")
+        box.setFixedSize(150, 150)
+        bl = QVBoxLayout(box)
+        bl.setContentsMargins(0, 0, 0, 0)
+        self.noimg = QLabel(tr("没有图片"))
+        self.noimg.setObjectName("Faint")
+        self.noimg.setAlignment(Qt.AlignCenter)
         self.img = QLabel()
-        self.img.setFixedSize(150, 150)
         self.img.setAlignment(Qt.AlignCenter)
-        top.addWidget(self.img, 0, Qt.AlignTop)
+        bl.addWidget(self.img)
+        bl.addWidget(self.noimg)
+        top.addWidget(box, 0, Qt.AlignTop)
         mid = QVBoxLayout()
         mid.setSpacing(6)
         self.title = QLabel("")
@@ -210,8 +220,14 @@ class ProductWindow(QDialog):
         name = x.get("name") or str(x.get("code"))
         self.setWindowTitle(tr("商品详情 — {0}", name))
         self.title.setText(name)
-        PI.set_label_image(self.img, x.get("ean"), 150, self.settings)
-        self.img.show()
+        PI.set_label_image(self.img, x.get("ean"), 148, self.settings)
+        self._sync_noimg()
+        if not getattr(self, "_img_watch", False):         # 图片下载完（或确定没有）时更新「没有图片」
+            self._img_watch = True
+            try:
+                PI.store(self.settings).ready.connect(lambda _e: self._sync_noimg())
+            except Exception:
+                pass
         self._show_promo(x.get("promo"))
         self._clear(self.info)
         self._clear(self.stock)
@@ -286,6 +302,12 @@ class ProductWindow(QDialog):
                 except Exception:
                     pass
                 self._db = None
+
+    def _sync_noimg(self):
+        try:
+            self.noimg.setVisible(self.img.isHidden())
+        except RuntimeError:
+            pass
 
     def _show_promo(self, p):
         if p:

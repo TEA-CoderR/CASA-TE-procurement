@@ -2635,4 +2635,5 @@ TRANSLATIONS = {
     '会员限时价': ('Limited member price', 'Prezzo VIP a tempo'),
     '促销单': ('Promotion', 'Promozione'),
     '促销': ('Promotion', 'Promozione'),
+    '没有图片': ('No image', 'Nessuna immagine'),
 }
