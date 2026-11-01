@@ -600,7 +600,7 @@ def query_monthly_sales(db, store_id, codes, months=24, today=None):
 #   会员限时价  prodotti_vip.PrezzoVedi + Prezzofine
 #   促销单      promozioni（l, Data_a, Data_f, negozio = "0,1,2,3" 空 = 全部门店）+ promozioni_list（promozioni_l, CodArticolo,
 #               Prezzo_p 促销价 / sconto 折扣 %, invalid）
-# 只算有时间限制的（单品特价、会员限时价、促销单；用户 2026-11-01 定），会员价不算。
+# 四种都算（用户 2026-11-01：促销在会员价里，有几百个）。促销单 / 会员限时价两张表在这个库里停在 2026-04-09（没同步），会员价和单品特价在商品表里每天同步。
 # 今天有效、比标价便宜的都算；同一个商品几种都有，取最便宜的。查不到的表跳过（不影响别的）
 PROMO_KINDS = {"vip": "会员价", "offer": "单品特价", "vip_t": "会员限时价", "promo": "促销单"}
 PROMO_DAYS = 7        # 详情窗口每天销量：实际卖价比标价便宜 PROMO_MIN 以上标红
@@ -678,7 +678,9 @@ def query_promos(db, store_id, codes, today=None):
         for r in df.to_dict("records"):
             c = r["CodArticolo"]
             lists[str(int(c))] = r["PrezzoVedi1"]
-            # 会员价 PrezzoVedi3 没有时间限制：不算促销（用户 2026-11-01：只要有时间限制的），只在详情窗口显示
+            # 会员价 PrezzoVedi3：门店的促销就做在这里（用户 2026-11-01 确认；754 个商品，万圣节服装、11 月扫墓花、OMINO BIANCO…），
+            # 商品表每天同步，是最新的
+            add(c, "vip", r.get("PrezzoVedi3"))
             if _active(r.get("PrezzoVediOfferta_inizio"), r.get("PrezzoVediOfferta_fine"), today):
                 add(c, "offer", r.get("PrezzoVediOfferta"), r.get("PrezzoVediOfferta_fine"))
         try:
