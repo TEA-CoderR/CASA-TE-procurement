@@ -188,7 +188,7 @@ def write_problem_report(rows, path, store=None, url=None, when=None):
     thin = Side(style="thin", color=LINE)
     box = Border(left=thin, right=thin, top=thin, bottom=thin)
     center = Alignment(horizontal="center", vertical="center", wrap_text=True)
-    left = Alignment(horizontal="left", vertical="center", wrap_text=True)
+    left = Alignment(horizontal="left", vertical="center", wrap_text=True, indent=1)
     # 用户 2026-11-01：加「供应商」（门店知道是哪家的货别再要）；「Grossisti」改成「可订到」= Ordinabile
     heads = ["Foto", "EAN", "Cod. Art.", "Descrizione", "Fornitore", "Colli richiesti", "Colli ordinati", "Ordinabile"]
     widths = (13, 16, 10, 40, 24, 10, 10, 11)
