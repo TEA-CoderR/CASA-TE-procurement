@@ -153,11 +153,10 @@ def _tab_of(kind):
 
 
 def _report_rows(rows, store):
-    """发给门店的报告里这家店的两段：① 非 Griglia 商品（下次别加）② Griglia 商品这周批发商都没有"""
-    rs = [x for x in rows if x.get("store") == store and _problem(x)]
-    key = lambda y: str(y.get("name") or "").lower()
-    return (sorted([x for x in rs if _tab_of(_problem(x)) == "nogrid"], key=key),
-            sorted([x for x in rs if _problem(x) == "noquote"], key=key))
+    """发给门店的报告里这家店的商品：只有非 Griglia 商品（下次别加）。
+    原来的第 ② 段「Griglia 商品这周批发商都没有」用户 2026-11-01 说不用发给门店，去掉了"""
+    rs = [x for x in rows if x.get("store") == store and _tab_of(_problem(x)) == "nogrid"]
+    return (sorted(rs, key=lambda y: str(y.get("name") or "").lower()),)
 
 
 def report_name(store, when=None):
@@ -183,7 +182,8 @@ def write_problem_report(rows, path, store=None, url=None, when=None, sources=No
     import product_images as PI
     url = url or PI.DEFAULT_URL
     when = when or datetime.now()
-    stores = [store] if store is not None else sorted({x.get("store") for x in rows if _problem(x)}, key=lambda v: v or 0)
+    stores = [store] if store is not None else \
+        sorted({x.get("store") for x in rows if _tab_of(_problem(x)) == "nogrid"}, key=lambda v: v or 0)
     wb = Workbook()
     wb.remove(wb.active)
     INK, MUTED, LINE = "1F2A37", "6B7280", "E5E7EB"
@@ -193,14 +193,13 @@ def write_problem_report(rows, path, store=None, url=None, when=None, sources=No
     left = Alignment(horizontal="left", vertical="center", wrap_text=True, indent=1)
     # 用户 2026-11-01：加「供应商」（门店知道是哪家的货别再要）；「Grossisti」改成「可订到」= Ordinabile
     heads = ["Foto", "EAN", "Cod. Art.", "Descrizione", "Fornitore", "Colli richiesti", "Colli ordinati", "Ordinabile"]
-    widths = (13, 16, 10, 40, 24, 10, 10, 11)
+    widths = (9, 16, 10, 40, 24, 10, 10, 11)
+    IMG = 48                      # 照片显示 48 × 48 像素（用户：不用那么大），行高跟着小
     ncol = len(heads)
     names = " · ".join(str(s) for s in (sources or []) if str(s).strip())
     who = names or "i nostri grossisti"
-    sections = (("① Articoli non in Griglia – da non inserire nei prossimi ordini", "FDECE2", "B4471A", True,
-                 f"Ordinabile = presente nei listini di questa settimana di {who}. «No» vale solo per questi grossisti."),
-                ("② Articoli Griglia non disponibili dai grossisti questa settimana", "E3EEFB", "1F5FA8", False,
-                 f"Non presenti nei listini di questa settimana di {who}."))
+    sections = (("Articoli non in Griglia – da non inserire nei prossimi ordini", "FDECE2", "B4471A", True,
+                 f"Ordinabile = presente nei listini di questa settimana di {who}. «No» vale solo per questi grossisti."),)
     for sid in stores:
         parts = _report_rows(rows, sid)
         if not any(parts):
@@ -217,7 +216,7 @@ def write_problem_report(rows, path, store=None, url=None, when=None, sources=No
         ws["A1"].alignment = Alignment(horizontal="left", vertical="center", indent=1)
         ws.row_dimensions[1].height = 32
         ws.merge_cells(f"A2:{last}2")
-        ws["A2"] = f"CASA&TE · {when:%d/%m/%Y} · {len(parts[0]) + len(parts[1])} articoli"
+        ws["A2"] = f"CASA&TE · {when:%d/%m/%Y} · {sum(len(p) for p in parts)} articoli"
         ws["A2"].font = Font(size=10, italic=True, color=MUTED)
         ws["A2"].alignment = Alignment(horizontal="left", vertical="center", indent=1)
         ws.row_dimensions[2].height = 20
@@ -249,7 +248,8 @@ def write_problem_report(rows, path, store=None, url=None, when=None, sources=No
             r += 1
             for k, x in enumerate(xs):
                 ean = PI.norm_ean(x.get("ean"))
-                vals = [f'=_xlfn.IMAGE("{url.format(ean=ean)}")' if ean else "", ean or str(x.get("ean") or ""),
+                # IMAGE(网址, 替代文字, 3 = 自定大小, 高, 宽)：显示成 48 像素的小图
+                vals = [f'=_xlfn.IMAGE("{url.format(ean=ean)}","",3,{IMG},{IMG})' if ean else "", ean or str(x.get("ean") or ""),
                         str(x.get("code") or ""), str(x.get("name") or ""),
                         str(x.get("sup_name") or x.get("quote_sup") or ""), int(x.get("lbox") or 0), int(x.get("fbox") or 0),
                         "No" if _problem(x) == "nogrid_noq" else "Sì"]
@@ -264,7 +264,7 @@ def write_problem_report(rows, path, store=None, url=None, when=None, sources=No
                 if full:
                     g = ws.cell(r, 8)
                     g.font = Font(size=10, bold=True, color="B42318" if g.value == "No" else "2E7D32")
-                ws.row_dimensions[r].height = 60          # 照片那一格的高度（IMAGE 按格子大小缩放）
+                ws.row_dimensions[r].height = 42          # 放得下 48 像素的照片
                 r += 1
             r += 1
         foot = ws.cell(r, 1, "Foto: si caricano da internet in Excel 365.")

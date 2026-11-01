@@ -3509,7 +3509,7 @@ class MainWindow(QMainWindow):
         acts.addWidget(self.btn_edit)
         acts.addWidget(self.btn_missing)
         b_rep = QPushButton(tr("门店报告"))
-        b_rep.setToolTip(tr("发给门店的意大利文报告（非 Griglia 商品下次别加、这周批发商没货的）：检查清单确认时生成在这家店的比价文件夹里"))
+        b_rep.setToolTip(tr("发给门店的意大利文报告（非 Griglia 商品，下次别加）：检查清单确认时生成在这家店的比价文件夹里"))
         b_rep.clicked.connect(self.open_store_report)
         acts.addWidget(b_rep)
         acts.addWidget(self.btn_transfers)
@@ -4765,7 +4765,7 @@ class MainWindow(QMainWindow):
         if files:
             open_path(files[-1])
         else:
-            QMessageBox.information(self, APP_NAME, tr("这家店没有门店报告：检查清单里没有待核对的商品，或者这次不是从检查清单确认的。"))
+            QMessageBox.information(self, APP_NAME, tr("这家店没有门店报告：清单里没有非 Griglia 商品，或者这次不是从检查清单确认的。"))
 
     def open_main_order(self):
         p = self._shown_state().get("ordine_file")

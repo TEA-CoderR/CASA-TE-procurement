@@ -204,16 +204,17 @@ def test_problem_report(tmp_path=None):
     vals = [[c.value for c in r] for r in ws.iter_rows()]
     flat = [v for r in vals for v in r if v is not None]
     eans = [r[1] for r in vals if r[1] and str(r[1]).startswith("800")]
-    assert eans == ["8000000000011", "8000000000028", "8000000000035"]           # ① 非 Griglia 两个 ② Griglia 没货一个
-    assert '=_xlfn.IMAGE("https://img.casaete.top/prodotti/8000000000011/01.webp")' in flat   # 照片用 IMAGE 函数读网站
+    assert eans == ["8000000000011", "8000000000028"]                            # 只有非 Griglia 商品（Griglia 没货的不发）
+    assert '=_xlfn.IMAGE("https://img.casaete.top/prodotti/8000000000011/01.webp","",3,48,48)' in flat   # 照片 48 像素
     assert "No" in flat and "Sì" in flat                                         # 批发商有没有
     assert "Fornitore" in flat and "Ordinabile" in flat and "Grossisti" not in flat
     assert any("MELONI · MEGA CASH" in str(v) for v in flat)                      # 写明是哪几家批发商订不到
     assert not any("箱规" in str(v) for v in flat)                               # 不放无关的（没有箱规）
-    assert any(str(v).startswith("① Articoli non in Griglia") for v in flat)
+    assert any(str(v).startswith("Articoli non in Griglia") for v in flat)
     p2 = OC.write_problem_report(rows, os.path.join(d, "b.xlsx"))                 # 不指定门店：每家店一页
     assert load_workbook(p2).sheetnames == ["FOIANO", "MARLIA"]
     assert OC.write_problem_report([rows[4]], os.path.join(d, "c.xlsx")) is None
+    assert OC.write_problem_report([rows[2]], os.path.join(d, "e.xlsx")) is None     # 只有 Griglia 没货的：不出报告
     assert OC.report_name(2, __import__("datetime").datetime(2026, 11, 1)) == "Articoli_da_verificare_MARLIA_0111.xlsx"
     assert OC._tab_of("nogrid_noq") == OC._tab_of("nogrid") == "nogrid" and OC._prob_title("nogrid", 3) == "非 Griglia 商品（3）"
 
