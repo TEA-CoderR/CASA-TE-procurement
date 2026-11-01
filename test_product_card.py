@@ -92,7 +92,7 @@ def test_query_promos_and_product_card():
         assert card["stock"][1] == 3 and card["stock"][2] == -1 and card["stock"][0] == 10
         cols, rows = card["receipts"]
         assert [h for _c, h, _t in cols][:5] == ["日期", "数量", "类型", "商家", "发票"]
-        assert rows[0]["Quantita"] == -2 and rows[1]["IDFornitore"] == "MEGA CASH (7)"     # 新的在前，商家换成名字
+        assert rows[0]["Quantita"] == -2 and rows[1]["IDFornitore"] == "MEGA CASH"     # 新的在前，商家换成名字
         assert sum(q for q, _t in card["daily"][1].values()) == 8 and sum(q for q, _t in card["daily"][2].values()) == 4
         table = R.daily_sales_table(card["daily"], 60)
         assert table[0][0] == date.today() and table[0][1] == {1: 1}

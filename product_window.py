@@ -37,10 +37,7 @@ def fmt_cell(v, tag=None):
         return "", ""
     if hasattr(v, "strftime"):
         try:
-            t = v.strftime("%d/%m/%Y")
-            if isinstance(v, datetime) and (v.hour or v.minute):
-                t += v.strftime(" %H:%M")
-            return t, v.isoformat()
+            return v.strftime("%d/%m/%Y"), v.isoformat()
         except (ValueError, AttributeError):
             return str(v), str(v)
     if tag == "store":
@@ -57,14 +54,12 @@ def fmt_cell(v, tag=None):
     return str(v).strip(), str(v).strip().lower()
 
 
+# 入库记录默认只显示这几列（用户 2026-11-01：要像 ERP 里那样简洁）：日期 数量 类型 商家 发票；其余右键表头「显示哪些列…」打开
+SHOW_TAGS = ("date", "qty", "type", "sup", "doc")
+
+
 def default_hidden_cols(cols):
-    """内部编号一类的列默认藏起来（右键表头「显示哪些列…」可以打开）"""
-    out = []
-    for c, _h, tag in cols:
-        n = str(c).lower()
-        if tag is None and (n == "id" or n.startswith("id") or n.endswith("id")):
-            out.append(_fid(c, tag))
-    return out
+    return [_fid(c, tag) for c, _h, tag in cols if tag not in SHOW_TAGS]
 
 
 class _Sig(QObject):
@@ -74,7 +69,7 @@ class _Sig(QObject):
 class _Grid:
     """一张表 + 搜索框 + 「n / 总数」：rows[i] = 显示文字列表，keys[i] = 排序值列表，colors = {(i, c): 颜色记号}"""
 
-    def __init__(self, ui, heads, numeric, cfg, key, save, fids, hidden=(), widths=None):
+    def __init__(self, ui, heads, numeric, cfg, key, save, fids, hidden=(), widths=None, ver=1):
         self.ui, self.rows, self.keys, self.colors, self.tips = ui, [], [], {}, {}
         self.w = QWidget()
         v = QVBoxLayout(self.w)
@@ -102,7 +97,7 @@ class _Grid:
         self.ctl = TableSortFilter(self.t, lambda: len(self.rows), lambda i, c: self.rows[i][c], self._fill,
                                    key=lambda i, c: self.keys[i][c], hide=self._hidden, numeric=numeric)
         self.ctl.rendered.connect(lambda n, tot: self.count.setText(tr("{0:,} / {1:,}", n, tot)))
-        self.ctl.remember(cfg, key, save, fids, default_hidden=list(hidden), ver=1)
+        self.ctl.remember(cfg, key, save, fids, default_hidden=list(hidden), ver=ver)
         self.search.textChanged.connect(lambda _: self.ctl.render())
 
     def _hidden(self, i):
@@ -366,7 +361,8 @@ class ProductWindow(QDialog):
             if it.widget():
                 it.widget().setParent(None)
         widths = {_fid(c, tag): _TAG_W.get(tag, 110) for c, _h, tag in cols}
-        self.rec = _Grid(self.ui, heads, numeric, self.cfg, "card_rec", self._save, fids, default_hidden_cols(cols), widths)
+        self.rec = _Grid(self.ui, heads, numeric, self.cfg, "card_rec", self._save, fids, default_hidden_cols(cols), widths,
+                         ver=2)
         lay.addWidget(self.rec.w)
         out, keys, colors = [], [], {}
         qcol = next((k for k, (_c, _h, tag) in enumerate(cols) if tag == "qty"), None)

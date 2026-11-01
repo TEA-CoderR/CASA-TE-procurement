@@ -731,13 +731,16 @@ def receipt_columns(cols):
     for c in cols:
         low.setdefault(str(c).lower().replace("_", ""), c)
     used, out = set(), []
+    loose = {"date": ("data",), "qty": ("quant", "qta"), "type": ("tipo", "causal"), "sup": ("fornit",),
+             "doc": ("fattur", "ddt", "bolla", "documen", "numdoc"), "price": ("prezzo", "costo"), "store": ("negozio",)}
     for tag, head, names in RECEIPT_COLS:
-        for n in names:
-            c = low.get(n)
-            if c is not None and c not in used:
-                out.append((c, head, tag))
-                used.add(c)
-                break
+        hit = next((low[n] for n in names if n in low and low[n] not in used), None)
+        if hit is None:          # 名字不完全一样：按包含的词找（例如 NumeroFattura、DataCarico）
+            hit = next((c for k, c in low.items() if c not in used and str(k) not in _RECEIPT_SKIP and
+                        any(w in k for w in loose.get(tag, ()))), None)
+        if hit is not None:
+            out.append((hit, head, tag))
+            used.add(hit)
     for c in cols:
         if c in used or str(c).lower() in _RECEIPT_SKIP:
             continue
@@ -889,7 +892,7 @@ def product_card(db, code, days=60, stores=None, today=None):
                         except (TypeError, ValueError):
                             n = None
                         if n:
-                            r[sup] = f"{n} ({int(float(r[sup]))})"
+                            r[sup] = n
                 except Exception:
                     pass
         return cols, rows
