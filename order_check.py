@@ -48,7 +48,10 @@ from reorder_page import short_decision, store_label, algo_widgets
 #   商品（图 + 名称）供应商 | 现在：库存 月销 现在够卖 | 订多少：每箱件数 清单 → 确定 ✎ | 结果：订后够卖 金额 | 判断 调货
 #   订后够卖一个数就能看出订得合不合理：红 = 下次到货前就卖完，黄 = 压货。30/60/90/180 天、日均、周期、等级、编号、条码收起来（详情栏里有）
 #   29 = 金额（确定箱数 × 每箱件数 × 件价，有调货的按调货以后的箱数）
-_ORDER = [22, 3, 27, 4, 28, 9, 10, 11, 15, 20, 29, 0, 24, 2, 26, 16, 17, 18, 5, 6, 7, 8, 14, 12, 13, 19, 21, 23, 25, 1]
+#   2026-11-01 加 30 = 情况（Griglia 商品 · 批发商都没有 / 其他区域 · 批发商都没有 / 其他区域 · 批发商有），放在判断后面，
+#   待核对的商品也在主表格里显示，右键表头按「情况」筛选、直接改（用户：在列表里直接判断和修改）
+_ORDER = [22, 3, 27, 4, 28, 9, 10, 11, 15, 20, 29, 0, 30, 24, 2, 26, 16, 17, 18, 5, 6, 7, 8, 14, 12, 13, 19, 21, 23, 25, 1]
+SITU = 30
 # 2026-10-21 第四版：窗口和订货明细一个样子（门店按钮、一行工具条、状态栏），名称显示、供应商和原因收起来（详情栏里有）：
 #   门店 条码 Codice 名称 等级 周期 本店库存 日均 库存够卖 每箱件数 | 清单 判断 确定箱数 确定件数 ✎ 调货 ✎ | 到货后够卖
 _LAYOUT_VER = 9           # 改了默认顺序就加 1（第 9 版起列宽也一起恢复默认）
@@ -104,6 +107,20 @@ def _issue(x):
     elif _pk(x) <= 0:
         return "nopack"
     return None
+
+
+def _situation(x):
+    """「情况」列：待核对的商品属于哪一类（和待核对窗口的页一样）；正常的空着"""
+    k = _problem(x)
+    if k == "noquote":
+        return tr("Griglia 商品 · 批发商都没有") if x.get("in_grid") else tr("批发商都没有")
+    return {"nogrid_noq": tr("其他区域 · 批发商都没有"), "nogrid": tr("其他区域 · 批发商有")}.get(k, "")
+
+
+def _edited(x):
+    """手动改过确定箱数：和系统建议比（系统算不了的和门店清单比）"""
+    base = x.get("sbox") if x.get("sbox") is not None else x.get("lbox")
+    return base is not None and x.get("fbox") is not None and x["fbox"] != base
 
 
 def _issue_text(x):
@@ -618,7 +635,7 @@ class OrderCheck:
                                           tr("清单件数"), tr("建议件数"), tr("确定件数"), tr("确定箱数"), tr("等级"), tr("周期"), tr("日均"),
                                           tr("目标库存"), tr("订后够卖"), tr("清单订后够卖（天）"), tr("门店"),
                                           tr("变化（箱）"), tr("调货"), tr("原因"), "Codice Fornitore", tr("供应商"), tr("月销"),
-                                          tr("金额 €")]),
+                                          tr("金额 €"), tr("情况")]),
                                    numeric_cols=[_col(k) for k in list(range(4, 16)) + [17, 18, 19, 20, 21, 23, 28, 29]])
         self.table.setMinimumHeight(380)
         import product_images as PI
@@ -632,7 +649,7 @@ class OrderCheck:
         import product_images as PI          # 「商品」那一格：左边商品图（条码在藏起来的条码列），右边名称
         self.table.setItemDelegateForColumn(_col(3), PI.ThumbDelegate(self.table, _col(2), None, self.settings))
         for c, wd in enumerate(_perm((96, 80, 130, PI.thumb_size(self.settings) + 300, 60, 52, 52, 52, 52, 76, 52, 56, 70, 70, 76,
-                                      70, 50, 50, 60, 70, 76, 120, 80, 76, 110, 380, 110, 120, 60, 76))):
+                                      70, 50, 50, 60, 70, 76, 120, 80, 76, 110, 380, 110, 120, 60, 76, 180))):
             self.table.setColumnWidth(c, wd)
         self.table.horizontalHeaderItem(_col(28)).setToolTip(tr("月销：一个月大约卖几件（新算法 = 加权日均 × 30；原程序算法 = 最长周期销量 ÷ 月数）"))
         self.table.horizontalHeaderItem(_col(4)).setToolTip(tr("本店现在的库存（件）"))
@@ -663,6 +680,11 @@ class OrderCheck:
                                    hide=self._hidden, numeric=tuple(_col(k) for k in list(range(4, 16)) + [17, 18, 19, 20, 21, 23, 28, 29]))
         # 列可以拖动换位置、拖宽度，下次打开照旧（右键表头是筛选，所以「恢复默认列顺序」放在下面）
         from erp_widgets import remember_columns
+        saved = self.cfg.get("check_columns")
+        if isinstance(saved, list) and saved and SITU not in saved:     # 新加的「情况」列：插在判断后面，原来排好的不动
+            saved.insert(saved.index(0) + 1 if 0 in saved else len(saved), SITU)
+        self.table.horizontalHeaderItem(_col(SITU)).setToolTip(
+            tr("待核对的商品属于哪一类：Griglia 商品批发商都没有 / 其他区域批发商都没有 / 其他区域批发商有；正常的空着。右键表头可以只看某一类"))
         if self.cfg.get("check_columns_ver") != _LAYOUT_VER:
             self.cfg.pop("check_widths", None)        # 第 9 版重新设计了：旧的列宽（名称列太窄等）也不用了
         self._reset_cols = remember_columns(self.table, self.cfg, "check", _ORDER, lambda: save_settings(self.settings),
@@ -1088,7 +1110,7 @@ class OrderCheck:
                       _days(_cover(x, x["file_pcs"])) if (x.get("file_pcs") or 0) > 0 else "",
                       R.STORES.get(x.get("store"), ""), self._change_text(x), self._transfer_text(x),
                       "；".join(self._reason_lines(x)), x.get("sup_code") or "", x.get("sup_name") or "", self._monthly(x),
-                      self._amount_text(x)])
+                      self._amount_text(x), _situation(x)])
 
     def _amount(self, x):
         """这一行要花多少钱：确定箱数（有调货的按调货以后的箱数）× 每箱件数 × 件价"""
@@ -1174,7 +1196,7 @@ class OrderCheck:
             lines.append(tr("系统算出来要 {0:,} 箱，多于门店清单，按清单 {1:,} 箱订（先不多订）", x["sys_box"], x["lbox"]))
         if x.get("in_db", True) and x.get("sbox") is not None and x["lbox"] != x["sbox"]:
             lines.append(tr("门店清单报了 {0:,} 箱", x["lbox"]))
-        if x.get("sbox") is not None and x["fbox"] != x["sbox"]:
+        if _edited(x):
             lines.append(tr("现在确定 {0:,} 箱（手动改过）", x["fbox"]))
         return lines
 
@@ -1689,7 +1711,7 @@ class OrderCheck:
                     if c == 6:
                         it.setFlags(it.flags() | Qt.ItemIsEditable)
                         it.setToolTip(tr("双击修改箱数，0 = 不订"))
-                        it.setForeground(QColor(self.ui.T("accent") if x["fbox"] > 0 else self.ui.T("faint")))
+                        self._style_prob_cell(it, x)
                     else:
                         it.setFlags(it.flags() & ~Qt.ItemIsEditable)
             t.blockSignals(False)
@@ -1703,12 +1725,14 @@ class OrderCheck:
 
     def _nogrid_none(self, kind="nogrid"):
         """这个问题列表（不在 Griglia / 没报价）里的商品全部不订"""
-        n = 0
-        for x in self.rows:
+        n, idx = 0, []
+        for i, x in enumerate(self.rows):
             if _problem(x) == kind and x.get("fbox"):
                 _set_box(x, 0)
                 n += 1
+                idx.append(i)
         self._fill_prob()
+        self._refresh_rows(idx)                       # 主表格里这些行也标黄
         self._summary()
         self.win.show_toast(tr("{0} 个商品改成不订", n))
 
@@ -1756,11 +1780,19 @@ class OrderCheck:
             self._prob_filling = True
             t.blockSignals(True)
             cell.setText(f"{x['fbox']:,}")
-            cell.setForeground(QColor(self.ui.T("accent") if x["fbox"] > 0 else self.ui.T("faint")))
+            self._style_prob_cell(cell, x)
             t.blockSignals(False)
             self._prob_filling = False
+            self._refresh_rows([i])                     # 主表格里这一行也跟着变（改过的标黄）
             self._sum_timer.start()
         QTimer.singleShot(0, later)
+
+    def _style_prob_cell(self, it, x):
+        """待核对窗口的确定箱数格：改过的标黄（和主表格一样）"""
+        T = self.ui.T
+        ch = _edited(x)
+        it.setForeground(QColor(T("warn") if ch else T("accent") if x["fbox"] > 0 else T("faint")))
+        it.setBackground(QColor(T("warn_soft")) if ch else QColor(0, 0, 0, 0))
 
     def _export_prob(self):
         """待核对窗口「导出 Excel」：三页一起（全部门店）"""
@@ -1826,7 +1858,7 @@ class OrderCheck:
         if not self.rows:
             self.count_lbl.setText("")
             return
-        n_edit = sum(1 for x in self.rows if x.get("sbox") is not None and x["fbox"] != x["sbox"])
+        n_edit = sum(1 for x in self.rows if _edited(x))
         boxes = amt = 0.0
         for i in getattr(self.ctl, "visible", None) or []:
             x = self.rows[i]
@@ -1849,8 +1881,6 @@ class OrderCheck:
             return True
         sup = self.f_sup.currentData()
         if sup and (x.get("sup_name") or "") != sup:
-            return True
-        if _problem(x):                                # 数据库没有 / 没有箱规的在顶上的小表格里
             return True
         text = self.flt.text().strip().lower()
         view = self.view.currentData()
@@ -1919,6 +1949,10 @@ class OrderCheck:
         if v is not None and v > self._limit():
             t.item(k, LIST_AFTER_COL).setForeground(QColor(T("warn")))
             t.item(k, LIST_AFTER_COL).setToolTip(tr("订完要很久才卖得完（超过 {0} 天），可能压货", int(self._limit())))
+        st = t.item(k, _col(SITU))
+        if st is not None and st.text():
+            st.setForeground(QColor(T("err") if _problem(x) in ("noquote", "nogrid_noq") else T("warn")))
+            st.setToolTip(dict(PROB_KINDS_TIPS()).get(_problem(x), "") + ("\n" + _issue_text(x) if _issue(x) else ""))
         self._style_edit(i, k)
 
     def _after_info(self, x):
@@ -1962,10 +1996,11 @@ class OrderCheck:
         f = c.font()
         f.setBold(x["fbox"] > 0)
         c.setFont(f)
-        changed = x.get("sbox") is not None and x["fbox"] != x["sbox"]
+        changed = _edited(x)
         c.setForeground(QColor(T("warn") if changed else T("accent") if x["fbox"] > 0 else T("faint")))
         c.setBackground(QColor(T("warn_soft")) if changed else QColor(0, 0, 0, 0))
-        c.setToolTip(tr("手动改过：系统建议 {0:,} 箱", x["sbox"]) if changed else tr("双击修改箱数，0 = 不订"))
+        c.setToolTip((tr("手动改过：系统建议 {0:,} 箱", x["sbox"]) if x.get("sbox") is not None else
+                      tr("手动改过：门店清单 {0:,} 箱", x["lbox"])) if changed else tr("双击修改箱数，0 = 不订"))
         self.table.item(k, PCS_COL).setText(f"{x['final']:,}" if _pk(x) > 0 else "")
         # 订后够卖：跟着确定箱数变。红 = 不到一个订货周期（下次到货前卖断），黄 = 超过凑单天数（压货）
         a = self.table.item(k, AFTER_COL)
@@ -2053,7 +2088,7 @@ class OrderCheck:
         for x in self.rows:
             k_ = self._verdict(x)[0]
             cnt[k_] = cnt.get(k_, 0) + 1
-        n_edit = sum(1 for x in self.rows if x.get("sbox") is not None and x["fbox"] != x["sbox"])
+        n_edit = sum(1 for x in self.rows if _edited(x))
         txt = tr("{0} 个商品：照清单订 {1}，多订 {2}，少订 {3}，不订 {4}，建议调货 {5}，数据库没有 {6}。手动改了 {7} 个。",
                  len(self.rows), cnt["same"], cnt["more"], cnt["less"], cnt["none"], cnt["transfer"], cnt["nodb"], n_edit)
         # 采购金额估算：最便宜那家报价的件价（没有报价的用数据库进价 PrezzoForn）× 件数；实际金额以「开始处理」后的比价为准

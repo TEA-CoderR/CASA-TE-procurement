@@ -205,3 +205,17 @@ def test_problem_report(tmp_path=None):
     p2 = OC.write_problem_report(rows, os.path.join(d, "b.xlsx"))
     assert len(load_workbook(p2).sheetnames) == 3
     assert OC.write_problem_report([rows[4]], os.path.join(d, "c.xlsx")) is None
+
+
+def test_situation_and_edited():
+    import order_check as OC
+    base = {"in_db": True, "pack": 6, "lbox": 2, "fbox": 2, "sbox": 1}
+    assert OC._situation(dict(base, in_grid=True, in_quote=False)) == "Griglia 商品 · 批发商都没有"
+    assert OC._situation(dict(base, in_grid=False, in_quote=False)) == "其他区域 · 批发商都没有"
+    assert OC._situation(dict(base, in_grid=False, in_quote=True)) == "其他区域 · 批发商有"
+    assert OC._situation(dict(base, in_grid=True, in_quote=True)) == ""
+    assert OC._situation(dict(base, in_quote=False)) == "批发商都没有"              # 没放 Griglia
+    assert OC._edited(base)                                                         # 和系统建议 1 箱比
+    assert not OC._edited(dict(base, fbox=1))
+    assert OC._edited(dict(base, sbox=None, fbox=0)) and not OC._edited(dict(base, sbox=None))   # 算不了的和清单比
+    assert OC._ORDER.index(OC.SITU) == OC._ORDER.index(0) + 1 and sorted(OC._ORDER) == list(range(31))

@@ -2578,4 +2578,11 @@ TRANSLATIONS = {
     '这次批发商没货': ('Wholesalers out of stock this time', 'Grossisti senza merce questa volta'),
     '✔ 门店提醒：{0}': ('✔ Store reminder: {0}', '✔ Promemoria negozio: {0}'),
     '{0}：门店提醒没写上：{1}': ('{0}: store reminder not written: {1}', '{0}: promemoria negozio non scritto: {1}'),
+    'Griglia 商品 · 批发商都没有': ('Griglia item · no wholesaler', 'Articolo Griglia · nessun grossista'),
+    '批发商都没有': ('No wholesaler', 'Nessun grossista'),
+    '待核对的商品属于哪一类：Griglia 商品批发商都没有 / 其他区域批发商都没有 / 其他区域批发商有；正常的空着。右键表头可以只看某一类': ('Which group an item to check belongs to: Griglia item no wholesaler / other area no wholesaler / other area quoted; empty = normal. Right-click the header to show one group only', "Gruppo dell'articolo da verificare: articolo Griglia nessun grossista / altro reparto nessun grossista / altro reparto a listino; vuoto = normale. Clic destro sull'intestazione per vedere un solo gruppo"),
+    '其他区域 · 批发商都没有': ('Other area · no wholesaler', 'Altro reparto · nessun grossista'),
+    '其他区域 · 批发商有': ('Other area · quoted', 'Altro reparto · a listino'),
+    '情况': ('Status', 'Situazione'),
+    '手动改过：门店清单 {0:,} 箱': ('Edited manually: store list {0:,} cases', 'Modificato a mano: lista negozio {0:,} colli'),
 }
