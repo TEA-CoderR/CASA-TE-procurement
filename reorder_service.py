@@ -912,7 +912,7 @@ def product_card(db, code, days=60, stores=None, today=None, store=None):
                 except (TypeError, ValueError):
                     n = None
                 if n:
-                    r[sup] = n
+                    r["_sup_name"] = n          # 商家照 ERP 写编号，名字给鼠标提示用
         return cols, rows
 
     def q_daily():              # 五家店近 days 天每天的销量：一条 UNION ALL 查完
