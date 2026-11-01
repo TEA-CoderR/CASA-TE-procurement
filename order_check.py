@@ -376,12 +376,14 @@ def _days(v):
 VERDICT_TOKEN = {"transfer": "ok", "more": "accent", "less": "warn", "none": "err", "same": "muted", "nodb": "err"}
 # 「看哪些」下拉框
 VIEWS = (("all", "全部商品"), ("changed", "只看有变化的"), ("transfer", "只看调货"), ("more", "只看多订"),
-         ("less", "只看少订"), ("none", "只看不订"), ("phantom", "只看库存可能不准"))
+         ("less", "只看少订"), ("none", "只看不订"), ("phantom", "只看库存可能不准"),
+         ("promo", "只看促销"))
 
 
 class _Sig(QObject):
     done = Signal(object)
     months = Signal(object)          # 近两年每月销量读好了（后台线程 → 界面）
+    promos = Signal(object)          # 本店在促销的商品读好了
 
 
 class OrderCheck:
@@ -397,6 +399,8 @@ class OrderCheck:
         self.sig = _Sig()
         self.sig.done.connect(self._done)
         self.sig.months.connect(self._months_arrived)
+        self.sig.promos.connect(self._promos_arrived)
+        self._card = None                # 商品详情窗口（双击商品打开，一个窗口反复用）
         self._m24, self._m24_keys, self._m24_done = {}, [], set()
 
     def build(self):
@@ -698,6 +702,8 @@ class OrderCheck:
         self.transfer_ov = {}
         self.transfer_frozen = False
         self.table.cellDoubleClicked.connect(self._edit_transfer)     # 双击「调货」：选调出门店、填件数
+        self.table.cellDoubleClicked.connect(self._open_card)         # 双击商品：商品详情窗口
+        self.table.horizontalHeaderItem(_col(3)).setToolTip(tr("双击打开商品详情（入库记录、每天销量、各店库存）；名称红色 = 门店在促销"))
         self.table.horizontalHeaderItem(_col(TRANSFER_COL)).setText(tr("调货") + " ✎")
         self._plan_timer = QTimer()
         self._plan_timer.setSingleShot(True)
@@ -1364,6 +1370,12 @@ class OrderCheck:
         self.d_codes.setTextInteractionFlags(Qt.TextSelectableByMouse)
         for w in (self.d_img, self.d_title, self.d_codes):
             v.addWidget(w)
+        self.d_more = QPushButton(tr("商品详情 ›"))       # 和双击商品一样：入库记录、每天销量、各店库存
+        self.d_more.setObjectName("CrumbLink")
+        self.d_more.setCursor(Qt.PointingHandCursor)
+        self.d_more.setToolTip(tr("入库记录、每天销量、各店库存（双击表格里的商品也能打开）"))
+        self.d_more.clicked.connect(lambda: self.open_card(self._cur_i) if self._cur_i is not None else None)
+        v.addWidget(self.d_more, 0, Qt.AlignLeft)
         # 这一行怎么订：清单 3 箱 → 确定 1 箱（大字），下面一行订后够卖、金额
         dec = QFrame()
         dec.setObjectName("MiniCard")
@@ -1470,6 +1482,11 @@ class OrderCheck:
         def work():
             try:
                 db = R.make_db(dbs)
+                for sid, codes in by_store.items():       # 促销先查（主表格要标红），每月销量后查
+                    try:
+                        self.sig.promos.emit((token, sid, R.query_promos(db, sid, codes)))
+                    except Exception as e:
+                        self.sig.promos.emit((token, sid, {"_error": str(e)}))
                 for sid, codes in by_store.items():
                     try:
                         data = R.query_monthly_sales(db, sid, codes)
@@ -1481,6 +1498,57 @@ class OrderCheck:
                 for sid, codes in by_store.items():
                     self.sig.months.emit((token, sid, codes, {"_error": str(e)}))
         threading.Thread(target=work, daemon=True).start()
+
+    def _promos_arrived(self, payload):
+        """本店在促销的商品：x["promo"]，商品 / 条码格标红、「只看促销」"""
+        token, sid, data = payload
+        if token != getattr(self, "_m24_token", None):
+            return
+        err = data.pop("_error", None)
+        if err:
+            self.win.log(tr("⚠ 促销没查到：{0}", err))
+            return
+        if data:
+            self.win.log(tr("[检查清单] {0}：{1} 个商品在促销", R.STORES.get(sid, sid), len(data)))
+        idx = []
+        for i, x in enumerate(self.rows):
+            if x.get("store") == sid:
+                p = data.get(str(x.get("code")))
+                if p or x.get("promo"):
+                    x["promo"] = p
+                    idx.append(i)
+        if idx:
+            self._refresh_rows(idx)
+            self._summary()
+        if self._card is not None and self._card.isVisible() and self._card.x is not None and \
+                self._card.x.get("store") == sid:
+            self._card._show_promo(self._card.x.get("promo"))
+
+    def _promo_tip(self, x):
+        p = x.get("promo")
+        if not p:
+            return ""
+        return tr("促销中：标价 €{0:.2f} → 近 {1} 天实卖 €{2:.2f}（−{3:.0%}），促销期间销量会偏高",
+                  p["list"], R.PROMO_DAYS, p["sold"], p["pct"])
+
+    def _open_card(self, k, c):
+        """双击商品 / 条码 / 编号：打开商品详情窗口（入库记录、每天销量、各店库存…）"""
+        if c not in (_col(1), _col(2), _col(3)):
+            return
+        i = self.ctl.row_at(k)
+        if i is not None:
+            self.open_card(i)
+
+    def open_card(self, i):
+        if not (0 <= i < len(self.rows)):
+            return
+        x = self.rows[i]
+        from product_window import ProductWindow
+        if self._card is None:
+            self._card = ProductWindow(self.window, self.ui, self.settings)
+        key = (x.get("store"), str(x.get("code")))
+        vals = self._m24.get(key) if x.get("store") in getattr(self, "_m24_done", set()) else None
+        self._card.show_item(x, (vals, self._m24_keys) if vals is not None else None)
 
     def _months_arrived(self, payload):
         token, sid, codes, data = payload
@@ -1586,7 +1654,9 @@ class OrderCheck:
             self.why_t.setText(tr("为什么建议 {0:g} 箱", x["sbox"]))
         else:
             self.why_t.setText(tr("为什么"))
-        self.why.setText("\n".join(["· " + l for l in self._reason_lines(x)] + ["⚠ " + m[2] for m in self._marks(x)]))
+        self.why.setText("\n".join(["· " + l for l in self._reason_lines(x)] + ["⚠ " + m[2] for m in self._marks(x)] +
+                                   (["🏷 " + self._promo_tip(x)] if x.get("promo") else [])))
+        self.d_title.setStyleSheet("font-size:15px; font-weight:700;" + (f" color:{T('err')};" if x.get("promo") else ""))
         # 其他门店：库存、够卖几天、这次定了几箱
         while self.others.count():
             w = self.others.takeAt(0).widget()
@@ -1847,6 +1917,7 @@ class OrderCheck:
         n = {"all": len(self.rows), "changed": sum(cnt.get(k, 0) for k in ("transfer", "more", "less", "none"))}
         n.update(cnt)
         n["phantom"] = sum(1 for x in self.rows if x.get("phantom") and not _problem(x))
+        n["promo"] = sum(1 for x in self.rows if x.get("promo"))
         for k in range(self.view.count()):
             key = self.view.itemData(k)
             text = tr(dict(VIEWS)[key])
@@ -1887,7 +1958,7 @@ class OrderCheck:
         kind = self._verdict(x)[0]
         hide = (view == "changed" and kind not in ("transfer", "more", "less", "none")) or \
             (view in ("transfer", "more", "less", "none") and kind != view) or \
-            (view == "phantom" and not x.get("phantom"))
+            (view == "phantom" and not x.get("phantom")) or (view == "promo" and not x.get("promo"))
         return hide or \
                (bool(text) and text not in f"{x['code']} {x['ean']} {x['name']} {x.get('sup_code') or ''} {x.get('sup_name') or ''}".lower())
 
@@ -1913,6 +1984,16 @@ class OrderCheck:
         t.item(k, 0).setToolTip(tip)
         t.item(k, 0).setData(Qt.UserRole, i)
         t.item(k, _col(3)).setToolTip(f"{x['name']}\nEAN {x['ean'] or '—'}")
+        if x.get("promo"):                       # 门店在促销：商品名 / 条码标红
+            ptip = self._promo_tip(x)
+            for pc in (_col(2), _col(3)):
+                it = t.item(k, pc)
+                it.setForeground(QColor(T("err")))
+                f = it.font()
+                f.setBold(True)
+                it.setFont(f)
+            t.item(k, _col(3)).setToolTip(f"{x['name']}\nEAN {x['ean'] or '—'}\n🏷 {ptip}")
+            t.item(k, _col(2)).setToolTip("🏷 " + ptip)
         pk = t.item(k, _col(10))
         if x.get("quote_sup"):
             same = not x.get("db_pack") or abs(x["pack"] - x["db_pack"]) < 1e-9

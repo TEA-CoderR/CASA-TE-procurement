@@ -593,6 +593,262 @@ def query_monthly_sales(db, store_id, codes, months=24, today=None):
     return out
 
 
+# ---------- 门店自己在做的促销（2026-11-01 用户：检查清单里促销的商品条码标红）----------
+# 数据库里没有单独的促销表，看实际卖价：近 PROMO_DAYS 天本店卖出的件数里，一半以上的成交价（TotRighe ÷ Qta，含税）
+# 比标价（prodotti.PrezzoVedi1，含税）便宜 ≥ PROMO_MIN → 算在促销。标价如果是不含税的，就一个都不会标（不会乱标）
+PROMO_DAYS = 7
+PROMO_MIN = 0.05
+PROMO_SHARE = 0.5
+
+
+def promo_info(qty, total, disc_qty, list_price, last=None):
+    """一个商品近几天的销售合计 → 促销信息 {"list", "sold", "pct", "share", "qty", "last"}；不算促销返回 None"""
+    try:
+        q, t, dq, lp = float(qty or 0), float(total or 0), float(disc_qty or 0), float(list_price or 0)
+    except (TypeError, ValueError):
+        return None
+    if q != q or t != t or lp != lp or dq != dq or not (q > 0 and t > 0 and lp > 0):
+        return None
+    unit = t / q
+    pct = 1 - unit / lp
+    share = min(1.0, dq / q)
+    if pct < PROMO_MIN or share < PROMO_SHARE:
+        return None
+    return {"list": lp, "sold": unit, "pct": pct, "share": share, "qty": q, "last": last}
+
+
+def query_promos(db, store_id, codes, days=PROMO_DAYS, today=None):
+    """本店这些商品里正在促销的：{商品编号(str): promo_info}（只读查询）"""
+    import pandas as pd
+    from datetime import date as _date
+    since = (today or _date.today()) - timedelta(days=int(days))
+    codes = sorted({int(c) for c in codes if str(c).strip().isdigit()})
+    out = {}
+    for i in range(0, len(codes), 2000):
+        chunk = codes[i:i + 2000]
+        ph = ", ".join(["%s"] * len(chunk))
+        sql = (f"SELECT v.CodArticolo AS c, SUM(v.Qta) AS q, SUM(v.TotRighe) AS t, "
+               f"SUM(CASE WHEN v.TotRighe < v.Qta * p.PrezzoVedi1 * %s THEN v.Qta ELSE 0 END) AS dq, "
+               f"MAX(p.PrezzoVedi1) AS lp, MAX(v.Data) AS last "
+               f"FROM vendite_list_{int(store_id)} v JOIN prodotti p ON p.CodArticolo = v.CodArticolo "
+               f"WHERE v.CodArticolo IN ({ph}) AND v.Data >= %s AND v.Qta > 0 GROUP BY v.CodArticolo")
+        df = pd.read_sql(sql, db.engine, params=(1 - PROMO_MIN,) + tuple(chunk) + (since,))
+        for _, r in df.iterrows():
+            try:
+                c = str(int(r["c"]))
+            except (TypeError, ValueError):
+                continue
+            info = promo_info(r["q"], r["t"], r["dq"], r["lp"], r["last"])
+            if info:
+                out[c] = info
+    return out
+
+
+# ---------- 商品详情窗口（检查清单里双击商品）：一个商品的资料、各店库存、入库记录、每天销量（只读）----------
+# 入库记录表 caricolistalist 的列：认识的换成中文表头排在前面，其余照原名放后面（右键表头可以藏）
+RECEIPT_COLS = (("date", "日期", ("cdata", "data", "datacarico", "datadoc")),
+                ("qty", "数量", ("quantita", "qta", "quantità")),
+                ("type", "类型", ("tipo", "tipodoc", "tipocarico", "causale", "tipodocumento")),
+                ("sup", "商家", ("idfornitore", "fornitore", "codfornitore", "ragionesociale")),
+                ("doc", "发票", ("fattura", "numfattura", "nfattura", "numerofattura", "documento", "numdoc", "ndoc",
+                                 "numerodoc", "bolla", "ddt", "numero")),
+                ("price", "进价", ("prezzo", "prezzoforn", "costo", "prezzoacquisto", "prezzounitario")),
+                ("store", "门店", ("negozio", "idnegozio", "magazzino", "idmagazzino")))
+_RECEIPT_SKIP = ("codarticolo", "codbarre", "descrizione")
+
+
+def receipt_columns(cols):
+    """入库记录的列 → [(原列名, 表头, 记号)]：认识的在前面（按 RECEIPT_COLS 的顺序），其余照原名；商品编号 / 条码 / 名称不重复显示"""
+    low = {}
+    for c in cols:
+        low.setdefault(str(c).lower().replace("_", ""), c)
+    used, out = set(), []
+    for tag, head, names in RECEIPT_COLS:
+        for n in names:
+            c = low.get(n)
+            if c is not None and c not in used:
+                out.append((c, head, tag))
+                used.add(c)
+                break
+    for c in cols:
+        if c in used or str(c).lower() in _RECEIPT_SKIP:
+            continue
+        out.append((c, str(c), None))
+    return out
+
+
+def _find(d, *pats, skip=()):
+    """在商品表的一行里按列名找（不分大小写）：返回 (列名, 值)，找不到 (None, None)"""
+    import re
+    for pat in pats:
+        rx = re.compile(pat, re.I)
+        for k, v in d.items():
+            if k not in skip and rx.search(str(k)):
+                return k, v
+    return None, None
+
+
+def _blank(v):
+    return v is None or (isinstance(v, float) and v != v) or str(v).strip() in ("", "nan", "NaT", "None")
+
+
+def card_fields(prod):
+    """商品表一行（dict）→ 详情窗口要显示的 [(标签, 文字)]（数据库里没有的就不显示）"""
+    def num(v, fmt="{0:g}"):
+        if _blank(v):
+            return ""
+        try:
+            return fmt.format(float(v))
+        except (TypeError, ValueError):
+            return str(v)
+
+    def day(v):
+        if _blank(v):
+            return ""
+        return v.strftime("%d/%m/%Y") if hasattr(v, "strftime") else str(v)[:10]
+
+    def txt(v):
+        return "" if _blank(v) else str(v).strip()
+    p = prod or {}
+    out = [("编号", txt(p.get("CodArticolo"))), ("条码", txt(p.get("CodBarre"))),
+           ("商家", " · ".join(x for x in (txt(p.get("IDFornitore")), txt(p.get("FornitoreNome"))) if x)),
+           ("商家编码", txt(p.get("ArticoloForn")))]
+    _k, brand = _find(p, r"^marca", r"brand", r"^marchio")
+    out.append(("品牌", txt(brand)))
+    out += [("Iva", num(p.get("CodIva"), "{0:g}%")), ("每箱件数", num(p.get("qtasmallbox")))]
+    k2, box = _find(p, r"^qta.*(big|box|collo|cartone|imballo)", skip=("qtasmallbox",))
+    if k2:
+        out.append(("箱装数", num(box)))
+    out += [("进价", num(p.get("PrezzoForn"), "€{0:.3f}")), ("售价", num(p.get("PrezzoVedi1"), "€{0:.2f}"))]
+    out.append(("类别", " / ".join(x for x in (txt(p.get("CategoriaNome")), txt(p.get("SottocategoriaNome"))) if x)))
+    _k, cr = _find(p, r"crea", r"inserim", r"datains")
+    _k, md = _find(p, r"modific", r"aggiorn", r"update", r"datamod")
+    out.append(("创建 / 修改", " · ".join(x for x in (day(cr), day(md)) if x)))
+    return [(a, b) for a, b in out if b]
+
+
+def daily_sales_table(per_store, days=60, today=None):
+    """
+    每家门店每天的销量 {门店: {日期: (件数, 金额)}} → 每天一行 (日期, {门店: 件数}, {门店: 平均卖价})，新的在前；
+    一家都没卖的日子不放
+    """
+    from datetime import date as _date
+    end = today or _date.today()
+    rows = []
+    for k in range(int(days) + 1):
+        d = end - timedelta(days=k)
+        q, pr = {}, {}
+        for sid, m in (per_store or {}).items():
+            v = (m or {}).get(d)
+            if v and v[0]:
+                q[sid] = v[0]
+                if v[0] > 0 and v[1]:
+                    pr[sid] = v[1] / v[0]
+        if q:
+            rows.append((d, q, pr))
+    return rows
+
+
+def product_card(db, code, days=60, stores=None, today=None):
+    """
+    双击商品看的详情（只读查询，几条同时查）：
+      prod     商品表这一行（+ 供应商名、大类 / 中类名）
+      stock    {门店: 库存}（giacenza G0..G5）
+      receipts (列 [(原列名, 表头, 记号)], 行 [dict])：caricolistalist 最近 300 条，新的在前；商家编号换成名字
+      daily    {门店: {日期: (件数, 金额)}}：近 days 天
+    查不到的部分是空的，errors 里写原因
+    """
+    import pandas as pd
+    from datetime import date as _date
+    from concurrent.futures import ThreadPoolExecutor
+    code = int(code)
+    stores = [s for s in (stores or STORES) if s != 0]
+    since = (today or _date.today()) - timedelta(days=int(days))
+    out = {"prod": {}, "stock": {}, "receipts": ([], []), "daily": {}, "errors": []}
+
+    def q_prod():
+        df = pd.read_sql("SELECT p.*, f.Nome AS FornitoreNome FROM prodotti p "
+                         "LEFT JOIN fornitore f ON f.IDFornitore = p.IDFornitore WHERE p.CodArticolo = %s",
+                         db.engine, params=(code,))
+        prod = df.iloc[0].to_dict() if len(df) else {}
+        if prod:
+            try:
+                cat = pd.read_sql("SELECT c1.Descrizione AS a, c2.Descrizione AS b FROM prodotti p "
+                                  "LEFT JOIN categorie c1 ON p.Categoria = c1.Categorie AND c1.SottoCategorie IS NULL "
+                                  "LEFT JOIN categorie c2 ON p.Sottocategoria = c2.SottoCategorie AND p.Categoria = c2.Categorie "
+                                  "WHERE p.CodArticolo = %s", db.engine, params=(code,))
+                if len(cat):
+                    prod["CategoriaNome"], prod["SottocategoriaNome"] = cat.iloc[0]["a"], cat.iloc[0]["b"]
+            except Exception:
+                pass
+        return prod
+
+    def q_stock():
+        df = pd.read_sql("SELECT * FROM giacenza WHERE CodArticolo = %s", db.engine, params=(code,))
+        if not len(df):
+            return {}
+        r = df.iloc[0].to_dict()
+        st = {}
+        for s in STORES:
+            try:
+                st[s] = float(r.get(f"G{s}") or 0)
+            except (TypeError, ValueError):
+                pass
+        return st
+
+    def q_receipts():
+        df = pd.read_sql("SELECT * FROM caricolistalist WHERE CodArticolo = %s ORDER BY Cdata DESC LIMIT 300",
+                         db.engine, params=(code,))
+        cols = receipt_columns(list(df.columns))
+        rows = df.to_dict("records")
+        sup = next((c for c, _h, tag in cols if tag == "sup"), None)
+        if sup is not None and rows:
+            ids = sorted({int(float(r[sup])) for r in rows if not _blank(r.get(sup)) and
+                          str(r[sup]).replace(".0", "").strip().isdigit()})
+            if ids:
+                try:
+                    names = pd.read_sql(f"SELECT IDFornitore, Nome FROM fornitore WHERE IDFornitore IN "
+                                        f"({', '.join(['%s'] * len(ids))})", db.engine, params=tuple(ids))
+                    nm = {int(a): str(b or "").strip() for a, b in zip(names["IDFornitore"], names["Nome"])}
+                    for r in rows:
+                        try:
+                            n = nm.get(int(float(r[sup])))
+                        except (TypeError, ValueError):
+                            n = None
+                        if n:
+                            r[sup] = f"{n} ({int(float(r[sup]))})"
+                except Exception:
+                    pass
+        return cols, rows
+
+    def q_daily(sid):
+        df = pd.read_sql(f"SELECT DATE(Data) AS d, SUM(Qta) AS q, SUM(TotRighe) AS t FROM vendite_list_{int(sid)} "
+                         f"WHERE CodArticolo = %s AND Data >= %s GROUP BY DATE(Data)", db.engine, params=(code, since))
+        m = {}
+        for d, q, t in zip(df["d"], df["q"], df["t"]):
+            try:
+                dd = d.date() if hasattr(d, "date") else _date.fromisoformat(str(d)[:10])
+                m[dd] = (float(q or 0), float(t or 0))
+            except (TypeError, ValueError):
+                continue
+        return m
+    jobs = {"prod": q_prod, "stock": q_stock, "receipts": q_receipts}
+    jobs.update({("daily", s): (lambda s=s: q_daily(s)) for s in stores})
+    with ThreadPoolExecutor(max_workers=4, thread_name_prefix="card") as ex:
+        futs = {k: ex.submit(f) for k, f in jobs.items()}
+        for k, f in futs.items():
+            try:
+                v = f.result()
+            except Exception as e:
+                out["errors"].append(f"{k if isinstance(k, str) else STORES.get(k[1], k[1])}: {e}")
+                continue
+            if isinstance(k, tuple):
+                out["daily"][k[1]] = v
+            else:
+                out[k] = v
+    return out
+
+
 _REV_CACHE = {}         # (数据库, 门店, 天数, 日期) → (查的时间, 结果)：全店 91 天销售额，同一批检查 / 配货里各处都要用
 REV_TTL = 600           # 10 分钟内再要直接用（ABC 按 91 天销售额排，几分钟里的新销售不会改变排名）
 
