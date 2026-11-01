@@ -82,8 +82,7 @@ def test_query_promos_and_product_card():
     pd.read_sql = fake
     try:
         pr = R.query_promos(db, 1, ["1", "2", "3", "4", "5", "6", "7", "x"])
-        assert set(pr) == {"1", "2", "4", "6"}, pr          # 3 特价过期、5 会员限时价过期、7 的促销单不是这家店
-        assert pr["1"]["kind"] == "vip" and abs(pr["1"]["price"] - 1.6) < 1e-9 and abs(pr["1"]["pct"] - 0.2) < 1e-9
+        assert set(pr) == {"2", "4", "6"}, pr      # 1 只有会员价（没有时间限制，不算）、3 特价过期、5 限时价过期、7 不是这家店
         assert pr["2"]["kind"] == "offer" and pr["2"]["end"] == date(2099, 12, 31)
         assert pr["4"]["kind"] == "vip_t" and pr["6"]["kind"] == "promo" and abs(pr["6"]["price"] - 7.0) < 1e-9
         assert set(R.query_promos(db, 2, ["7"])) == {"7"}

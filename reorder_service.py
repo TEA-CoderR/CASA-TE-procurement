@@ -600,6 +600,7 @@ def query_monthly_sales(db, store_id, codes, months=24, today=None):
 #   会员限时价  prodotti_vip.PrezzoVedi + Prezzofine
 #   促销单      promozioni（l, Data_a, Data_f, negozio = "0,1,2,3" 空 = 全部门店）+ promozioni_list（promozioni_l, CodArticolo,
 #               Prezzo_p 促销价 / sconto 折扣 %, invalid）
+# 只算有时间限制的（单品特价、会员限时价、促销单；用户 2026-11-01 定），会员价不算。
 # 今天有效、比标价便宜的都算；同一个商品几种都有，取最便宜的。查不到的表跳过（不影响别的）
 PROMO_KINDS = {"vip": "会员价", "offer": "单品特价", "vip_t": "会员限时价", "promo": "促销单"}
 PROMO_DAYS = 7        # 详情窗口每天销量：实际卖价比标价便宜 PROMO_MIN 以上标红
@@ -677,7 +678,7 @@ def query_promos(db, store_id, codes, today=None):
         for r in df.to_dict("records"):
             c = r["CodArticolo"]
             lists[str(int(c))] = r["PrezzoVedi1"]
-            add(c, "vip", r.get("PrezzoVedi3"))
+            # 会员价 PrezzoVedi3 没有时间限制：不算促销（用户 2026-11-01：只要有时间限制的），只在详情窗口显示
             if _active(r.get("PrezzoVediOfferta_inizio"), r.get("PrezzoVediOfferta_fine"), today):
                 add(c, "offer", r.get("PrezzoVediOfferta"), r.get("PrezzoVediOfferta_fine"))
         try:
