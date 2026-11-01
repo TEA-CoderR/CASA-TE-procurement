@@ -331,6 +331,7 @@ def set_label_image(label, ean, size=150, settings=None):
     st = store(settings)
     e = norm_ean(ean)
     label._img_ean = e
+    label.clear()                 # 先清掉上一个商品的图（没图的商品不能还显示别人的图）
     if not st.enabled or not e:
         label.hide()
         return
@@ -343,6 +344,7 @@ def set_label_image(label, ean, size=150, settings=None):
             label.setPixmap(pm)
             label.show()
         else:
+            label.clear()
             label.hide()
     pm = st.pixmap(e, size)
     if pm is not None:

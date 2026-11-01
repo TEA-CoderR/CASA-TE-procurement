@@ -120,7 +120,11 @@ def test_order_check_nogrid():
     assert OC._problem(dict(base, in_grid=False)) == "nogrid"
     assert OC._problem(dict(base, in_grid=True)) is None
     assert OC._problem(dict(base)) is None                         # 没有 Griglia：不判断
-    assert OC._problem(dict(base, in_grid=False, in_db=False)) == "nodb"   # 数据库没有的优先
+    # 数据库没有 / 没有箱规：一定是批发商都没有的，归进对应的「批发商都没有」页，备注写原因
+    assert OC._problem(dict(base, in_grid=False, in_db=False)) == "nogrid_noq"
+    assert OC._problem(dict(base, in_grid=True, pack=0)) == "noquote" and OC._issue_text(dict(base, pack=0)) == "没有箱规"
+    assert OC._problem(dict(base, pack=0)) == "noquote"                                # 没放 Griglia
+    assert OC._issue(dict(base, in_db=False, quote_sup="MEGA")) is None                # 报价里补上了箱规：能算
 
 
 def test_track_fresh():
@@ -177,3 +181,41 @@ def test_parse_direct_and_cats():
                       ["8000000000011", "A", "SHAMPOO", "CAPELLI", "CURA PERSONE", "HENKEL ITALIA"]])
     it = g["items"]["8000000000011"]
     assert it["cats"] == ["CURA PERSONE", "CAPELLI", "SHAMPOO"] and it["direct"] == "HENKEL ITALIA"
+
+
+def test_problem_report(tmp_path=None):
+    import order_check as OC
+    from openpyxl import load_workbook
+    rows = [{"store": 1, "code": "1", "ean": "8000000000011", "name": "A", "in_db": True, "pack": 6, "in_grid": False,
+             "in_quote": False, "lbox": 2, "fbox": 2},
+            {"store": 1, "code": "2", "ean": "8000000000028", "name": "B", "in_db": True, "pack": 6, "in_grid": False,
+             "in_quote": True, "lbox": 1, "fbox": 0},
+            {"store": 1, "code": "3", "ean": "8000000000035", "name": "C", "in_db": True, "pack": 0, "in_grid": True,
+             "lbox": 1, "fbox": 1},
+            {"store": 2, "code": "4", "ean": "8000000000042", "name": "D", "in_db": True, "pack": 6, "in_grid": False,
+             "in_quote": False, "lbox": 1, "fbox": 1},
+            {"store": 1, "code": "5", "ean": "8000000000059", "name": "E", "in_db": True, "pack": 6, "in_grid": True,
+             "in_quote": True, "lbox": 1, "fbox": 1}]
+    d = tempfile.mkdtemp()
+    p = OC.write_problem_report(rows, os.path.join(d, "a.xlsx"), store=1, for_store=True)
+    wb = load_workbook(p)
+    s1, s2 = wb.worksheets
+    assert [r[2].value for r in s1.iter_rows(min_row=2)] == ["8000000000011", "8000000000028"]   # 非 Griglia 商品（只有 FOIANO）
+    assert [(r[2].value, r[5].value) for r in s2.iter_rows(min_row=2)] == [("8000000000035", "没有箱规")]
+    p2 = OC.write_problem_report(rows, os.path.join(d, "b.xlsx"))
+    assert len(load_workbook(p2).sheetnames) == 3
+    assert OC.write_problem_report([rows[4]], os.path.join(d, "c.xlsx")) is None
+
+
+def test_situation_and_edited():
+    import order_check as OC
+    base = {"in_db": True, "pack": 6, "lbox": 2, "fbox": 2, "sbox": 1}
+    assert OC._situation(dict(base, in_grid=True, in_quote=False)) == "Griglia 商品 · 批发商都没有"
+    assert OC._situation(dict(base, in_grid=False, in_quote=False)) == "非 Griglia 商品 · 批发商都没有"
+    assert OC._situation(dict(base, in_grid=False, in_quote=True)) == "非 Griglia 商品 · 批发商有"
+    assert OC._situation(dict(base, in_grid=True, in_quote=True)) == ""
+    assert OC._situation(dict(base, in_quote=False)) == "批发商都没有"              # 没放 Griglia
+    assert OC._edited(base)                                                         # 和系统建议 1 箱比
+    assert not OC._edited(dict(base, fbox=1))
+    assert OC._edited(dict(base, sbox=None, fbox=0)) and not OC._edited(dict(base, sbox=None))   # 算不了的和清单比
+    assert OC._ORDER.index(OC.SITU) == OC._ORDER.index(0) + 1 and sorted(OC._ORDER) == list(range(31))
