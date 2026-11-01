@@ -666,7 +666,7 @@ def query_promos(db, store_id, codes, today=None):
     from datetime import date as _date
     today = today or _date.today()
     codes = sorted({int(c) for c in codes if str(c).strip().isdigit()})
-    offers, lists = {}, {}
+    offers, lists, warn = {}, {}, set()
 
     def add(c, kind, price, end=None):
         offers.setdefault(str(int(c)), []).append((kind, price, end))
@@ -687,8 +687,8 @@ def query_promos(db, store_id, codes, today=None):
             for r in df.to_dict("records"):
                 if _active(None, r.get("Prezzofine"), today):
                     add(r["CodArticolo"], "vip_t", r.get("PrezzoVedi"), r.get("Prezzofine"))
-        except Exception:
-            pass
+        except Exception as e:
+            warn.add(f"prodotti_vip: {e}")
         try:
             df = pd.read_sql(f"SELECT pl.CodArticolo, pl.Prezzo_p, pl.sconto, pl.invalid, pr.Data_a, pr.Data_f, pr.negozio "
                              f"FROM promozioni_list pl JOIN promozioni pr ON pr.l = pl.promozioni_l "
@@ -702,13 +702,15 @@ def query_promos(db, store_id, codes, today=None):
                 if p <= 0 and _num(r.get("sconto")) > 0:
                     p = _num(lists.get(c)) * (1 - _num(r.get("sconto")) / 100)
                 add(c, "promo", p, r.get("Data_f"))
-        except Exception:
-            pass
+        except Exception as e:
+            warn.add(f"promozioni: {e}")
     out = {}
     for c, of in offers.items():
         p = promo_pick(lists.get(c), of)
         if p:
             out[c] = p
+    if warn:
+        out["_warn"] = sorted(warn)          # 哪张促销表没查成（日志里写出来，别的照样用）
     return out
 
 
@@ -842,25 +844,18 @@ def product_card(db, code, days=60, stores=None, today=None):
     since = (today or _date.today()) - timedelta(days=int(days))
     out = {"prod": {}, "stock": {}, "receipts": ([], []), "daily": {}, "errors": []}
 
-    def q_prod():
-        df = pd.read_sql("SELECT p.*, f.Nome AS FornitoreNome FROM prodotti p "
-                         "LEFT JOIN fornitore f ON f.IDFornitore = p.IDFornitore WHERE p.CodArticolo = %s",
-                         db.engine, params=(code,))
-        prod = df.iloc[0].to_dict() if len(df) else {}
-        if prod:
-            try:
-                cat = pd.read_sql("SELECT c1.Descrizione AS a, c2.Descrizione AS b FROM prodotti p "
-                                  "LEFT JOIN categorie c1 ON p.Categoria = c1.Categorie AND c1.SottoCategorie IS NULL "
-                                  "LEFT JOIN categorie c2 ON p.Sottocategoria = c2.SottoCategorie AND p.Categoria = c2.Categorie "
-                                  "WHERE p.CodArticolo = %s", db.engine, params=(code,))
-                if len(cat):
-                    prod["CategoriaNome"], prod["SottocategoriaNome"] = cat.iloc[0]["a"], cat.iloc[0]["b"]
-            except Exception:
-                pass
-        return prod
+    def q_prod():               # 商品 + 供应商名 + 大类 / 中类名：一条查完
+        df = pd.read_sql("SELECT p.*, f.Nome AS FornitoreNome, c1.Descrizione AS CategoriaNome, "
+                         "c2.Descrizione AS SottocategoriaNome FROM prodotti p "
+                         "LEFT JOIN fornitore f ON f.IDFornitore = p.IDFornitore "
+                         "LEFT JOIN categorie c1 ON p.Categoria = c1.Categorie AND c1.SottoCategorie IS NULL "
+                         "LEFT JOIN categorie c2 ON p.Sottocategoria = c2.SottoCategorie AND p.Categoria = c2.Categorie "
+                         "WHERE p.CodArticolo = %s LIMIT 1", db.engine, params=(code,))
+        return df.iloc[0].to_dict() if len(df) else {}
 
     def q_stock():
-        df = pd.read_sql("SELECT * FROM giacenza WHERE CodArticolo = %s", db.engine, params=(code,))
+        df = pd.read_sql("SELECT " + ", ".join(f"G{s}" for s in STORES) + " FROM giacenza WHERE CodArticolo = %s LIMIT 1",
+                         db.engine, params=(code,))
         if not len(df):
             return {}
         r = df.iloc[0].to_dict()
@@ -879,50 +874,58 @@ def product_card(db, code, days=60, stores=None, today=None):
         rows = df.to_dict("records")
         sup = next((c for c, _h, tag in cols if tag == "sup"), None)
         if sup is not None and rows:
-            ids = sorted({int(float(r[sup])) for r in rows if not _blank(r.get(sup)) and
-                          str(r[sup]).replace(".0", "").strip().isdigit()})
-            if ids:
+            nm = supplier_names(db)
+            for r in rows:
                 try:
-                    names = pd.read_sql(f"SELECT IDFornitore, Nome FROM fornitore WHERE IDFornitore IN "
-                                        f"({', '.join(['%s'] * len(ids))})", db.engine, params=tuple(ids))
-                    nm = {int(a): str(b or "").strip() for a, b in zip(names["IDFornitore"], names["Nome"])}
-                    for r in rows:
-                        try:
-                            n = nm.get(int(float(r[sup])))
-                        except (TypeError, ValueError):
-                            n = None
-                        if n:
-                            r[sup] = n
-                except Exception:
-                    pass
+                    n = nm.get(int(float(r[sup])))
+                except (TypeError, ValueError):
+                    n = None
+                if n:
+                    r[sup] = n
         return cols, rows
 
-    def q_daily(sid):
-        df = pd.read_sql(f"SELECT DATE(Data) AS d, SUM(Qta) AS q, SUM(TotRighe) AS t FROM vendite_list_{int(sid)} "
-                         f"WHERE CodArticolo = %s AND Data >= %s GROUP BY DATE(Data)", db.engine, params=(code, since))
-        m = {}
-        for d, q, t in zip(df["d"], df["q"], df["t"]):
+    def q_daily():              # 五家店近 days 天每天的销量：一条 UNION ALL 查完
+        parts = [f"SELECT {int(s)} AS s, DATE(Data) AS d, SUM(Qta) AS q, SUM(TotRighe) AS t FROM vendite_list_{int(s)} "
+                 f"WHERE CodArticolo = %s AND Data >= %s GROUP BY DATE(Data)" for s in stores]
+        df = pd.read_sql(" UNION ALL ".join(parts), db.engine, params=tuple(x for _s in stores for x in (code, since)))
+        m = {s: {} for s in stores}
+        for s, d, q, t in zip(df["s"], df["d"], df["q"], df["t"]):
             try:
                 dd = d.date() if hasattr(d, "date") else _date.fromisoformat(str(d)[:10])
-                m[dd] = (float(q or 0), float(t or 0))
+                m.setdefault(int(s), {})[dd] = (float(q or 0), float(t or 0))
             except (TypeError, ValueError):
                 continue
         return m
-    jobs = {"prod": q_prod, "stock": q_stock, "receipts": q_receipts}
-    jobs.update({("daily", s): (lambda s=s: q_daily(s)) for s in stores})
-    with ThreadPoolExecutor(max_workers=4, thread_name_prefix="card") as ex:
+    jobs = {"prod": q_prod, "stock": q_stock, "receipts": q_receipts, "daily": q_daily}
+    with ThreadPoolExecutor(max_workers=len(jobs), thread_name_prefix="card") as ex:
         futs = {k: ex.submit(f) for k, f in jobs.items()}
         for k, f in futs.items():
             try:
-                v = f.result()
+                out[k] = f.result()
             except Exception as e:
-                out["errors"].append(f"{k if isinstance(k, str) else STORES.get(k[1], k[1])}: {e}")
-                continue
-            if isinstance(k, tuple):
-                out["daily"][k[1]] = v
-            else:
-                out[k] = v
+                out["errors"].append(f"{k}: {e}")
     return out
+
+
+_SUP_NAMES = {}          # 数据库 → (查的时间, {供应商编号: 名字})：入库记录里的商家编号换成名字，一小时查一次
+
+
+def supplier_names(db):
+    import time
+    import pandas as pd
+    key = str(getattr(getattr(db, "engine", None), "url", ""))
+    hit = _SUP_NAMES.get(key)
+    if hit and time.time() - hit[0] < 3600:
+        return hit[1]
+    df = pd.read_sql("SELECT IDFornitore, Nome FROM fornitore", db.engine)
+    nm = {}
+    for a, b in zip(df["IDFornitore"], df["Nome"]):
+        try:
+            nm[int(a)] = str(b or "").strip()
+        except (TypeError, ValueError):
+            pass
+    _SUP_NAMES[key] = (time.time(), nm)
+    return nm
 
 
 _REV_CACHE = {}         # (数据库, 门店, 天数, 日期) → (查的时间, 结果)：全店 91 天销售额，同一批检查 / 配货里各处都要用

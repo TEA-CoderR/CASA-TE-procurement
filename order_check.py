@@ -1097,6 +1097,14 @@ class OrderCheck:
         self._replan(render=False)
         self._fill()
         self._load_months()                             # 详情栏的近两年每月销量：后台读
+        try:                                            # 商品详情窗口：先在后台连好数据库，第一次双击就快
+            from product_window import ProductWindow
+            if self._card is None:
+                self._card = ProductWindow(self.window, self.ui, self.settings)
+            self._card._cache.clear()
+            self._card.warm_up()
+        except Exception:
+            pass
         self.summary_row.show()
         self.window.setWindowTitle(tr("检查门店订货清单 — {0} · {1} 个商品",
                                       "、".join(store_label(k) for k in meta["stores"]), len(rows)))
@@ -1516,8 +1524,9 @@ class OrderCheck:
         if err:
             self.win.log(tr("⚠ 促销没查到：{0}", err))
             return
-        if data:
-            self.win.log(tr("[检查清单] {0}：{1} 个商品在促销", R.STORES.get(sid, sid), len(data)))
+        for w in data.pop("_warn", None) or ():
+            self.win.log(tr("⚠ 促销没查到：{0}", w))
+        self.win.log(tr("[检查清单] {0}：{1} 个商品在促销", R.STORES.get(sid, sid), len(data)))
         idx = []
         for i, x in enumerate(self.rows):
             if x.get("store") == sid:

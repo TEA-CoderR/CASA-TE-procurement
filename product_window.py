@@ -7,6 +7,7 @@
 TableSortFilter（点表头排序、右键筛选）+ 列可拖、记住（settings reorder.card_*）。
 """
 import threading
+import time
 import zlib
 from datetime import date, datetime
 
@@ -19,6 +20,7 @@ from i18n import tr
 import reorder_service as R
 
 DAYS = 60
+CACHE_TTL = 600         # 同一个商品 10 分钟内再打开直接用上次查的
 _TAG_FID = {"date": 1, "qty": 2, "type": 3, "sup": 4, "doc": 5, "price": 6, "store": 7}
 _TAG_W = {"date": 100, "qty": 70, "type": 70, "sup": 240, "doc": 150, "price": 80, "store": 100}
 
@@ -137,6 +139,7 @@ class ProductWindow(QDialog):
         self.sig = _Sig()
         self.sig.done.connect(self._arrived)
         self._token = 0
+        self._db, self._lock, self._cache = None, threading.Lock(), {}
         self.x = None
         T = ui.T
         root = QVBoxLayout(self)
@@ -238,19 +241,51 @@ class ProductWindow(QDialog):
             self._placeholder(self.rec_box, tr("数据库里没有这个商品"))
             self._placeholder(self.day_box, tr("数据库里没有这个商品"))
             return
-        token, dbs = self._token, self.settings.get("db") or None
+        token = self._token
+        hit = self._cache.get(code)
+        if hit and time.time() - hit[0] < CACHE_TTL:          # 10 分钟内看过：直接显示
+            self._arrived((token, hit[1]))
+            return
 
         def work():
             try:
-                db = R.make_db(dbs)
-                try:
-                    res = R.product_card(db, code, DAYS)
-                finally:
-                    db.engine.dispose()
+                res = R.product_card(self._conn(), code, DAYS)
+                if not res.get("errors"):
+                    self._cache[code] = (time.time(), res)
             except Exception as e:
                 res = {"errors": [str(e)]}
             self.sig.done.emit((token, res))
         threading.Thread(target=work, daemon=True).start()
+
+    def _conn(self):
+        """窗口一直留着一个数据库连接（连接池）：走 VPN 新建连接很慢，第二个商品起直接用"""
+        with self._lock:
+            if self._db is None:
+                self._db = R.make_db(self.settings.get("db") or None)
+            return self._db
+
+    def warm_up(self):
+        """后台先把连接连好（4 条，和查询一样多）、供应商名字读好：第一次双击就快"""
+        def work():
+            try:
+                db = self._conn()
+                from concurrent.futures import ThreadPoolExecutor
+                import pandas as pd
+                with ThreadPoolExecutor(max_workers=4) as ex:
+                    list(ex.map(lambda _i: pd.read_sql("SELECT 1 AS x", db.engine), range(4)))
+                R.supplier_names(db)
+            except Exception:
+                pass
+        threading.Thread(target=work, daemon=True).start()
+
+    def dispose(self):
+        with self._lock:
+            if self._db is not None:
+                try:
+                    self._db.engine.dispose()
+                except Exception:
+                    pass
+                self._db = None
 
     def _show_promo(self, p):
         if p:
