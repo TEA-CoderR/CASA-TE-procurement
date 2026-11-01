@@ -2636,4 +2636,7 @@ TRANSLATIONS = {
     '促销单': ('Promotion', 'Promozione'),
     '促销': ('Promotion', 'Promozione'),
     '没有图片': ('No image', 'Nessuna immagine'),
+    '全部门店（数据库入库表里分不出门店）': ('All stores (the receipts table has no store column)', 'Tutti i negozi (la tabella carichi non indica il negozio)'),
+    '只有 {0} 的入库': ('Receipts of {0} only', 'Solo i carichi di {0}'),
+    '入库记录分不出门店，显示的是全部门店': ('Receipts cannot be split by store: showing all stores', 'I carichi non indicano il negozio: mostrati tutti i negozi'),
 }

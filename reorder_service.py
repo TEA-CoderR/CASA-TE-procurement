@@ -827,7 +827,7 @@ def daily_sales_table(per_store, days=60, today=None):
     return rows
 
 
-def product_card(db, code, days=60, stores=None, today=None):
+def product_card(db, code, days=60, stores=None, today=None, store=None):
     """
     双击商品看的详情（只读查询，几条同时查）：
       prod     商品表这一行（+ 供应商名、大类 / 中类名）
@@ -868,8 +868,15 @@ def product_card(db, code, days=60, stores=None, today=None):
         return st
 
     def q_receipts():
-        df = pd.read_sql("SELECT * FROM caricolistalist WHERE CodArticolo = %s ORDER BY Cdata DESC LIMIT 300",
-                         db.engine, params=(code,))
+        # 只看这家门店的（用户 2026-11-01）：入库表里认出门店那一列（Negozio…）就按它筛；认不出来照旧全部，receipts_all = True
+        scol = receipt_store_col(db) if store is not None else None
+        if scol is not None:
+            df = pd.read_sql(f"SELECT * FROM caricolistalist WHERE CodArticolo = %s AND `{scol}` = %s "
+                             f"ORDER BY Cdata DESC LIMIT 300", db.engine, params=(code, int(store)))
+        else:
+            df = pd.read_sql("SELECT * FROM caricolistalist WHERE CodArticolo = %s ORDER BY Cdata DESC LIMIT 300",
+                             db.engine, params=(code,))
+        out["receipts_all"] = scol is None
         cols = receipt_columns(list(df.columns))
         rows = df.to_dict("records")
         sup = next((c for c, _h, tag in cols if tag == "sup"), None)
@@ -905,6 +912,18 @@ def product_card(db, code, days=60, stores=None, today=None):
             except Exception as e:
                 out["errors"].append(f"{k}: {e}")
     return out
+
+
+_RC_COLS = {}            # 数据库 → 入库表的门店列名（None = 没有）：只查一次表头
+
+
+def receipt_store_col(db):
+    import pandas as pd
+    key = str(getattr(getattr(db, "engine", None), "url", ""))
+    if key not in _RC_COLS:
+        cols = list(pd.read_sql("SELECT * FROM caricolistalist LIMIT 0", db.engine).columns)
+        _RC_COLS[key] = next((c for c, _h, tag in receipt_columns(cols) if tag == "store"), None)
+    return _RC_COLS[key]
 
 
 _SUP_NAMES = {}          # 数据库 → (查的时间, {供应商编号: 名字})：入库记录里的商家编号换成名字，一小时查一次

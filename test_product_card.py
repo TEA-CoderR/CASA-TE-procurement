@@ -39,7 +39,7 @@ def _db():
     con.execute("CREATE TABLE categorie (Categorie INT, SottoCategorie INT, Descrizione TEXT)")
     con.execute("CREATE TABLE giacenza (CodArticolo INT, G0 REAL, G1 REAL, G2 REAL, G3 REAL, G4 REAL, G5 REAL)")
     con.execute("CREATE TABLE caricolistalist (IDCarico INT, CodArticolo INT, Cdata TEXT, Quantita REAL, Tipo TEXT,"
-                " IDFornitore INT, NumFattura TEXT)")
+                " IDFornitore INT, NumFattura TEXT, Negozio INT)")
     con.execute("INSERT INTO prodotti VALUES (1,'8001','Detersivo','F-1',0.5,2.0,22,6,2,5,7,'ACE','2025-03-01',1.6,'',NULL,NULL)")
     con.execute("INSERT INTO prodotti VALUES (2,'8002','Sapone','F-2',0.3,1.0,22,12,2,5,7,NULL,NULL,0,'0.79','2026-01-01','2099-12-31')")
     for c in range(3, 8):
@@ -62,8 +62,9 @@ def _db():
         con.execute("INSERT INTO vendite_list_1 VALUES (2,?,2,2.0,0.36)", (d(k),))      # 商品 2：照标价卖
     con.execute("INSERT INTO vendite_list_1 VALUES (1,?,3,6.0,1)", (d(20),))            # 20 天前：不在 7 天里
     con.execute("INSERT INTO vendite_list_2 VALUES (1,?,4,8.0,1)", (d(1),))
-    con.execute("INSERT INTO caricolistalist VALUES (11,1,?,24,'CA',7,'FT 12')", (d(3),))
-    con.execute("INSERT INTO caricolistalist VALUES (12,1,?,-2,'RE',7,'NC 3')", (d(1),))
+    con.execute("INSERT INTO caricolistalist VALUES (11,1,?,24,'CA',7,'FT 12',1)", (d(3),))
+    con.execute("INSERT INTO caricolistalist VALUES (12,1,?,-2,'RE',7,'NC 3',1)", (d(1),))
+    con.execute("INSERT INTO caricolistalist VALUES (13,1,?,48,'CA',7,'FT 99',2)", (d(2),))    # 别的门店的入库
     old = R.__dict__.get("_pd_read_sql")
     import pandas as pd
     orig = pd.read_sql
@@ -86,12 +87,14 @@ def test_query_promos_and_product_card():
         assert pr["2"]["kind"] == "offer" and pr["2"]["end"] == date(2099, 12, 31)
         assert pr["4"]["kind"] == "vip_t" and pr["6"]["kind"] == "promo" and abs(pr["6"]["price"] - 7.0) < 1e-9
         assert set(R.query_promos(db, 2, ["7"])) == {"7"}
-        card = R.product_card(db, 1, days=60)
+        card = R.product_card(db, 1, days=60, store=1)
         assert not card["errors"], card["errors"]
         assert card["prod"]["FornitoreNome"] == "MEGA CASH" and card["prod"]["CategoriaNome"] == "DETERSIVI"
         assert card["stock"][1] == 3 and card["stock"][2] == -1 and card["stock"][0] == 10
         cols, rows = card["receipts"]
         assert [h for _c, h, _t in cols][:5] == ["日期", "数量", "类型", "商家", "发票"]
+        assert len(rows) == 2 and not card["receipts_all"]                # 只有门店 1 的入库
+        assert len(R.product_card(db, 1, days=60)["receipts"][1]) == 3    # 不给门店：全部
         assert rows[0]["Quantita"] == -2 and rows[1]["IDFornitore"] == "MEGA CASH"     # 新的在前，商家换成名字
         assert sum(q for q, _t in card["daily"][1].values()) == 8 and sum(q for q, _t in card["daily"][2].values()) == 4
         table = R.daily_sales_table(card["daily"], 60)
