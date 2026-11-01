@@ -675,9 +675,12 @@ class OrderCheck:
         dv.addWidget(self.prob_tabs, 1)
         close = QPushButton(tr("关闭"))
         close.clicked.connect(dlg.accept)
-        exp = QPushButton(tr("导出门店报告"))
-        exp.setToolTip(tr("意大利文报告，一家店一个文件，可以直接发给门店（带商品照片，Excel 365 打开时从网上读）。确认生成主订单时，每家店的比价文件夹里也会自动生成一份"))
-        exp.clicked.connect(self._export_prob)
+        exp = QPushButton(tr("导出门店报告") + " ▾")
+        exp.setToolTip(tr("意大利文报告，可以直接发给门店（带商品照片，Excel 365 打开时从网上读）。确认生成主订单时，每家店的比价文件夹里也会自动生成一份"))
+        em = QMenu(exp)                               # 两种导出放在一个按钮的下拉里（用户：每店一个 / 合成一个都要）
+        em.addAction(tr("每家店一个文件"), self._export_prob)
+        em.addAction(tr("合成一个文件（每店一页）"), self._export_prob_one)
+        exp.setMenu(em)
         cb = QHBoxLayout()
         cb.addWidget(exp)
         cb.addStretch()
@@ -1973,6 +1976,26 @@ class OrderCheck:
         ch = _edited(x)
         it.setForeground(QColor(T("warn") if ch else T("accent") if x["fbox"] > 0 else T("faint")))
         it.setBackground(QColor(T("warn_soft")) if ch else QColor(0, 0, 0, 0))
+
+    def _export_prob_one(self):
+        """导出门店报告：五家店合成一个文件，每家店一个工作表（发到大家都在的群里用）"""
+        start = self.win.ws_root() if hasattr(self.win, "ws_root") else ""
+        path, _ = QFileDialog.getSaveFileName(self.prob_dlg, tr("导出门店报告"), os.path.join(
+            start or "", f"Articoli_da_verificare_{datetime.now():%d%m}.xlsx"), tr("Excel 文件 (*.xlsx)"))
+        if not path:
+            return
+        try:
+            p = write_problem_report(self.rows, path, store=None, url=self.settings.get("image_url") or None)
+        except Exception as e:
+            QMessageBox.warning(self.prob_dlg, tr("导出门店报告"), tr("导出失败：{0}", e))
+            return
+        if p:
+            self.win.log(tr("✔ 门店报告：{0}", p))
+            self.win.show_toast(tr("已导出：{0}", os.path.basename(p)))
+            try:
+                os.startfile(os.path.dirname(p))
+            except Exception:
+                pass
 
     def _export_prob(self):
         """待核对窗口「导出门店报告」：选一个文件夹，每家店一个意大利文报告（可以直接发给门店）"""

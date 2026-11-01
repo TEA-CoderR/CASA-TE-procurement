@@ -2656,4 +2656,7 @@ TRANSLATIONS = {
     '✔ 门店报告：{0}': ('✔ Store report: {0}', '✔ Report negozio: {0}'),
     '都没有': ('None', 'Nessuno'),
     '有': ('Yes', 'Sì'),
+    '每家店一个文件': ('One file per store', 'Un file per negozio'),
+    '合成一个文件（每店一页）': ('One file (one sheet per store)', 'Un unico file (un foglio per negozio)'),
+    '意大利文报告，可以直接发给门店（带商品照片，Excel 365 打开时从网上读）。确认生成主订单时，每家店的比价文件夹里也会自动生成一份': ('Italian report, ready to send to stores (with product photos, loaded from the internet in Excel 365). One is also created in each store folder when the master order is confirmed', "Report in italiano, pronto da inviare ai negozi (con foto degli articoli, caricate da internet in Excel 365). Viene creato anche nella cartella di ogni negozio alla conferma dell'ordine"),
 }
