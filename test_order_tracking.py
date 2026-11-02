@@ -245,3 +245,24 @@ def test_budget_iva_detected():
     _rows, budgets, _s = OT.read_excel(x)
     assert sorted(budgets) == [("2026-10", "1", 100000.0), ("2026-10", "2", 180000.0)]
     assert OT._is_iva(1, 2, 5, 6) and not OT._is_iva(1, 2, 1, 6) and not OT._is_iva(0, 0, 0, 0)
+
+
+def test_month_summary_weeks():
+    w = OT.week_ranges(2026, 10)                       # 10-01 是周四
+    assert [(a.day, b.day) for a, b in w] == [(1, 4), (5, 11), (12, 18), (19, 25), (26, 31)]
+    assert [(a.day, b.day) for a, b in OT.week_ranges(2026, 8)][-1] == (24, 31)   # 8 月有 6 周：最后一周并进第 5 周
+    assert len(OT.week_ranges(2027, 2)) == 4                                        # 2027-02-01 周一、28 天
+    d = tempfile.mkdtemp()
+    st = OT.Store(d, me="t", host="h")
+    st.add({"date": "2026-10-01", "store": "1", "supplier": "A", "amount": 100})
+    st.add({"date": "2026-10-04", "store": "2", "supplier": "B", "amount": 50})
+    st.add({"date": "2026-10-20", "store": "1", "supplier": "C", "amount": 30})
+    st.add({"date": "2026-10-21", "store": "1", "supplier": "D", "amount": 999, "draft": True})
+    st.set_budget("2026-10", "1", 1000)
+    st.set_budget("2026-10", "2", 500)
+    rs = OT.rows(st)
+    a = OT.month_summary(rs, st, 2026, 10)
+    assert a["budget"] == 1500 and a["n"] == 3 and a["amount"] == 180 and [w["n"] for w in a["weeks"]] == [2, 0, 0, 1, 0]
+    f = OT.month_summary(rs, st, 2026, 10, store="1")
+    assert f["budget"] == 1000 and f["amount"] == 130 and f["weeks"][0]["amount"] == 100
+    assert OT.month_summary(rs, st, 2026, 11)["budget"] is None

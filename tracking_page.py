@@ -12,7 +12,8 @@ from datetime import date, datetime
 
 from PySide6.QtCore import Qt, QObject, Signal, QTimer, QDate
 from PySide6.QtGui import QColor
-from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QPushButton, QLineEdit,
+from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QPushButton, QLineEdit, QFrame,
+                               QProgressBar, QToolButton, QButtonGroup, QSizePolicy,
                                QComboBox, QTabWidget, QFileDialog, QStackedWidget, QMenu, QDialog, QCheckBox,
                                QDateEdit, QDoubleSpinBox, QListWidget, QListWidgetItem, QMessageBox, QInputDialog,
                                QAbstractItemView, QHeaderView)
@@ -126,6 +127,207 @@ NUM_COLS = (4, 9)
 HIDDEN = (11, 12)
 
 
+class MonthPanel(QFrame):
+    """
+    页面顶上的「本月」（2026-11-02 用户：把 PIANO 表头的预算、本月合计、每周单数和合计放到顶上；没选门店 = 全部，选了 = 这家）。
+      左边：‹ 2026 年 11 月 › · 门店 / 已下单（大字）/ 预算 ✎ / 进度条（绿 → 黄 ≥ 90% → 红 > 100%）/ 百分比、还剩多少
+      右边：每周一格（和 PIANO 一样：第 1 周 = 1 号到第一个星期天）：单数、金额、占这个月的小条；本周描边，点一格 = 订单表只看这一周
+    都不含税，不算待登记、已取消
+    """
+    week_clicked = Signal(object)        # (第一天, 最后一天) 或 None
+    month_step = Signal(int)             # -1 / +1
+    budget_clicked = Signal()
+
+    def __init__(self, ui):
+        super().__init__()
+        self.ui = ui
+        self.setObjectName("Panel")
+        self.sel = None
+        self.data = None
+        self.tone = "ok"
+        h = QHBoxLayout(self)
+        h.setContentsMargins(18, 12, 18, 12)
+        h.setSpacing(16)
+        lw = QWidget()
+        lw.setFixedWidth(270)
+        lv = QVBoxLayout(lw)
+        lv.setContentsMargins(0, 0, 0, 0)
+        lv.setSpacing(2)
+        nav = QHBoxLayout()
+        nav.setSpacing(2)
+        self.prev, self.next = QToolButton(), QToolButton()
+        for b, d, tip in ((self.prev, -1, tr("上个月")), (self.next, 1, tr("下个月"))):
+            b.setText("‹" if d < 0 else "›")
+            b.setAutoRaise(True)
+            b.setToolTip(tip)
+            b.setCursor(Qt.PointingHandCursor)
+            b.setFixedSize(24, 24)
+            b.clicked.connect(lambda _=False, d=d: self.month_step.emit(d))
+        self.m_lbl = QLabel("")
+        self.m_lbl.setObjectName("MpMonth")
+        self.scope = QLabel("")
+        self.scope.setObjectName("MpScope")
+        nav.addWidget(self.prev)
+        nav.addWidget(self.m_lbl)
+        nav.addWidget(self.next)
+        nav.addSpacing(6)
+        nav.addWidget(self.scope)
+        nav.addStretch()
+        lv.addLayout(nav)
+        lv.addSpacing(4)
+        self.amt = QLabel("")
+        self.amt.setObjectName("KpiValue")
+        self.amt.setToolTip(tr("这个月下的单（不含待登记、已取消），不含税"))
+        lv.addWidget(self.amt)
+        self.bud = QLabel("")
+        self.bud.setObjectName("MpBudget")
+        self.bud.setCursor(Qt.PointingHandCursor)
+        self.bud.mousePressEvent = lambda _e: self.budget_clicked.emit()
+        lv.addWidget(self.bud)
+        lv.addSpacing(6)
+        self.bar = QProgressBar()
+        self.bar.setRange(0, 1000)
+        self.bar.setTextVisible(False)
+        self.bar.setFixedHeight(8)
+        lv.addWidget(self.bar)
+        self.pct = QLabel("")
+        self.pct.setObjectName("MpPct")
+        lv.addWidget(self.pct)
+        lv.addStretch()
+        h.addWidget(lw)
+        self.sep = QFrame()
+        self.sep.setFixedWidth(1)
+        h.addWidget(self.sep)
+        wb = QHBoxLayout()
+        wb.setSpacing(10)
+        self.tiles = []
+        for i in range(5):
+            t = QFrame()
+            t.setObjectName("WeekTile")
+            t.setCursor(Qt.PointingHandCursor)
+            t.setMinimumWidth(110)
+            t.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+            tv = QVBoxLayout(t)
+            tv.setContentsMargins(12, 9, 12, 9)
+            tv.setSpacing(3)
+            top = QHBoxLayout()
+            top.setSpacing(4)
+            title, rng = QLabel(""), QLabel("")
+            title.setObjectName("WkTitle")
+            rng.setObjectName("WkRange")
+            top.addWidget(title)
+            top.addStretch()
+            top.addWidget(rng)
+            tv.addLayout(top)
+            amt = QLabel("")
+            amt.setObjectName("WkAmt")
+            n = QLabel("")
+            n.setObjectName("WkN")
+            tv.addWidget(amt)
+            tv.addWidget(n)
+            tv.addStretch()
+            bar = QProgressBar()
+            bar.setObjectName("WkBar")
+            bar.setRange(0, 1000)
+            bar.setTextVisible(False)
+            bar.setFixedHeight(4)
+            tv.addWidget(bar)
+            t.mousePressEvent = lambda _e, i=i: self._tile_clicked(i)
+            wb.addWidget(t)
+            self.tiles.append({"w": t, "title": title, "rng": rng, "amt": amt, "n": n, "bar": bar})
+        h.addLayout(wb, 1)
+        self.restyle()
+
+    def _tile_clicked(self, i):
+        if not self.data or i >= len(self.data["weeks"]):
+            return
+        w = self.data["weeks"][i]
+        key = (w["start"], w["end"])
+        self.week_clicked.emit(None if self.sel == key else key)
+
+    @staticmethod
+    def _prop(w, name, val):
+        if w.property(name) != val:
+            w.setProperty(name, val)
+            w.style().unpolish(w)
+            w.style().polish(w)
+
+    def show_month(self, data, year, month, scope, can_edit, sel=None, today=None):
+        today = today or date.today()
+        self.data, self.sel = data, sel
+        self.m_lbl.setText(tr("{0} 年 {1} 月", year, month))
+        self.scope.setText(scope)
+        self.amt.setText(f"€ {data['amount']:,.2f}")
+        b = data["budget"]
+        pen = "  ✎" if can_edit else ""
+        self.bud.setText((tr("预算 € {0:,.0f}", b) if b else tr("没有预算")) + pen)
+        self.bud.setToolTip(tr("点一下改这家店这个月的预算（不含税）") if can_edit else tr("各门店预算加起来；选一家门店可以改它的预算"))
+        if b:
+            p = data["amount"] / b
+            self.bar.setValue(int(min(p, 1) * 1000))
+            self.tone = "err" if p > 1 else "warn" if p >= 0.9 else "ok"
+            self.pct.setText(tr("{0:.0%} · 超出 € {1:,.0f}", p, data["amount"] - b) if p > 1
+                             else tr("{0:.0%} · 还剩 € {1:,.0f}", p, b - data["amount"]))
+        else:
+            self.bar.setValue(0)
+            self.tone = "faint"
+            self.pct.setText(tr("{0} 张单", data["n"]))
+        self.pct.setText(self.pct.text() + ("" if not b else tr(" · {0} 张单", data["n"])))
+        top = max((w["amount"] for w in data["weeks"]), default=0) or 1
+        for i, tile in enumerate(self.tiles):
+            if i >= len(data["weeks"]):
+                tile["w"].hide()
+                continue
+            w = data["weeks"][i]
+            tile["w"].show()
+            now = w["start"] <= today <= w["end"]
+            tile["title"].setText(tr("本周") if now else tr("第 {0} 周", i + 1))
+            tile["rng"].setText(f"{w['start']:%d/%m}–{w['end']:%d/%m}" if w["start"] != w["end"] else f"{w['start']:%d/%m}")
+            tile["amt"].setText(f"€ {w['amount']:,.2f}" if w["n"] else "–")
+            tile["n"].setText(tr("{0} 张单", w["n"]) if w["n"] else ("" if w["start"] > today else tr("没有单")))
+            tile["bar"].setValue(int(w["amount"] / top * 1000))
+            tile["w"].setToolTip(tr("第 {0} 周 {1:%d/%m} – {2:%d/%m}：{3} 张单，€ {4:,.2f}\n点一下：下面的订单只看这一周",
+                                    i + 1, w["start"], w["end"], w["n"], w["amount"]))
+            self._prop(tile["w"], "current", now)
+            self._prop(tile["w"], "sel", sel == (w["start"], w["end"]))
+            self._prop(tile["w"], "future", w["start"] > today)
+        self.restyle()
+
+    def restyle(self):
+        T = self.ui.T
+        tone = self.tone
+        self.setStyleSheet(
+            f"#MpMonth {{ font-size: 15px; font-weight: 600; color: {T('text')}; }}"
+            f"#MpScope {{ color: {T('accent')}; background: {T('accent_soft')}; border-radius: 9px; padding: 1px 8px;"
+            f" font-size: 11px; font-weight: 600; }}"
+            f"#MpBudget {{ color: {T('muted')}; font-size: 12px; }}"
+            f"#MpPct {{ color: {T(tone if tone != 'ok' else 'muted')}; font-size: 12px; }}"
+            f"QFrame#WeekTile {{ background: {T('surface2')}; border: 1px solid {T('line')}; border-radius: 10px; }}"
+            f"QFrame#WeekTile:hover {{ border: 1px solid {T('ghost')}; }}"
+            f"QFrame#WeekTile[current=\"true\"] {{ border: 1px solid {T('accent')}; }}"
+            f"QFrame#WeekTile[sel=\"true\"] {{ background: {T('accent_soft')}; border: 1px solid {T('accent')}; }}"
+            f"#WkTitle {{ color: {T('muted')}; font-size: 12px; font-weight: 600; }}"
+            f"QFrame#WeekTile[current=\"true\"] #WkTitle {{ color: {T('accent')}; }}"
+            f"#WkRange {{ color: {T('faint')}; font-size: 11px; }}"
+            f"#WkAmt {{ color: {T('text')}; font-size: 16px; font-weight: 600; }}"
+            f"QFrame#WeekTile[future=\"true\"] #WkAmt {{ color: {T('faint')}; }}"
+            f"#WkN {{ color: {T('muted')}; font-size: 12px; }}"
+            f"QProgressBar#WkBar {{ background: {T('track')}; border: none; border-radius: 2px; }}"
+            f"QProgressBar#WkBar::chunk {{ background: {T('ghost')}; border-radius: 2px; }}"
+            f"QFrame#WeekTile[current=\"true\"] QProgressBar#WkBar::chunk {{ background: {T('accent')}; }}")
+        self.sep.setStyleSheet(f"background: {T('line')};")
+        self.bar.setStyleSheet(f"QProgressBar {{ background: {T('track')}; border: none; border-radius: 4px; }}"
+                               f"QProgressBar::chunk {{ background: {T(tone if tone != 'faint' else 'track')}; border-radius: 4px; }}")
+        from theme import NUM_FONT
+        for tile in self.tiles:
+            f = tile["amt"].font()
+            f.setFamily(NUM_FONT)
+            tile["amt"].setFont(f)
+
+
+PILLS = (("draft", "warn"), ("pending", "warn"), ("overdue", "err"), ("stuck", "err"))
+
+
 class TrackingPage:
     def __init__(self, win, settings, ui):
         self.win, self.settings, self.ui = win, settings, ui
@@ -137,10 +339,14 @@ class TrackingPage:
         self.sig.exported.connect(self._export_done)
         self.syncing = False
         self._shown = False
+        self.store_sel = None                        # 选的门店（None = 全部）
+        self.week_sel = None                         # 点了「本月」里的哪一周：(第一天, 最后一天)
+        t0 = date.today()
+        self.panel_ym = (t0.year, t0.month)
 
     # ================================================================ 界面
     def build(self):
-        from erp_widgets import EmptyState, kpi_card
+        from erp_widgets import EmptyState
         w = QWidget()
         w.setObjectName("Content")
         lay = QVBoxLayout(w)
@@ -189,22 +395,44 @@ class TrackingPage:
         bv = QVBoxLayout(body)
         bv.setContentsMargins(0, 0, 0, 0)
         bv.setSpacing(12)
-        kr = QHBoxLayout()
-        kr.setSpacing(12)
-        self.kpis = {}
-        for key, label, tip in (("draft", tr("待登记"), tr("门店配货 / 批发商比价生成的订单，还没确认发给供应商。发了以后选中，右键「确认已下单」")),
-                                ("pending", tr("待确认"), tr("下单 {0} 天以上还没确认的", OT.PENDING_DAYS)),
-                                ("overdue", tr("已超期"), tr("过了预计到货日还没到（含部分到货）")),
-                                ("stuck", tr("卡住了"), ""),
-                                ("month", tr("本月下单"), tr("这个月下的单（不含待登记、已取消），不含税，和预算比（预算也是不含税）"))):
-            f, val, sub = kpi_card(label)
-            if tip:
-                f.setToolTip(tip)
-            f.setCursor(Qt.PointingHandCursor)
-            f.mousePressEvent = lambda _e, k=key: self._kpi_clicked(k)
-            kr.addWidget(f)
-            self.kpis[key] = (val, sub)
-        bv.addLayout(kr)
+        # 门店（全部 / 每家店）+ 右边几个要处理的数字；下面「本月」面板；再下面三张表（都跟着门店走）
+        sr = QHBoxLayout()
+        sr.setSpacing(8)
+        self.store_group = QButtonGroup(body)
+        self.store_group.setExclusive(True)
+        from PySide6.QtGui import QFontMetrics
+        for code, text in [(None, tr("全部门店"))] + list(OT.STORES):
+            b = QPushButton(text)
+            b.setObjectName("Chip")
+            b.setCheckable(True)
+            b.setChecked(code is None)
+            b.setCursor(Qt.PointingHandCursor)
+            b.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+            bf = b.font()
+            bf.setBold(True)
+            b.setMinimumWidth(QFontMetrics(bf).horizontalAdvance(text) + 28)
+            b.clicked.connect(lambda _=False, c=code: self.set_store(c))
+            self.store_group.addButton(b)
+            sr.addWidget(b)
+        sr.addStretch()
+        self.pills = {}
+        tips = {"draft": tr("门店配货 / 批发商比价生成的订单，还没确认发给供应商。发了以后选中，右键「确认已下单」"),
+                "pending": tr("下单 {0} 天以上还没确认的", OT.PENDING_DAYS),
+                "overdue": tr("过了预计到货日还没到（含部分到货）"), "stuck": ""}
+        for key, _tok in PILLS:
+            b = QPushButton("")
+            b.setCursor(Qt.PointingHandCursor)
+            if tips[key]:
+                b.setToolTip(tips[key])
+            b.clicked.connect(lambda _=False, k=key: self._kpi_clicked(k))
+            sr.addWidget(b)
+            self.pills[key] = b
+        bv.addLayout(sr)
+        self.panel = MonthPanel(self.ui)
+        self.panel.month_step.connect(self._month_step)
+        self.panel.week_clicked.connect(self._week_clicked)
+        self.panel.budget_clicked.connect(self._budget_clicked)
+        bv.addWidget(self.panel)
         self.tabs = QTabWidget()
         self.tabs.addTab(self._build_orders(), tr("订单"))
         self.tabs.addTab(self._build_sups(), tr("供应商"))
@@ -240,14 +468,16 @@ class TrackingPage:
         bar.addWidget(self.search)
         self.f_month = QComboBox()
         self.f_month.setMinimumWidth(110)
-        self.f_month.currentIndexChanged.connect(lambda _: self.render())
+        self.f_month.currentIndexChanged.connect(lambda _: self._month_combo())
         bar.addWidget(self.f_month)
-        self.f_store = QComboBox()
-        self.f_store.addItem(tr("全部门店"), None)
-        for k, n in OT.STORES:
-            self.f_store.addItem(n, k)
-        self.f_store.currentIndexChanged.connect(lambda _: self.render())
-        bar.addWidget(self.f_store)
+        self.week_chip = QPushButton("")
+        self.week_chip.setObjectName("Chip")
+        self.week_chip.setCheckable(True)
+        self.week_chip.setChecked(True)
+        self.week_chip.setToolTip(tr("只看这一周的单；点一下取消"))
+        self.week_chip.clicked.connect(lambda: self._week_clicked(None))
+        self.week_chip.hide()
+        bar.addWidget(self.week_chip)
         self.f_view = QComboBox()
         self.f_view.setMinimumWidth(130)
         for k, n in VIEWS():
@@ -426,8 +656,6 @@ class TrackingPage:
         if st is None:
             return
         self.rows = OT.rows(st)
-        self.sups = OT.supplier_stats(self.rows)
-        self.buds = OT.budget_rows(self.rows, st)
         # 月份下拉：有单的月份（新的在上）
         cur = self.f_month.currentData()
         months = sorted({OT.month_of(r) for r in self.rows if r["date"]}, reverse=True)
@@ -439,33 +667,100 @@ class TrackingPage:
         i = self.f_month.findData(cur)
         self.f_month.setCurrentIndex(max(0, i))
         self.f_month.blockSignals(False)
-        # 看哪些：带个数
+        self.badge(sum(1 for r in self.rows if r["status"] == "draft"))
+        self._update_src()
+        self.update_view()
+
+    def _srows(self):
+        return [r for r in self.rows if not self.store_sel or r["store"] == self.store_sel]
+
+    def update_view(self):
+        """门店 / 月份 / 周变了：数字、本月面板、三张表按选的门店重算（不重读数据）"""
+        st = self.st
+        if st is None:
+            return
+        srows = self._srows()
+        self.sups = OT.supplier_stats(srows)
+        self.buds = [b for b in OT.budget_rows(self.rows, st) if not self.store_sel or b["store"] == self.store_sel]
         self.f_view.blockSignals(True)
         for i, (k, n) in enumerate(VIEWS()):
-            c = sum(1 for r in self.rows if _in_view(r, k))
+            c = sum(1 for r in srows if _in_view(r, k))
             self.f_view.setItemText(i, f"{n}（{c}）" if k != "all" else n)
         self.f_view.blockSignals(False)
-        mon = date.today().strftime("%Y-%m")
-        s = OT.summary(self.rows, st, mon)
-        late = max((r["late_by"] for r in self.rows if r["overdue"]), default=0)
-        vals = {"draft": (str(s["draft"]), tr("右键确认已下单") if s["draft"] else ""),
-                "pending": (str(s["pending"]), ""), "overdue": (str(s["overdue"]), tr("最久 {0} 天", late) if late else ""),
-                "stuck": (str(s["stuck"]), ""),
-                "month": (f"€ {s['spent']:,.0f}",
-                          tr("预算 € {0:,.0f} · {1:.0%}", s["budget"], s["spent"] / s["budget"]) if s["budget"]
-                          else tr("没有预算"))}
+        s = OT.summary(srows, st, date.today().strftime("%Y-%m"))
+        late = max((r["late_by"] for r in srows if r["overdue"]), default=0)
+        labels = {"draft": tr("待登记"), "pending": tr("待确认"), "overdue": tr("已超期"), "stuck": tr("卡住了")}
         T = self.ui.T
-        for k, (v, sub) in vals.items():
-            self.kpis[k][0].setText(v)
-            self.kpis[k][1].setText(sub)
-            self.kpis[k][1].setVisible(bool(sub))
-            tok = {"draft": "warn", "pending": "warn", "overdue": "err", "stuck": "err"}.get(k)
-            self.kpis[k][0].setStyleSheet(f"color:{T(tok)};" if tok and v not in ("0", "") else "")
-        self.badge(s["draft"])
-        self._update_src()
+        for key, tok in PILLS:
+            n = s[key]
+            b = self.pills[key]
+            b.setText(f"{labels[key]}  {n}")
+            if key == "overdue" and late:
+                b.setToolTip(tr("过了预计到货日还没到（含部分到货）") + "\n" + tr("最久 {0} 天", late))
+            b.setStyleSheet(
+                f"QPushButton {{ border-radius: 13px; padding: 4px 12px; font-size: 12px; font-weight: 600;"
+                f" border: 1px solid {T(tok) if n else T('line')}; background: {T(tok + '_soft') if n else 'transparent'};"
+                f" color: {T(tok) if n else T('faint')}; }}"
+                f"QPushButton:hover {{ border-color: {T(tok)}; }}")
+        y, m = self.panel_ym
+        data = OT.month_summary(self.rows, st, y, m, self.store_sel)
+        self.panel.show_month(data, y, m, OT.STORE_NAMES.get(self.store_sel, tr("全部门店")) if self.store_sel
+                              else tr("全部门店"), bool(self.store_sel), self.week_sel)
+        if self.week_sel:
+            a, b = self.week_sel
+            self.week_chip.setText(f"{a:%d/%m}–{b:%d/%m}  ✕")
+        self.week_chip.setVisible(bool(self.week_sel))
+        self.f_month.setEnabled(not self.week_sel)
         self.render()
         self.s_ctl.render()
         self.b_ctl.render()
+
+    def set_store(self, code):
+        self.store_sel = code
+        self.update_view()
+
+    def _month_step(self, d):
+        y, m = self.panel_ym
+        m += d
+        if m < 1:
+            y, m = y - 1, 12
+        elif m > 12:
+            y, m = y + 1, 1
+        self.panel_ym = (y, m)
+        self.week_sel = None
+        self.update_view()
+
+    def _week_clicked(self, key):
+        self.week_sel = key
+        if key:
+            self.tabs.setCurrentIndex(0)
+        self.update_view()
+
+    def _month_combo(self):
+        """订单表的月份下拉换了：顶上「本月」也跟着换到那个月"""
+        mth = self.f_month.currentData()
+        if mth:
+            y, m = (int(x) for x in mth.split("-"))
+            if (y, m) != self.panel_ym:
+                self.panel_ym = (y, m)
+                self.week_sel = None
+                self.update_view()
+                return
+        self.render()
+
+    def _budget_clicked(self):
+        if not self.store_sel:
+            self.tabs.setCurrentIndex(2)
+            return
+        y, m = self.panel_ym
+        ym = f"{y:04d}-{m:02d}"
+        cur = self.st.budgets.get(f"{ym}|{self.store_sel}") if self.st else None
+        v, ok = QInputDialog.getDouble(self.win, tr("预算"), tr("{0} · {1} 预算（不含税，0 = 不设）", ym,
+                                                              OT.STORE_NAMES.get(self.store_sel, self.store_sel)),
+                                       float(cur or 0), 0, 99999999, 0)
+        if ok:
+            self.st.set_budget(ym, self.store_sel, v or None)
+            self.refresh()
 
     def _update_src(self):
         f = self._folder()
@@ -482,12 +777,15 @@ class TrackingPage:
         q = self.search.text().strip().lower()
         if q and q not in f"{r['supplier']} {r['raw_supplier']} {r['buyer']} {r['note']} {r['store_name']} {r['ref']}".lower():
             return True
-        mth = self.f_month.currentData()
-        if mth and OT.month_of(r) != mth:
+        if self.store_sel and r["store"] != self.store_sel:
             return True
-        sto = self.f_store.currentData()
-        if sto and r["store"] != sto:
-            return True
+        if self.week_sel:
+            if not r["date"] or not (self.week_sel[0] <= r["date"] <= self.week_sel[1]):
+                return True
+        else:
+            mth = self.f_month.currentData()
+            if mth and OT.month_of(r) != mth:
+                return True
         return not _in_view(r, self.f_view.currentData())
 
     def _text(self, i, c):
@@ -598,11 +896,13 @@ class TrackingPage:
         return [self.rows[i] for i in (self.ctl.row_at(k) for k in ks) if i is not None]
 
     def _kpi_clicked(self, key):
-        if key == "month":
-            self.tabs.setCurrentIndex(2)
-            return
         self.tabs.setCurrentIndex(0)
+        self.week_sel = None
+        self.f_month.blockSignals(True)
         self.f_month.setCurrentIndex(0)
+        self.f_month.blockSignals(False)
+        self.week_chip.hide()
+        self.f_month.setEnabled(True)
         i = self.f_view.findData(key)
         if i >= 0:
             self.f_view.setCurrentIndex(i)
@@ -706,7 +1006,7 @@ class TrackingPage:
                 self.choose_folder()
             if self.st is None:
                 return
-        sto = self.f_store.currentData()
+        sto = self.store_sel
         dlg = OrderDialog(self.win, self, {"date": date.today().isoformat(), "store": sto or "1",
                                            "buyer": self.cfg.get("last_buyer") or ""}, None, None)
         if dlg.exec() != QDialog.Accepted or not dlg.changes:
@@ -1092,6 +1392,8 @@ class TrackingPage:
             pass
 
     def restyle(self):
+        if hasattr(self, "panel"):
+            self.panel.restyle()
         if self.st is not None and self.rows:
             self.refresh()
 

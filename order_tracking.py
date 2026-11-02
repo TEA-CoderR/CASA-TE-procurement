@@ -1032,3 +1032,43 @@ def export_piano(rs, st, template, out):
         done.append((name, n_all))
     wb.save(out)
     return done
+
+
+# ===================================================================== 页面顶上的「本月」：预算、合计、每周（和 PIANO 表头一样）
+def week_ranges(year, month):
+    """这个月每一周的 (第一天, 最后一天)：第 1 周 = 1 号到第一个星期天，之后周一到周日；最多 5 周（多出来的并进第 5 周，和 _week_of 一样）"""
+    import calendar
+    last = calendar.monthrange(year, month)[1]
+    end = min(7 - date(year, month, 1).weekday(), last)
+    out = [(1, end)]
+    while end < last:
+        start, end = end + 1, min(end + 7, last)
+        if len(out) == 5:
+            out[-1] = (out[-1][0], end)
+        else:
+            out.append((start, end))
+    return [(date(year, month, a), date(year, month, b)) for a, b in out]
+
+
+def month_summary(rs, st, year, month, store=None):
+    """
+    某个月（某家门店 / 全部）：预算、已下单金额和单数、每周的单数和金额（不含待登记、已取消；都不含税）。
+    → {"budget", "amount", "n", "weeks": [{"start", "end", "n", "amount"}]}
+    """
+    ym = f"{year:04d}-{month:02d}"
+    weeks = [{"start": a, "end": b, "n": 0, "amount": 0.0} for a, b in week_ranges(year, month)]
+    n, amt = 0, 0.0
+    for r in rs:
+        d = r.get("date")
+        if not d or d.year != year or d.month != month or r["status"] in NOT_ORDERED:
+            continue
+        if store and r["store"] != store:
+            continue
+        w = weeks[min(_week_of(d), len(weeks) - 1)]
+        v = float(r["amount"] or 0)
+        w["n"] += 1
+        w["amount"] += v
+        n += 1
+        amt += v
+    vals = [v for k, v in st.budgets.items() if k.startswith(ym + "|") and (not store or k.split("|", 1)[1] == store)]
+    return {"budget": sum(vals) if vals else None, "amount": amt, "n": n, "weeks": weeks}
