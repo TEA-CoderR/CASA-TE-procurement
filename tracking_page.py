@@ -8,6 +8,7 @@
 """
 import os
 import threading
+import time
 from datetime import date, datetime
 
 from PySide6.QtCore import Qt, QObject, Signal, QTimer, QDate
@@ -379,6 +380,7 @@ class TrackingPage:
         self.sig.done.connect(self._sync_done)
         self.sig.exported.connect(self._export_done)
         self.syncing = False
+        self._bad_mtime = self._try_mtime = None
         self._shown = False
         self.store_sel = None                        # 选的门店（None = 全部）
         self.week_sel = None                         # 点了「本月」里的哪一周：(第一天, 最后一天)
@@ -404,6 +406,7 @@ class TrackingPage:
         self.src_lbl.setObjectName("Faint")
         head.addWidget(self.src_lbl, 1)
         self.btn_sync = QPushButton(tr("从 Excel 同步"))
+        self.btn_sync.setToolTip(tr("Excel 存过就会自动同步（打开这页时、开着时每 20 秒看一次），一般不用点；想马上同步再点"))
         self.btn_sync.clicked.connect(lambda: self.sync_excel(manual=True))
         head.addWidget(self.btn_sync)
         self.btn_new = QPushButton(tr("+ 新订单"))
@@ -667,9 +670,8 @@ class TrackingPage:
         elif self.st.changed():
             self.load()
         self.timer.start()
-        if not self._shown:
-            self._shown = True
-            self._auto_sync()
+        self._shown = True
+        self._auto_sync()                 # 每次打开页面：Excel 存过（修改时间变了）就自动同步
 
     def _poll(self):
         if not self.page.isVisible():
@@ -677,6 +679,7 @@ class TrackingPage:
             return
         if self.st is not None and not self.syncing and self.st.changed():
             self.load()
+        self._auto_sync()                 # 页面开着时别人存了 Excel：20 秒内自动同步过来
 
     def load(self):
         f = self._folder()
@@ -1292,7 +1295,10 @@ class TrackingPage:
         ST.save_settings(self.settings)
 
     def _auto_sync(self):
-        """打开页面时：Excel 改过（修改时间变了）就在后台同步一次"""
+        """
+        Excel 改过（修改时间和上次同步的不一样）就在后台同步一次：打开页面时、页面开着每 20 秒看一次（2026-11-02 用户：不想每次手动点）。
+        刚存完 10 秒内先不读（同步盘可能还在传、文件可能只写了一半），下一轮再读
+        """
         x = self._excel()
         if not x:
             return
@@ -1300,7 +1306,8 @@ class TrackingPage:
             mt = os.path.getmtime(x)
         except OSError:
             return
-        if mt != self.cfg.get("excel_mtime"):
+        if mt != self.cfg.get("excel_mtime") and mt != self._bad_mtime and time.time() - mt > 10:
+            self._try_mtime = mt
             self.sync_excel(manual=False)
 
     def sync_excel(self, manual=True):
@@ -1331,6 +1338,8 @@ class TrackingPage:
         self.btn_sync.setText(tr("从 Excel 同步"))
         if err:
             self.btn_sync.setEnabled(True)
+            if not manual:                # 自动同步失败：这个版本的 Excel 不再自动重试（不然每 20 秒报一次），Excel 再存一次或手动点再试
+                self._bad_mtime = self._try_mtime
             self.win.log(tr("⚠ 订单跟踪：Excel 同步失败：{0}", err))
             if manual:
                 QMessageBox.warning(self.win, tr("从 Excel 同步"), tr("同步失败：{0}", err))
