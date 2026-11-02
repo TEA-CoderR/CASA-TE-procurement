@@ -521,12 +521,18 @@ def read_excel(path):
         for c in starts:
             if _norm(ws.cell(hr, c + 1).value) != "FORNITORE":
                 continue
+            # 块标题「Gli ordini per …」：不一定正好在「Data Ordine」那一列上面（OTT / SET / Agosto / NOV 的 Capannori
+            # 标题在 H 列、表头从 I 列开始）→ 在左右两列里找，取最近的一个
             store = None
-            for r in range(1, hr):
-                n = _norm(ws.cell(r, c).value)
-                if n.startswith("GLIORDINI"):
-                    n = n.replace("GLIORDINIPER", "").replace("GLIORDINI", "")
-                    store = EXCEL_STORE.get(n)
+            for dc in (0, -1, 1, -2, 2):
+                if c + dc < 1:
+                    continue
+                for r in range(1, hr):
+                    n = _norm(ws.cell(r, c + dc).value)
+                    if n.startswith("GLIORDINI"):
+                        store = EXCEL_STORE.get(n.replace("GLIORDINIPER", "").replace("GLIORDINI", ""))
+                        break
+                if store:
                     break
             if not store:
                 continue

@@ -102,7 +102,7 @@ def _piano(path):
     ws = wb.active
     ws.title = "OTT"
     for c0, name, budget in ((1, "Gli ordini \nper Foiano", 55000), (9, "Gli ordini \nper Capannori", 180000)):
-        ws.cell(1, c0, name)
+        ws.cell(1, c0 - 1 if c0 > 1 else c0, name)       # 真实文件：Capannori 的标题在 H 列、表头从 I 列开始
         ws.cell(1, c0 + 2, "BADGET ACQUISTO IVATO")
         ws.cell(1, c0 + 5, budget)
         for k, h in enumerate(["Data\nOrdine", "Fornitore", "Ordine\nDa", "Importo\nInponibile", "Data \nconfermato",
