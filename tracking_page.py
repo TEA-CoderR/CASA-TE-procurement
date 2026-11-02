@@ -653,6 +653,13 @@ class TrackingPage:
 
     def _excel(self):
         p = self.cfg.get("excel") or ""
+        if not self.cfg.get("excel_original"):        # 2026-11-02 用户：换成 NUOVO 正本（以前存的是 _COPIA）→ 换一次
+            self.cfg["excel_original"] = True
+            o = OT.prefer_original(p)
+            if o:
+                self.cfg["excel"] = p = o
+                self.cfg.pop("excel_mtime", None)
+            self._save()
         if p and os.path.isfile(p):
             return p
         return OT.find_excel(self._folder()) if self._folder() else ""
@@ -1351,7 +1358,12 @@ class TrackingPage:
         if res.get("kept"):
             msg += tr("（另有 {0} 张 Excel 里没有了，但程序里改过，留着）", res["kept"])
         self.win.log("✔ " + msg)
-        if manual or res["new"] or res["updated"]:
+        unk = res.get("unknown") or []
+        for sh, col, title in unk:                  # 认不出是哪家门店的块：整块没读，一定要让人知道
+            self.win.log(tr("⚠ Excel「{0}」表 {1} 列那一块认不出是哪家门店，没读：「{2}」", sh, col, title or "—"))
+        if unk:
+            self.win.show_toast(tr("⚠ Excel 里有 {0} 块认不出是哪家门店，没读（看日志）", len(unk)))
+        elif manual or res["new"] or res["updated"]:
             self.win.show_toast(msg)
         self.load()
 

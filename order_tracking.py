@@ -30,6 +30,9 @@ STORE_NAMES = dict(STORES)
 # Excel 每一块的标题「Gli ordini per Capannori」→ 门店（Capannori = 程序里的 MARLIA）
 EXCEL_STORE = {"FOIANO": "1", "CAPANNORI": "2", "MARLIA": "2", "SANFILIPPO": "3", "SFILIPPO": "3", "SANMARCO": "4",
                "SMARCO": "4", "SANCONCORDIO": "5", "SCONCORDIO": "5", "BMS": "BMS"}
+# 块标题里的门店名写错 / 写法不同时按关键词认（2026-11-02：11 月表写成「Gli ordini per San S.Conrdio」→ 整块没读）
+_STORE_WORDS = (("FOIANO", "1"), ("CAPANNORI", "2"), ("MARLIA", "2"), ("FILIPPO", "3"), ("MARCO", "4"),
+                ("CONCORDIO", "5"), ("BMS", "BMS"))
 IVA = 0.22
 PENDING_DAYS = 2          # 下单超过 2 天还没确认 → 「待确认」
 LEAD_DEFAULT = 10         # 没有历史时按 10 天到货
@@ -504,8 +507,33 @@ def _flag_text(text, out):
         out.setdefault("_notes", []).append(t)
 
 
-def _layout(ws):
-    """月份表的格式：表头行（「Data Ordine」那一行）和每一块 [(起始列, 门店, 备注列)]；不是月份表 (None, [])"""
+def title_store(text):
+    """
+    块标题「Gli ordini per …」→ 门店号（认不出 None）。先照写法对（EXCEL_STORE），再找关键词（FILIPPO / CONCORDIO…），
+    最后按相似度对（拼错一两个字母：「S.Conrdio」→ CONCORDIO）
+    """
+    import difflib
+    n = _norm(text).replace("GLIORDINIPER", "").replace("GLIORDINI", "")
+    if not n:
+        return None
+    if n in EXCEL_STORE:
+        return EXCEL_STORE[n]
+    for w, code in _STORE_WORDS:
+        if w in n:
+            return code
+    core = n
+    for _ in range(3):                                  # 去掉前面的 SAN / S（「SANSCONRDIO」→「CONRDIO」）
+        core = core[3:] if core.startswith("SAN") else core[1:] if core.startswith("S") and len(core) > 4 else core
+    words = [w for w, _c in _STORE_WORDS if w != "BMS"]
+    hit = difflib.get_close_matches(core, words, n=1, cutoff=0.75) or difflib.get_close_matches(n, words, n=1, cutoff=0.75)
+    return dict(_STORE_WORDS)[hit[0]] if hit else None
+
+
+def _layout(ws, unknown=None):
+    """
+    月份表的格式：表头行（「Data Ordine」那一行）和每一块 [(起始列, 门店, 备注列)]；不是月份表 (None, [])。
+    unknown（列表）：认不出是哪家门店的块记进去 (工作表, 列字母, 标题)，同步时提醒（不然整块悄悄漏掉）
+    """
     hr, starts = None, []
     for r in range(1, 13):
         cs = [c for c in range(1, min(ws.max_column, 80) + 1) if _norm(ws.cell(r, c).value) == "DATAORDINE"]
@@ -520,18 +548,22 @@ def _layout(ws):
             continue
         # 块标题「Gli ordini per …」：不一定正好在「Data Ordine」那一列上面（OTT / SET / Agosto / NOV 的 Capannori
         # 标题在 H 列、表头从 I 列开始）→ 在左右两列里找，取最近的一个
-        store = None
+        store, title = None, None
         for dc in (0, -1, 1, -2, 2):
             if c + dc < 1:
                 continue
             for r in range(1, hr):
-                n = _norm(ws.cell(r, c + dc).value)
-                if n.startswith("GLIORDINI"):
-                    store = EXCEL_STORE.get(n.replace("GLIORDINIPER", "").replace("GLIORDINI", ""))
+                v = ws.cell(r, c + dc).value
+                if _norm(v).startswith("GLIORDINI"):
+                    title = title or " ".join(str(v).split())
+                    store = title_store(v)
                     break
             if store:
                 break
         if not store:
+            if unknown is not None:
+                from openpyxl.utils import get_column_letter
+                unknown.append((ws.title, get_column_letter(c), title or ""))
             continue
         note_col = c + 7 if _norm(ws.cell(hr, c + 7).value).startswith("NOT") else None
         blocks.append((c, store, note_col))
@@ -564,8 +596,9 @@ def _is_iva(k, n, sk, sn):
     return sn > 0 and sk * 2 > sn
 
 
-def read_excel(path):
+def read_excel(path, info=None):
     """
+    info（dict，可选）：读完写进 info["blocks"] = {(工作表, 门店)}（真读到的块）、info["unknown"] = 认不出门店的块。
     读 PIANO ACQUISTO MESILE：每个有「Data Ordine」表头的工作表（GIUGNO_26 以后的新格式），每块一家门店。
     → (rows, budgets, sheets)：rows = [{id, date, store, supplier, buyer, amount, confirmed, arrived, state, kind, note,
     ref, origin}]，budgets = [(月份, 门店, 预算)]，sheets = 读了的工作表名
@@ -578,8 +611,11 @@ def read_excel(path):
     except Exception:
         wf = None
     rows, budgets, sheets = [], [], []
+    unknown, read_blocks = [], set()
+    if info is not None:
+        info["unknown"], info["blocks"] = unknown, read_blocks
     for ws in wb.worksheets:
-        hr, blocks = _layout(ws)
+        hr, blocks = _layout(ws, unknown)
         if not blocks:
             continue
         # 这张表是哪个月：下单日期最多的那个月（预算记在这个月）
@@ -600,6 +636,7 @@ def read_excel(path):
                 for c, _s, _n in blocks}
         sk, sn = sum(k for k, _n in cnts.values()), sum(n for _k, n in cnts.values())
         for c, store, note_col in blocks:
+            read_blocks.add((ws.title, store))
             iva = _is_iva(*cnts[c], sk, sn)
             for r in range(1, hr):                     # 预算：标题那一行「BADGET ACQUISTO」后面的数字
                 labels = [cc for cc in range(c, c + 8) if "BADGET" in _norm(ws.cell(r, cc).value) or
@@ -654,8 +691,9 @@ def tr_amount(text):
     return f"金额：{text}"
 
 
-def sync_excel(st, rows, budgets, sheets):
+def sync_excel(st, rows, budgets, sheets, blocks=None):
     """
+    blocks = 这次真读到的 {(工作表, 门店)}：只删这些块里 Excel 已经没有的单（一块认不出门店 / 标题写错时，不会把那家店的单全删掉）。
     把 Excel 读到的单写进跟踪记录：新的单加进来；已有的单只更新「最后一次是 Excel 写的」字段（程序里改过的不动）；
     程序里删掉的单不再加回来；Excel 里已经没有的单（而且程序里没改过）删掉。返回 {"new", "updated", "removed", "kept"}
     """
@@ -687,7 +725,10 @@ def sync_excel(st, rows, budgets, sheets):
     gone = []
     read = set(sheets)
     for oid, o in st.orders.items():
-        if o.get("origin") != "excel" or oid in seen or str(o.get("ref") or "").split("!")[0] not in read:
+        sh = str(o.get("ref") or "").split("!")[0]
+        if o.get("origin") != "excel" or oid in seen or sh not in read:
+            continue
+        if blocks is not None and (sh, o.get("store")) not in blocks:
             continue
         if all(w[2] == "excel" for w in st.meta.get(oid, {}).values()):
             gone.append(oid)
@@ -714,27 +755,44 @@ def import_file(st, path):
     tmp = os.path.join(tempfile.mkdtemp(prefix="piano_"), "piano.xlsx")
     shutil.copy2(path, tmp)
     try:
-        rows_, budgets, sheets = read_excel(tmp)
+        info = {}
+        rows_, budgets, sheets = read_excel(tmp, info)
     finally:
         try:
             shutil.rmtree(os.path.dirname(tmp), ignore_errors=True)
         except Exception:
             pass
     st.reload()
-    res = sync_excel(st, rows_, budgets, sheets)
-    res["rows"], res["sheets"] = len(rows_), sheets
+    res = sync_excel(st, rows_, budgets, sheets, info.get("blocks"))
+    res["rows"], res["sheets"], res["unknown"] = len(rows_), sheets, info.get("unknown") or []
     return res
 
 
 def find_excel(folder):
-    """共享文件夹里的 PIANO ACQUISTO MESILE（有 _COPIA 的先用 COPIA：用户 2026-11-02 说先用副本试）"""
+    """
+    共享文件夹里的 PIANO ACQUISTO MESILE：先用 NUOVO 正本（2026-11-02 用户：换成 NUOVO 那份——同事在正本里填，
+    副本 _COPIA 不会跟着变；程序只是复制一份再读，不改原表），没有正本才用 COPIA / 别的
+    """
     try:
         fs = [f for f in os.listdir(folder) if f.lower().endswith((".xlsx", ".xlsm")) and not f.startswith("~$")
               and "PIANO" in f.upper()]
     except OSError:
         return ""
-    fs.sort(key=lambda f: ("COPIA" not in f.upper(), "NUOVO" not in f.upper(), f))
+    fs.sort(key=lambda f: ("NUOVO" not in f.upper(), "COPIA" in f.upper(), f))
     return os.path.join(folder, fs[0]) if fs else ""
+
+
+def prefer_original(path):
+    """设置里存的是副本（…_COPIA.xlsx）、同一个文件夹里有正本（去掉 _COPIA）→ 返回正本路径，否则 None"""
+    if not path:
+        return None
+    d, f = os.path.split(path)
+    stem, ext = os.path.splitext(f)
+    m = re.match(r"^(.*?)[ _-]*COPIA$", stem, re.I)
+    if not m:
+        return None
+    orig = os.path.join(d, m.group(1) + ext)
+    return orig if os.path.isfile(orig) else None
 
 
 def export_excel(rs, path):
