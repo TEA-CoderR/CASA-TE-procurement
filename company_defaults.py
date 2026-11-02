@@ -4,7 +4,7 @@
 """
 import json
 
-COMPANY_DEFAULTS_VER = 9          # v3.3.13 发布时同步
+COMPANY_DEFAULTS_VER = 10          # v3.3.14 发布时同步
 
 COMPANY_DEFAULTS = json.loads(r'''
 {
@@ -33,15 +33,13 @@ COMPANY_DEFAULTS = json.loads(r'''
  "confirm_before_run": true,
  "griglia_cols": {
   "gone_cols_hidden": [
-   1,
    3,
-   4,
-   7
+   4
   ],
   "gone_cols_hidden_ver": 2,
   "gone_columns": [
-   1,
    2,
+   1,
    3,
    4,
    5,
@@ -52,21 +50,21 @@ COMPANY_DEFAULTS = json.loads(r'''
    10
   ],
   "gone_columns_ver": 2,
+  "gone_shown_1": true,
+  "gone_shown_7": true,
   "gone_widths": {
-   "1": 0,
+   "1": 130,
    "10": 84,
    "2": 326,
    "3": 0,
    "4": 0,
    "5": 194,
    "6": 260,
-   "7": 0,
+   "7": 130,
    "8": 232,
    "9": 227
   },
   "new_cols_hidden": [
-   1,
-   7,
    11
   ],
   "new_cols_hidden_ver": 2,
@@ -83,12 +81,14 @@ COMPANY_DEFAULTS = json.loads(r'''
    14,
    886868,
    354034,
-   997144,
-   443332
+   443332,
+   498903
   ],
   "new_columns_ver": 2,
+  "new_shown_1": true,
+  "new_shown_7": true,
   "new_widths": {
-   "1": 0,
+   "1": 130,
    "11": 0,
    "12": 76,
    "13": 63,
@@ -96,16 +96,14 @@ COMPANY_DEFAULTS = json.loads(r'''
    "2": 427,
    "354034": 111,
    "443332": 106,
+   "498903": 84,
    "5": 111,
    "6": 89,
-   "7": 0,
+   "7": 130,
    "8": 145,
-   "886868": 72,
-   "997144": 151
+   "886868": 72
   },
-  "odd_cols_hidden": [
-   1
-  ],
+  "odd_cols_hidden": [],
   "odd_cols_hidden_ver": 2,
   "odd_columns": [
    1,
@@ -115,6 +113,8 @@ COMPANY_DEFAULTS = json.loads(r'''
    18
   ],
   "odd_columns_ver": 2,
+  "odd_shown_1": true,
+  "odd_shown_7": true,
   "odd_widths": {
    "1": 0,
    "16": 279,
@@ -123,14 +123,12 @@ COMPANY_DEFAULTS = json.loads(r'''
    "2": 480
   },
   "price_cols_hidden": [
-   1,
-   3,
-   7
+   3
   ],
   "price_cols_hidden_ver": 2,
   "price_columns": [
-   1,
    2,
+   1,
    3,
    5,
    7,
@@ -143,12 +141,14 @@ COMPANY_DEFAULTS = json.loads(r'''
    15,
    886868,
    354034,
-   997144,
-   443332
+   443332,
+   498903
   ],
   "price_columns_ver": 2,
+  "price_shown_1": true,
+  "price_shown_7": true,
   "price_widths": {
-   "1": 0,
+   "1": 130,
    "10": 84,
    "13": 76,
    "14": 166,
@@ -157,13 +157,13 @@ COMPANY_DEFAULTS = json.loads(r'''
    "3": 0,
    "354034": 111,
    "443332": 106,
+   "498903": 84,
    "5": 179,
    "6": 127,
-   "7": 0,
+   "7": 130,
    "8": 160,
    "886868": 72,
-   "9": 131,
-   "997144": 151
+   "9": 131
   }
  },
  "history_keep_days": 180,
@@ -463,7 +463,7 @@ COMPANY_DEFAULTS = json.loads(r'''
    "34": 0,
    "35": 380,
    "36": 76,
-   "4": 126,
+   "4": 130,
    "5": 76,
    "6": 71,
    "7": 50,
@@ -520,6 +520,7 @@ COMPANY_DEFAULTS = json.loads(r'''
   "budget_cols_hidden": [],
   "budget_cols_hidden_ver": 2,
   "budget_columns_ver": 2,
+  "excel_original": true,
   "orders_cols_hidden": [
    11,
    12
