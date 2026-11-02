@@ -2823,4 +2823,6 @@ TRANSLATIONS = {
     '第 {0} 周': ('Week {0}', 'Settimana {0}'),
     '这个月下的单（不含待登记、已取消），不含税': ('Orders this month (excluding to-register and cancelled), excl. VAT', 'Ordini del mese (esclusi da registrare e annullati), imponibile'),
     '预算 € {0:,.0f}': ('Budget € {0:,.0f}', 'Budget € {0:,.0f}'),
+    '超出 € {0:,.0f}': ('Over by € {0:,.0f}', 'Oltre di € {0:,.0f}'),
+    '还剩 € {0:,.0f}': ('€ {0:,.0f} left', 'Restano € {0:,.0f}'),
 }

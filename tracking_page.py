@@ -127,11 +127,161 @@ NUM_COLS = (4, 9)
 HIDDEN = (11, 12)
 
 
+class _Ring(QWidget):
+    """预算用了多少：一圈进度（绿 / 黄 ≥ 90% / 红 > 100%），中间写百分比"""
+
+    def __init__(self, ui, size=84):
+        super().__init__()
+        self.ui, self.p, self.tone = ui, None, "ok"
+        self.setFixedSize(size, size)
+
+    def set(self, p, tone):
+        self.p, self.tone = p, tone
+        self.update()
+
+    def paintEvent(self, _e):
+        from PySide6.QtGui import QPainter, QPen, QFont
+        from PySide6.QtCore import QRectF
+        from theme import NUM_FONT
+        T = self.ui.T
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        w = 8
+        r = QRectF(w / 2 + 1, w / 2 + 1, self.width() - w - 2, self.height() - w - 2)
+        pen = QPen(QColor(T("track")), w)
+        pen.setCapStyle(Qt.RoundCap)
+        p.setPen(pen)
+        p.drawArc(r, 0, 360 * 16)
+        if self.p:
+            pen.setColor(QColor(T(self.tone)))
+            p.setPen(pen)
+            p.drawArc(r, 90 * 16, -int(min(self.p, 1.0) * 360 * 16))
+        f = QFont(NUM_FONT)
+        f.setPixelSize(17)
+        f.setBold(True)
+        p.setFont(f)
+        p.setPen(QColor(T(self.tone) if self.p and self.tone != "ok" else T("text")))
+        p.drawText(self.rect(), Qt.AlignCenter, f"{self.p:.0%}" if self.p is not None else "—")
+        p.end()
+
+
+class _WeekChart(QWidget):
+    """
+    每周一栏：周名 + 日期、金额、几张单，下面一根竖条（高 = 这周金额，底对齐，几周连起来就是一张小柱状图）。
+    本周：蓝字蓝条；点过的周：浅蓝底；以后的周：灰字、虚线框；鼠标停上去整栏浅灰底
+    """
+    clicked = Signal(int)
+    BAR_H = 40
+
+    def __init__(self, ui):
+        super().__init__()
+        self.ui = ui
+        self.weeks, self.today, self.sel, self.hover = [], date.today(), None, -1
+        self.setMouseTracking(True)
+        self.setMinimumHeight(128)
+        self.setCursor(Qt.PointingHandCursor)
+
+    def set(self, weeks, today, sel):
+        self.weeks, self.today, self.sel = weeks, today, sel
+        self.update()
+
+    def _col(self, x):
+        n = len(self.weeks)
+        if not n:
+            return -1
+        i = int(x * n / max(1, self.width()))
+        return i if 0 <= i < n else -1
+
+    def mouseMoveEvent(self, e):
+        i = self._col(e.position().x() if hasattr(e, "position") else e.x())
+        if i != self.hover:
+            self.hover = i
+            self.update()
+            if i >= 0:
+                w = self.weeks[i]
+                self.setToolTip(tr("第 {0} 周 {1:%d/%m} – {2:%d/%m}：{3} 张单，€ {4:,.2f}\n点一下：下面的订单只看这一周",
+                                   i + 1, w["start"], w["end"], w["n"], w["amount"]))
+
+    def leaveEvent(self, _e):
+        self.hover = -1
+        self.update()
+
+    def mousePressEvent(self, e):
+        i = self._col(e.position().x() if hasattr(e, "position") else e.x())
+        if i >= 0:
+            self.clicked.emit(i)
+
+    def paintEvent(self, _e):
+        from PySide6.QtGui import QPainter, QPen, QFont, QFontMetrics
+        from PySide6.QtCore import QRectF
+        from theme import NUM_FONT, UI_FONT
+        T = self.ui.T
+        n = len(self.weeks)
+        if not n:
+            return
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        W, H = self.width(), self.height()
+        cw = W / n
+        top = max((w["amount"] for w in self.weeks), default=0) or 1
+        base = H - 6                                         # 柱子的底线
+        f_small, f_amt = QFont(UI_FONT), QFont(NUM_FONT)
+        f_small.setPixelSize(11)
+        f_amt.setPixelSize(16)
+        f_amt.setBold(True)
+        f_title = QFont(UI_FONT)
+        f_title.setPixelSize(12)
+        f_title.setBold(True)
+        for i, w in enumerate(self.weeks):
+            x0 = i * cw
+            box = QRectF(x0 + 4, 0, cw - 8, H)
+            now = w["start"] <= self.today <= w["end"]
+            future = w["start"] > self.today
+            sel = self.sel == (w["start"], w["end"])
+            if sel or i == self.hover:                       # 选中 / 鼠标停着：整栏淡底
+                p.setPen(Qt.NoPen)
+                p.setBrush(QColor(T("accent_soft") if sel else T("surface2")))
+                p.drawRoundedRect(box, 10, 10)
+            pad = 12
+            tx = box.left() + pad
+            tw = box.width() - 2 * pad
+            p.setFont(f_title)
+            p.setPen(QColor(T("accent") if now else T("muted")))
+            p.drawText(QRectF(tx, 10, tw, 16), Qt.AlignLeft | Qt.AlignVCenter, tr("本周") if now else tr("第 {0} 周", i + 1))
+            p.setFont(f_small)
+            p.setPen(QColor(T("faint")))
+            rng = f"{w['start']:%d/%m}–{w['end']:%d/%m}" if w["start"] != w["end"] else f"{w['start']:%d/%m}"
+            p.drawText(QRectF(tx, 10, tw, 16), Qt.AlignRight | Qt.AlignVCenter, rng)
+            p.setFont(f_amt)
+            p.setPen(QColor(T("faint") if (future or not w["n"]) else T("text")))
+            amt = f"€ {w['amount']:,.0f}" if w["n"] else "–"
+            p.drawText(QRectF(tx, 30, tw, 22), Qt.AlignLeft | Qt.AlignVCenter,
+                       QFontMetrics(f_amt).elidedText(amt, Qt.ElideRight, int(tw)))
+            p.setFont(f_small)
+            p.setPen(QColor(T("muted")))
+            p.drawText(QRectF(tx, 52, tw, 16), Qt.AlignLeft | Qt.AlignVCenter,
+                       tr("{0} 张单", w["n"]) if w["n"] else ("" if future else tr("没有单")))
+            # 柱子：底对齐，高 = 金额 / 最多那周
+            bx, bw = tx, tw
+            if future and not w["n"]:
+                pen = QPen(QColor(T("line")), 1, Qt.DashLine)
+                p.setPen(pen)
+                p.setBrush(Qt.NoBrush)
+                p.drawRoundedRect(QRectF(bx, base - 8, bw, 8), 4, 4)
+            else:
+                h = max(4.0, self.BAR_H * w["amount"] / top) if w["n"] else 4.0
+                p.setPen(Qt.NoPen)
+                p.setBrush(QColor(T("accent") if (now or sel) else T("ghost") if w["n"] else T("track")))
+                p.drawRoundedRect(QRectF(bx, base - h, bw, h), 4, 4)
+        p.end()
+
+
 class MonthPanel(QFrame):
     """
-    页面顶上的「本月」（2026-11-02 用户：把 PIANO 表头的预算、本月合计、每周单数和合计放到顶上；没选门店 = 全部，选了 = 这家）。
-      左边：‹ 2026 年 11 月 › · 门店 / 已下单（大字）/ 预算 ✎ / 进度条（绿 → 黄 ≥ 90% → 红 > 100%）/ 百分比、还剩多少
-      右边：每周一格（和 PIANO 一样：第 1 周 = 1 号到第一个星期天）：单数、金额、占这个月的小条；本周描边，点一格 = 订单表只看这一周
+    页面顶上的「本月」（2026-11-02 用户：把 PIANO 表头的预算、本月合计、每周单数和合计放到顶上；没选门店 = 全部，选了 = 这家；
+    要美观 → 第二版：不用一格格带框的小卡片，左边一圈预算进度、右边每周一栏连成一张小柱状图，整块只有一个外框）。
+      左边：‹ 2026 年 11 月 › · 门店 / 圆圈（用了预算的百分比）+ 已下单（大字）、预算 ✎、还剩 / 超出 · 几张单
+      右边：每周一栏（第 1 周 = 1 号到第一个星期天）：金额、几张单、柱子；本周蓝色，点一栏 = 订单表只看这一周
     都不含税，不算待登记、已取消
     """
     week_clicked = Signal(object)        # (第一天, 最后一天) 或 None
@@ -146,15 +296,15 @@ class MonthPanel(QFrame):
         self.data = None
         self.tone = "ok"
         h = QHBoxLayout(self)
-        h.setContentsMargins(18, 12, 18, 12)
-        h.setSpacing(16)
+        h.setContentsMargins(18, 12, 14, 10)
+        h.setSpacing(14)
         lw = QWidget()
-        lw.setFixedWidth(270)
+        lw.setFixedWidth(300)
         lv = QVBoxLayout(lw)
         lv.setContentsMargins(0, 0, 0, 0)
-        lv.setSpacing(2)
+        lv.setSpacing(8)
         nav = QHBoxLayout()
-        nav.setSpacing(2)
+        nav.setSpacing(0)
         self.prev, self.next = QToolButton(), QToolButton()
         for b, d, tip in ((self.prev, -1, tr("上个月")), (self.next, 1, tr("下个月"))):
             b.setText("‹" if d < 0 else "›")
@@ -170,87 +320,48 @@ class MonthPanel(QFrame):
         nav.addWidget(self.prev)
         nav.addWidget(self.m_lbl)
         nav.addWidget(self.next)
-        nav.addSpacing(6)
+        nav.addSpacing(8)
         nav.addWidget(self.scope)
         nav.addStretch()
         lv.addLayout(nav)
-        lv.addSpacing(4)
+        row = QHBoxLayout()
+        row.setSpacing(14)
+        self.ring = _Ring(ui)
+        row.addWidget(self.ring, 0, Qt.AlignVCenter)
+        tv = QVBoxLayout()
+        tv.setSpacing(1)
         self.amt = QLabel("")
-        self.amt.setObjectName("KpiValue")
+        self.amt.setObjectName("MpAmount")
         self.amt.setToolTip(tr("这个月下的单（不含待登记、已取消），不含税"))
-        lv.addWidget(self.amt)
         self.bud = QLabel("")
         self.bud.setObjectName("MpBudget")
         self.bud.setCursor(Qt.PointingHandCursor)
         self.bud.mousePressEvent = lambda _e: self.budget_clicked.emit()
-        lv.addWidget(self.bud)
-        lv.addSpacing(6)
-        self.bar = QProgressBar()
-        self.bar.setRange(0, 1000)
-        self.bar.setTextVisible(False)
-        self.bar.setFixedHeight(8)
-        lv.addWidget(self.bar)
         self.pct = QLabel("")
         self.pct.setObjectName("MpPct")
-        lv.addWidget(self.pct)
+        tv.addStretch()
+        tv.addWidget(self.amt)
+        tv.addWidget(self.bud)
+        tv.addWidget(self.pct)
+        tv.addStretch()
+        row.addLayout(tv, 1)
+        lv.addLayout(row)
         lv.addStretch()
         h.addWidget(lw)
         self.sep = QFrame()
         self.sep.setFixedWidth(1)
         h.addWidget(self.sep)
-        wb = QHBoxLayout()
-        wb.setSpacing(10)
-        self.tiles = []
-        for i in range(5):
-            t = QFrame()
-            t.setObjectName("WeekTile")
-            t.setCursor(Qt.PointingHandCursor)
-            t.setMinimumWidth(110)
-            t.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-            tv = QVBoxLayout(t)
-            tv.setContentsMargins(12, 9, 12, 9)
-            tv.setSpacing(3)
-            top = QHBoxLayout()
-            top.setSpacing(4)
-            title, rng = QLabel(""), QLabel("")
-            title.setObjectName("WkTitle")
-            rng.setObjectName("WkRange")
-            top.addWidget(title)
-            top.addStretch()
-            top.addWidget(rng)
-            tv.addLayout(top)
-            amt = QLabel("")
-            amt.setObjectName("WkAmt")
-            n = QLabel("")
-            n.setObjectName("WkN")
-            tv.addWidget(amt)
-            tv.addWidget(n)
-            tv.addStretch()
-            bar = QProgressBar()
-            bar.setObjectName("WkBar")
-            bar.setRange(0, 1000)
-            bar.setTextVisible(False)
-            bar.setFixedHeight(4)
-            tv.addWidget(bar)
-            t.mousePressEvent = lambda _e, i=i: self._tile_clicked(i)
-            wb.addWidget(t)
-            self.tiles.append({"w": t, "title": title, "rng": rng, "amt": amt, "n": n, "bar": bar})
-        h.addLayout(wb, 1)
+        self.chart = _WeekChart(ui)
+        self.chart.clicked.connect(self._week)
+        h.addWidget(self.chart, 1)
         self.restyle()
 
-    def _tile_clicked(self, i):
+    def _week(self, i):
         if not self.data or i >= len(self.data["weeks"]):
             return
         w = self.data["weeks"][i]
         key = (w["start"], w["end"])
         self.week_clicked.emit(None if self.sel == key else key)
-
-    @staticmethod
-    def _prop(w, name, val):
-        if w.property(name) != val:
-            w.setProperty(name, val)
-            w.style().unpolish(w)
-            w.style().polish(w)
 
     def show_month(self, data, year, month, scope, can_edit, sel=None, today=None):
         today = today or date.today()
@@ -259,70 +370,37 @@ class MonthPanel(QFrame):
         self.scope.setText(scope)
         self.amt.setText(f"€ {data['amount']:,.2f}")
         b = data["budget"]
-        pen = "  ✎" if can_edit else ""
-        self.bud.setText((tr("预算 € {0:,.0f}", b) if b else tr("没有预算")) + pen)
+        self.bud.setText((tr("预算 € {0:,.0f}", b) if b else tr("没有预算")) + ("  ✎" if can_edit else ""))
         self.bud.setToolTip(tr("点一下改这家店这个月的预算（不含税）") if can_edit else tr("各门店预算加起来；选一家门店可以改它的预算"))
         if b:
             p = data["amount"] / b
-            self.bar.setValue(int(min(p, 1) * 1000))
             self.tone = "err" if p > 1 else "warn" if p >= 0.9 else "ok"
-            self.pct.setText(tr("{0:.0%} · 超出 € {1:,.0f}", p, data["amount"] - b) if p > 1
-                             else tr("{0:.0%} · 还剩 € {1:,.0f}", p, b - data["amount"]))
+            self.pct.setText((tr("超出 € {0:,.0f}", data["amount"] - b) if p > 1 else tr("还剩 € {0:,.0f}", b - data["amount"]))
+                             + tr(" · {0} 张单", data["n"]))
+            self.ring.set(p, self.tone)
         else:
-            self.bar.setValue(0)
-            self.tone = "faint"
+            self.tone = "ok"
             self.pct.setText(tr("{0} 张单", data["n"]))
-        self.pct.setText(self.pct.text() + ("" if not b else tr(" · {0} 张单", data["n"])))
-        top = max((w["amount"] for w in data["weeks"]), default=0) or 1
-        for i, tile in enumerate(self.tiles):
-            if i >= len(data["weeks"]):
-                tile["w"].hide()
-                continue
-            w = data["weeks"][i]
-            tile["w"].show()
-            now = w["start"] <= today <= w["end"]
-            tile["title"].setText(tr("本周") if now else tr("第 {0} 周", i + 1))
-            tile["rng"].setText(f"{w['start']:%d/%m}–{w['end']:%d/%m}" if w["start"] != w["end"] else f"{w['start']:%d/%m}")
-            tile["amt"].setText(f"€ {w['amount']:,.2f}" if w["n"] else "–")
-            tile["n"].setText(tr("{0} 张单", w["n"]) if w["n"] else ("" if w["start"] > today else tr("没有单")))
-            tile["bar"].setValue(int(w["amount"] / top * 1000))
-            tile["w"].setToolTip(tr("第 {0} 周 {1:%d/%m} – {2:%d/%m}：{3} 张单，€ {4:,.2f}\n点一下：下面的订单只看这一周",
-                                    i + 1, w["start"], w["end"], w["n"], w["amount"]))
-            self._prop(tile["w"], "current", now)
-            self._prop(tile["w"], "sel", sel == (w["start"], w["end"]))
-            self._prop(tile["w"], "future", w["start"] > today)
+            self.ring.set(None, "ok")
+        self.chart.set(data["weeks"], today, sel)
         self.restyle()
 
     def restyle(self):
+        from theme import NUM_FONT
         T = self.ui.T
         tone = self.tone
         self.setStyleSheet(
-            f"#MpMonth {{ font-size: 15px; font-weight: 600; color: {T('text')}; }}"
-            f"#MpScope {{ color: {T('accent')}; background: {T('accent_soft')}; border-radius: 9px; padding: 1px 8px;"
+            f"#MpMonth {{ font-size: 15px; font-weight: 600; color: {T('text')}; padding: 0 2px; }}"
+            f"#MpScope {{ color: {T('accent')}; background: {T('accent_soft')}; border-radius: 9px; padding: 1px 9px;"
             f" font-size: 11px; font-weight: 600; }}"
+            f"#MpAmount {{ font-family: \"{NUM_FONT}\"; font-size: 24px; font-weight: 600; color: {T('text')}; }}"
             f"#MpBudget {{ color: {T('muted')}; font-size: 12px; }}"
-            f"#MpPct {{ color: {T(tone if tone != 'ok' else 'muted')}; font-size: 12px; }}"
-            f"QFrame#WeekTile {{ background: {T('surface2')}; border: 1px solid {T('line')}; border-radius: 10px; }}"
-            f"QFrame#WeekTile:hover {{ border: 1px solid {T('ghost')}; }}"
-            f"QFrame#WeekTile[current=\"true\"] {{ border: 1px solid {T('accent')}; }}"
-            f"QFrame#WeekTile[sel=\"true\"] {{ background: {T('accent_soft')}; border: 1px solid {T('accent')}; }}"
-            f"#WkTitle {{ color: {T('muted')}; font-size: 12px; font-weight: 600; }}"
-            f"QFrame#WeekTile[current=\"true\"] #WkTitle {{ color: {T('accent')}; }}"
-            f"#WkRange {{ color: {T('faint')}; font-size: 11px; }}"
-            f"#WkAmt {{ color: {T('text')}; font-size: 16px; font-weight: 600; }}"
-            f"QFrame#WeekTile[future=\"true\"] #WkAmt {{ color: {T('faint')}; }}"
-            f"#WkN {{ color: {T('muted')}; font-size: 12px; }}"
-            f"QProgressBar#WkBar {{ background: {T('track')}; border: none; border-radius: 2px; }}"
-            f"QProgressBar#WkBar::chunk {{ background: {T('ghost')}; border-radius: 2px; }}"
-            f"QFrame#WeekTile[current=\"true\"] QProgressBar#WkBar::chunk {{ background: {T('accent')}; }}")
+            f"#MpPct {{ color: {T(tone) if tone != 'ok' else T('muted')}; font-size: 12px; font-weight: 600; }}"
+            f"QToolButton {{ color: {T('muted')}; font-size: 16px; border-radius: 12px; }}"
+            f"QToolButton:hover {{ background: {T('surface2')}; color: {T('accent')}; }}")
         self.sep.setStyleSheet(f"background: {T('line')};")
-        self.bar.setStyleSheet(f"QProgressBar {{ background: {T('track')}; border: none; border-radius: 4px; }}"
-                               f"QProgressBar::chunk {{ background: {T(tone if tone != 'faint' else 'track')}; border-radius: 4px; }}")
-        from theme import NUM_FONT
-        for tile in self.tiles:
-            f = tile["amt"].font()
-            f.setFamily(NUM_FONT)
-            tile["amt"].setFont(f)
+        self.ring.update()
+        self.chart.update()
 
 
 PILLS = (("draft", "warn"), ("pending", "warn"), ("overdue", "err"), ("stuck", "err"))
