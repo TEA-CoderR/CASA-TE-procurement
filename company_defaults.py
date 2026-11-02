@@ -4,7 +4,7 @@
 """
 import json
 
-COMPANY_DEFAULTS_VER = 8          # v3.3.12 发布时同步
+COMPANY_DEFAULTS_VER = 9          # v3.3.13 发布时同步
 
 COMPANY_DEFAULTS = json.loads(r'''
 {
@@ -293,9 +293,9 @@ COMPANY_DEFAULTS = json.loads(r'''
    "2": 130,
    "20": 76,
    "21": 104,
-   "22": 0,
+   "22": 80,
    "23": 0,
-   "24": 0,
+   "24": 110,
    "25": 0,
    "26": 0,
    "27": 203,
@@ -358,7 +358,7 @@ COMPANY_DEFAULTS = json.loads(r'''
    "allow_drop": true,
    "drop_extra": 0.0,
    "enabled": true,
-   "keyword": "Listino_01 - Offerta",
+   "keyword": "Listino_01 - Offerta",
    "manual_extra": 0.0,
    "min_amount": 500.0,
    "min_colli": 0.0,
@@ -515,6 +515,50 @@ COMPANY_DEFAULTS = json.loads(r'''
   "Ordine Mega Cash Foiano 1810.xlsx": "MEGA CASH",
   "Ordine Meloni Foiano 1810.xlsx": "MELONI",
   "formattato_059603(2).xlsx": "MEGA CASH"
+ },
+ "tracking": {
+  "budget_cols_hidden": [],
+  "budget_cols_hidden_ver": 2,
+  "budget_columns_ver": 2,
+  "orders_cols_hidden": [
+   11,
+   12
+  ],
+  "orders_cols_hidden_ver": 1,
+  "orders_columns": [
+   0,
+   1,
+   2,
+   3,
+   4,
+   5,
+   6,
+   7,
+   8,
+   9,
+   10,
+   11,
+   12
+  ],
+  "orders_columns_ver": 1,
+  "orders_widths": {
+   "0": 136,
+   "1": 98,
+   "10": 220,
+   "11": 0,
+   "12": 0,
+   "2": 170,
+   "3": 84,
+   "4": 96,
+   "5": 88,
+   "6": 134,
+   "7": 129,
+   "8": 134,
+   "9": 73
+  },
+  "sups_cols_hidden": [],
+  "sups_cols_hidden_ver": 1,
+  "sups_columns_ver": 1
  },
  "wholesale_transfer": {
   "enabled": false,
