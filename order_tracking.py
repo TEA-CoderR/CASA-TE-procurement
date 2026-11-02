@@ -504,6 +504,40 @@ def _flag_text(text, out):
         out.setdefault("_notes", []).append(t)
 
 
+def _layout(ws):
+    """月份表的格式：表头行（「Data Ordine」那一行）和每一块 [(起始列, 门店, 备注列)]；不是月份表 (None, [])"""
+    hr, starts = None, []
+    for r in range(1, 13):
+        cs = [c for c in range(1, min(ws.max_column, 80) + 1) if _norm(ws.cell(r, c).value) == "DATAORDINE"]
+        if cs:
+            hr, starts = r, cs
+            break
+    if not hr:
+        return None, []
+    blocks = []
+    for c in starts:
+        if _norm(ws.cell(hr, c + 1).value) != "FORNITORE":
+            continue
+        # 块标题「Gli ordini per …」：不一定正好在「Data Ordine」那一列上面（OTT / SET / Agosto / NOV 的 Capannori
+        # 标题在 H 列、表头从 I 列开始）→ 在左右两列里找，取最近的一个
+        store = None
+        for dc in (0, -1, 1, -2, 2):
+            if c + dc < 1:
+                continue
+            for r in range(1, hr):
+                n = _norm(ws.cell(r, c + dc).value)
+                if n.startswith("GLIORDINI"):
+                    store = EXCEL_STORE.get(n.replace("GLIORDINIPER", "").replace("GLIORDINI", ""))
+                    break
+            if store:
+                break
+        if not store:
+            continue
+        note_col = c + 7 if _norm(ws.cell(hr, c + 7).value).startswith("NOT") else None
+        blocks.append((c, store, note_col))
+    return hr, blocks
+
+
 def read_excel(path):
     """
     读 PIANO ACQUISTO MESILE：每个有「Data Ordine」表头的工作表（GIUGNO_26 以后的新格式），每块一家门店。
@@ -515,35 +549,7 @@ def read_excel(path):
     wb = load_workbook(path, data_only=True)
     rows, budgets, sheets = [], [], []
     for ws in wb.worksheets:
-        hr, starts = None, []
-        for r in range(1, 13):
-            cs = [c for c in range(1, min(ws.max_column, 80) + 1) if _norm(ws.cell(r, c).value) == "DATAORDINE"]
-            if cs:
-                hr, starts = r, cs
-                break
-        if not hr:
-            continue
-        blocks = []
-        for c in starts:
-            if _norm(ws.cell(hr, c + 1).value) != "FORNITORE":
-                continue
-            # 块标题「Gli ordini per …」：不一定正好在「Data Ordine」那一列上面（OTT / SET / Agosto / NOV 的 Capannori
-            # 标题在 H 列、表头从 I 列开始）→ 在左右两列里找，取最近的一个
-            store = None
-            for dc in (0, -1, 1, -2, 2):
-                if c + dc < 1:
-                    continue
-                for r in range(1, hr):
-                    n = _norm(ws.cell(r, c + dc).value)
-                    if n.startswith("GLIORDINI"):
-                        store = EXCEL_STORE.get(n.replace("GLIORDINIPER", "").replace("GLIORDINI", ""))
-                        break
-                if store:
-                    break
-            if not store:
-                continue
-            note_col = c + 7 if _norm(ws.cell(hr, c + 7).value).startswith("NOT") else None
-            blocks.append((c, store, note_col))
+        hr, blocks = _layout(ws)
         if not blocks:
             continue
         # 这张表是哪个月：下单日期最多的那个月（预算记在这个月）
@@ -849,3 +855,145 @@ def confirm_drafts(st, ids, today=None):
         ch.append((oid, f))
     st.set_many(ch)
     return len(ch)
+
+
+# ===================================================================== 导出成和 PIANO ACQUISTO MESILE 一样的表
+# 2026-11-02 用户：导出的表格要和原表格一致。拿原来的 Excel 当模板：复制最新那张月份表的格式（合并格、颜色、列宽、数字格式），
+# 每个月一张，六块门店并排；每周单数、每周合计（=SUM 那几行）、本月合计、预算都按原表的位置写。原文件里其他工作表原样保留，
+# 同一个月的旧表换成新的。写到一个新文件，不改原来的 Excel。
+ITA_MONTHS = ["GEN", "FEB", "MAR", "APR", "MAG", "GIU", "LUG", "AGO", "SET", "OTT", "NOV", "DIC"]
+
+
+def _week_of(d):
+    """这个月的第几周（0 起）：第 1 周 = 1 号到第一个星期天，之后每周一到周日；最多 5 周（第 6 周算进第 5 周）"""
+    first_sun = 7 - date(d.year, d.month, 1).weekday()          # 1 号是周日 → 1
+    return 0 if d.day <= first_sun else min(4, 1 + (d.day - first_sun - 1) // 7)
+
+
+def _sheet_month(ws, hr, blocks):
+    """这张月份表是哪个月 (年, 月)：先看下单日期，空表看表名（OTT、GIUGNO_26…）"""
+    cnt = {}
+    for c, _s, _n in blocks:
+        for r in range(hr + 1, ws.max_row + 1):
+            d, _ = parse_date(ws.cell(r, c).value)
+            if d and ws.cell(r, c + 1).value not in (None, ""):
+                cnt[(d.year, d.month)] = cnt.get((d.year, d.month), 0) + 1
+    if cnt:
+        return max(cnt.items(), key=lambda kv: kv[1])[0]
+    n = _norm(ws.title)
+    m = next((i + 1 for i, a in enumerate(ITA_MONTHS) if n.startswith(a)), None)
+    if not m:
+        return None
+    y = re.search(r"(\d{2,4})$", n)
+    year = (2000 + int(y.group(1)) if len(y.group(1)) == 2 else int(y.group(1))) if y else date.today().year
+    return (year, m)
+
+
+def export_piano(rs, st, template, out):
+    """
+    rs = rows(st)（已经是要导出的单：不含待登记、已取消）；template = 原来的 PIANO ACQUISTO MESILE。
+    返回 [(工作表名, 单数)]
+    """
+    import copy
+    from openpyxl import load_workbook
+    from openpyxl.comments import Comment
+    from openpyxl.styles import PatternFill
+    from openpyxl.utils import get_column_letter as L
+    wb = load_workbook(template)
+    layouts = {}
+    for ws in wb.worksheets:
+        hr, blocks = _layout(ws)
+        if hr and blocks:
+            layouts[ws.title] = (hr, blocks, _sheet_month(ws, hr, blocks))
+    if not layouts:
+        raise ValueError("模板里没有月份表（表头「Data Ordine」）")
+    # 模板 = 门店块最多的那张（一样多取排在前面的，一般是最新的月份）
+    tpl_name = max(layouts, key=lambda k: (len(layouts[k][1]), -wb.sheetnames.index(k)))
+    tpl = wb[tpl_name]
+    hr, blocks, _ = layouts[tpl_name]
+    by_month = {}
+    for r in rs:
+        if r["status"] in NOT_ORDERED or not r["date"]:
+            continue
+        by_month.setdefault((r["date"].year, r["date"].month), {}).setdefault(r["store"], []).append(r)
+    years = {y for y, _m in by_month}
+    done = []
+    for ym in sorted(by_month, reverse=True):
+        old = next((k for k, (_h, _b, m) in layouts.items() if m == ym), None)
+        name = old or (ITA_MONTHS[ym[1] - 1] + (f"_{ym[0] % 100:02d}" if len(years) > 1 or ym[0] != date.today().year else ""))
+        ws = wb.copy_worksheet(tpl)
+        ws.sheet_view.zoomScale = tpl.sheet_view.zoomScale
+        ws.freeze_panes = tpl.freeze_panes
+        if tpl.sheet_properties.tabColor is not None:
+            ws.sheet_properties.tabColor = copy.copy(tpl.sheet_properties.tabColor)
+        idx = wb.sheetnames.index(old) if old else 0
+        if old:
+            wb.remove(wb[old])
+        wb._sheets.remove(ws)
+        wb._sheets.insert(idx, ws)
+        ws.title = name
+        # 清空数据区和批注；格式统一成每列最常见的那种（模板里有人手工涂的红格子不跟过来）
+        last = max(ws.max_row, hr + 1)
+        for c, _s, _n in blocks:
+            for cc in range(c, c + 8):
+                cnt = {}
+                for r in range(hr + 1, last + 1):
+                    k = ws.cell(r, cc).style_id
+                    cnt[k] = cnt.get(k, 0) + 1
+                base = copy.copy(ws.cell(next(r for r in range(hr + 1, last + 1)
+                                             if ws.cell(r, cc).style_id == max(cnt, key=cnt.get)), cc)._style)
+                for r in range(hr + 1, last + 1):
+                    cell = ws.cell(r, cc)
+                    cell.value = None
+                    cell.comment = None
+                    cell._style = copy.copy(base)
+        week_rows = [r for r in range(1, hr) if "SETTIMANA" in _norm(ws.cell(r, blocks[0][0] + 2).value)]
+        total_row = next((r for r in range(1, hr) if "TOTALE" in _norm(ws.cell(r, blocks[0][0] + 2).value)), None)
+        budget_row = next((r for r in range(1, hr) if "BADGET" in _norm(ws.cell(r, blocks[0][0] + 2).value)
+                           or "BUDGET" in _norm(ws.cell(r, blocks[0][0] + 2).value)), None)
+        n_all = 0
+        for c, store, _n in blocks:
+            orders = sorted(by_month[ym].get(store, []), key=lambda r: (r["date"], r["supplier"].lower()))
+            need = hr + len(orders)
+            for r in range(ws.max_row + 1, need + 1):                # 比模板行多：照第一行数据行的格式
+                for cc in range(c, c + 8):
+                    ws.cell(r, cc)._style = copy.copy(ws.cell(hr + 1, cc)._style)
+            weeks = {}
+            for i, o in enumerate(orders):
+                r = hr + 1 + i
+                weeks.setdefault(_week_of(o["date"]), []).append(r)
+                deter = o["status"] == "deter"
+                arr = o["arrived"] or ("DETER" if deter else ("卡住了" if o["status"] == "stuck" else None))
+                vals = [o["date"], o["raw_supplier"] or o["supplier"], o["buyer"] or None, o["amount"],
+                        o["confirmed"] or ("DETER" if deter else None), arr,
+                        (o["arrived"] - o["date"]).days if (o["arrived"] and o["date"]) else None]
+                for k, v in enumerate(vals):
+                    cell = ws.cell(r, c + k)
+                    cell.value = v
+                    if isinstance(v, date):
+                        cell.number_format = "dd/mm/yyyy;@"
+                    elif k == 3 and v is not None:
+                        cell.number_format = "[$€-410]\\ #,##0.00;\\-[$€-410]\\ #,##0.00"
+                    elif k == 6 and v is not None:
+                        cell.number_format = "0"
+                if o["overdue"]:                                       # 超期没到：到货格涂红（和原表一样的红）
+                    ws.cell(r, c + 5).fill = PatternFill("solid", fgColor="FFFF0000")
+                if o["status"] == "partial":
+                    ws.cell(r, c + 5).comment = Comment("到了一部分", "Programma")
+                if o["note"]:
+                    ws.cell(r, c + 1).comment = Comment(o["note"], "Programma")
+            n_all += len(orders)
+            amt = L(c + 3)
+            for w, row in enumerate(week_rows):
+                rr = weeks.get(w) or []
+                if w == len(week_rows) - 1:                          # 最后一行包括之后所有的周
+                    rr = [x for k, v in weeks.items() if k >= w for x in v]
+                ws.cell(row, c + 4).value = len(rr)
+                ws.cell(row, c + 5).value = f"=SUM({amt}{min(rr)}:{amt}{max(rr)})" if rr else None
+            if total_row and week_rows:
+                ws.cell(total_row, c + 5).value = f"=SUM({L(c + 5)}{week_rows[0]}:{L(c + 5)}{week_rows[-1]})"
+            if budget_row:
+                ws.cell(budget_row, c + 5).value = st.budgets.get(f"{ym[0]:04d}-{ym[1]:02d}|{store}")
+        done.append((name, n_all))
+    wb.save(out)
+    return done

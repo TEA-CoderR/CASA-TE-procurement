@@ -196,3 +196,33 @@ def test_auto_register_drafts():
     assert OT.register_wholesale(settings, "???", [{"supplier": "MELONI", "amount": 1}]) is None
     assert OT.store_code("Capannori") == "2" and OT.store_code("S.CONCORDIO") == "5" and OT.store_code("BMS") == "BMS"
     assert OT.register_store_orders({"tracking": {"folder": d, "auto_register": False}}, written) is None
+
+
+def test_export_piano_same_layout():
+    """导出成原表的样子，再读回来：单、预算、每周单数都对得上；原文件里别的工作表留着"""
+    from openpyxl import load_workbook
+    d = tempfile.mkdtemp()
+    x = os.path.join(d, "PIANO.xlsx")
+    _piano(x)
+    wb = load_workbook(x)
+    for k, v in enumerate(["1ª settimana", "2ª settimana", "3ª settimana", "4ª settimana", "5ª settimana"]):
+        for c0 in (1, 9):
+            wb["OTT"].cell(3 + k, c0 + 2, v)
+    for c0 in (1, 9):
+        wb["OTT"].cell(2, c0 + 2, "Totale del mese")
+    wb.save(x)
+    st = OT.Store(d, me="t", host="h")
+    OT.import_file(st, x)
+    st.add({"date": "2026-11-03", "store": "2", "supplier": "NUOVO", "amount": 50.0})      # 新的月份
+    st.add({"date": "2026-11-03", "store": "1", "supplier": "BOZZA", "amount": 9.0, "draft": True})   # 待登记不导出
+    out = os.path.join(d, "out.xlsx")
+    done = dict(OT.export_piano(OT.rows(st), st, x, out))
+    assert done == {"NOV": 1, "OTT": 5}, done
+    wb = load_workbook(out)
+    assert wb.sheetnames == ["NOV", "OTT", "ELENCO FORNITORI "]
+    ws = wb["OTT"]
+    assert ws["F1"].value == 55000 and ws["E3"].value == 2 and ws["F3"].value == "=SUM(D9:D10)"   # 10-01、10-04 是第 1 周
+    assert ws["F2"].value == "=SUM(F3:F7)" and ws["F11"].value == "卡住了" and ws["F9"].comment is not None
+    rows, _b, _s = OT.read_excel(out)
+    assert len(rows) == 6 and {r["supplier"] for r in rows if r["store"] == "2"} == {"TecnoAir System", "NUOVO"}
+    assert OT._week_of(date(2026, 10, 4)) == 0 and OT._week_of(date(2026, 10, 5)) == 1 and OT._week_of(date(2026, 8, 31)) == 4

@@ -23,6 +23,7 @@ import order_tracking as OT
 
 class _Sig(QObject):
     done = Signal(object)
+    exported = Signal(object)
 
 
 def STATUS_LABELS():
@@ -133,6 +134,7 @@ class TrackingPage:
         self.rows, self.sups, self.buds = [], [], []
         self.sig = _Sig()
         self.sig.done.connect(self._sync_done)
+        self.sig.exported.connect(self._export_done)
         self.syncing = False
         self._shown = False
 
@@ -164,6 +166,7 @@ class TrackingPage:
         more = QPushButton(tr("更多") + " ▾")
         m = QMenu(more)
         m.addAction(tr("名字相近的供应商…"), self.suggest_merge)
+        m.addAction(tr("导出成 PIANO 表（和原表一样）…"), self.export_piano)
         m.addAction(tr("导出 Excel（显示的订单）"), self.export)
         m.addSeparator()
         m.addAction(tr("打开共享文件夹"), self.open_folder)
@@ -1041,6 +1044,50 @@ class TrackingPage:
             self.refresh()
             return
         self.badge(sum(1 for o in self.st.orders.values() if o.get("draft") and o.get("state") != "cancel"))
+
+    def export_piano(self):
+        """导出成和 PIANO ACQUISTO MESILE 一样的表：拿原来的 Excel 当模板，每月一张、六块门店并排（不改原文件）"""
+        if self.st is None:
+            return
+        tpl = self._excel()
+        if not tpl:
+            tpl, _ = QFileDialog.getOpenFileName(self.win, tr("选择原来的 PIANO ACQUISTO MESILE（当模板）"),
+                                                 self._folder(), tr("Excel 文件 (*.xlsx *.xlsm)"))
+            if not tpl:
+                return
+        out, _ = QFileDialog.getSaveFileName(self.win, tr("导出成 PIANO 表"), os.path.join(
+            self._folder() or "", f"PIANO ACQUISTO MESILE (programma) {datetime.now():%d%m}.xlsx"), tr("Excel 文件 (*.xlsx)"))
+        if not out:
+            return
+        if os.path.normcase(os.path.abspath(out)) == os.path.normcase(os.path.abspath(tpl)):
+            QMessageBox.warning(self.win, tr("导出成 PIANO 表"), tr("不能直接盖掉原来的 Excel，请换一个文件名"))
+            return
+        rows, st = list(self.rows), self.st
+        self.win.show_toast(tr("正在导出…"))
+
+        def work():
+            try:
+                import shutil
+                import tempfile
+                tmp = os.path.join(tempfile.mkdtemp(prefix="piano_"), "tpl.xlsx")
+                shutil.copy2(tpl, tmp)                      # 原文件可能正被 Excel 打开
+                self.sig.exported.emit((OT.export_piano(rows, st, tmp, out), out, None))
+            except Exception as e:
+                self.sig.exported.emit((None, out, str(e)))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _export_done(self, payload):
+        done, out, err = payload
+        if err:
+            QMessageBox.warning(self.win, tr("导出成 PIANO 表"), tr("导出失败：{0}", err))
+            return
+        self.win.log(tr("✔ 导出 PIANO 表：{0}（{1}）", out, "、".join(f"{n} {k}" for n, k in done)))
+        self.win.show_toast(tr("已导出：{0}", os.path.basename(out)))
+        try:
+            from main import open_path
+            open_path(os.path.dirname(out))
+        except Exception:
+            pass
 
     def restyle(self):
         if self.st is not None and self.rows:

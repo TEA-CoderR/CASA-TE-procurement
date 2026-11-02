@@ -2796,4 +2796,10 @@ TRANSLATIONS = {
     '程序生成的订单自动登记': ('Register orders created by the program', 'Registra gli ordini creati dal programma'),
     '门店配货 / 批发商比价生成的订单，还没确认发给供应商。发了以后选中，右键「确认已下单」': ('Orders created by store orders / wholesaler comparison, not yet confirmed as sent. Once sent, select them and right-click «Confirm as ordered»', "Ordini creati da ordini negozi / confronto grossisti, non ancora confermati come inviati. Dopo l'invio selezionali e clic destro «Conferma ordine inviato»"),
     '门店配货、批发商比价生成订单文件时，每家供应商 × 每家门店 / BMS 登记一张「待登记」的单；发给供应商后确认': ('When store orders / wholesaler comparison create order files, one «to register» order per supplier × store / BMS; confirm once sent to the supplier', "Quando ordini negozi / confronto grossisti creano i file, un ordine «da registrare» per fornitore × negozio / BMS; confermalo dopo l'invio al fornitore"),
+    '✔ 导出 PIANO 表：{0}（{1}）': ('✔ PIANO sheet exported: {0} ({1})', '✔ PIANO esportato: {0} ({1})'),
+    '不能直接盖掉原来的 Excel，请换一个文件名': ('Cannot overwrite the original Excel, choose another file name', "Non si può sovrascrivere l'Excel originale, scegli un altro nome"),
+    '导出成 PIANO 表': ('Export as PIANO sheet', 'Esporta come PIANO'),
+    '导出成 PIANO 表（和原表一样）…': ('Export as PIANO sheet (same as the original)…', "Esporta come PIANO (come l'originale)…"),
+    '正在导出…': ('Exporting…', 'Esportazione…'),
+    '选择原来的 PIANO ACQUISTO MESILE（当模板）': ('Choose the original PIANO ACQUISTO MESILE (as template)', 'Scegli il PIANO ACQUISTO MESILE originale (come modello)'),
 }
