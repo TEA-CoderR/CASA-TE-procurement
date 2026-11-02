@@ -741,19 +741,6 @@ class ToolWindow(QMainWindow):
         self.activateWindow()
 
 
-def column_lines(table):
-    """
-    表格加很浅的竖线分隔列（2026-11-02 用户：试试看，不行再去掉）。只用在相邻几列长得像（几列日期挨着）
-    或者要横竖对着看的表（月份 × 门店）；普通列表靠对齐和留白，不加。换深浅色时再调用一次
-    """
-    line = T("line")
-    table.setStyleSheet(
-        f"QTableWidget::item {{ padding: 4px 10px; border-bottom: 1px solid {line}; border-right: 1px solid {line}; }}"
-        f"QHeaderView::section {{ background: {T('surface2')}; color: {T('muted')}; border: none;"
-        f" border-bottom: 1px solid {line}; border-right: 1px solid {line}; padding: 9px 10px;"
-        f" font-weight: 500; font-size: 12px; }}")
-
-
 def tip_label(text, tip=None):
     """设置界面的短标签：有说明时标签后加 ⓘ，说明放在鼠标提示里（界面要简洁，不放一段段字）"""
     lb = QLabel(text + ("  ⓘ" if tip else ""))

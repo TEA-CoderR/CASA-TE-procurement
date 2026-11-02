@@ -11,7 +11,7 @@ from PySide6.QtCore import Qt, QByteArray
 from PySide6.QtGui import QColor, QPainter, QPen, QIcon, QPixmap, QLinearGradient, QFont
 from PySide6.QtSvg import QSvgRenderer
 
-APP_VERSION = "v3.3.9"
+APP_VERSION = "v3.3.12"
 UI_FONT = "Microsoft YaHei UI"
 NUM_FONT = "Bahnschrift"
 
@@ -189,13 +189,14 @@ def build_qss():
     QTableWidget, QListWidget, QTreeWidget {{ background: {t['surface']}; border: none; gridline-color: transparent;
                     selection-background-color: {t['accent_soft']}; selection-color: {t['text']};
                     alternate-background-color: {t['surface2']}; outline: none; }}
-    QTableWidget::item {{ padding: 4px 10px; border-bottom: 1px solid {t['line']}; }}
+    QTableWidget::item {{ padding: 4px 10px; border-bottom: 1px solid {t['line']}; border-right: 1px solid {t['line']}; }}
     QListWidget::item {{ padding: 8px 10px; border-bottom: 1px solid {t['line']}; }}
     QTreeWidget::item {{ padding: 7px 6px; border-bottom: 1px solid {t['line']}; }}
     QTreeWidget::item:selected {{ background: {t['accent_soft']}; color: {t['text']}; }}
     QListWidget::item:selected {{ background: {t['accent_soft']}; color: {t['text']}; }}
     QHeaderView::section {{ background: {t['surface2']}; color: {t['muted']}; border: none;
-                            border-bottom: 1px solid {t['line']}; padding: 9px 10px; font-weight: 500; font-size: 12px; }}
+                            border-bottom: 1px solid {t['line']}; border-right: 1px solid {t['line']};
+                            padding: 9px 10px; font-weight: 500; font-size: 12px; }}
     QTableCornerButton::section {{ background: {t['surface2']}; border: none; }}
     QScrollBar:vertical {{ background: transparent; width: 10px; margin: 2px; }}
     QScrollBar::handle:vertical {{ background: {t['line']}; border-radius: 4px; min-height: 30px; }}

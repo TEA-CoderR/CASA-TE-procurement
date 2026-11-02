@@ -287,6 +287,7 @@ class StatusDelegate(QStyledItemDelegate):
         p.drawText(r, Qt.AlignCenter, fm.elidedText(text, Qt.ElideRight, int(w - 12)))
         p.setPen(QPen(QColor(T("line")), 1))
         p.drawLine(opt.rect.bottomLeft(), opt.rect.bottomRight())
+        p.drawLine(opt.rect.topRight(), opt.rect.bottomRight())        # 列之间的细竖线（和样式表里的一样）
         p.restore()
 
     def sizeHint(self, opt, idx):

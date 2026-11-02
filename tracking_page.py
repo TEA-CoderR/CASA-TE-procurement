@@ -200,7 +200,6 @@ class TrackingPage:
         self.stack.addWidget(body)
         lay.addWidget(self.stack, 1)
 
-        self._lines()
         self.timer = QTimer(w)
         self.timer.setInterval(20000)                # 别的电脑改了（同步盘同步过来）：20 秒内看到
         self.timer.timeout.connect(self._poll)
@@ -969,14 +968,7 @@ class TrackingPage:
         except Exception as e:
             QMessageBox.warning(self.win, tr("导出 Excel"), tr("导出失败：{0}", e))
 
-    def _lines(self):
-        """订单表（确认 / 预计到货 / 到货三列日期挨着）和预算表（月份 × 门店）加很浅的竖线"""
-        from erp_widgets import column_lines
-        column_lines(self.t)
-        column_lines(self.b_t)
-
     def restyle(self):
-        self._lines()
         if self.st is not None and self.rows:
             self.refresh()
 
