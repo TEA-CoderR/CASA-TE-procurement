@@ -277,3 +277,12 @@ def test_overview_counts_carried_and_cheapest():
         [("MEGA", 2, 2), ("MELONI", 3, 1), ("PETRILLO", 0, 0)]
     assert abs(o["sups"][1]["share"] - 0.75) < 1e-9
     assert G.overview({"labels": []}, 0)["share"] is None
+
+
+def test_ean_column_shown_once():
+    import griglia_page as GP
+    cfg = {"price_cols_hidden": [1, 3, 4], "price_cols_hidden_ver": 2}
+    assert GP._show_ean_once(cfg, "price") and cfg["price_cols_hidden"] == [3, 4]
+    cfg["price_cols_hidden"] = [1, 3]                 # 用户之后自己又藏起来：照用户的
+    assert not GP._show_ean_once(cfg, "price") and cfg["price_cols_hidden"] == [1, 3]
+    assert 1 not in GP._HIDDEN

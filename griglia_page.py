@@ -346,8 +346,21 @@ class GridPanel(QFrame):
 # 每列默认宽度（按列编号；批发商价格列没写 = 84）。用户拖过的宽度记在设置里，优先用
 _WIDTHS = {1: 130, 2: 330, 3: 80, 4: 120, 5: 170, 6: 170, 7: 130, 8: 210, 9: 170, 10: 84, 11: 150, 12: 72,
            13: 84, 14: 120, 15: 76, 16: 130, 17: 84, 18: 96}
-# 默认藏起来的列（右键表头「显示哪些列…」可以打开）：条码（商品图就是按它取的，搜索框也能搜）、编号、品牌、小类（Griglia 里大多是空的）、部门
-_HIDDEN = (1, 3, 4, 7, 11)
+# 默认藏起来的列（右键表头「显示哪些列…」可以打开）：编号、品牌、小类（Griglia 里大多是空的）、部门
+# （条码以前也藏着，2026-11-02 用户：为什么没有条码列 → 默认显示，见 _show_ean_once）
+_HIDDEN = (3, 4, 7, 11)
+
+
+def _show_ean_once(cfg, key):
+    """以前存过的「藏哪些列」里有条码（编号 1）的，拿掉一次（只做一次；之后用户自己再藏起来就照用户的）。不改列顺序 / 列宽"""
+    flag = key + "_ean_shown"
+    if cfg.get(flag):
+        return False
+    cfg[flag] = True
+    h = cfg.get(key + "_cols_hidden")
+    if isinstance(h, list) and 1 in h:
+        cfg[key + "_cols_hidden"] = [f for f in h if f != 1]
+    return True
 
 
 def _p(v):
@@ -612,6 +625,7 @@ class GrigliaPage:
             rows.append(r)
             keys.append(k)
         cfg = self.settings.setdefault("griglia_cols", {})
+        _show_ean_once(cfg, key)
         tab.ctl.remember(cfg, key, lambda: ST.save_settings(self.settings), fids,
                          default_hidden=[f for f in _HIDDEN if f in fids], ver=2)
         box = self.boxes[idx]
