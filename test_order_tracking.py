@@ -303,3 +303,16 @@ def test_block_title_typo_and_unknown_block_kept():
     assert [r["store"] for r in rows2] == ["1"] and info["unknown"] and info["unknown"][0][0] == "NOV"
     res = OT.sync_excel(st, rows2, [], sheets, info["blocks"])
     assert res["removed"] == 0 and sum(1 for o in st.orders.values() if o.get("store") == "5") == 1
+
+
+def test_find_excel_prefers_nuovo_original():
+    d = tempfile.mkdtemp()
+    for f in ("PIANO ACQUISTO MESILE  NUOVO_COPIA.xlsx", "PIANO ACQUISTO MESILE  NUOVO.xlsx", "PIANO ACQUISTO MESILE .xlsx",
+              "~$PIANO ACQUISTO MESILE  NUOVO.xlsx"):
+        open(os.path.join(d, f), "wb").close()
+    assert os.path.basename(OT.find_excel(d)) == "PIANO ACQUISTO MESILE  NUOVO.xlsx"
+    cp = os.path.join(d, "PIANO ACQUISTO MESILE  NUOVO_COPIA.xlsx")
+    assert OT.prefer_original(cp) == os.path.join(d, "PIANO ACQUISTO MESILE  NUOVO.xlsx")
+    assert OT.prefer_original(os.path.join(d, "PIANO ACQUISTO MESILE  NUOVO.xlsx")) is None
+    os.remove(os.path.join(d, "PIANO ACQUISTO MESILE  NUOVO.xlsx"))
+    assert OT.prefer_original(cp) is None

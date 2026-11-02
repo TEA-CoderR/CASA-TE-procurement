@@ -769,14 +769,30 @@ def import_file(st, path):
 
 
 def find_excel(folder):
-    """共享文件夹里的 PIANO ACQUISTO MESILE（有 _COPIA 的先用 COPIA：用户 2026-11-02 说先用副本试）"""
+    """
+    共享文件夹里的 PIANO ACQUISTO MESILE：先用 NUOVO 正本（2026-11-02 用户：换成 NUOVO 那份——同事在正本里填，
+    副本 _COPIA 不会跟着变；程序只是复制一份再读，不改原表），没有正本才用 COPIA / 别的
+    """
     try:
         fs = [f for f in os.listdir(folder) if f.lower().endswith((".xlsx", ".xlsm")) and not f.startswith("~$")
               and "PIANO" in f.upper()]
     except OSError:
         return ""
-    fs.sort(key=lambda f: ("COPIA" not in f.upper(), "NUOVO" not in f.upper(), f))
+    fs.sort(key=lambda f: ("NUOVO" not in f.upper(), "COPIA" in f.upper(), f))
     return os.path.join(folder, fs[0]) if fs else ""
+
+
+def prefer_original(path):
+    """设置里存的是副本（…_COPIA.xlsx）、同一个文件夹里有正本（去掉 _COPIA）→ 返回正本路径，否则 None"""
+    if not path:
+        return None
+    d, f = os.path.split(path)
+    stem, ext = os.path.splitext(f)
+    m = re.match(r"^(.*?)[ _-]*COPIA$", stem, re.I)
+    if not m:
+        return None
+    orig = os.path.join(d, m.group(1) + ext)
+    return orig if os.path.isfile(orig) else None
 
 
 def export_excel(rs, path):

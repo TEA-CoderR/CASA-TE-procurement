@@ -653,6 +653,13 @@ class TrackingPage:
 
     def _excel(self):
         p = self.cfg.get("excel") or ""
+        if not self.cfg.get("excel_original"):        # 2026-11-02 用户：换成 NUOVO 正本（以前存的是 _COPIA）→ 换一次
+            self.cfg["excel_original"] = True
+            o = OT.prefer_original(p)
+            if o:
+                self.cfg["excel"] = p = o
+                self.cfg.pop("excel_mtime", None)
+            self._save()
         if p and os.path.isfile(p):
             return p
         return OT.find_excel(self._folder()) if self._folder() else ""
