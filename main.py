@@ -2689,7 +2689,7 @@ class MainWindow(QMainWindow):
     NAV_SIDE = [item for _, items in NAV_GROUPS for item in items]          # 侧边栏上的
     NAV = _all_pages(NAV_SIDE, SUB_PAGES)                                    # 所有页面（含标签页）
     NAV_SECTION = {k: g for g, items in NAV_GROUPS for k, _ in items}
-    SOON = {"tracking"}   # 还没做（采购订单跟踪）
+    SOON = set()          # 还没做的模块（侧边栏上标「二期」）
 
     def __init__(self):
         super().__init__()
@@ -2750,6 +2750,8 @@ class MainWindow(QMainWindow):
         self.import_page = ImportPage(self, settings, _UI)
         from griglia_page import GrigliaPage
         self.griglia_page = GrigliaPage(self, settings, _UI)
+        from tracking_page import TrackingPage
+        self.tracking = TrackingPage(self, settings, _UI)
         builders = {
             "distribution": lambda: (self.distribution.build(), True),
             "import": lambda: (self.import_page.build(), True),
@@ -2761,6 +2763,7 @@ class MainWindow(QMainWindow):
             "rules": lambda: (self._page_rules(), True),
             "search": lambda: (self._page_missing(), True),
             "griglia": lambda: (self.griglia_page.build(), False),
+            "tracking": lambda: (self.tracking.build(), False),
             "settings": lambda: (self.settings_page.build(), True),
             "log": lambda: (self._page_log(), True),
         }
@@ -3234,7 +3237,7 @@ class MainWindow(QMainWindow):
         for pg in (getattr(self, "dashboard", None), getattr(self, "store_orders", None),
                    getattr(self, "settings_page", None), getattr(self, "order_check", None),
                    getattr(self, "distribution", None), getattr(self, "import_page", None),
-                   getattr(self, "griglia_page", None)):
+                   getattr(self, "griglia_page", None), getattr(self, "tracking", None)):
             if pg is not None and hasattr(pg, "restyle"):
                 pg.restyle()
         for b in (self.banner_folder, self.banner_result, self.banner_rules):
