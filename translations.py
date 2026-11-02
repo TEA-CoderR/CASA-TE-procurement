@@ -2834,4 +2834,6 @@ TRANSLATIONS = {
     '{0}：这周报价里有 {1:,} 个 Griglia 商品（{2:.0%}），其中 {3:,} 个它最便宜\n点一下：价格表只看这家最便宜的': ("{0}: {1:,} Griglia items in this week's list ({2:.0%}), cheapest on {3:,}\nClick: show only items where it is cheapest", '{0}: {1:,} articoli Griglia nel listino di questa settimana ({2:.0%}), il più economico su {3:,}\nClic: mostra solo gli articoli in cui è il più economico'),
     '有 {0:,} 个 · {1:.0%}': ('carries {0:,} · {1:.0%}', 'ne ha {0:,} · {1:.0%}'),
     'Excel 存过就会自动同步（打开这页时、开着时每 20 秒看一次），一般不用点；想马上同步再点': ('The Excel is synced automatically when it is saved (when this page opens, and every 20 seconds while it is open). Click only to sync right away', "L'Excel si sincronizza da solo quando viene salvato (all'apertura di questa pagina e ogni 20 secondi mentre è aperta). Clicca solo per sincronizzare subito"),
+    '⚠ Excel「{0}」表 {1} 列那一块认不出是哪家门店，没读：「{2}」': ('⚠ Excel sheet «{0}», block at column {1}: store not recognised, not read: «{2}»', '⚠ Excel foglio «{0}», blocco in colonna {1}: negozio non riconosciuto, non letto: «{2}»'),
+    '⚠ Excel 里有 {0} 块认不出是哪家门店，没读（看日志）': ('⚠ {0} Excel block(s) with an unrecognised store were not read (see log)', "⚠ {0} blocchi dell'Excel con negozio non riconosciuto non sono stati letti (vedi registro)"),
 }

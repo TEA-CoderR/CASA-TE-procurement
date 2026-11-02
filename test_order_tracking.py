@@ -266,3 +266,40 @@ def test_month_summary_weeks():
     f = OT.month_summary(rs, st, 2026, 10, store="1")
     assert f["budget"] == 1000 and f["amount"] == 130 and f["weeks"][0]["amount"] == 100
     assert OT.month_summary(rs, st, 2026, 11)["budget"] is None
+
+
+def test_block_title_typo_and_unknown_block_kept():
+    """11 月表 S.Concordio 的标题写成「San S.Conrdio」→ 以前整块没读；认不出的块不能把那家店以前的单删掉"""
+    import openpyxl
+    import order_tracking as OT
+    assert OT.title_store("Gli ordini \nper San S.Conrdio") == "5"
+    assert OT.title_store("Gli ordini per S.Filippo") == "3"
+    assert OT.title_store("Gli ordini per Capannori") == "2"
+    assert OT.title_store("Gli ordini per Pisa") is None
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "NOV"
+    for c0, title in ((1, "Gli ordini per Foiano"), (9, "Gli ordini per San S.Conrdio")):
+        ws.cell(1, c0, title)
+        for i, h in enumerate(("Data Ordine", "Fornitore", "Ordine Da", "Importo Inponibile", "Data confermato", "Data arrivato")):
+            ws.cell(8, c0 + i, h)
+        ws.cell(9, c0, datetime(2026, 11, 1))
+        ws.cell(9, c0 + 1, "Meloni")
+        ws.cell(9, c0 + 3, 100.0)
+    p = os.path.join(tempfile.mkdtemp(), "p.xlsx")
+    wb.save(p)
+    info = {}
+    rows, _b, _s = OT.read_excel(p, info)
+    assert sorted(r["store"] for r in rows) == ["1", "5"] and info["unknown"] == []
+    # 标题改成认不出的：那一块进 unknown，同步时也不删这家店以前的单
+    d = tempfile.mkdtemp()
+    st = OT.Store(d, me="t")
+    st.reload()
+    OT.sync_excel(st, rows, [], ["NOV"], {("NOV", "1"), ("NOV", "5")})
+    ws.cell(1, 9, "Gli ordini per ???")
+    wb.save(p)
+    info = {}
+    rows2, _b, sheets = OT.read_excel(p, info)
+    assert [r["store"] for r in rows2] == ["1"] and info["unknown"] and info["unknown"][0][0] == "NOV"
+    res = OT.sync_excel(st, rows2, [], sheets, info["blocks"])
+    assert res["removed"] == 0 and sum(1 for o in st.orders.values() if o.get("store") == "5") == 1
