@@ -769,6 +769,43 @@ def kpi_card(label, value="—", sub=""):
     return f, val, s
 
 
+
+class Ring(QWidget):
+    """一圈进度（订单跟踪的预算、Griglia 的覆盖率共用）：底圈 track，弧线颜色 = tone（ok / warn / err / accent），中间写百分比"""
+
+    def __init__(self, size=84):
+        super().__init__()
+        self.p, self.tone, self.color_text = None, "ok", False
+        self.setFixedSize(size, size)
+
+    def set(self, p, tone, color_text=None):
+        """color_text：中间的百分比也用 tone 的颜色（默认：tone 不是 ok 才上色）"""
+        self.p, self.tone = p, tone
+        self.color_text = (tone != "ok") if color_text is None else color_text
+        self.update()
+
+    def paintEvent(self, _e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        w = 8
+        r = QRectF(w / 2 + 1, w / 2 + 1, self.width() - w - 2, self.height() - w - 2)
+        pen = QPen(QColor(T("track")), w)
+        pen.setCapStyle(Qt.RoundCap)
+        p.setPen(pen)
+        p.drawArc(r, 0, 360 * 16)
+        if self.p:
+            pen.setColor(QColor(T(self.tone)))
+            p.setPen(pen)
+            p.drawArc(r, 90 * 16, -int(min(self.p, 1.0) * 360 * 16))
+        f = QFont(NUM_FONT)
+        f.setPixelSize(17 if self.width() >= 80 else 14)
+        f.setBold(True)
+        p.setFont(f)
+        p.setPen(QColor(T(self.tone) if self.p and self.color_text else T("text")))
+        p.drawText(self.rect(), Qt.AlignCenter, f"{self.p:.0%}" if self.p is not None else "—")
+        p.end()
+
+
 def fit_chip(btn, pad=34):
     """可勾选的 Chip 按钮：选中时是粗体，按粗体留宽度，长文字（英文 / 意大利文）不被截断"""
     from PySide6.QtGui import QFontMetrics

@@ -357,6 +357,32 @@ def stats(grid, quotes, fresh=None):
             "history": fresh is not None}
 
 
+
+def overview(st, n_grid):
+    """
+    Griglia 页顶上的总览（2026-11-02 用户：Griglia 统计也做得好看点）。
+    返回 {"grid": Griglia 商品数, "covered": 这周至少一家批发商有的, "share": covered / grid,
+          "sups": [{"label", "carried": 有几个 Griglia 商品, "cheapest": 其中几个它最便宜, "share": carried / grid}]}
+    sups 按最便宜的个数从多到少（一样多按有几个），批发商一个都没有的也列出来（0）
+    """
+    n_grid = max(0, int(n_grid or 0))
+    covered = max(0, n_grid - len(st.get("gone") or ()))
+    carried = {l: 0 for l in st.get("labels") or ()}
+    cheapest = dict.fromkeys(carried, 0)
+    for x in st.get("prices") or ():
+        for l in (x.get("prices") or {}):
+            carried[l] = carried.get(l, 0) + 1
+            cheapest.setdefault(l, 0)
+        b = x.get("best_sup")
+        if b:
+            cheapest[b] = cheapest.get(b, 0) + 1
+            carried.setdefault(b, 0)
+    sups = [{"label": l, "carried": carried[l], "cheapest": cheapest.get(l, 0),
+             "share": carried[l] / n_grid if n_grid else 0.0} for l in carried]
+    sups.sort(key=lambda d: (-d["cheapest"], -d["carried"], d["label"]))
+    return {"grid": n_grid, "covered": covered, "share": covered / n_grid if n_grid else None, "sups": sups}
+
+
 def export(st, path, labels=None):
     """统计导出 Excel：三个工作表（都不做了 / 新品 / 价格）"""
     from openpyxl import Workbook

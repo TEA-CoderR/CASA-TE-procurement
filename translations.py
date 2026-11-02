@@ -2825,4 +2825,12 @@ TRANSLATIONS = {
     '预算 € {0:,.0f}': ('Budget € {0:,.0f}', 'Budget € {0:,.0f}'),
     '超出 € {0:,.0f}': ('Over by € {0:,.0f}', 'Oltre di € {0:,.0f}'),
     '还剩 € {0:,.0f}': ('€ {0:,.0f} left', 'Restano € {0:,.0f}'),
+    '这周批发商还在做': ('Still offered this week', 'Ancora offerti questa settimana'),
+    'Griglia 商品里，这周至少一家批发商报价里有的占几成': ('Share of Griglia items found in at least one wholesaler price list this week', 'Quota di articoli Griglia presenti in almeno un listino grossista questa settimana'),
+    '要看的': ('To check', 'Da controllare'),
+    '{0:,} 个商品': ('{0:,} items', '{0:,} articoli'),
+    '{0:,} 个有批发商在做': ('{0:,} offered', '{0:,} offerti'),
+    '个最便宜': ('cheapest', 'più economici'),
+    '{0}：这周报价里有 {1:,} 个 Griglia 商品（{2:.0%}），其中 {3:,} 个它最便宜\n点一下：价格表只看这家最便宜的': ("{0}: {1:,} Griglia items in this week's list ({2:.0%}), cheapest on {3:,}\nClick: show only items where it is cheapest", '{0}: {1:,} articoli Griglia nel listino di questa settimana ({2:.0%}), il più economico su {3:,}\nClic: mostra solo gli articoli in cui è il più economico'),
+    '有 {0:,} 个 · {1:.0%}': ('carries {0:,} · {1:.0%}', 'ne ha {0:,} · {1:.0%}'),
 }

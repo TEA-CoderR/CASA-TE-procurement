@@ -127,44 +127,6 @@ NUM_COLS = (4, 9)
 HIDDEN = (11, 12)
 
 
-class _Ring(QWidget):
-    """预算用了多少：一圈进度（绿 / 黄 ≥ 90% / 红 > 100%），中间写百分比"""
-
-    def __init__(self, ui, size=84):
-        super().__init__()
-        self.ui, self.p, self.tone = ui, None, "ok"
-        self.setFixedSize(size, size)
-
-    def set(self, p, tone):
-        self.p, self.tone = p, tone
-        self.update()
-
-    def paintEvent(self, _e):
-        from PySide6.QtGui import QPainter, QPen, QFont
-        from PySide6.QtCore import QRectF
-        from theme import NUM_FONT
-        T = self.ui.T
-        p = QPainter(self)
-        p.setRenderHint(QPainter.Antialiasing)
-        w = 8
-        r = QRectF(w / 2 + 1, w / 2 + 1, self.width() - w - 2, self.height() - w - 2)
-        pen = QPen(QColor(T("track")), w)
-        pen.setCapStyle(Qt.RoundCap)
-        p.setPen(pen)
-        p.drawArc(r, 0, 360 * 16)
-        if self.p:
-            pen.setColor(QColor(T(self.tone)))
-            p.setPen(pen)
-            p.drawArc(r, 90 * 16, -int(min(self.p, 1.0) * 360 * 16))
-        f = QFont(NUM_FONT)
-        f.setPixelSize(17)
-        f.setBold(True)
-        p.setFont(f)
-        p.setPen(QColor(T(self.tone) if self.p and self.tone != "ok" else T("text")))
-        p.drawText(self.rect(), Qt.AlignCenter, f"{self.p:.0%}" if self.p is not None else "—")
-        p.end()
-
-
 class _WeekChart(QWidget):
     """
     每周一栏：周名 + 日期、金额、几张单，下面一根竖条（高 = 这周金额，底对齐，几周连起来就是一张小柱状图）。
@@ -326,7 +288,8 @@ class MonthPanel(QFrame):
         lv.addLayout(nav)
         row = QHBoxLayout()
         row.setSpacing(14)
-        self.ring = _Ring(ui)
+        from erp_widgets import Ring
+        self.ring = Ring()        # 预算用了多少：绿 / 黄 ≥ 90% / 红 > 100%
         row.addWidget(self.ring, 0, Qt.AlignVCenter)
         tv = QVBoxLayout()
         tv.setSpacing(1)
