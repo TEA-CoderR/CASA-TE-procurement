@@ -1,7 +1,7 @@
 """
 批发商比价 → Griglia（2026-10-28）：我们的 DETERSIVI 总表和这周批发商报价对比（数据见 griglia.py）。
   上面：Griglia 文件 · 换 Griglia / 打开文件夹 / 刷新 / 导出 Excel
-  四张卡：Griglia 商品 · 都不做了 · 新品 · 最低价换了供应商（点卡片跳到对应的表）
+  总览（GridPanel，一个外框）：还在做的占几成 · 要看的四样（点了跳到表）· 每家批发商几个最便宜（点了价格表只看这家）
   标签页：都不做了 / 新品（至少几家在做）/ 价格 / 价格可疑，每张表都能点表头排序、右键表头筛选、搜索
 """
 import os
@@ -11,7 +11,7 @@ import threading
 from PySide6.QtCore import Qt, QObject, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QLineEdit, QComboBox,
-                               QTabWidget, QFileDialog, QStackedWidget)
+                               QTabWidget, QFileDialog, QStackedWidget, QFrame)
 
 from i18n import tr
 
@@ -76,6 +76,273 @@ class _Tab:
         self.ctl.render()
 
 
+class _StatList(QWidget):
+    """
+    几行「要看的」：彩色圆点 + 名字 + 右边的个数 + ›，一行一个标签页，点一行跳过去（鼠标停着整行淡底）。
+    items = [(名字, 个数文字, 颜色记号, 标签页, 鼠标提示)]
+    """
+    clicked = Signal(int)
+    ROW = 30
+
+    def __init__(self, ui):
+        super().__init__()
+        self.ui, self.items, self.hover = ui, [], -1
+        self.setMouseTracking(True)
+        self.setCursor(Qt.PointingHandCursor)
+
+    def set(self, items):
+        self.items = list(items)
+        self.setFixedHeight(self.ROW * len(self.items))
+        self.update()
+
+    def _row(self, e):
+        y = e.position().y() if hasattr(e, "position") else e.y()
+        i = int(y // self.ROW)
+        return i if 0 <= i < len(self.items) else -1
+
+    def mouseMoveEvent(self, e):
+        i = self._row(e)
+        if i != self.hover:
+            self.hover = i
+            self.setToolTip(self.items[i][4] if i >= 0 else "")
+            self.update()
+
+    def leaveEvent(self, _e):
+        self.hover = -1
+        self.update()
+
+    def mousePressEvent(self, e):
+        i = self._row(e)
+        if i >= 0:
+            self.clicked.emit(self.items[i][3])
+
+    def paintEvent(self, _e):
+        from PySide6.QtGui import QPainter, QFont
+        from PySide6.QtCore import QRectF
+        from theme import NUM_FONT, UI_FONT
+        T = self.ui.T
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        W = self.width()
+        f_lbl, f_num = QFont(UI_FONT), QFont(NUM_FONT)
+        f_lbl.setPixelSize(13)
+        f_num.setPixelSize(15)
+        f_num.setBold(True)
+        for i, (label, val, tone, _tab, _tip) in enumerate(self.items):
+            y = i * self.ROW
+            if i == self.hover:
+                p.setPen(Qt.NoPen)
+                p.setBrush(QColor(T("surface2")))
+                p.drawRoundedRect(QRectF(0, y + 2, W, self.ROW - 4), 8, 8)
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor(T(tone)))
+            p.drawEllipse(QRectF(10, y + self.ROW / 2 - 4, 8, 8))
+            p.setFont(f_lbl)
+            p.setPen(QColor(T("text")))
+            p.drawText(QRectF(28, y, W - 100, self.ROW), Qt.AlignLeft | Qt.AlignVCenter, label)
+            p.setPen(QColor(T("muted")))
+            p.drawText(QRectF(W - 22, y, 16, self.ROW), Qt.AlignCenter, "›")
+            p.setFont(f_num)
+            p.setPen(QColor(T(tone) if val not in ("0", "—") else T("faint")))
+            p.drawText(QRectF(W - 110, y, 84, self.ROW), Qt.AlignRight | Qt.AlignVCenter, val)
+        p.end()
+
+
+class _SupChart(QWidget):
+    """
+    这周每家批发商一栏：名字、「n 个最便宜」（大字）、有几个 Griglia 商品 · 占几成，下面一根竖条（高 = 最便宜的个数），
+    最便宜最多的那家蓝条；点一栏 = 价格表只看这家最便宜的（再点一次取消），选中的那栏淡蓝底
+    """
+    clicked = Signal(str)
+    BAR_H = 40
+
+    def __init__(self, ui):
+        super().__init__()
+        self.ui, self.sups, self.sel, self.hover = ui, [], None, -1
+        self.setMouseTracking(True)
+        self.setMinimumHeight(128)
+        self.setCursor(Qt.PointingHandCursor)
+
+    def set(self, sups, sel=None):
+        self.sups, self.sel = list(sups), sel
+        self.update()
+
+    def _col(self, e):
+        x = e.position().x() if hasattr(e, "position") else e.x()
+        n = len(self.sups)
+        i = int(x * n / max(1, self.width())) if n else -1
+        return i if 0 <= i < n else -1
+
+    def mouseMoveEvent(self, e):
+        i = self._col(e)
+        if i != self.hover:
+            self.hover = i
+            self.update()
+            if i >= 0:
+                d = self.sups[i]
+                self.setToolTip(tr("{0}：这周报价里有 {1:,} 个 Griglia 商品（{2:.0%}），其中 {3:,} 个它最便宜\n点一下：价格表只看这家最便宜的",
+                                   d["label"], d["carried"], d["share"], d["cheapest"]))
+
+    def leaveEvent(self, _e):
+        self.hover = -1
+        self.update()
+
+    def mousePressEvent(self, e):
+        i = self._col(e)
+        if i >= 0:
+            self.clicked.emit(self.sups[i]["label"])
+
+    def paintEvent(self, _e):
+        from PySide6.QtGui import QPainter, QFont, QFontMetrics
+        from PySide6.QtCore import QRectF
+        from theme import NUM_FONT, UI_FONT
+        T = self.ui.T
+        n = len(self.sups)
+        if not n:
+            return
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        W, H = self.width(), self.height()
+        cw = W / n
+        top = max(d["cheapest"] for d in self.sups) or 1
+        base = H - 6
+        f_title, f_small, f_num = QFont(UI_FONT), QFont(UI_FONT), QFont(NUM_FONT)
+        f_title.setPixelSize(12)
+        f_title.setBold(True)
+        f_small.setPixelSize(11)
+        f_num.setPixelSize(16)
+        f_num.setBold(True)
+        for i, d in enumerate(self.sups):
+            box = QRectF(i * cw + 4, 0, cw - 8, H)
+            sel = d["label"] == self.sel
+            lead = d["cheapest"] == top and d["cheapest"] > 0
+            if sel or i == self.hover:
+                p.setPen(Qt.NoPen)
+                p.setBrush(QColor(T("accent_soft") if sel else T("surface2")))
+                p.drawRoundedRect(box, 10, 10)
+            pad = 12
+            tx, tw = box.left() + pad, box.width() - 2 * pad
+            p.setFont(f_title)
+            p.setPen(QColor(T("accent") if (sel or lead) else T("muted")))
+            p.drawText(QRectF(tx, 10, tw, 16), Qt.AlignLeft | Qt.AlignVCenter,
+                       QFontMetrics(f_title).elidedText(d["label"], Qt.ElideRight, int(tw)))
+            p.setFont(f_num)
+            p.setPen(QColor(T("text") if d["cheapest"] else T("faint")))
+            num = f"{d['cheapest']:,}"
+            p.drawText(QRectF(tx, 30, tw, 22), Qt.AlignLeft | Qt.AlignVCenter, num)
+            nw = QFontMetrics(f_num).horizontalAdvance(num)
+            p.setFont(f_small)
+            p.setPen(QColor(T("muted")))
+            p.drawText(QRectF(tx + nw + 5, 30, max(0, tw - nw - 5), 22), Qt.AlignLeft | Qt.AlignVCenter, tr("个最便宜"))
+            p.setPen(QColor(T("faint")))
+            p.drawText(QRectF(tx, 52, tw, 16), Qt.AlignLeft | Qt.AlignVCenter,
+                       QFontMetrics(f_small).elidedText(tr("有 {0:,} 个 · {1:.0%}", d["carried"], d["share"]),
+                                                        Qt.ElideRight, int(tw)))
+            h = max(4.0, self.BAR_H * d["cheapest"] / top)
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor(T("accent") if (sel or lead) else T("ghost") if d["cheapest"] else T("track")))
+            p.drawRoundedRect(QRectF(tx, base - h, tw, h), 4, 4)
+        p.end()
+
+
+class GridPanel(QFrame):
+    """
+    Griglia 页顶上的总览（2026-11-02 用户：Griglia 统计也做得好看点；和订单跟踪的「本月」一个样子，整块一个外框）：
+      左：一圈 = 这周还有批发商在做的 Griglia 商品占几成 + Griglia 商品数（大字）、几个有批发商在做、几家报价（文件名在页面标题右边）
+      中：要看的几样（都不做了 / 新上架 / 最低价换了供应商 / 价格可疑），点一行跳到那张表
+      右：每家批发商一栏：几个 Griglia 商品它最便宜、它有几个，点一栏 = 价格表只看这家最便宜的
+    """
+    tab_clicked = Signal(int)
+    sup_clicked = Signal(str)
+
+    def __init__(self, ui):
+        super().__init__()
+        from erp_widgets import Ring
+        self.ui = ui
+        self.setObjectName("Panel")
+        h = QHBoxLayout(self)
+        h.setContentsMargins(18, 12, 14, 10)
+        h.setSpacing(14)
+        lw = QWidget()
+        lw.setFixedWidth(290)
+        lv = QVBoxLayout(lw)
+        lv.setContentsMargins(0, 0, 0, 0)
+        lv.setSpacing(8)
+        self.cap = QLabel(tr("这周批发商还在做"))
+        self.cap.setObjectName("GpCap")
+        lv.addWidget(self.cap)
+        row = QHBoxLayout()
+        row.setSpacing(14)
+        self.ring = Ring()
+        self.ring.setToolTip(tr("Griglia 商品里，这周至少一家批发商报价里有的占几成"))
+        row.addWidget(self.ring, 0, Qt.AlignVCenter)
+        tv = QVBoxLayout()
+        tv.setSpacing(1)
+        self.big = QLabel("")
+        self.big.setObjectName("GpBig")
+        self.sub = QLabel("")
+        self.sub.setObjectName("GpSub")
+        self.sub2 = QLabel("")
+        self.sub2.setObjectName("GpSub")
+        tv.addStretch()
+        for x in (self.big, self.sub, self.sub2):
+            tv.addWidget(x)
+        tv.addStretch()
+        row.addLayout(tv, 1)
+        lv.addLayout(row)
+        lv.addStretch()
+        h.addWidget(lw)
+        self.seps = [QFrame(), QFrame()]
+        h.addWidget(self.seps[0])
+        mw = QWidget()
+        mw.setFixedWidth(250)
+        mv = QVBoxLayout(mw)
+        mv.setContentsMargins(0, 0, 0, 0)
+        mv.setSpacing(4)
+        self.cap2 = QLabel(tr("要看的"))
+        self.cap2.setObjectName("GpCap")
+        mv.addWidget(self.cap2)
+        self.stats = _StatList(ui)
+        self.stats.clicked.connect(self.tab_clicked.emit)
+        mv.addWidget(self.stats)
+        mv.addStretch()
+        h.addWidget(mw)
+        h.addWidget(self.seps[1])
+        self.chart = _SupChart(ui)
+        self.chart.clicked.connect(self.sup_clicked.emit)
+        h.addWidget(self.chart, 1)
+        for sp in self.seps:
+            sp.setFixedWidth(1)
+        self.restyle()
+
+    def show_stats(self, ov, n_sup, stats, sel=None):
+        """ov = griglia.overview(…)；stats = _StatList 的几行"""
+        s = ov["share"]
+        self.ring.set(s, "ok" if s is None or s >= 0.95 else "warn" if s >= 0.85 else "err", color_text=False)
+        self.big.setText(tr("{0:,} 个商品", ov["grid"]))
+        self.sub.setText(tr("{0:,} 个有批发商在做", ov["covered"]))
+        self.sub2.setText(tr("{0} 家批发商报价", n_sup))
+        self.stats.set(stats)
+        self.chart.set(ov["sups"], sel)
+
+    def set_sel(self, sel):
+        self.chart.sel = sel
+        self.chart.update()
+
+    def restyle(self):
+        from theme import NUM_FONT
+        T = self.ui.T
+        self.setStyleSheet(
+            f"#GpCap {{ color: {T('muted')}; font-size: 12px; font-weight: 600; }}"
+            f"#GpBig {{ font-family: \"{NUM_FONT}\"; font-size: 22px; font-weight: 600; color: {T('text')}; }}"
+            f"#GpSub {{ color: {T('muted')}; font-size: 12px; }}")
+        for sp in self.seps:
+            sp.setStyleSheet(f"background: {T('line')};")
+        for w in (self.ring, self.stats, self.chart):
+            w.update()
+
+
+
 # 每列默认宽度（按列编号；批发商价格列没写 = 84）。用户拖过的宽度记在设置里，优先用
 _WIDTHS = {1: 130, 2: 330, 3: 80, 4: 120, 5: 170, 6: 170, 7: 130, 8: 210, 9: 170, 10: 84, 11: 150, 12: 72,
            13: 84, 14: 120, 15: 76, 16: 130, 17: 84, 18: 96}
@@ -96,6 +363,8 @@ class GrigliaPage:
         self.grid = None
         self.running = False
         self._loaded_once = False
+        self._labels, self._price_fids = [], []
+        self.panel = None
 
     # ---------- 界面 ----------
     def build(self):
@@ -124,7 +393,7 @@ class GrigliaPage:
         lay.addLayout(head)
 
         self.stack = QStackedWidget()
-        from erp_widgets import EmptyState, kpi_card
+        from erp_widgets import EmptyState
         self.empty = EmptyState("search", tr("还没有 Griglia"),
                                 tr("把我们的 DETERSIVI 总表（ELENCO_DETERSIVI.xlsx）放进工作文件夹「0 Griglia」，或点「换 Griglia…」"))
         b = QPushButton(tr("选择 Griglia…"))
@@ -137,22 +406,10 @@ class GrigliaPage:
         bv = QVBoxLayout(body)
         bv.setContentsMargins(0, 0, 0, 0)
         bv.setSpacing(12)
-        kr = QHBoxLayout()
-        kr.setSpacing(12)
-        self.kpis = {}
-        for key, label, tab, tip in (("grid", tr("Griglia 商品"), None, ""),
-                                     ("gone", tr("都不做了"), 0, tr("Griglia 里有、这周所有批发商报价里都没有")),
-                                     ("new", tr("新上架"), 1, tr("批发商报价里第一次出现、Griglia 里没有的商品（和以前读过的报价比，30 天内）。第一次统计只是记下现在有哪些，下次换了新报价才有")),
-                                     ("moved", tr("最低价换了供应商"), 2, tr("现在最便宜的批发商不是 Griglia 里登记的那家"))):
-            f, val, sub = kpi_card(label)
-            if tip:
-                f.setToolTip(tip)
-            if tab is not None:
-                f.setCursor(Qt.PointingHandCursor)
-                f.mousePressEvent = lambda _e, k=tab: self.tabs.setCurrentIndex(k)
-            kr.addWidget(f)
-            self.kpis[key] = (val, sub)
-        bv.addLayout(kr)
+        self.panel = GridPanel(ui)
+        self.panel.tab_clicked.connect(lambda k: self.tabs.setCurrentIndex(k))
+        self.panel.sup_clicked.connect(self._sup_clicked)
+        bv.addWidget(self.panel)
         self.tabs = QTabWidget()
         self.min_n = QComboBox()
         for n in (1, 2, 3, 4):
@@ -270,28 +527,48 @@ class GrigliaPage:
             self.stack.setCurrentIndex(0)
             self.win.show_toast(tr("Griglia 统计失败：{0}", err))
             return
-        from datetime import datetime
         self.grid, self.st = grid, st
-        self.file_lbl.setText(tr("{0} · {1:,} 个商品 · {2:%Y-%m-%d}", grid["name"], len(grid["items"]),
-                                 datetime.fromtimestamp(grid.get("mtime") or 0)))
         labels = st["labels"]
-        nf = sum(1 for x in st["new"] if x["fresh"])
-        moved = sum(1 for x in st["prices"] if x["moved"])
-        vals = {"grid": (f"{len(grid['items']):,}", tr("{0} 家批发商报价", len(labels))),
-                "gone": (f"{len(st['gone']):,}", ""),
-                "new": (f"{nf:,}" if st["history"] else "—",
-                        tr("全部 {0:,}", len(st["new"])) if st["history"] else tr("下周起显示新上架")),
-                "moved": (f"{moved:,}", tr("{0:,} 个价格可疑", len(st["odd"])) if st["odd"] else "")}
-        for k, (v, sub) in vals.items():
-            self.kpis[k][0].setText(v)
-            self.kpis[k][1].setText(sub)
-            self.kpis[k][1].setVisible(bool(sub))
+        self._labels = labels
         self.tabs.setTabText(0, tr("都不做了（{0}）", len(st["gone"])))
         self.tabs.setTabText(1, tr("新品"))
         self.tabs.setTabText(2, tr("价格（{0:,}）", len(st["prices"])))
         self.tabs.setTabText(3, tr("价格可疑（{0}）", len(st["odd"])))
         self._build_tables(labels)
+        self._show_panel()
         self.stack.setCurrentIndex(1)
+
+    def _show_panel(self):
+        import griglia as G
+        from datetime import datetime
+        st, grid = self.st, self.grid
+        nf = sum(1 for x in st["new"] if x["fresh"])
+        moved = sum(1 for x in st["prices"] if x["moved"])
+        stats = [(tr("都不做了"), f"{len(st['gone']):,}", "err", 0, tr("Griglia 里有、这周所有批发商报价里都没有")),
+                 (tr("新上架"), f"{nf:,}" if st["history"] else "—", "accent", 1,
+                  tr("批发商报价里第一次出现、Griglia 里没有的商品（和以前读过的报价比，30 天内）。第一次统计只是记下现在有哪些，下次换了新报价才有")),
+                 (tr("最低价换了供应商"), f"{moved:,}", "warn", 2, tr("现在最便宜的批发商不是 Griglia 里登记的那家")),
+                 (tr("价格可疑"), f"{len(st['odd']):,}", "warn", 3,
+                  tr("报价表里明显写错的价格（低于 €0.05，或比别家中间价低 70% 以上，多半是箱价 / 件价搞混）：不拿来比最低价，请找供应商确认"))]
+        self.file_lbl.setText(f"{grid['name']} · {datetime.fromtimestamp(grid.get('mtime') or 0):%d/%m/%Y}")
+        self.panel.show_stats(G.overview(st, len(grid["items"])), len(self._labels), stats, self._best_sel())
+
+    def _best_col(self):
+        """价格表里「最便宜」是第几列（列编号 14）"""
+        return self._price_fids.index(14) if self.t_price is not None and 14 in self._price_fids else None
+
+    def _best_sel(self):
+        c = self._best_col()
+        a = self.t_price.ctl.filters.get(c) if c is not None else None
+        return next(iter(a)) if a and len(a) == 1 else None
+
+    def _sup_clicked(self, label):
+        """点总览里的一家批发商：价格表只看它最便宜的（再点一次取消）"""
+        c = self._best_col()
+        if c is None:
+            return
+        self.t_price.ctl.set_filter(c, None if self._best_sel() == label else {label})
+        self.tabs.setCurrentIndex(2)
 
     # ---------- 表格 ----------
     def _tab(self, idx, key, cols, data, extra=None):
@@ -407,6 +684,8 @@ class GrigliaPage:
              (15, tr("变化 %"), "pct", lambda x: round(x["change"] * 100, 1) if x["change"] is not None else None,
               ch_color)] + sup_cols()
         self.t_price = self._tab(2, "price", pcols, st["prices"])
+        self._price_fids = [c[0] for c in pcols]
+        self.t_price.ctl.rendered.connect(lambda *_: self.panel.set_sel(self._best_sel()))
         heads = [c[0] for c in pcols]
         self.t_price.t.horizontalHeaderItem(heads.index(15)).setToolTip(
             tr("现在最低价比 Griglia 记的价（PA MIGLIORE）高（红）或低（绿）多少"))
@@ -420,6 +699,8 @@ class GrigliaPage:
 
     def restyle(self):
         """换深色 / 浅色：表格里的彩色字重画一遍"""
+        if self.panel is not None:
+            self.panel.restyle()
         for tab in (self.t_gone, self.t_new, self.t_price, self.t_odd):
             if tab is not None and tab.rows:
                 tab.ctl.render()

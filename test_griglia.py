@@ -263,3 +263,17 @@ def test_scheda_index_brand_supplier():
     assert SO.brand_supplier(idx, "08000000000028", "") == "DOPLA"          # 条码前面的 0 不影响
     assert SO.brand_supplier(idx, "", "456") == "DOPLA" and SO.brand_supplier(idx, "1", "9") is None
     assert SO.scheda_index(root, cache)["ean"] == idx["ean"]                # 第二次用缓存
+
+
+def test_overview_counts_carried_and_cheapest():
+    import griglia as G
+    st = {"labels": ["MELONI", "MEGA", "PETRILLO"], "gone": [{"ean": "9"}],
+          "prices": [{"prices": {"MELONI": 1.0, "MEGA": 0.9}, "best_sup": "MEGA"},
+                     {"prices": {"MELONI": 2.0}, "best_sup": "MELONI"},
+                     {"prices": {"MELONI": 3.0, "MEGA": 2.5}, "best_sup": "MEGA"}]}
+    o = G.overview(st, 4)
+    assert o["covered"] == 3 and abs(o["share"] - 0.75) < 1e-9
+    assert [(d["label"], d["carried"], d["cheapest"]) for d in o["sups"]] == \
+        [("MEGA", 2, 2), ("MELONI", 3, 1), ("PETRILLO", 0, 0)]
+    assert abs(o["sups"][1]["share"] - 0.75) < 1e-9
+    assert G.overview({"labels": []}, 0)["share"] is None

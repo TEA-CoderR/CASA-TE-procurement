@@ -1267,8 +1267,10 @@ def run_process(ordine_file, eliminare_path, distribuire_path, log, progress=Non
     log(tr("[完成] 处理完成"))
     log("=" * 50)
     try:
+        mp = {}
         summary["orders"] = export_orders(distribuire_path, purchased_suppliers(rows_data, assignment), log,
-                                          summary.get("supplier_labels"), settings)
+                                          summary.get("supplier_labels"), settings, mapping=mp)
+        track_orders(distribuire_path, rows_data, assignment, mp, settings, log)
     except Exception as e:
         log(tr("⚠ 订单文件夹没生成：{0}", e))
     P(100, tr("处理完成"))
@@ -1800,7 +1802,27 @@ def purchased_suppliers(rows, assign):
     return out
 
 
-def export_orders(dist, purchased, log=None, labels=None, settings=None):
+def track_orders(dist, rows, assign, mapping, settings, log):
+    """
+    比价 / 修改分配生成 Ordini 后：这家门店每个采购了的供应商在「采购订单跟踪」里登记一张待登记的单（金额 = 分给它的
+    件价 × 件数，不含税）。没设共享文件夹就跳过；出错只记日志，不影响比价
+    """
+    try:
+        import order_tracking as OT
+        from allocation_plan import _totals
+        settings = settings if settings is not None else load_settings()
+        store = os.path.basename(os.path.dirname(os.path.abspath(dist)))
+        items = []
+        for f, (name, path) in mapping.items():
+            colli, amt = _totals(rows, assign, f)
+            items.append({"supplier": name, "amount": amt, "colli": colli, "file": path})
+        return OT.register_wholesale(settings, store, items, log)
+    except Exception as e:
+        log(tr("⚠ 订单跟踪没登记上：{0}", e))
+        return None
+
+
+def export_orders(dist, purchased, log=None, labels=None, settings=None, mapping=None):
     """
     门店比价文件夹里建 Ordini：只放采购了的供应商的订单，文件名 Ordine_门店名_供应商名_日期.xlsx；
     没采购的供应商不放。distribuire（程序的工作副本：修改分配、重新比价要用）设成隐藏；缺失报告复制到门店文件夹。
@@ -1836,6 +1858,8 @@ def export_orders(dist, purchased, log=None, labels=None, settings=None):
         try:
             shutil.copy2(src, os.path.join(dest, fn))
             out.append(os.path.join(dest, fn))
+            if mapping is not None:
+                mapping[f] = (name, os.path.join(dest, fn))
         except OSError as e:
             log(tr("⚠ {0} 没复制成功：{1}", fn, e))
     rep = os.path.join(dist, "缺失报告.xlsx")
@@ -2027,7 +2051,9 @@ def rewrite_assignment(data, new_assign, new_sources, log, progress=None, force=
     except Exception as e:
         log(tr("⚠ {0}", e))
     try:
-        out["orders"] = export_orders(dist, purchased_suppliers(rows, new_assign), log, st.get("labels"))
+        mp = {}
+        out["orders"] = export_orders(dist, purchased_suppliers(rows, new_assign), log, st.get("labels"), mapping=mp)
+        track_orders(dist, rows, new_assign, mp, None, log)
     except Exception as e:
         log(tr("⚠ 订单文件夹没生成：{0}", e))
     _save_history(out, log, update=True)

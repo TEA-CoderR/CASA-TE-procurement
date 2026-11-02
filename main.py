@@ -287,6 +287,7 @@ class StatusDelegate(QStyledItemDelegate):
         p.drawText(r, Qt.AlignCenter, fm.elidedText(text, Qt.ElideRight, int(w - 12)))
         p.setPen(QPen(QColor(T("line")), 1))
         p.drawLine(opt.rect.bottomLeft(), opt.rect.bottomRight())
+        p.drawLine(opt.rect.topRight(), opt.rect.bottomRight())        # 列之间的细竖线（和样式表里的一样）
         p.restore()
 
     def sizeHint(self, opt, idx):
@@ -2689,7 +2690,7 @@ class MainWindow(QMainWindow):
     NAV_SIDE = [item for _, items in NAV_GROUPS for item in items]          # 侧边栏上的
     NAV = _all_pages(NAV_SIDE, SUB_PAGES)                                    # 所有页面（含标签页）
     NAV_SECTION = {k: g for g, items in NAV_GROUPS for k, _ in items}
-    SOON = {"tracking"}   # 还没做（采购订单跟踪）
+    SOON = set()          # 还没做的模块（侧边栏上标「二期」）
 
     def __init__(self):
         super().__init__()
@@ -2750,6 +2751,8 @@ class MainWindow(QMainWindow):
         self.import_page = ImportPage(self, settings, _UI)
         from griglia_page import GrigliaPage
         self.griglia_page = GrigliaPage(self, settings, _UI)
+        from tracking_page import TrackingPage
+        self.tracking = TrackingPage(self, settings, _UI)
         builders = {
             "distribution": lambda: (self.distribution.build(), True),
             "import": lambda: (self.import_page.build(), True),
@@ -2761,6 +2764,7 @@ class MainWindow(QMainWindow):
             "rules": lambda: (self._page_rules(), True),
             "search": lambda: (self._page_missing(), True),
             "griglia": lambda: (self.griglia_page.build(), False),
+            "tracking": lambda: (self.tracking.build(), False),
             "settings": lambda: (self.settings_page.build(), True),
             "log": lambda: (self._page_log(), True),
         }
@@ -3234,7 +3238,7 @@ class MainWindow(QMainWindow):
         for pg in (getattr(self, "dashboard", None), getattr(self, "store_orders", None),
                    getattr(self, "settings_page", None), getattr(self, "order_check", None),
                    getattr(self, "distribution", None), getattr(self, "import_page", None),
-                   getattr(self, "griglia_page", None)):
+                   getattr(self, "griglia_page", None), getattr(self, "tracking", None)):
             if pg is not None and hasattr(pg, "restyle"):
                 pg.restyle()
         for b in (self.banner_folder, self.banner_result, self.banner_rules):
@@ -5127,6 +5131,8 @@ class MainWindow(QMainWindow):
 
     def _on_rewrite_done(self, payload):
         out, n, err = payload
+        if getattr(self, "tracking", None) is not None:
+            self.tracking.check_badge()
         self.running = False
         self.tick.stop()
         self.btn_run.setEnabled(True)
@@ -5159,6 +5165,8 @@ class MainWindow(QMainWindow):
             dlg.post_progress(pct)
 
     def _on_done(self, summary):
+        if getattr(self, "tracking", None) is not None:
+            self.tracking.check_badge()               # 比价生成了 Ordini → 订单跟踪的「待登记」个数
         dlg = getattr(self, "_cmp_task", None)
         if dlg is not None and not dlg.is_done:
             ok = bool(summary and summary.get("ok"))

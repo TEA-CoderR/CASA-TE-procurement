@@ -23,7 +23,9 @@ SKIP_TOP = {"last_folder", "theme", "language", "db", "wholesale_root", "wholesa
 SKIP_IN = {"store_orders": {"folder", "day", "skip", "moq_override", "stores", "last_dir"},
            "reorder": {"store", "last_dir", "last_file"},
            "distribution": {"folder", "last_dir", "last_file"},
-           "import_page": {"folder", "last_dir", "last_file"}}
+           "import_page": {"folder", "last_dir", "last_file"},
+           # 采购订单跟踪：共享文件夹、Excel、我的名字、上次同步是每台电脑自己的（列顺序 / 宽度照常统一）
+           "tracking": {"folder", "excel", "me", "excel_mtime", "synced_at", "last_buyer"}}
 _SECRET = re.compile(r"pass|pwd|token|secret|api_?key|credential", re.I)
 _PATHLIKE = re.compile(r"^[A-Za-z]:[\\/]|^\\\\|^/(home|Users|mnt|tmp)/")
 
