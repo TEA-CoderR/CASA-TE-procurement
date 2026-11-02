@@ -346,21 +346,30 @@ class GridPanel(QFrame):
 # 每列默认宽度（按列编号；批发商价格列没写 = 84）。用户拖过的宽度记在设置里，优先用
 _WIDTHS = {1: 130, 2: 330, 3: 80, 4: 120, 5: 170, 6: 170, 7: 130, 8: 210, 9: 170, 10: 84, 11: 150, 12: 72,
            13: 84, 14: 120, 15: 76, 16: 130, 17: 84, 18: 96}
-# 默认藏起来的列（右键表头「显示哪些列…」可以打开）：编号、品牌、小类（Griglia 里大多是空的）、部门
-# （条码以前也藏着，2026-11-02 用户：为什么没有条码列 → 默认显示，见 _show_ean_once）
-_HIDDEN = (3, 4, 7, 11)
+# 默认藏起来的列（右键表头「显示哪些列…」可以打开）：编号、品牌、部门
+# （条码、小类以前也藏着；2026-11-02 用户：为什么没有条码列 / 要三个类 → 默认显示，见 _show_once）
+_HIDDEN = (3, 4, 11)
+_UNHIDE = (1, 7)          # 以前默认藏、现在默认显示的列：条码、小类
 
 
-def _show_ean_once(cfg, key):
-    """以前存过的「藏哪些列」里有条码（编号 1）的，拿掉一次（只做一次；之后用户自己再藏起来就照用户的）。不改列顺序 / 列宽"""
-    flag = key + "_ean_shown"
-    if cfg.get(flag):
-        return False
-    cfg[flag] = True
+def _show_once(cfg, key, fields=_UNHIDE):
+    """
+    以前存过的「藏哪些列」里有 fields 这几列的，拿掉一次（每列只做一次；之后用户自己再藏起来就照用户的）。
+    不改列顺序 / 列宽。返回这次拿掉了哪些
+    """
     h = cfg.get(key + "_cols_hidden")
-    if isinstance(h, list) and 1 in h:
-        cfg[key + "_cols_hidden"] = [f for f in h if f != 1]
-    return True
+    done = []
+    for f in fields:
+        flag = f"{key}_shown_{f}"
+        if cfg.get(flag) or (f == 1 and cfg.get(key + "_ean_shown")):      # _ean_shown：上一版只放出条码时的记号
+            continue
+        cfg[flag] = True
+        if isinstance(h, list) and f in h:
+            h = [x for x in h if x != f]
+            done.append(f)
+    if done:
+        cfg[key + "_cols_hidden"] = h
+    return done
 
 
 def _p(v):
@@ -625,7 +634,7 @@ class GrigliaPage:
             rows.append(r)
             keys.append(k)
         cfg = self.settings.setdefault("griglia_cols", {})
-        _show_ean_once(cfg, key)
+        _show_once(cfg, key)
         tab.ctl.remember(cfg, key, lambda: ST.save_settings(self.settings), fids,
                          default_hidden=[f for f in _HIDDEN if f in fids], ver=2)
         box = self.boxes[idx]

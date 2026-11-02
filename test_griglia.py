@@ -279,10 +279,12 @@ def test_overview_counts_carried_and_cheapest():
     assert G.overview({"labels": []}, 0)["share"] is None
 
 
-def test_ean_column_shown_once():
+def test_ean_and_cat3_columns_shown_once():
     import griglia_page as GP
-    cfg = {"price_cols_hidden": [1, 3, 4], "price_cols_hidden_ver": 2}
-    assert GP._show_ean_once(cfg, "price") and cfg["price_cols_hidden"] == [3, 4]
-    cfg["price_cols_hidden"] = [1, 3]                 # 用户之后自己又藏起来：照用户的
-    assert not GP._show_ean_once(cfg, "price") and cfg["price_cols_hidden"] == [1, 3]
-    assert 1 not in GP._HIDDEN
+    cfg = {"price_cols_hidden": [1, 3, 4, 7], "price_cols_hidden_ver": 2}
+    assert GP._show_once(cfg, "price") == [1, 7] and cfg["price_cols_hidden"] == [3, 4]
+    cfg["price_cols_hidden"] = [1, 3, 7]              # 用户之后自己又藏起来：照用户的
+    assert GP._show_once(cfg, "price") == [] and cfg["price_cols_hidden"] == [1, 3, 7]
+    old = {"gone_cols_hidden": [1, 7], "gone_ean_shown": True}   # 上一版已经放出过条码的：条码照用户的，只放出小类
+    assert GP._show_once(old, "gone") == [7] and old["gone_cols_hidden"] == [1]
+    assert 1 not in GP._HIDDEN and 7 not in GP._HIDDEN
