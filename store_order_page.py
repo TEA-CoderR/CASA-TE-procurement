@@ -1755,6 +1755,12 @@ class StoreOrderPage:
                 res = S.allocate(calc, colli, fill, out_root, log=lambda m: log("[门店配货] " + m), edited=edited,
                                  picks={p_: v for p_, v in self.bms_picks.items() if p_ in keep},
                                  progress=lambda i, st, cnt, det, pct: (dlg.post_step(i, st, cnt, det), dlg.post_progress(pct)))
+                try:                                       # 采购订单跟踪：每家供应商 × 每个去向一张「待登记」
+                    import order_tracking as OT
+                    res["tracked"] = OT.register_store_orders(self.settings, res["written"],
+                                                              log=lambda m: log("[门店配货] " + m))
+                except Exception as e:
+                    log(tr("⚠ 订单跟踪没登记上：{0}", e))
                 dlg.post_finished(True, tr("生成 {0} 个订单文件", len(S.written_files(res["written"]))))
                 res["sig"] = sig
                 self.sig.done.emit((res, None))
@@ -1778,7 +1784,11 @@ class StoreOrderPage:
         self.result_sig = res.get("sig")
         self._fill_result()
         self._show_view(1)
-        self.win.show_toast(tr("门店配货完成：{0} 个订单文件", len(S.written_files(res["written"]))))
+        tk = res.get("tracked")
+        self.win.show_toast(tr("门店配货完成：{0} 个订单文件", len(S.written_files(res["written"])))
+                            + (tr(" · {0} 张待登记（采购订单跟踪）", tk["drafts"]) if tk and tk.get("drafts") else ""))
+        if tk and hasattr(self.win, "tracking"):
+            self.win.tracking.badge(tk.get("drafts"))
         if hasattr(self.win, "dashboard"):
             self.win.dashboard.refresh()
 

@@ -165,3 +165,34 @@ def test_read_and_sync_excel():
     out = os.path.join(d, "exp.xlsx")
     OT.export_excel(OT.rows(st2), out)
     assert load_workbook(out).active.max_row == 5
+
+
+def test_auto_register_drafts():
+    """程序生成订单 → 待登记；同一天再生成更新金额、删掉没有了的；确认后算正式下单"""
+    d = tempfile.mkdtemp()
+    settings = {"tracking": {"folder": d, "me": "Lucas"}}
+    written = [("/x/Ordine_DOPLA_0211.xlsx", "DOPLA", "FOIANO", 3, 120.0, "direct", "s"),
+               ("/x/Ordine_DOPLA_0211.xlsx", "DOPLA", "BMS", 5, 300.0, "direct", "s"),
+               ("/x/Ordine_LAMPA_0211.xlsx", "LAMPA", "MARLIA", 2, 80.0, "direct", "s")]
+    res = OT.register_store_orders(settings, written)
+    assert res["new"] == 3 and res["drafts"] == 3
+    st = OT.Store(d, me="x").reload()
+    rs = {(r["store"], r["supplier"]): r for r in OT.rows(st)}
+    assert rs[("1", "DOPLA")]["status"] == "draft" and rs[("BMS", "DOPLA")]["amount"] == 300.0
+    assert rs[("2", "LAMPA")]["origin"] == "store_orders" and rs[("2", "LAMPA")]["file"].endswith("LAMPA_0211.xlsx")
+    s = OT.summary(OT.rows(st), st, date.today().strftime("%Y-%m"))
+    assert s["draft"] == 3 and s["spent"] == 0                 # 待登记的不算花费
+    # 重新配货：DOPLA FOIANO 金额变了、BMS 不订了；LAMPA 这次没配（不在这批供应商里 → 不删）
+    res = OT.register_store_orders(settings, [("/x/Ordine_DOPLA_0211.xlsx", "DOPLA", "FOIANO", 4, 150.0, "direct", "s")])
+    assert res["updated"] == 1 and res["removed"] == 1 and res["drafts"] == 2
+    st.reload()
+    rs = {(r["store"], r["supplier"]): r for r in OT.rows(st)}
+    assert rs[("1", "DOPLA")]["amount"] == 150.0 and ("BMS", "DOPLA") not in rs and ("2", "LAMPA") in rs
+    assert OT.confirm_drafts(st, [rs[("1", "DOPLA")]["id"]]) == 1
+    r = {x["id"]: x for x in OT.rows(st)}[rs[("1", "DOPLA")]["id"]]
+    assert r["status"] == "ordered" and r["buyer"] == "x"
+    # 比价：门店名认得出才登记
+    assert OT.register_wholesale(settings, "S.FILIPPO", [{"supplier": "MELONI", "amount": 900, "colli": 20, "file": "f"}])["new"] == 1
+    assert OT.register_wholesale(settings, "???", [{"supplier": "MELONI", "amount": 1}]) is None
+    assert OT.store_code("Capannori") == "2" and OT.store_code("S.CONCORDIO") == "5" and OT.store_code("BMS") == "BMS"
+    assert OT.register_store_orders({"tracking": {"folder": d, "auto_register": False}}, written) is None

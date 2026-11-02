@@ -5131,6 +5131,8 @@ class MainWindow(QMainWindow):
 
     def _on_rewrite_done(self, payload):
         out, n, err = payload
+        if getattr(self, "tracking", None) is not None:
+            self.tracking.check_badge()
         self.running = False
         self.tick.stop()
         self.btn_run.setEnabled(True)
@@ -5163,6 +5165,8 @@ class MainWindow(QMainWindow):
             dlg.post_progress(pct)
 
     def _on_done(self, summary):
+        if getattr(self, "tracking", None) is not None:
+            self.tracking.check_badge()               # 比价生成了 Ordini → 订单跟踪的「待登记」个数
         dlg = getattr(self, "_cmp_task", None)
         if dlg is not None and not dlg.is_done:
             ok = bool(summary and summary.get("ok"))

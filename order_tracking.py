@@ -38,7 +38,9 @@ EXCEL_FIELDS = ("date", "store", "supplier", "buyer", "amount", "confirmed", "ar
                 "origin")
 
 # 状态（显示顺序）
-STATUS = ["ordered", "confirmed", "partial", "arrived", "stuck", "cancel", "deter"]
+# draft = 待登记：程序生成了订单文件、还没人确认真的发给供应商（2026-11-02 用户：以后都由程序自动登记，不手填）
+STATUS = ["draft", "ordered", "confirmed", "partial", "arrived", "stuck", "cancel", "deter"]
+NOT_ORDERED = {"cancel", "draft"}      # 不算进花费、预算、供应商统计
 OPEN = {"ordered", "confirmed", "partial", "stuck"}
 
 
@@ -259,6 +261,8 @@ class Store:
 def status(o):
     if o.get("state") == "cancel":
         return "cancel"
+    if o.get("draft"):
+        return "draft"
     if o.get("kind") == "deter":
         return "deter"
     if o.get("arrived"):
@@ -346,7 +350,8 @@ def rows(st, today=None):
                     "status": s, "confirmed": conf, "arrived": arr, "expected": exp, "expected_manual": bool(exp_manual),
                     "lead": lead, "overdue": overdue, "pending": pending, "days": days, "open": open_,
                     "note": str(o.get("note") or ""), "ref": str(o.get("ref") or ""),
-                    "origin": o.get("origin") or "", "last": last,
+                    "origin": o.get("origin") or "", "last": last, "file": str(o.get("file") or ""),
+                    "colli": o.get("colli"),
                     "late_by": (today - exp).days if overdue else 0})
     return out
 
@@ -357,10 +362,11 @@ def month_of(r):
 
 def summary(rs, st, month, today=None):
     """顶上几张卡：待确认 / 已超期 / 卡住了 / 本月下单（含税）和预算"""
-    spent = sum(float(r["amount"] or 0) for r in rs if month_of(r) == month and r["status"] != "cancel")
+    spent = sum(float(r["amount"] or 0) for r in rs if month_of(r) == month and r["status"] not in NOT_ORDERED)
     budget = sum(v for k, v in st.budgets.items() if k.startswith(month + "|"))
     return {"pending": sum(1 for r in rs if r["pending"]), "overdue": sum(1 for r in rs if r["overdue"]),
             "stuck": sum(1 for r in rs if r["status"] == "stuck"),
+            "draft": sum(1 for r in rs if r["status"] == "draft"),
             "open": sum(1 for r in rs if r["open"]),
             "spent": spent, "spent_iva": spent * (1 + IVA), "budget": budget}
 
@@ -369,7 +375,7 @@ def supplier_stats(rs):
     """按供应商：单数、金额、到货天数（平均 / 中位 / 最长）、还没到的、超期的、最近一次下单"""
     out = {}
     for r in rs:
-        if r["status"] == "cancel":
+        if r["status"] in NOT_ORDERED:
             continue
         s = out.setdefault(r["sup_key"], {"key": r["sup_key"], "supplier": r["supplier"], "n": 0, "amount": 0.0,
                                          "leads": [], "open": 0, "overdue": 0, "last": None, "deter": 0,
@@ -397,7 +403,7 @@ def budget_rows(rs, st):
     """预算表：每个月 × 门店：预算（含税）、已下单（不含税 / 含税）、占预算、单数"""
     agg = {}
     for r in rs:
-        if r["status"] == "cancel" or not r["date"]:
+        if r["status"] in NOT_ORDERED or not r["date"]:
             continue
         k = (month_of(r), r["store"])
         a = agg.setdefault(k, [0.0, 0])
@@ -721,3 +727,125 @@ def export_excel(rs, path):
     ws.auto_filter.ref = f"A1:K{ws.max_row}"
     wb.save(path)
     return path
+
+
+# ===================================================================== 程序生成的订单自动登记（2026-11-02 用户：以后都由程序登记，不手填 Excel）
+SOURCES = {"store_orders": "门店配货", "wholesale": "批发商比价"}
+
+
+def store_code(name):
+    """门店名（FOIANO / MARLIA / Capannori / S.FILIPPO / BMS…）→ "1".."5" / "BMS"；认不出 None"""
+    n = _norm(name)
+    if n in EXCEL_STORE:
+        return EXCEL_STORE[n]
+    for k, v in STORE_NAMES.items():
+        if _norm(v) == n:
+            return k
+    return None
+
+
+def draft_id(source, day, store, supplier):
+    return "a" + hashlib.sha1(f"{source}|{day}|{store}|{sup_key(supplier)}".encode("utf-8")).hexdigest()[:12]
+
+
+def register_drafts(st, source, items, in_scope=None, today=None):
+    """
+    门店配货 / 批发商比价生成订单文件后调用：每家供应商 × 每个去向（门店 / BMS）一张「待登记」的单（draft）。
+    items = [{"store", "supplier", "amount", "colli", "file"}]。同一天同一来源再生成（重新配货、修改分配）：
+    同一张单更新金额 / 文件（只改程序自动写的字段，人改过的不动）；这次没有了、还是待登记、没人动过的删掉
+    （只删 in_scope(单) 为真的，例如同一家门店 / 同一批供应商）。已经确认下单的不会被删，金额照样跟着更新（有修改记录）。
+    返回 {"new", "updated", "removed", "drafts"}
+    """
+    day = (today or date.today()).isoformat()
+    res = {"new": 0, "updated": 0, "removed": 0}
+    changes, ids = [], set()
+    for it in items:
+        store, sup = it.get("store"), str(it.get("supplier") or "").strip()
+        if not store or not sup:
+            continue
+        oid = draft_id(source, day, store, sup)
+        if oid in ids:
+            continue
+        ids.add(oid)
+        f = {"date": day, "store": store, "supplier": sup,
+             "amount": round(float(it["amount"]), 2) if it.get("amount") is not None else None,
+             "colli": it.get("colli"), "file": it.get("file") or None, "origin": source}
+        cur = st.orders.get(oid)
+        if cur is None:
+            f["draft"] = True
+            changes.append((oid, f))
+            res["new"] += 1
+            continue
+        meta = st.meta.get(oid, {})
+        ch = {k: v for k, v in f.items() if cur.get(k) != v and (not meta.get(k) or meta[k][2] == "auto")}
+        if ch:
+            changes.append((oid, ch))
+            res["updated"] += 1
+    st.set_many(changes, src="auto")
+    gone = [oid for oid, o in st.orders.items()
+            if o.get("origin") == source and o.get("draft") and o.get("date") == day and oid not in ids
+            and (in_scope is None or in_scope(o)) and all(w[2] == "auto" for w in st.meta.get(oid, {}).values())]
+    if gone:
+        st.delete(gone, src="auto")
+    res["removed"] = len(gone)
+    res["drafts"] = sum(1 for o in st.orders.values() if o.get("draft") and o.get("state") != "cancel")
+    return res
+
+
+def store_for(settings):
+    """设置里有共享文件夹、没关掉自动登记 → 读好的 Store；不然 None"""
+    cfg = (settings or {}).get("tracking") or {}
+    folder = cfg.get("folder") or ""
+    if not folder or not os.path.isdir(folder) or cfg.get("auto_register") is False:
+        return None
+    me = (cfg.get("me") or (settings or {}).get("user_name") or default_me()).strip()
+    return Store(folder, me=me).reload()
+
+
+def register_store_orders(settings, written, log=None):
+    """门店配货：write_plans 的结果 [(文件, 供应商, 去向, 箱数, 金额, 状态, SCHEDA)] → 待登记"""
+    st = store_for(settings)
+    if st is None:
+        return None
+    items = [{"store": store_code(dest), "supplier": sup, "colli": colli, "amount": amt, "file": p}
+             for p, sup, dest, colli, amt, _status, _sc in written or []]
+    sups = {sup_key(x["supplier"]) for x in items}
+    res = register_drafts(st, "store_orders", items, in_scope=lambda o: sup_key(o.get("supplier")) in sups)
+    if log:
+        from i18n import tr
+        log(tr("[订单跟踪] 门店配货：待登记 新的 {0} 张，更新 {1} 张，删掉 {2} 张", res["new"], res["updated"], res["removed"]))
+    return res
+
+
+def register_wholesale(settings, store_name, items, log=None):
+    """批发商比价：一家门店这次采购的供应商 [{"supplier", "amount", "colli", "file"}] → 待登记"""
+    st = store_for(settings)
+    code = store_code(store_name)
+    if st is None or not code:
+        if st is not None and log:
+            from i18n import tr
+            log(tr("[订单跟踪] 认不出门店「{0}」，没有登记", store_name))
+        return None
+    for x in items:
+        x["store"] = code
+    res = register_drafts(st, "wholesale", items, in_scope=lambda o: str(o.get("store")) == code)
+    if log:
+        from i18n import tr
+        log(tr("[订单跟踪] {0}：待登记 新的 {1} 张，更新 {2} 张，删掉 {3} 张", store_name, res["new"], res["updated"], res["removed"]))
+    return res
+
+
+def confirm_drafts(st, ids, today=None):
+    """确认已下单：待登记 → 已下单，下单日期 = 今天（发给供应商的那天）；谁下的没填就写自己"""
+    day = (today or date.today()).isoformat()
+    ch = []
+    for oid in ids:
+        o = st.orders.get(oid)
+        if not o or not o.get("draft"):
+            continue
+        f = {"draft": None, "date": day}
+        if not o.get("buyer"):
+            f["buyer"] = st.me
+        ch.append((oid, f))
+    st.set_many(ch)
+    return len(ch)
