@@ -196,7 +196,7 @@ class TrackingPage:
                                 ("pending", tr("待确认"), tr("下单 {0} 天以上还没确认的", OT.PENDING_DAYS)),
                                 ("overdue", tr("已超期"), tr("过了预计到货日还没到（含部分到货）")),
                                 ("stuck", tr("卡住了"), ""),
-                                ("month", tr("本月下单（含税）"), tr("这个月下的单（不含已取消）× 1.22，和 Excel 里的预算（含税）比"))):
+                                ("month", tr("本月下单"), tr("这个月下的单（不含待登记、已取消），不含税，和预算比（预算也是不含税）"))):
             f, val, sub = kpi_card(label)
             if tip:
                 f.setToolTip(tip)
@@ -348,21 +348,23 @@ class TrackingPage:
         v = QVBoxLayout(box)
         v.setContentsMargins(0, 8, 0, 0)
         v.setSpacing(8)
-        heads = [tr("月份"), tr("门店"), tr("预算（含税）"), tr("已下单（不含税）"), tr("已下单（含税）"), tr("占预算"), tr("单数")]
-        self.b_t = ui.make_table(heads, numeric_cols=(2, 3, 4, 5, 6))
+        heads = [tr("月份"), tr("门店"), tr("预算"), tr("已下单"), tr("占预算"), tr("单数")]
+        self.b_t = ui.make_table(heads, numeric_cols=(2, 3, 4, 5))
         t = self.b_t
         t.verticalHeader().setDefaultSectionSize(32)
         hh = t.horizontalHeader()
         hh.setSectionResizeMode(QHeaderView.Interactive)
         hh.setStretchLastSection(False)
-        for c, wd in enumerate((90, 120, 130, 140, 140, 90, 70)):
+        for c, wd in enumerate((90, 120, 130, 140, 90, 70)):
             t.setColumnWidth(c, wd)
-        t.horizontalHeaderItem(5).setToolTip(tr("已下单（含税）÷ 预算。黄 ≥ 90%，红 > 100%"))
+        t.horizontalHeaderItem(2).setToolTip(tr("不含税。6–9 月 Excel 里的预算是含税的，导入时已经 ÷ 1.22"))
+        t.horizontalHeaderItem(3).setToolTip(tr("不含税（不算待登记、已取消）"))
+        t.horizontalHeaderItem(4).setToolTip(tr("已下单 ÷ 预算。黄 ≥ 90%，红 > 100%"))
         from erp_widgets import TableSortFilter
         self.b_ctl = TableSortFilter(t, lambda: len(self.buds), self._b_text, self._b_fill, key=self._b_key,
-                                     numeric=(2, 3, 4, 5, 6))
+                                     numeric=(2, 3, 4, 5))
         import settings as ST
-        self.b_ctl.remember(self.cfg, "budget", lambda: ST.save_settings(self.settings), list(range(len(heads))))
+        self.b_ctl.remember(self.cfg, "budget", lambda: ST.save_settings(self.settings), list(range(len(heads))), ver=2)
         t.cellDoubleClicked.connect(lambda k, _c: self.edit_budget(self.b_ctl.row_at(k)))
         v.addWidget(t, 1)
         hint = QLabel(tr("双击改预算"))
@@ -449,8 +451,8 @@ class TrackingPage:
         vals = {"draft": (str(s["draft"]), tr("右键确认已下单") if s["draft"] else ""),
                 "pending": (str(s["pending"]), ""), "overdue": (str(s["overdue"]), tr("最久 {0} 天", late) if late else ""),
                 "stuck": (str(s["stuck"]), ""),
-                "month": (f"€ {s['spent_iva']:,.0f}",
-                          tr("预算 € {0:,.0f} · {1:.0%}", s["budget"], s["spent_iva"] / s["budget"]) if s["budget"]
+                "month": (f"€ {s['spent']:,.0f}",
+                          tr("预算 € {0:,.0f} · {1:.0%}", s["budget"], s["spent"] / s["budget"]) if s["budget"]
                           else tr("没有预算"))}
         T = self.ui.T
         for k, (v, sub) in vals.items():
@@ -849,18 +851,18 @@ class TrackingPage:
     def _b_text(self, i, c):
         b = self.buds[i]
         return [b["month"], b["store_name"], _money(b["budget"]) if b["budget"] else "", _money(b["amount"]) if b["n"] else "",
-                _money(b["amount_iva"]) if b["n"] else "", f"{b['pct']:.0%}" if b["pct"] is not None else "",
+                f"{b['pct']:.0%}" if b["pct"] is not None else "",
                 str(b["n"]) if b["n"] else ""][c]
 
     def _b_key(self, i, c):
         b = self.buds[i]
-        return [b["month"], None, b["budget"] or 0, b["amount"], b["amount_iva"], b["pct"] or 0, b["n"]][c]
+        return [b["month"], None, b["budget"] or 0, b["amount"], b["pct"] or 0, b["n"]][c]
 
     def _b_fill(self, i, k):
         b = self.buds[i]
-        self.ui.table_set_row(self.b_t, k, [self._b_text(i, c) for c in range(7)])
+        self.ui.table_set_row(self.b_t, k, [self._b_text(i, c) for c in range(6)])
         if b["pct"] is not None and b["pct"] >= 0.9:
-            it = self.b_t.item(k, 5)
+            it = self.b_t.item(k, 4)
             if it is not None:
                 it.setForeground(QColor(self.ui.T("err" if b["pct"] > 1 else "warn")))
                 f = it.font()
@@ -871,7 +873,7 @@ class TrackingPage:
         if i is None or self.st is None:
             return
         b = self.buds[i]
-        v, ok = QInputDialog.getDouble(self.win, tr("预算"), tr("{0} · {1} 预算（含税，0 = 不设）", b["month"], b["store_name"]),
+        v, ok = QInputDialog.getDouble(self.win, tr("预算"), tr("{0} · {1} 预算（不含税，0 = 不设）", b["month"], b["store_name"]),
                                        float(b["budget"] or 0), 0, 99999999, 0)
         if ok:
             self.st.set_budget(b["month"], b["store"], v or None)

@@ -2802,4 +2802,10 @@ TRANSLATIONS = {
     '导出成 PIANO 表（和原表一样）…': ('Export as PIANO sheet (same as the original)…', "Esporta come PIANO (come l'originale)…"),
     '正在导出…': ('Exporting…', 'Esportazione…'),
     '选择原来的 PIANO ACQUISTO MESILE（当模板）': ('Choose the original PIANO ACQUISTO MESILE (as template)', 'Scegli il PIANO ACQUISTO MESILE originale (come modello)'),
+    '{0} · {1} 预算（不含税，0 = 不设）': ('{0} · {1} budget (excl. VAT, 0 = none)', '{0} · {1} budget (imponibile, 0 = nessuno)'),
+    '不含税。6–9 月 Excel 里的预算是含税的，导入时已经 ÷ 1.22': ('Excl. VAT. Budgets for June–September in Excel included VAT and were divided by 1.22 on import', "Imponibile. I budget di giugno–settembre in Excel erano IVA inclusa e sono stati divisi per 1,22 all'importazione"),
+    '不含税（不算待登记、已取消）': ('Excl. VAT (orders to register and cancelled ones not counted)', 'Imponibile (esclusi da registrare e annullati)'),
+    '已下单 ÷ 预算。黄 ≥ 90%，红 > 100%': ('Ordered ÷ budget. Yellow ≥ 90%, red > 100%', 'Ordinato ÷ budget. Giallo ≥ 90%, rosso > 100%'),
+    '本月下单': ('Ordered this month', 'Ordinato questo mese'),
+    '这个月下的单（不含待登记、已取消），不含税，和预算比（预算也是不含税）': ('Orders this month (excluding to-register and cancelled), excl. VAT, compared with the budget (also excl. VAT)', "Ordini del mese (esclusi da registrare e annullati), imponibile, confrontati con il budget (anch'esso imponibile)"),
 }

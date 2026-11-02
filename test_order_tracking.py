@@ -91,7 +91,7 @@ def test_merge_suppliers_and_budget():
     st.set_budget("2026-10", "1", 1000)
     b = {(x["month"], x["store"]): x for x in OT.budget_rows(OT.rows(st), st)}
     assert len(b) == 6 and abs(b[("2026-10", "1")]["amount_iva"] - 183.0) < 1e-9
-    assert abs(b[("2026-10", "1")]["pct"] - 0.183) < 1e-9 and b[("2026-10", "2")]["budget"] is None
+    assert abs(b[("2026-10", "1")]["pct"] - 0.15) < 1e-9 and b[("2026-10", "2")]["budget"] is None
 
 
 def _piano(path):
@@ -226,3 +226,22 @@ def test_export_piano_same_layout():
     rows, _b, _s = OT.read_excel(out)
     assert len(rows) == 6 and {r["supplier"] for r in rows if r["store"] == "2"} == {"TecnoAir System", "NUOVO"}
     assert OT._week_of(date(2026, 10, 4)) == 0 and OT._week_of(date(2026, 10, 5)) == 1 and OT._week_of(date(2026, 8, 31)) == 4
+
+
+def test_budget_iva_detected():
+    """6–9 月的表按含税算（每周合计 ×1.22）：预算换成不含税；10 月起不乘的照原样"""
+    from openpyxl import load_workbook
+    d = tempfile.mkdtemp()
+    x = os.path.join(d, "PIANO.xlsx")
+    _piano(x)
+    wb = load_workbook(x)
+    ws = wb["OTT"]
+    for k in range(3):
+        ws.cell(3 + k, 6, f"=SUM(D{9 + k}:D{9 + k})*1.22")      # Foiano：含税
+        ws.cell(3 + k, 14, f"=SUM(L{9 + k}:L{9 + k})")          # Capannori：不含税
+    ws.cell(2, 6, "=SUM(F3:G7)")                                # 本月合计不算
+    ws["F1"] = 122000
+    wb.save(x)
+    _rows, budgets, _s = OT.read_excel(x)
+    assert sorted(budgets) == [("2026-10", "1", 100000.0), ("2026-10", "2", 180000.0)]
+    assert OT._is_iva(1, 2, 5, 6) and not OT._is_iva(1, 2, 1, 6) and not OT._is_iva(0, 0, 0, 0)

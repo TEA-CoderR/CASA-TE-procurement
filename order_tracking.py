@@ -361,7 +361,7 @@ def month_of(r):
 
 
 def summary(rs, st, month, today=None):
-    """顶上几张卡：待确认 / 已超期 / 卡住了 / 本月下单（含税）和预算"""
+    """顶上几张卡：待登记 / 待确认 / 已超期 / 卡住了 / 本月下单和预算（都不含税）"""
     spent = sum(float(r["amount"] or 0) for r in rs if month_of(r) == month and r["status"] not in NOT_ORDERED)
     budget = sum(v for k, v in st.budgets.items() if k.startswith(month + "|"))
     return {"pending": sum(1 for r in rs if r["pending"]), "overdue": sum(1 for r in rs if r["overdue"]),
@@ -400,7 +400,7 @@ def supplier_stats(rs):
 
 
 def budget_rows(rs, st):
-    """预算表：每个月 × 门店：预算（含税）、已下单（不含税 / 含税）、占预算、单数"""
+    """预算表：每个月 × 门店：预算、已下单、占预算、单数（都不含税；含税的旧预算导入时已经 ÷ 1.22）"""
     agg = {}
     for r in rs:
         if r["status"] in NOT_ORDERED or not r["date"]:
@@ -416,7 +416,7 @@ def budget_rows(rs, st):
         amt, n = agg.get((m, s), (0.0, 0))
         b = st.budgets.get(f"{m}|{s}")
         out.append({"month": m, "store": s, "store_name": STORE_NAMES.get(s, s), "budget": b, "amount": amt,
-                    "amount_iva": amt * (1 + IVA), "n": n, "pct": (amt * (1 + IVA) / b) if b else None})
+                    "amount_iva": amt * (1 + IVA), "n": n, "pct": (amt / b) if b else None})
     order = {k: i for i, (k, _n) in enumerate(STORES)}
     out.sort(key=lambda x: order.get(x["store"], 99))
     out.sort(key=lambda x: x["month"], reverse=True)                # 新的月份在上
@@ -538,6 +538,32 @@ def _layout(ws):
     return hr, blocks
 
 
+def _block_iva(ws, hr, c):
+    """
+    月份表里这一块（一家门店）是不是按含税算的：上面几行的每周合计公式一半以上 ×1.22 就算含税（按块看：10 月表其他门店
+    不含税了，BMS 那块还是 ×1.22、预算 109 800 = 90 000 × 1.22）。
+    用户的 PIANO（2026-11-02 分析）：6–9 月几乎都 ×1.22、预算写「IVATO」；10 月起公式不乘了，预算也换成不含税
+    （S.Filippo 9 月 39 204.70 ÷ 1.22 = 10 月 32 135.00），11 月表头把「IVATO」去掉了
+    """
+    n = k = 0
+    for row in ws.iter_rows(min_row=1, max_row=max(1, hr - 1), min_col=c, max_col=c + 7, values_only=True):
+        for v in row:
+            if isinstance(v, str) and v.startswith("=") and "SUM(" in v.upper():
+                refs = [int(x) for x in re.findall(r"[A-Z]+(\d+)", v.upper())]
+                if not refs or min(refs) <= hr:                  # 本月合计（加的是上面几周的格子）不算
+                    continue
+                n += 1
+                k += "*1.22" in v.replace(" ", "")
+    return k, n
+
+
+def _is_iva(k, n, sk, sn):
+    """这一块 ×1.22 的过半 → 含税；一半一半看整张表"""
+    if n and k * 2 != n:
+        return k * 2 > n
+    return sn > 0 and sk * 2 > sn
+
+
 def read_excel(path):
     """
     读 PIANO ACQUISTO MESILE：每个有「Data Ordine」表头的工作表（GIUGNO_26 以后的新格式），每块一家门店。
@@ -547,6 +573,10 @@ def read_excel(path):
     from openpyxl import load_workbook
     from openpyxl.utils import get_column_letter
     wb = load_workbook(path, data_only=True)
+    try:
+        wf = load_workbook(path, read_only=True)               # 看公式（每周合计有没有 ×1.22）
+    except Exception:
+        wf = None
     rows, budgets, sheets = [], [], []
     for ws in wb.worksheets:
         hr, blocks = _layout(ws)
@@ -566,7 +596,11 @@ def read_excel(path):
         ym = max(cnt.items(), key=lambda kv: kv[1])[0]
         month = f"{ym[0]:04d}-{ym[1]:02d}"
         sheets.append(ws.title)
+        cnts = {c: (_block_iva(wf[ws.title], hr, c) if wf is not None and ws.title in wf.sheetnames else (0, 0))
+                for c, _s, _n in blocks}
+        sk, sn = sum(k for k, _n in cnts.values()), sum(n for _k, n in cnts.values())
         for c, store, note_col in blocks:
+            iva = _is_iva(*cnts[c], sk, sn)
             for r in range(1, hr):                     # 预算：标题那一行「BADGET ACQUISTO」后面的数字
                 labels = [cc for cc in range(c, c + 8) if "BADGET" in _norm(ws.cell(r, cc).value) or
                           "BUDGET" in _norm(ws.cell(r, cc).value)]
@@ -574,7 +608,8 @@ def read_excel(path):
                     for cc in range(labels[0] + 1, c + 8):
                         v = ws.cell(r, cc).value
                         if isinstance(v, (int, float)) and v > 0:
-                            budgets.append((month, store, float(v)))
+                            # 6–9 月的表是含税的（每周合计 ×1.22、预算含税）→ 换成不含税，和订单金额一样（10 月起原表就不含税）
+                            budgets.append((month, store, round(float(v) / (1 + IVA), 2) if iva else float(v)))
                             break
                     break
             occ = {}
