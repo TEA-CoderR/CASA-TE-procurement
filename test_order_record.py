@@ -193,3 +193,8 @@ def test_transit_subtracted_from_suggestions():
     row2 = dict(row, transit_pcs=5.0)
     OC.init_boxes([row2])
     assert row2["sbox"] == 4 and "transit_cut" not in row2
+
+
+def test_deduct_switch_default_on():
+    assert R.deduct_on({}) and R.deduct_on({"tracking": {}})
+    assert not R.deduct_on({"tracking": {"deduct_transit": False}})

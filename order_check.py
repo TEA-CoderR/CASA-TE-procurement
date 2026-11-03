@@ -858,8 +858,8 @@ class OrderCheck:
         if isinstance(saved, list) and saved and TRANSIT not in saved:  # 2026-11-03 新加的「在途」：插在现在够卖后面
             saved.insert(saved.index(9) + 1 if 9 in saved else len(saved), TRANSIT)
         self.table.horizontalHeaderItem(_col(TRANSIT)).setToolTip(
-            tr("在途箱数：已经订了、还没到货的箱数（采购订单跟踪里没到货的单 + RECORD ORDINE 里的订单文件），已经从建议里扣掉了；"
-               "鼠标停在格子上看是哪几张单"))
+            tr("在途箱数：已经订了、还没到货的箱数（采购订单跟踪里没到货的单 + RECORD ORDINE 里的订单文件）。"
+               "订单跟踪设置里「建议量扣掉在途」打开时（默认）已经从建议里扣掉了；鼠标停在格子上看是哪几张单"))
         self.table.horizontalHeaderItem(_col(SITU)).setToolTip(
             tr("待核对的商品属于哪一类：Griglia 商品批发商都没有 / 非 Griglia 商品批发商都没有 / 非 Griglia 商品批发商有；正常的空着。右键表头可以只看某一类"))
         if self.cfg.get("check_columns_ver") != _LAYOUT_VER:
@@ -1240,8 +1240,9 @@ class OrderCheck:
                 except Exception as e:
                     log(tr("⚠ 在途（RECORD ORDINE）读不了：{0}", e))
                 n_tr = 0
+                deduct = REC.deduct_on(self.settings)          # 开关关了：在途只显示，不扣
                 for x in rows:
-                    t_ = REC.lookup(transit, x.get("store"), x.get("ean"), x.get("code")) if transit else None
+                    t_ = REC.lookup(transit, x.get("store"), x.get("ean"), x.get("code")) if (transit and deduct) else None
                     x.pop("transit_pcs", None)
                     if t_:
                         x["transit_pcs"] = float(t_["pcs"])

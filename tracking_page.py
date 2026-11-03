@@ -1424,6 +1424,10 @@ class TrackingPage:
         cb_auto.setToolTip(tr("总仓采购、DETERSIVO采购生成订单文件时，每家供应商 × 每家门店 / BMS 登记一张「待登记」的单；发给供应商后确认"))
         cb_auto.setChecked(self.cfg.get("auto_register") is not False)
         g.addWidget(cb_auto, 4, 1)
+        cb_ded = QCheckBox(tr("建议量扣掉在途"))
+        cb_ded.setToolTip(tr("打开（默认）：总仓采购、门店采购、检查门店清单算建议量时，扣掉已经订了还没到货的数量；关掉：在途箱数只显示，不扣"))
+        cb_ded.setChecked(REC.deduct_on(self.settings))
+        g.addWidget(cb_ded, 5, 1)
         row = QHBoxLayout()
         row.addStretch()
         cancel, ok = QPushButton(tr("取消")), QPushButton(tr("保存"))
@@ -1432,7 +1436,7 @@ class TrackingPage:
         ok.clicked.connect(dlg.accept)
         row.addWidget(cancel)
         row.addWidget(ok)
-        g.addLayout(row, 5, 0, 1, 3)
+        g.addLayout(row, 6, 0, 1, 3)
         if dlg.exec() != QDialog.Accepted:
             return
         rec = e_rec.text().strip()
@@ -1445,6 +1449,7 @@ class TrackingPage:
         self.cfg["excel"] = e_x.text().strip()
         self.cfg["me"] = e_me.text().strip()
         self.cfg["auto_register"] = cb_auto.isChecked()
+        self.cfg["deduct_transit"] = cb_ded.isChecked()
         self._save()
         self.st = None
         self._on_show()

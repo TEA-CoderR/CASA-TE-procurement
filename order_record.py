@@ -427,6 +427,11 @@ def record_root(settings):
     return cfg.get("record") or RECORD_DEFAULT
 
 
+def deduct_on(settings):
+    """「建议量扣掉在途」开关（订单跟踪设置，tracking.deduct_transit，默认开；2026-11-03 用户要开关）"""
+    return ((settings or {}).get("tracking") or {}).get("deduct_transit") is not False
+
+
 def tracking_folder(settings):
     f = ((settings or {}).get("tracking") or {}).get("folder") or ""
     return f if f and os.path.isdir(f) else ""

@@ -1386,7 +1386,7 @@ class StoreOrderPage:
                 transit = None
                 try:                               # 在途（已经订了还没到货）：建议量里扣掉（2026-11-03 用户定）
                     import order_record as REC
-                    if REC.tracking_folder(settings):
+                    if REC.tracking_folder(settings) and REC.deduct_on(settings):    # 开关关了：只显示（订货明细后台读）
                         transit = REC.cached(settings)
                 except Exception as e:
                     log(tr("⚠ 在途（RECORD ORDINE）读不了：{0}", e))
