@@ -4,7 +4,7 @@
 """
 import json
 
-COMPANY_DEFAULTS_VER = 10          # v3.3.14 发布时同步
+COMPANY_DEFAULTS_VER = 11          # v3.3.15 发布时同步
 
 COMPANY_DEFAULTS = json.loads(r'''
 {
@@ -31,6 +31,11 @@ COMPANY_DEFAULTS = json.loads(r'''
  "allow_partial_purchase": false,
  "auto_backup": true,
  "confirm_before_run": true,
+ "deter_arrival": {
+  "lines_cols_hidden": [],
+  "lines_cols_hidden_ver": 1,
+  "lines_columns_ver": 1
+ },
  "griglia_cols": {
   "gone_cols_hidden": [
    3,
@@ -253,6 +258,7 @@ COMPANY_DEFAULTS = json.loads(r'''
    4,
    28,
    9,
+   31,
    10,
    11,
    21,
@@ -303,6 +309,7 @@ COMPANY_DEFAULTS = json.loads(r'''
    "29": 71,
    "3": 297,
    "30": 180,
+   "31": 60,
    "4": 60,
    "5": 0,
    "6": 0,
@@ -505,6 +512,123 @@ COMPANY_DEFAULTS = json.loads(r'''
   },
   "use_supplier_cycles": true
  },
+ "store_pdv": {
+  "cycle": 30,
+  "day": "__all__",
+  "days": [
+   30,
+   60,
+   90,
+   180
+  ],
+  "detail_cols_hidden": [
+   0,
+   1,
+   3,
+   14,
+   21,
+   24,
+   25,
+   26,
+   27,
+   28,
+   29,
+   30,
+   31,
+   34
+  ],
+  "detail_cols_hidden_ver": 4,
+  "detail_columns": [
+   4,
+   36,
+   5,
+   18,
+   19,
+   6,
+   20,
+   22,
+   11,
+   7,
+   8,
+   9,
+   10,
+   21,
+   23,
+   12,
+   15,
+   2,
+   37,
+   16,
+   33,
+   32,
+   13,
+   17,
+   35,
+   1,
+   0,
+   3,
+   34,
+   14,
+   24,
+   25,
+   26,
+   27,
+   28,
+   29,
+   30,
+   31
+  ],
+  "detail_columns_ver": 5,
+  "detail_widths": {
+   "0": 0,
+   "1": 0,
+   "10": 52,
+   "11": 82,
+   "12": 78,
+   "13": 62,
+   "14": 0,
+   "15": 97,
+   "16": 90,
+   "17": 80,
+   "18": 50,
+   "19": 49,
+   "2": 93,
+   "20": 60,
+   "21": 0,
+   "22": 56,
+   "23": 87,
+   "24": 0,
+   "25": 0,
+   "26": 0,
+   "27": 0,
+   "28": 0,
+   "29": 0,
+   "3": 0,
+   "30": 0,
+   "31": 0,
+   "32": 119,
+   "33": 70,
+   "34": 0,
+   "35": 380,
+   "36": 76,
+   "37": 76,
+   "4": 130,
+   "5": 76,
+   "6": 71,
+   "7": 50,
+   "8": 50,
+   "9": 50
+  },
+  "moq_override": {},
+  "stores": [
+   1,
+   2,
+   3,
+   4,
+   5
+  ],
+  "use_supplier_cycles": true
+ },
  "supplier_names": {
   "(Prezzi)FlliPetrillo_Base_17_10.xlsx": "PETRILLO",
   "(Prezzi)FlliPetrillo_Base_24_10.xlsx": "petrillo",
@@ -517,10 +641,14 @@ COMPANY_DEFAULTS = json.loads(r'''
   "formattato_059603(2).xlsx": "MEGA CASH"
  },
  "tracking": {
+  "auto_register": true,
   "budget_cols_hidden": [],
   "budget_cols_hidden_ver": 2,
   "budget_columns_ver": 2,
-  "excel_original": true,
+  "deduct_transit": true,
+  "lines_cols_hidden": [],
+  "lines_cols_hidden_ver": 1,
+  "lines_columns_ver": 1,
   "orders_cols_hidden": [
    11,
    12
@@ -533,6 +661,7 @@ COMPANY_DEFAULTS = json.loads(r'''
    3,
    4,
    5,
+   13,
    6,
    7,
    8,
@@ -548,6 +677,7 @@ COMPANY_DEFAULTS = json.loads(r'''
    "10": 220,
    "11": 0,
    "12": 0,
+   "13": 104,
    "2": 170,
    "3": 84,
    "4": 96,
