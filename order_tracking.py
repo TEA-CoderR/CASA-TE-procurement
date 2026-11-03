@@ -354,7 +354,7 @@ def rows(st, today=None):
                     "lead": lead, "overdue": overdue, "pending": pending, "days": days, "open": open_,
                     "note": str(o.get("note") or ""), "ref": str(o.get("ref") or ""),
                     "origin": o.get("origin") or "", "last": last, "file": str(o.get("file") or ""),
-                    "colli": o.get("colli"),
+                    "colli": o.get("colli"), "record": str(o.get("record") or ""),
                     "late_by": (today - exp).days if overdue else 0})
     return out
 

@@ -3354,6 +3354,11 @@ class MainWindow(QMainWindow):
         self.zone_elim.files_dropped.connect(self._drop_eliminare)
         p1.lay.addLayout(zones)
         zr = QHBoxLayout()
+        b_miss = QPushButton(tr("上周没到的…"))
+        b_miss.setObjectName("Link")
+        b_miss.setToolTip(tr("列出每家店上一次的 DETERSIVO 订单，勾上还没到货的 → 自动变成这家店的扣减文件（不用再手动放）"))
+        b_miss.clicked.connect(self.open_deter_arrival)
+        zr.addWidget(b_miss)
         zr.addStretch()
         b_chk = QPushButton(tr("报价表和数据库对比…"))
         b_chk.setObjectName("Link")
@@ -4264,6 +4269,19 @@ class MainWindow(QMainWindow):
             self._after_drop(tr("门店清单放好了：{0}", "、".join(done)))
         if price:
             self._drop_suppliers(price)
+
+    def open_deter_arrival(self):
+        """上周 DETERSIVO 订单里勾还没到货的 → 每家店的扣减文件（deter_arrival.py）"""
+        from deter_arrival import DeterArrivalDialog
+        if self._busy_drop():
+            return
+        dlg = DeterArrivalDialog(self, settings, _UI, self.ws_root())
+        if not dlg.exec():
+            return
+        if dlg.saved:
+            self._after_drop(tr("没到货的做成扣减文件了：{0}", "；".join(tr("{0} {1} 种 · {2:g} 箱", *x) for x in dlg.saved)))
+        else:
+            self._after_drop(tr("上周的都到了：没有扣减文件"))
 
     def _drop_eliminare(self, files):
         """扣减文件 → 3 扣减文件\\门店（按文件名认门店，认不出问一下）"""

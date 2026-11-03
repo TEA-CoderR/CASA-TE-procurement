@@ -50,8 +50,10 @@ from reorder_page import short_decision, store_label, algo_widgets
 #   29 = 金额（确定箱数 × 每箱件数 × 件价，有调货的按调货以后的箱数）
 #   2026-11-01 加 30 = 情况（Griglia 商品 · 批发商都没有 / 非 Griglia 商品 · 批发商都没有 / 非 Griglia 商品 · 批发商有），放在判断后面，
 #   待核对的商品也在主表格里显示，右键表头按「情况」筛选、直接改（用户：在列表里直接判断和修改）
-_ORDER = [22, 3, 27, 4, 28, 9, 10, 11, 15, 20, 29, 0, 30, 24, 2, 26, 16, 17, 18, 5, 6, 7, 8, 14, 12, 13, 19, 21, 23, 25, 1]
+#   2026-11-03 加 31 = 在途（已经订了还没到货的箱数，order_record；只显示、不扣），放在现在够卖后面
+_ORDER = [22, 3, 27, 4, 28, 9, 31, 10, 11, 15, 20, 29, 0, 30, 24, 2, 26, 16, 17, 18, 5, 6, 7, 8, 14, 12, 13, 19, 21, 23, 25, 1]
 SITU = 30
+TRANSIT = 31
 # 2026-10-21 第四版：窗口和订货明细一个样子（门店按钮、一行工具条、状态栏），名称显示、供应商和原因收起来（详情栏里有）：
 #   门店 条码 Codice 名称 等级 周期 本店库存 日均 库存够卖 每箱件数 | 清单 判断 确定箱数 确定件数 ✎ 调货 ✎ | 到货后够卖
 _LAYOUT_VER = 9           # 改了默认顺序就加 1（第 9 版起列宽也一起恢复默认）
@@ -534,6 +536,7 @@ class _Sig(QObject):
     done = Signal(object)
     months = Signal(object)          # 近两年每月销量读好了（后台线程 → 界面）
     promos = Signal(object)          # 本店在促销的商品读好了
+    transit = Signal(object)         # 在途读好了（order_record）
 
 
 class OrderCheck:
@@ -550,6 +553,8 @@ class OrderCheck:
         self.sig.done.connect(self._done)
         self.sig.months.connect(self._months_arrived)
         self.sig.promos.connect(self._promos_arrived)
+        self.sig.transit.connect(self._transit_arrived)
+        self.transit = None
         self._card = None                # 商品详情窗口（双击商品打开，一个窗口反复用）
         self._m24, self._m24_keys, self._m24_done = {}, [], set()
 
@@ -793,8 +798,8 @@ class OrderCheck:
                                           tr("清单件数"), tr("建议件数"), tr("确定件数"), tr("确定箱数"), tr("等级"), tr("周期"), tr("日均"),
                                           tr("目标库存"), tr("订后够卖"), tr("清单订后够卖（天）"), tr("门店"),
                                           tr("变化（箱）"), tr("调货"), tr("原因"), "Codice Fornitore", tr("供应商"), tr("月销"),
-                                          tr("金额 €"), tr("情况")]),
-                                   numeric_cols=[_col(k) for k in list(range(4, 16)) + [17, 18, 19, 20, 21, 23, 28, 29]])
+                                          tr("金额 €"), tr("情况"), tr("在途")]),
+                                   numeric_cols=[_col(k) for k in list(range(4, 16)) + [17, 18, 19, 20, 21, 23, 28, 29, 31]])
         self.table.setMinimumHeight(380)
         import product_images as PI
         self.table.verticalHeader().setDefaultSectionSize(PI.row_height(self.settings))
@@ -807,7 +812,7 @@ class OrderCheck:
         import product_images as PI          # 「商品」那一格：左边商品图（条码在藏起来的条码列），右边名称
         self.table.setItemDelegateForColumn(_col(3), PI.ThumbDelegate(self.table, _col(2), None, self.settings))
         for c, wd in enumerate(_perm((96, 80, 130, PI.thumb_size(self.settings) + 300, 60, 52, 52, 52, 52, 76, 52, 56, 70, 70, 76,
-                                      70, 50, 50, 60, 70, 76, 120, 80, 76, 110, 380, 110, 120, 60, 76, 180))):
+                                      70, 50, 50, 60, 70, 76, 120, 80, 76, 110, 380, 110, 120, 60, 76, 180, 60))):
             self.table.setColumnWidth(c, wd)
         self.table.horizontalHeaderItem(_col(28)).setToolTip(tr("月销：一个月大约卖几件（新算法 = 加权日均 × 30；原程序算法 = 最长周期销量 ÷ 月数）"))
         self.table.horizontalHeaderItem(_col(4)).setToolTip(tr("本店现在的库存（件）"))
@@ -835,12 +840,17 @@ class OrderCheck:
         # 点表头排序、右键表头按列筛选；上面「判断」「等级」两个下拉框快速筛选
         from erp_widgets import TableSortFilter, ColumnFilterBox
         self.ctl = TableSortFilter(self.table, lambda: len(self.rows), self._text, self._fill_row, key=self._key,
-                                   hide=self._hidden, numeric=tuple(_col(k) for k in list(range(4, 16)) + [17, 18, 19, 20, 21, 23, 28, 29]))
+                                   hide=self._hidden, numeric=tuple(_col(k) for k in list(range(4, 16)) + [17, 18, 19, 20, 21, 23, 28, 29, 31]))
         # 列可以拖动换位置、拖宽度，下次打开照旧（右键表头是筛选，所以「恢复默认列顺序」放在下面）
         from erp_widgets import remember_columns
         saved = self.cfg.get("check_columns")
         if isinstance(saved, list) and saved and SITU not in saved:     # 新加的「情况」列：插在判断后面，原来排好的不动
             saved.insert(saved.index(0) + 1 if 0 in saved else len(saved), SITU)
+        if isinstance(saved, list) and saved and TRANSIT not in saved:  # 2026-11-03 新加的「在途」：插在现在够卖后面
+            saved.insert(saved.index(9) + 1 if 9 in saved else len(saved), TRANSIT)
+        self.table.horizontalHeaderItem(_col(TRANSIT)).setToolTip(
+            tr("在途：已经订了、还没到货的箱数（采购订单跟踪里没到货的单 + RECORD ORDINE 里的订单文件）。只是提醒，没从建议里扣；"
+               "鼠标停在格子上看是哪几张单"))
         self.table.horizontalHeaderItem(_col(SITU)).setToolTip(
             tr("待核对的商品属于哪一类：Griglia 商品批发商都没有 / 非 Griglia 商品批发商都没有 / 非 Griglia 商品批发商有；正常的空着。右键表头可以只看某一类"))
         if self.cfg.get("check_columns_ver") != _LAYOUT_VER:
@@ -1268,6 +1278,7 @@ class OrderCheck:
         self._replan(render=False)
         self._fill()
         self._load_months()                             # 详情栏的近两年每月销量：后台读
+        self._load_transit()                            # 在途列：后台读
         try:                                            # 商品详情窗口：先在后台连好数据库，第一次双击就快
             from product_window import ProductWindow
             if self._card is None:
@@ -1303,7 +1314,7 @@ class OrderCheck:
                       _days(_cover(x, x["file_pcs"])) if (x.get("file_pcs") or 0) > 0 else "",
                       R.STORES.get(x.get("store"), ""), self._change_text(x), self._transfer_text(x),
                       "；".join(self._reason_lines(x)), x.get("sup_code") or "", x.get("sup_name") or "", self._monthly(x),
-                      self._amount_text(x), _situation(x)])
+                      self._amount_text(x), _situation(x), self._transit_text(x)])
 
     def _amount(self, x):
         """这一行要花多少钱：确定箱数（有调货的按调货以后的箱数）× 每箱件数 × 件价"""
@@ -1329,7 +1340,48 @@ class OrderCheck:
             return rank * 1e7 - min(self._amount(x), 9e6)
         if c == AMOUNT_COL:
             return self._amount(x)
+        if c == _col(TRANSIT):
+            t = self._transit_of(x)
+            return t["colli"] if t else 0
         return None
+
+    # ---------- 在途（已经订了、还没到货）----------
+    def _transit_of(self, x):
+        import order_record as REC
+        return REC.lookup(getattr(self, "transit", None), x.get("store"), x.get("ean"), x.get("code"))
+
+    def _transit_text(self, x):
+        t = self._transit_of(x)
+        return f"{t['colli']:g}" if t else ""
+
+    def _load_transit(self):
+        """采购订单跟踪里没到货的单 + RECORD ORDINE 订单文件 → 每家店每个商品在途几箱（后台线程，第一次要读很多文件）"""
+        import order_record as REC
+        self.transit = None
+        if not REC.tracking_folder(self.settings):
+            return
+        self._tr_token = getattr(self, "_tr_token", 0) + 1
+        token, settings = self._tr_token, self.settings
+
+        def work():
+            try:
+                self.sig.transit.emit((token, REC.cached(settings), None))
+            except Exception as e:
+                self.sig.transit.emit((token, None, str(e)))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _transit_arrived(self, payload):
+        token, res, err = payload
+        if token != getattr(self, "_tr_token", None) or not hasattr(self, "ctl"):
+            return
+        if err:
+            self.win.log(tr("⚠ 在途（RECORD ORDINE）读不了：{0}", err))
+            return
+        self.transit = res
+        n = sum(1 for x in self.rows if self._transit_of(x))
+        if n:
+            self.win.log(tr("在途：{0} 个商品已经订了还没到货（在途列）", n))
+        self._refresh_rows(list(self.ctl.visible))
 
     def _monthly(self, x):
         """月均：新算法 = 加权日均 × 30；原程序算法 = 最长周期销量 ÷ 月数（和订货明细同一个算法，store_orders.monthly_and_need）"""
@@ -2206,6 +2258,12 @@ class OrderCheck:
         t.item(k, 0).setToolTip(tip)
         t.item(k, 0).setData(Qt.UserRole, i)
         t.item(k, _col(3)).setToolTip(f"{x['name']}\nEAN {x['ean'] or '—'}")
+        tri = self._transit_of(x)
+        if tri:                                   # 在途：蓝字，鼠标提示哪几张单
+            import order_record as REC
+            it = t.item(k, _col(TRANSIT))
+            it.setForeground(QColor(T("accent")))
+            it.setToolTip(tr("已经订了、还没到货 {0:g} 箱（{1:g} 件）：", tri["colli"], tri["pcs"]) + "\n" + REC.transit_text(tri))
         if x.get("promo"):                       # 门店在促销：商品名 / 条码标红
             ptip = self._promo_tip(x)
             for pc in (_col(2), _col(3)):

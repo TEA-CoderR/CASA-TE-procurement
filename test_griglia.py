@@ -241,7 +241,8 @@ def test_situation_and_edited():
     assert OC._edited(base)                                                         # 和系统建议 1 箱比
     assert not OC._edited(dict(base, fbox=1))
     assert OC._edited(dict(base, sbox=None, fbox=0)) and not OC._edited(dict(base, sbox=None))   # 算不了的和清单比
-    assert OC._ORDER.index(OC.SITU) == OC._ORDER.index(0) + 1 and sorted(OC._ORDER) == list(range(31))
+    assert OC._ORDER.index(OC.SITU) == OC._ORDER.index(0) + 1 and sorted(OC._ORDER) == list(range(32))
+    assert OC._ORDER.index(OC.TRANSIT) == OC._ORDER.index(9) + 1          # 在途在现在够卖后面
 
 
 def test_scheda_index_brand_supplier():
