@@ -563,7 +563,7 @@ class OrderCheck:
         self.file_edit = QLineEdit()
         self.file_edit.setReadOnly(True)
         self.file_edit.setPlaceholderText(tr("拖入门店清单"))
-        self.file_edit.setToolTip(tr("几家门店的清单一起检查，才能先在门店之间调货、再订剩下的（和门店配货一样）"))
+        self.file_edit.setToolTip(tr("几家门店的清单一起检查，才能先在门店之间调货、再订剩下的（和总仓采购一样）"))
         from erp_widgets import accept_file_drops
         accept_file_drops(self.file_edit, self._dropped, (".xlsx", ".xlsm"), multi=True)
         r1.addWidget(self.file_edit, 1)
@@ -1192,11 +1192,14 @@ class OrderCheck:
                         x["in_grid"] = G.contains(grid, x.get("ean"), x.get("code"))
                     log(tr("[检查清单] Griglia {0}：{1} 个商品不在里面", grid["name"],
                            sum(1 for x in rows if x.get("in_grid") is False)))
-                # 非 Griglia 商品能不能直接向品牌供应商订：到门店配货的 SCHEDA 里找（门店报告用；读不了不影响检查）
+                # 非 Griglia 商品能不能直接向品牌供应商订：到 LUCAS定制采购的 SCHEDA 里找（门店报告用；读不了不影响检查）
                 try:
                     import store_orders as SO
                     from settings import app_dir
-                    sroot = (self.settings.get("store_orders") or {}).get("folder") or ""
+                    # 总仓采购 + 门店采购两个文件夹的 SCHEDA 都算（门店采购的就是门店自己能直接订的供应商）
+                    sroot = [r for r in ((self.settings.get("store_orders") or {}).get("folder") or "",
+                                         (self.settings.get("store_pdv") or {}).get("folder") or SO.PDV_DEFAULT_FOLDER)
+                             if r and os.path.isdir(r)]
                     if sroot and any(x.get("in_grid") is False for x in rows):
                         idx = SO.scheda_index(sroot, os.path.join(app_dir(), "cache", "schede_index.json"), log)
                         for x in rows:
@@ -1471,7 +1474,7 @@ class OrderCheck:
         wt = TR.wholesale_raw(self.settings)          # 批发商比价自己的调货设置
         cfg = TR.config(wt)
         if not cfg.get("enabled"):
-            self.win.show_toast(tr("批发商比价没有启用门店间调货（设置 → 门店间调货…）"))
+            self.win.show_toast(tr("DETERSIVO采购没有启用门店间调货（设置 → 门店间调货…）"))
             return
         far = set(TR.excluded_stores(wt, (dict(SO.DEFAULT_FILL, **(so.get("fill") or {}))).get("far_stores")))
         sid, code = x.get("store"), str(x.get("code"))

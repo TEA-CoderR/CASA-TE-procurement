@@ -63,7 +63,8 @@ def FIELD_LABELS():
 
 
 def ORIGINS():
-    return {"store_orders": tr("门店配货"), "wholesale": tr("批发商比价"), "app": tr("程序"), "excel": "Excel"}
+    return {"store_orders": tr("总仓采购"), "store_pdv": tr("门店采购"), "wholesale": tr("DETERSIVO采购"),
+            "app": tr("程序"), "excel": "Excel"}
 
 
 def _d(v):
@@ -460,7 +461,7 @@ class TrackingPage:
             sr.addWidget(b)
         sr.addStretch()
         self.pills = {}
-        tips = {"draft": tr("门店配货 / 批发商比价生成的订单，还没确认发给供应商。发了以后选中，右键「确认已下单」"),
+        tips = {"draft": tr("总仓采购 / DETERSIVO采购生成的订单，还没确认发给供应商。发了以后选中，右键「确认已下单」"),
                 "pending": tr("下单 {0} 天以上还没确认的", OT.PENDING_DAYS),
                 "overdue": tr("过了预计到货日还没到（含部分到货）"), "stuck": ""}
         for key, _tok in PILLS:
@@ -1275,7 +1276,7 @@ class TrackingPage:
         g.addWidget(tip_label(tr("我的名字"), tr("修改记录里显示的名字")), 2, 0)
         g.addWidget(e_me, 2, 1)
         cb_auto = QCheckBox(tr("程序生成的订单自动登记"))
-        cb_auto.setToolTip(tr("门店配货、批发商比价生成订单文件时，每家供应商 × 每家门店 / BMS 登记一张「待登记」的单；发给供应商后确认"))
+        cb_auto.setToolTip(tr("总仓采购、DETERSIVO采购生成订单文件时，每家供应商 × 每家门店 / BMS 登记一张「待登记」的单；发给供应商后确认"))
         cb_auto.setChecked(self.cfg.get("auto_register") is not False)
         g.addWidget(cb_auto, 3, 1)
         row = QHBoxLayout()

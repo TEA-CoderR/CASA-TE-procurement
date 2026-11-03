@@ -461,8 +461,8 @@ class MoqDialog(QDialog):
         glob = {"bms_stores": {k for k in S.STORE_SHEETS if k not in set(fc.get("far_stores") or [])},
                 "transfer_stores": {k for k in S.STORE_SHEETS if k not in set(page.transfer_far())}}
         self.store_sections = {}
-        for key, title in (("bms_stores", tr("单独设 BMS 凑单门店")),
-                           ("transfer_stores", tr("单独设调货门店"))):
+        for key, title in (() if page.PDV else (("bms_stores", tr("单独设 BMS 凑单门店")),
+                                                ("transfer_stores", tr("单独设调货门店")))):
             own = self.result_supplier_cfg.get(key)
             cb = QCheckBox(title + "  ⓘ")
             cb.setToolTip(tr("不勾就按「配货设置」里的总设置"))
@@ -535,9 +535,17 @@ class MoqDialog(QDialog):
 # 页面
 # =====================================================================
 class StoreOrderPage:
+    """LUCAS定制采购 · 总仓采购（原来的门店配货）：Centrale Acquisti 的 SCHEDA，够起订量直送门店、不够并进 BMS"""
+    CFG_KEY = "store_orders"                  # settings.json 里存设置的地方
+    TITLE = "总仓采购"
+    TITLE_TIP = "品牌供应商直接送店 · 每家店单独满起订量才直送，差一点自动凑单，差太多并到 BMS"
+    DEFAULT_FOLDER = r"D:\CasaTe\采购配单"
+    TRACK_SOURCE = "store_orders"             # 采购订单跟踪里的来源
+    PDV = False
+
     def __init__(self, win, settings, ui):
         self.win, self.settings, self.ui = win, settings, ui
-        self.cfg = settings.setdefault("store_orders", {})
+        self.cfg = settings.setdefault(self.CFG_KEY, {})
         self.files = []          # [(星期, 路径)]
         self.moq = {}            # 路径 → 文件里读到的起订量（S.read_moq 的 dict，还没套手动修改）
         self.calc = None         # S.compute() 的结果
@@ -676,10 +684,10 @@ class StoreOrderPage:
         tr_ = QHBoxLayout()
         col = QVBoxLayout()
         col.setSpacing(3)
-        t = QLabel(tr("门店配货"))
+        t = QLabel(tr(self.TITLE))
         t.setObjectName("PageTitle")
-        t.setText(tr("门店配货") + "  ⓘ")
-        t.setToolTip(tr("品牌供应商直接送店 · 每家店单独满起订量才直送，差一点自动凑单，差太多并到 BMS"))
+        t.setText(tr(self.TITLE) + "  ⓘ")
+        t.setToolTip(tr(self.TITLE_TIP))
         col.addWidget(t)
         tr_.addLayout(col, 1)
         self.param_dlg = ParamDialog(self)           # 建出 self.cycle / self.use_cfg / self.days
@@ -797,7 +805,7 @@ class StoreOrderPage:
         r1.addWidget(rb)
         top.addLayout(r1)
         r2 = QHBoxLayout()
-        self.folder = QLineEdit(self.cfg.get("folder") or r"D:\CasaTe\采购配单")
+        self.folder = QLineEdit(self.cfg.get("folder") or self.DEFAULT_FOLDER)
         self.folder.setPlaceholderText(tr("采购配单文件夹（里面有 周一 … 周五）"))
         self.folder.setToolTip(tr("里面有 周一 … 周五 子文件夹，每个供应商一个 SCHEDA 表"))
         self.folder.editingFinished.connect(self.refresh_list)
@@ -984,6 +992,7 @@ class StoreOrderPage:
         th.addWidget(self.btn_transfers)
         tv.addLayout(th)
         right.addWidget(tp)
+        self.tr_panel = tp
         self._refresh_transfer_panel()
         h.addLayout(right, 1)
         return w
@@ -1052,6 +1061,7 @@ class StoreOrderPage:
         c1, self.r_total, self.r_total_sub = kpi_card(tr("采购总额"), "—", " ")
         c2, self.r_direct, self.r_direct_sub = kpi_card(tr("直接送店"), "—", " ")
         c3, self.r_bms, self.r_bms_sub = kpi_card(tr("BMS 分货"), "—", " ")
+        self.r_bms_card = c3
         c4, self.r_warn, self.r_warn_sub = kpi_card(tr("这次不订"), "—", " ")
         for i, c in enumerate((c1, c2, c3, c4)):
             k.addWidget(c, 0, i)
@@ -1344,13 +1354,13 @@ class StoreOrderPage:
         chosen = [f for f in self.files if f[1] in on]
         stores = [s for s, cb in self.store_cb.items() if cb.isChecked()]
         if not chosen:
-            QMessageBox.information(self.win, tr("门店配货"), tr("先勾选要订的供应商。"))
+            QMessageBox.information(self.win, tr(self.TITLE), tr("先勾选要订的供应商。"))
             return
         if not stores:
-            QMessageBox.information(self.win, tr("门店配货"), tr("至少选一家门店。"))
+            QMessageBox.information(self.win, tr(self.TITLE), tr("至少选一家门店。"))
             return
         if self.edited and QMessageBox.question(
-                self.win, tr("门店配货"), tr("重新计算会丢掉 {0} 处手动修改，继续？", len(self.edited))) != QMessageBox.Yes:
+                self.win, tr(self.TITLE), tr("重新计算会丢掉 {0} 处手动修改，继续？", len(self.edited))) != QMessageBox.Yes:
             return
         self._save_cfg()
         days = [sb.value() for sb in self.days]
@@ -1372,7 +1382,7 @@ class StoreOrderPage:
         def work():
             try:
                 db = R.make_db(dbs)
-                calc = S.compute(db, chosen, stores, days, cycle, log=lambda m: log("[门店配货] " + m),
+                calc = S.compute(db, chosen, stores, days, cycle, log=lambda m: log(f"[{tr(self.TITLE)}] " + m),
                                  use_supplier_cycles=use_cfg, algo=algo, moq_overrides=dict(self.moq_overrides()),
                                  progress=lambda i, st, cnt, det, pct: (dlg.post_step(i, st, cnt, det), dlg.post_progress(pct)),
                                  cancel=lambda: dlg.cancel_event.is_set())
@@ -1384,7 +1394,7 @@ class StoreOrderPage:
                 self.sig.computed.emit((None, "__cancel__"))
             except Exception as e:
                 import traceback
-                log(tr("❌ 门店配货失败：{0}", e))
+                log(tr("❌ {0}失败：{1}", tr(self.TITLE), e))
                 log(traceback.format_exc())
                 dlg.post_finished(False, tr("{0}\n\n数据库连不上的话，到「系统设置」检查地址和密码。", e))
                 self.sig.computed.emit((None, str(e)))
@@ -1397,7 +1407,7 @@ class StoreOrderPage:
         if err:
             self._update_state()
             if err != "__cancel__":
-                self.win.notify(tr("门店配货计算失败：{0}", err))
+                self.win.notify(tr("{0}计算失败：{1}", tr(self.TITLE), err))
             return
         import datetime as _dt
         calc.setdefault("date", _dt.date.today())    # 周销量按计算当天往回数
@@ -1405,9 +1415,9 @@ class StoreOrderPage:
         try:
             S.apply_transfers(calc, self.transfer_cfg(), self.transfer_far(), self.cfg.get("supplier_cfg"))
             if calc.get("transfers"):
-                self.win.log(tr("[门店配货] 门店间调货：{0} 个商品", len(calc["transfers"])))
+                self.win.log(tr("[总仓采购] 门店间调货：{0} 个商品", len(calc["transfers"])))
         except Exception as e:
-            self.win.log(tr("[门店配货] ⚠ 调货计算失败（按原来的建议订）：{0}", e))
+            self.win.log(tr("[总仓采购] ⚠ 调货计算失败（按原来的建议订）：{0}", e))
         self.colli = copy.deepcopy(calc["base"])
         self.edited = set()
         self._refresh_transfer_panel()
@@ -1729,12 +1739,12 @@ class StoreOrderPage:
         self._save_cfg()
         chosen = [sc for sc in self.calc["schede"] if sc["path"] in self.alloc_on]
         if not chosen:
-            QMessageBox.information(self.win, tr("门店配货"), tr("起订量检查里没有勾选供应商。勾选要配货的供应商后再点「开始配货」。"))
+            QMessageBox.information(self.win, tr(self.TITLE), tr("起订量检查里没有勾选供应商。勾选要配货的供应商后再点「开始配货」。"))
             return
         try:
             out_root = S.new_run_folder(self._out_root())     # 每次配货单独一个文件夹，不覆盖以前的
         except OSError as e:
-            QMessageBox.warning(self.win, tr("门店配货"), tr("建不了订单文件夹：{0}", e))
+            QMessageBox.warning(self.win, tr(self.TITLE), tr("建不了订单文件夹：{0}", e))
             return
         fill = self.fill_cfg()
         keep = {sc["path"] for sc in chosen}
@@ -1752,13 +1762,13 @@ class StoreOrderPage:
 
         def work():
             try:
-                res = S.allocate(calc, colli, fill, out_root, log=lambda m: log("[门店配货] " + m), edited=edited,
+                res = S.allocate(calc, colli, fill, out_root, log=lambda m: log(f"[{tr(self.TITLE)}] " + m), edited=edited,
                                  picks={p_: v for p_, v in self.bms_picks.items() if p_ in keep},
                                  progress=lambda i, st, cnt, det, pct: (dlg.post_step(i, st, cnt, det), dlg.post_progress(pct)))
                 try:                                       # 采购订单跟踪：每家供应商 × 每个去向一张「待登记」
                     import order_tracking as OT
-                    res["tracked"] = OT.register_store_orders(self.settings, res["written"],
-                                                              log=lambda m: log("[门店配货] " + m))
+                    res["tracked"] = OT.register_store_orders(self.settings, res["written"], source=self.TRACK_SOURCE,
+                                                              log=lambda m: log(f"[{tr(self.TITLE)}] " + m))
                 except Exception as e:
                     log(tr("⚠ 订单跟踪没登记上：{0}", e))
                 dlg.post_finished(True, tr("生成 {0} 个订单文件", len(S.written_files(res["written"]))))
@@ -1766,7 +1776,7 @@ class StoreOrderPage:
                 self.sig.done.emit((res, None))
             except Exception as e:
                 import traceback
-                log(tr("❌ 门店配货失败：{0}", e))
+                log(tr("❌ {0}失败：{1}", tr(self.TITLE), e))
                 log(traceback.format_exc())
                 dlg.post_finished(False, str(e))
                 self.sig.done.emit((None, str(e)))
@@ -1778,14 +1788,14 @@ class StoreOrderPage:
         self.running = False
         if err:
             self._update_state()
-            self.win.notify(tr("门店配货失败：{0}", err))
+            self.win.notify(tr("{0}失败：{1}", tr(self.TITLE), err))
             return
         self.result = res
         self.result_sig = res.get("sig")
         self._fill_result()
         self._show_view(1)
         tk = res.get("tracked")
-        self.win.show_toast(tr("门店配货完成：{0} 个订单文件", len(S.written_files(res["written"])))
+        self.win.show_toast(tr("{0}完成：{1} 个订单文件", tr(self.TITLE), len(S.written_files(res["written"])))
                             + (tr(" · {0} 张待登记（采购订单跟踪）", tk["drafts"]) if tk and tk.get("drafts") else ""))
         if tk and hasattr(self.win, "tracking"):
             self.win.tracking.badge(tk.get("drafts"))
@@ -2046,3 +2056,72 @@ class StoreOrderPage:
     def _open(self, path):
         if path and os.path.exists(path):
             open_path(path, self.win)
+
+
+class PdvOrderPage(StoreOrderPage):
+    """
+    LUCAS定制采购 · 门店采购（2026-11-03）：门店自己采购的供应商（共享盘「03 Griglia per gli ordini PDV」，01 LUNEDI … 05 VENERDI）。
+    SCHEDA 只有一页 GRIGLIA（也有分几页的），一张单送一家店：五家店各自算、各自要达到起订量（差一点凑单，不够这次不订），
+    没有 BMS、没有调货；每家店一个订单文件（store_orders.write_pdv_file：填 Colli、送货地址、开票抬头、订单号、日期）
+    """
+    CFG_KEY = "store_pdv"
+    TITLE = "门店采购"
+    TITLE_TIP = "门店自己采购的供应商 · 一张单送一家店，每家店都要各自达到起订量（差一点自动凑单），不够这次不订"
+    DEFAULT_FOLDER = S.PDV_DEFAULT_FOLDER
+    TRACK_SOURCE = "store_pdv"
+    PDV = True
+    LEGEND = (("ok", "下单"), ("far", "这次不订"), ("err", "紧急缺货"))
+
+    def __init__(self, win, settings, ui):
+        super().__init__(win, settings, ui)
+        # 订货明细的列顺序 / 显示哪些列 / 列宽：第一次用门店采购时照抄总仓采购调好的（之后各存各的）
+        central = settings.get("store_orders") or {}
+        if not any(k.startswith("detail_") for k in self.cfg):
+            for k, v in central.items():
+                if k.startswith("detail_"):
+                    self.cfg[k] = copy.deepcopy(v)
+
+    def fill_cfg(self):
+        """凑单的范围（差多少欧 / 几箱以内凑单、加完最多够卖几天）和总仓采购共用；BMS 那些用不到"""
+        f = dict(S.DEFAULT_FILL, **((self.settings.get("store_orders") or {}).get("fill") or {}))
+        f["supplier_cfg"] = self.cfg.get("supplier_cfg") or {}
+        return f
+
+    def transfer_cfg(self):
+        import transfers as TR
+        return dict(TR.config(None), enabled=False)
+
+    def _add_legend(self, lay, store):
+        tips = {"ok": tr("这家店自己够起订量（或差一点凑单后够），下单"),
+                "far": tr("这家店不够起订量，这次不订，下次再看"),
+                "err": tr("这次不订的单里，库存够卖不到一周的商品个数占 ≥ 50%：红底；≥ 25%：红字")}
+        for kind, text in self.LEGEND:
+            dot = QLabel()
+            dot.setFixedSize(10, 10)
+            lab = QLabel(tr(text))
+            lab.setObjectName("Faint")
+            lab.setToolTip(tips[kind])
+            dot.setToolTip(tips[kind])
+            lay.addWidget(dot)
+            lay.addWidget(lab)
+            lay.addSpacing(8)
+            store.append((dot, kind))
+
+    def build(self):
+        page = super().build()
+        nb = 3 + len(S.STORE_SHEETS)                    # 起订量检查、结果表里 BMS 那一列
+        self.mtable.setColumnHidden(nb, True)
+        self.rtable.setColumnHidden(nb, True)
+        for w in (self.bms_btn, self.bms_reset, self.tr_panel, self.r_bms_card, self.btn_fill):
+            w.hide()
+        self.r_title.setToolTip(tr("一家供应商 × 一家门店一个订单文件；双击一行打开"))
+        return page
+
+    def toggle_bms_edit(self):
+        pass
+
+    def _open_row(self, row, _col):
+        """一家供应商有好几家店的文件：打开它们所在的文件夹"""
+        it = self.rtable.item(row, 0)
+        p = it.data(Qt.UserRole) if it is not None else None
+        self._open(os.path.dirname(p) if p else None)

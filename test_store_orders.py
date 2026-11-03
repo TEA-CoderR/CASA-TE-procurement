@@ -380,3 +380,111 @@ def test_duplicate_codes_ass_and_colours(tmp_path):
     wb2 = load_workbook(out)
     for name in ("FOIANO", "MARLIA"):
         assert [wb2[name].cell(r, 6).value for r in range(2, 7)] == [2, None, None, None, None]
+
+
+def _pdv_file(path, fatt_per_store=True, grids=("GRIGLIA ",), moq_amount=300):
+    """门店采购（PDV）样子的 SCHEDA：ANAGRAFICA（起订金额）、一页或几页 GRIGLIA、Dati Filiale 页"""
+    from openpyxl import Workbook
+    wb = Workbook()
+    ana = wb.active
+    ana.title = "SCHEDA ANAGRAFICA FORNITORI"
+    ana.cell(2, 2, "RAGIONE SOCIALE:")
+    ana.cell(2, 3, "PROVA SRL")
+    ana.cell(35, 2, "MINIMO ORDINE VOLUME:")
+    ana.cell(36, 2, "MINIMO ORDINE IMPORTO:")
+    ana.cell(36, 3, moq_amount)
+    for k, g in enumerate(grids):
+        ws = wb.create_sheet(g)
+        ws.cell(1, 5, "Fatturazione :")
+        ws.cell(1, 6, "Ragione Sociale: QUALCUNO")
+        ws.cell(1, 7, "NUMERO ORDINE :")
+        ws.cell(1, 8, "01032026-SF-01")
+        ws.cell(2, 5, "Luogo di destinazione :")
+        ws.cell(2, 6, "CASA & TE SRL \nVia d'arezzo 159/r Foiano")
+        ws.cell(2, 7, "Data Ordine:")
+        ws.cell(2, 8, "00/00/2026")
+        for c, h in enumerate(["NO.", "Immagine", "Cod.Art.", "Codice Fornitore", "Codice EAN", "Descrizione Prodotto",
+                               "PZ*COLLI", "Colli", "Qtà Ordine", "PREZZO\n NETTO", "IMPORTO"], 1):
+            ws.cell(5, c, h)
+        for i in range(3):
+            r = 6 + i
+            ws.cell(r, 3, str(100 * (k + 1) + i))
+            ws.cell(r, 5, str(8000000000000 + 100 * (k + 1) + i))
+            ws.cell(r, 6, f"ART {k}-{i}")
+            ws.cell(r, 7, 6)
+            ws.cell(r, 10, 2.0)
+    ds = wb.create_sheet("Dati Filiale 2" if fatt_per_store else "Dati Filiali 1")
+    ds.append(["Fatturazione", "Luogo di destinazione"])
+    dests = ["CASA & TE SRL \nVia d'arezzo 159/r 52045 Foiano Della Chiana", "CASA & TE GROUP SRL\nViale europa 434 Capannori",
+             "CASA & TE S.FILIPPO SRL\nVia di tiglio 1893 Lucca", "CASA & TE S.MARCO SRL\nVia del brennero 844",
+             "CASA & TE S.CONCORDIO SRL\nVIA SAVONAROLA, 50"]
+    fatts = ["Ragione Sociale: CASA & TE SRL\nSede legale：Via d'arezzo Foiano",
+             "Ragione Sociale: CASA & TE GROUP SRL\nSede legale：Capannori",
+             "Ragione Sociale: CASA & TE S.FILIPPO SRL\nSede legale：Via di tiglio",
+             "Ragione Sociale: CASA & TE S.MARCO SRL\nSede legale：Via brennero",
+             # 用户的文件里 S.CONCORDIO 这一行的 PEC 写成了 smarco：要按第一行（公司名）认
+             "Ragione Sociale: CASA & TE S.CONCORDIO SRL\nPEC：casaete.smarco@pec.it"]
+    for i in range(5):
+        ds.append([fatts[i] if fatt_per_store or i == 0 else None, dests[i]])
+    if not fatt_per_store:
+        ds.cell(2, 1, "Ragione Sociale: BMS PARTNERS SRL\nSede legale：Via di tiglio 1893")
+        ds.append([None, " BMS PARTNERS SRL\nVia di tiglio 1893 Lucca"])
+    wb.save(path)
+
+
+def test_pdv_scheda_one_order_per_store(tmp_path):
+    """门店采购（2026-11-03）：一页 GRIGLIA、每家店各自达到起订量、一家店一个文件（送货地址 / 开票抬头 / 订单号）"""
+    from openpyxl import load_workbook
+    p = str(tmp_path / "SCHEDA PROVA 0726..xlsx")
+    _pdv_file(p)
+    sc = S.parse_scheda(p)
+    assert sc["name"] == "PROVA" and sc.get("pdv") and sorted(sc["sheets"]) == [1, 2, 3, 4, 5]
+    assert len(sc["items"]) == 3 and sc["moq_amount"] == 300
+    assert sorted(sc["pdv"]["dest"]) == [1, 2, 3, 4, 5] and "CONCORDIO" in sc["pdv"]["fatt"][5]
+    sc["day"] = "周一"
+    rows = [it["row"] for it in sc["items"]]
+    # FOIANO 30 箱 × 12 € = 360 ≥ 300 → 下单；MARLIA 5 箱 = 60 € → 这次不订（门店采购没有 BMS）
+    colli = {1: {rows[0]: 30}, 2: {rows[1]: 5}}
+    plan = S.plan_supplier(sc, {}, {"max_amount_gap": 20, "max_colli_gap": 1}, [1, 2, 3, 4, 5], colli)
+    assert plan["stores"][1]["status"] == "direct" and plan["stores"][2]["status"] == "wait" and plan["bms"] is None
+    written = S.write_plans([("周一", sc, plan)], str(tmp_path / "out"), "0311")
+    assert len(written) == 1 and written[0][2] == "FOIANO" and written[0][0].endswith("Ordine_PROVA_FOIANO_0311.xlsx")
+    ws = load_workbook(written[0][0])["GRIGLIA "]
+    assert ws["H6"].value == 30 and ws["H7"].value is None
+    assert "Foiano" in ws["F2"].value and ws["F1"].value.startswith("Ragione Sociale: CASA & TE SRL")
+    assert ws["H1"].value.endswith("-FO-01") and ws["H2"].value.count("/") == 2
+    # S.CONCORDIO 的文件：开票抬头是 S.CONCORDIO（不是被 PEC 带偏的 S.MARCO）
+    out5 = str(tmp_path / "c.xlsx")
+    S.write_pdv_file(sc, 5, {rows[2]: 1}, out5)
+    ws5 = load_workbook(out5)["GRIGLIA "]
+    assert "CONCORDIO" in ws5["F1"].value and "CONCORDIO" in ws5["F2"].value and ws5["H8"].value == 1
+
+
+def test_pdv_invoice_to_bms_and_several_grids(tmp_path):
+    """Dati Filiali 1：发票都开给 BMS、货送门店；SAIS 那种好几页 GRIGLIA：几页一起读，各自写回"""
+    from openpyxl import load_workbook
+    p = str(tmp_path / "SCHEDA SAIS 0726.xlsx")
+    _pdv_file(p, fatt_per_store=False, grids=("GRIGLIA ESTIVI", "GRIGLIA INVERNO"))
+    sc = S.parse_scheda(p)
+    assert sc["pdv"]["fatt_all"].startswith("Ragione Sociale: BMS") and sc["pdv"]["sheets"] == ["GRIGLIA ESTIVI", "GRIGLIA INVERNO"]
+    assert len(sc["items"]) == 6 and len({it["row"] for it in sc["items"]}) == 6
+    last = sc["items"][-1]
+    assert last["sheet"] == "GRIGLIA INVERNO" and last["row"] == 8 + S.PDV_ROW_BLOCK
+    out = str(tmp_path / "o.xlsx")
+    S.write_pdv_file(sc, 3, {sc["items"][0]["row"]: 2, last["row"]: 4}, out)
+    wb = load_workbook(out)
+    assert wb["GRIGLIA ESTIVI"]["H6"].value == 2 and wb["GRIGLIA INVERNO"]["H8"].value == 4
+    assert wb["GRIGLIA INVERNO"]["H6"].value is None
+    for g in ("GRIGLIA ESTIVI", "GRIGLIA INVERNO"):
+        assert "BMS" in wb[g]["F1"].value and "FILIPPO" in wb[g]["F2"].value and wb[g]["H1"].value.endswith("-SF-01")
+
+
+def test_day_folders_italian(tmp_path):
+    """门店采购的星期文件夹叫「01 LUNEDI」…：和「周一」一样认"""
+    for d in ("01 LUNEDI", "02 MARTEDI", "05 VENERDI"):
+        os.makedirs(tmp_path / d)
+    open(tmp_path / "01 LUNEDI" / "SCHEDA X 0726.xlsx", "wb").close()
+    open(tmp_path / "01 LUNEDI" / "~$SCHEDA X 0726.xlsx", "wb").close()
+    dd = S.day_dirs(str(tmp_path))
+    assert sorted(dd) == ["周一", "周二", "周五"] and dd["周一"].endswith("01 LUNEDI")
+    assert [(d, os.path.basename(p)) for d, p in S.list_schede(str(tmp_path))] == [("周一", "SCHEDA X 0726.xlsx")]

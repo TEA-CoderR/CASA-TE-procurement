@@ -80,7 +80,7 @@ class DashboardPage:
         col.addWidget(self.date_lbl)
         col.addWidget(self.hello)
         head.addLayout(col, 1)
-        b1 = QPushButton(tr("批发商比价"))
+        b1 = QPushButton(tr("DETERSIVO采购"))
         b1.clicked.connect(lambda: self.win.go_page("order"))
         self.btn_start = QPushButton(tr("开始今日采购"))
         self.btn_start.setObjectName("Primary")
@@ -100,8 +100,8 @@ class DashboardPage:
             g.addWidget(c, 0, i)
         lay.addLayout(g)
 
-        p, pv, ph = _panel(tr("门店配货进度"))
-        ph.addWidget(_link(tr("进入门店配货 →"), lambda: self.win.go_page("store_orders")))
+        p, pv, ph = _panel(tr("总仓采购进度"))
+        ph.addWidget(_link(tr("进入总仓采购 →"), lambda: self.win.go_page("store_orders")))
         self.steps = StepBar([(tr("读取供应商清单"), ""), (tr("计算订货量"), ""), (tr("核对明细"), ""),
                               (tr("配货与凑单"), ""), (tr("生成订单"), "")])
         pv.addWidget(self.steps)
@@ -109,7 +109,7 @@ class DashboardPage:
 
         row = QHBoxLayout()
         row.setSpacing(16)
-        left, lv, lh = _panel(tr("今日供应商"), tr("每家供应商今天的状态和各门店去向；双击一行进入门店配货"))
+        left, lv, lh = _panel(tr("今日供应商"), tr("每家供应商今天的状态和各门店去向；双击一行进入总仓采购"))
         self.sup_title = left.title
         self.legend = []
         for kind, text in (("ok", tr("直送")), ("near", "BMS"), ("far", tr("这次不订"))):
@@ -284,7 +284,7 @@ class DashboardPage:
         n_calc = sum(1 for r in rows if r[8] == "calc")
         n_todo = sum(1 for r in rows if r[8] is None)
         has_res = n_done > 0
-        self.btn_start.setText(tr("查看配货结果") if has_res else tr("继续门店配货") if n_calc else tr("开始今日采购"))
+        self.btn_start.setText(tr("查看配货结果") if has_res else tr("继续总仓采购") if n_calc else tr("开始今日采购"))
         self.btn_start.setEnabled(bool(day))
 
         # 卡片

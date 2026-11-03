@@ -21,6 +21,16 @@ from datetime import datetime
 STORE_SHEETS = {1: "FOIANO", 2: "MARLIA", 3: "S.FILIPPO", 4: "S.MARCO", 5: "S.CONCORDIO"}
 BMS = "BMS"
 DAY_FOLDERS = ["周一", "周二", "周三", "周四", "周五"]
+# 星期文件夹的其他写法（门店采购的 PDV 文件夹是「01 LUNEDI」…「05 VENERDI」，2026-11-03）
+DAY_ALIASES = {"周一": ("LUNEDI", "LUNEDÌ", "MONDAY"), "周二": ("MARTEDI", "MARTEDÌ", "TUESDAY"),
+               "周三": ("MERCOLEDI", "MERCOLEDÌ", "WEDNESDAY"), "周四": ("GIOVEDI", "GIOVEDÌ", "THURSDAY"),
+               "周五": ("VENERDI", "VENERDÌ", "FRIDAY")}
+# 门店采购（PDV）文件夹的默认位置（共享盘；设置里可以改）
+PDV_DEFAULT_FOLDER = r"D:\SynologyDrive\SynologyDrive\2 Griglia per gli ordini\03 Griglia per gli ordini PDV"
+# 门店采购（PDV）订单号里的门店简写：NUMERO ORDINE = 日月年-简写-01（SCHEDA 模板里的样子是 01032026-SF-01）
+STORE_ABBR = {1: "FO", 2: "MA", 3: "SF", 4: "SM", 5: "SC"}
+# Dati Filiali 页里认门店用的关键词（地址文字里有就算）
+STORE_WORDS = {1: ("FOIANO",), 2: ("CAPANNORI", "MARLIA", "GROUP"), 3: ("FILIPPO",), 4: ("MARCO",), 5: ("CONCORDIO",)}
 
 DEFAULT_FILL = {
     "max_amount_gap": 30.0,   # 离起订金额差多少欧以内才凑单
@@ -59,11 +69,11 @@ def _first_number(text):
 
 
 def supplier_short_name(path):
-    """'SCHEDA DOPLA 0110 .xlsx' → 'DOPLA'；'SCHEDA FHP(VILEDA) 2308.xlsx' → 'FHP(VILEDA)'"""
+    """'SCHEDA DOPLA 0110 .xlsx' → 'DOPLA'；'SCHEDA FHP(VILEDA) 2308.xlsx' → 'FHP(VILEDA)'；'SCHEDA SAIS 0726..xlsx' → 'SAIS'"""
     n = os.path.splitext(os.path.basename(path))[0]
     n = re.sub(r"^\s*SCHEDA\s+", "", n, flags=re.I)
     n = re.sub(r"\(\d{4}-\d{2}-\d{2}.*?\)", "", n)
-    n = re.sub(r"\s+\d{4,6}\s*$", "", n.strip())
+    n = re.sub(r"\s+\d{4,6}[\s.]*$", "", n.strip())         # 「SCHEDA SAIS 0726..xlsx」后面多一个点也去掉
     return n.strip() or os.path.basename(path)
 
 
@@ -313,13 +323,33 @@ def save_config_moq(path, supplier_id, m, scheda_name=""):
     return d
 
 
+def day_dirs(root):
+    """{星期（周一…周五）: 文件夹路径}：文件夹叫「周一」或者「01 LUNEDI」这种都认"""
+    out = {}
+    try:
+        names = [n for n in os.listdir(root) if os.path.isdir(os.path.join(root, n))]
+    except OSError:
+        return out
+    for d in DAY_FOLDERS:
+        if d in names:
+            out[d] = os.path.join(root, d)
+            continue
+        for n in sorted(names):
+            u = _norm(n).replace(" ", "")
+            if any(a in u for a in DAY_ALIASES[d]):
+                out[d] = os.path.join(root, n)
+                break
+    return out
+
+
 def list_schede(root, day=None):
     """采购配单文件夹里的 SCHEDA 文件：[(星期, 路径)]"""
     out = []
     days = [day] if day else DAY_FOLDERS
+    dirs = day_dirs(root)
     for d in days:
-        folder = os.path.join(root, d)
-        if not os.path.isdir(folder):
+        folder = dirs.get(d)
+        if not folder:
             continue
         for f in sorted(os.listdir(folder)):
             if f.lower().endswith((".xlsx", ".xlsm")) and not f.startswith("~$") and "SCHEDA" in f.upper():
@@ -338,11 +368,13 @@ def scheda_index(root, cache_path=None, log=None):
     """
     品牌供应商（直接下单的供应商）的采购配单文件 SCHEDA 里有哪些商品（2026-11-01 用户：门店报告里写明非 Griglia 商品
     能不能直接向品牌供应商订）→ {"ean": {条码: 供应商名}, "code": {我们的编号: 供应商名}, "files": n}。
-    读「采购配单文件夹」周一 – 周五所有 SCHEDA；每个文件按 路径 + 大小 + 修改时间 缓存（cache_path，JSON），没改过不再打开
+    读「采购配单文件夹」周一 – 周五所有 SCHEDA（root 可以是几个文件夹：总仓采购 + 门店采购）；每个文件按 路径 + 大小 + 修改时间
+    缓存（cache_path，JSON），没改过不再打开
     """
     import json
     out = {"ean": {}, "code": {}, "files": 0}
-    if not root or not os.path.isdir(root):
+    roots = [r for r in (root if isinstance(root, (list, tuple)) else [root]) if r and os.path.isdir(r)]
+    if not roots:
         return out
     old = {}
     if cache_path and os.path.exists(cache_path):
@@ -352,7 +384,7 @@ def scheda_index(root, cache_path=None, log=None):
         except Exception:
             old = {}
     new = {}
-    for _d, p in list_schede(root):
+    for _d, p in [x for r in roots for x in list_schede(r)]:
         try:
             st = os.stat(p)
         except OSError:
@@ -400,6 +432,55 @@ def brand_supplier(index, ean, code):
 # =====================================================================
 # 读取 SCHEDA
 # =====================================================================
+PDV_ROW_BLOCK = 100000      # 门店采购 SCHEDA 有几页 GRIGLIA 时，第 k 页的商品行号 = 行 + k × 这个数
+
+
+def _find_header(ws):
+    """商品表头（Cod.Art. / Codice EAN / Colli …那一行）：({键: 列}, 行号)；找不到 ({}, None)"""
+    for i, row in enumerate(ws.iter_rows(min_row=1, max_row=15, values_only=True), 1):
+        found = {}
+        for c, v in enumerate(row, 1):
+            n = _norm(v).replace(" ", "")
+            if n == "COD.ART.":
+                found["code"] = c
+            elif n == "CODICEEAN":
+                found["ean"] = c
+            elif n.startswith("DESCRIZIONE"):
+                found["desc"] = c
+            elif n == "PZ*COLLI":
+                found["pack"] = c
+            elif n == "COLLI":
+                found["colli"] = c
+            elif n == "PREZZONETTO":
+                found["price"] = c
+            elif n.startswith("CODICEFORN") or n in ("COD.FORN.", "CODFORN", "COD.FORNITORE"):
+                found["sup_code"] = c          # 供应商自己的货号（Codice Fornitore）
+        if "colli" in found and ("ean" in found or "code" in found):
+            return found, i
+    return {}, None
+
+
+def _read_items(info, ws, cols, hdr, offset=0, sheet=None):
+    """一页的商品 → info["items"]（行号 + offset；sheet：门店采购几页 GRIGLIA 时记是哪一页）"""
+    for r_idx, row in enumerate(ws.iter_rows(min_row=hdr + 1, values_only=True), hdr + 1):
+        def g(k):
+            c = cols.get(k)
+            return row[c - 1] if c and c - 1 < len(row) else None
+        code, ean = g("code"), g("ean")
+        code = str(int(code)) if isinstance(code, float) and code == int(code) else str(code or "").strip()
+        ean = str(int(ean)) if isinstance(ean, float) and ean == int(ean) else str(ean or "").strip()
+        if not code and not ean:
+            continue
+        pack = _num(g("pack")) or 1
+        sc_ = g("sup_code")
+        sc_ = str(int(sc_)) if isinstance(sc_, float) and sc_ == int(sc_) else str(sc_ or "").strip()
+        it = {"row": r_idx + offset, "code": code, "ean": ean, "desc": str(g("desc") or "").strip(),
+              "pack": pack if pack > 0 else 1, "price": _num(g("price")) or 0.0, "sup_code": sc_}
+        if sheet is not None:
+            it["sheet"] = sheet
+        info["items"].append(it)
+
+
 def parse_scheda(path, overrides=None):
     """
     返回 {"path", "name", "company", "moq": {...}, "moq_colli", "moq_amount",
@@ -424,31 +505,19 @@ def parse_scheda(path, overrides=None):
         for sid, name in STORE_SHEETS.items():
             if name in titles:
                 info["sheets"][sid] = titles[name]
+        grids = [t for k, t in titles.items() if k.startswith("GRIGLIA") and "TUTTI" not in k]
+        if not info["sheets"] and grids:
+            # 门店采购（PDV 文件夹）：一页 GRIGLIA（也有分好几页的，例如 SAIS：BAZZAR & DRUG / ESTIVI / INVERNO），
+            # 一张单送一家店（表头「Luogo di destinazione」选门店）→ 五家店都按这几页算，生成订单时每家店一个文件
+            # （write_pdv_file）。第 k 页（从 0 数）的商品行号 = 行 + k × PDV_ROW_BLOCK，几页的行号不会重
+            info["pdv"] = read_pdv_header(wb, grids[0])
+            info["pdv"]["sheets"] = grids
+            info["pdv"]["cells_by_sheet"] = {t: read_pdv_header(wb, t)["cells"] for t in grids}
+            info["sheets"] = {sid: grids[0] for sid in STORE_SHEETS}
         if not info["sheets"]:
-            raise ValueError("没有门店页（FOIANO / MARLIA / S.FILIPPO / S.MARCO / S.CONCORDIO）")
+            raise ValueError("没有门店页（FOIANO / MARLIA / S.FILIPPO / S.MARCO / S.CONCORDIO），也没有 GRIGLIA 页")
         ws = wb[next(iter(info["sheets"].values()))]
-        cols, hdr = {}, None
-        for i, row in enumerate(ws.iter_rows(min_row=1, max_row=15, values_only=True), 1):
-            found = {}
-            for c, v in enumerate(row, 1):
-                n = _norm(v).replace(" ", "")
-                if n == "COD.ART.":
-                    found["code"] = c
-                elif n == "CODICEEAN":
-                    found["ean"] = c
-                elif n.startswith("DESCRIZIONE"):
-                    found["desc"] = c
-                elif n == "PZ*COLLI":
-                    found["pack"] = c
-                elif n == "COLLI":
-                    found["colli"] = c
-                elif n == "PREZZONETTO":
-                    found["price"] = c
-                elif n.startswith("CODICEFORN") or n in ("COD.FORN.", "CODFORN", "COD.FORNITORE"):
-                    found["sup_code"] = c          # 供应商自己的货号（Codice Fornitore）
-            if "colli" in found and ("ean" in found or "code" in found):
-                cols, hdr = found, i
-                break
+        cols, hdr = _find_header(ws)
         if not hdr:
             raise ValueError("门店页没有找到表头（Cod.Art. / Codice EAN / Colli）")
         info["header_row"], info["cols"] = hdr, cols
@@ -458,20 +527,18 @@ def parse_scheda(path, overrides=None):
         filled = [c for c, v in enumerate(hrow, 1) if v not in (None, "") and str(v).strip()]
         gia = next((c for c, v in enumerate(hrow, 1) if _norm(v) == "GIA"), None)
         info["extra_col"] = gia or ((max(filled) + 1) if filled else len(hrow) + 1)
-        for r_idx, row in enumerate(ws.iter_rows(min_row=hdr + 1, values_only=True), hdr + 1):
-            def g(k):
-                c = cols.get(k)
-                return row[c - 1] if c and c - 1 < len(row) else None
-            code, ean = g("code"), g("ean")
-            code = str(int(code)) if isinstance(code, float) and code == int(code) else str(code or "").strip()
-            ean = str(int(ean)) if isinstance(ean, float) and ean == int(ean) else str(ean or "").strip()
-            if not code and not ean:
-                continue
-            pack = _num(g("pack")) or 1
-            sc_ = g("sup_code")
-            sc_ = str(int(sc_)) if isinstance(sc_, float) and sc_ == int(sc_) else str(sc_ or "").strip()
-            info["items"].append({"row": r_idx, "code": code, "ean": ean, "desc": str(g("desc") or "").strip(),
-                                  "pack": pack if pack > 0 else 1, "price": _num(g("price")) or 0.0, "sup_code": sc_})
+        pages = [(0, ws, cols, hdr)]
+        if info.get("pdv"):
+            info["pdv"]["cols"] = {ws.title: cols}
+            for k, t in enumerate(info["pdv"]["sheets"][1:], 1):
+                c2, h2 = _find_header(wb[t])
+                if not h2:
+                    info["warnings"].append(f"{t} 页没有找到表头，这一页没读")
+                    continue
+                info["pdv"]["cols"][t] = c2
+                pages.append((k, wb[t], c2, h2))
+        for k, ws_, cols_, hdr_ in pages:
+            _read_items(info, ws_, cols_, hdr_, k * PDV_ROW_BLOCK, ws_.title if info.get("pdv") else None)
         # 各门店页一般行完全一样；万一不一样，按商品编号 / EAN 对应到各自的行
         info["rowmap"] = {}
         first = next(iter(info["sheets"].values()))
@@ -519,6 +586,81 @@ def parse_scheda(path, overrides=None):
         return info
     finally:
         wb.close()
+
+
+def _store_of_text(text):
+    """
+    地址 / 公司名文字 → 门店号（Dati Filiali 页一行一家店）；BMS 那一行、认不出 → None。
+    先看第一行（公司名「CASA & TE S.CONCORDIO SRL」），没有门店名再看整段：用户的文件里 S.CONCORDIO 那一行的 PEC
+    写成了 casaete.smarco@pec.it，整段一起看会认成 S.MARCO
+    """
+    raw = str(text or "")
+    for part in (raw.split("\n", 1)[0], raw):
+        u = _norm(part).replace(".", " ")
+        if not u:
+            continue
+        for sid, words in STORE_WORDS.items():
+            if any(w in u for w in words):
+                return sid
+    return None
+
+
+def read_pdv_header(wb, grid_title):
+    """
+    门店采购 SCHEDA 的表头（GRIGLIA 页第 1–3 行）和「Dati Filiali」页：
+      {"sheet", "cells": {"fatt": "F1", "dest": "F2", "number": "H1", "date": "H2"}, "dest": {门店号: 送货地址},
+       "fatt": {门店号: 开票抬头}, "fatt_all": 所有门店都一样的开票抬头（发票开给 BMS 的那种）}
+    两种写法（2026-11-03 看用户的文件）：「Dati Filiali 1」A 列只有一行 BMS 抬头 + B 列各店地址（发票开给 BMS、货送门店）；
+    「Dati Filiale 2」A / B 两列一家店一行（每家店自己开票）
+    """
+    ws = wb[grid_title]
+    cells = {}
+    for r, row in enumerate(ws.iter_rows(min_row=1, max_row=4, values_only=True), 1):
+        for c, v in enumerate(row, 1):
+            n = _norm(v).replace(" ", "").rstrip(":")
+            key = {"FATTURAZIONE": "fatt", "LUOGODIDESTINAZIONE": "dest", "NUMEROORDINE": "number",
+                   "DATAORDINE": "date", "DATACONSEGNAENTRO": "deliver"}.get(n)
+            if key and key not in cells:
+                cells[key] = f"{_col_letter(c + 1)}{r}"
+    out = {"sheet": grid_title, "cells": cells, "dest": {}, "fatt": {}, "fatt_all": None, "data_sheet": None}
+    ds = next((w for w in wb.worksheets if _norm(w.title).startswith("DATI FILIAL")), None)
+    if ds is None:
+        return out
+    out["data_sheet"] = ds.title
+    fatts = []
+    for row in ds.iter_rows(min_row=2, max_row=20, values_only=True):
+        a = row[0] if len(row) > 0 else None
+        b = row[1] if len(row) > 1 else None
+        if b not in (None, "") and str(b).strip():
+            sid = _store_of_text(b)
+            if sid and sid not in out["dest"]:
+                out["dest"][sid] = str(b).strip()
+        if a not in (None, "") and str(a).strip():
+            fatts.append(str(a).strip())
+            sid = _store_of_text(a)
+            if sid and sid not in out["fatt"]:
+                out["fatt"][sid] = str(a).strip()
+    if len(fatts) == 1:
+        out["fatt_all"] = fatts[0]
+    return out
+
+
+def pdv_header_values(pdv, sid, when=None):
+    """门店采购：这家店的订单文件表头要填的格子 {格子: 文字}（开票、送货地址、订单号、下单日期）"""
+    when = when or datetime.now()
+    cells = pdv.get("cells") or {}
+    out = {}
+    if cells.get("fatt"):
+        f = pdv["fatt"].get(sid) or pdv.get("fatt_all")
+        if f:
+            out[cells["fatt"]] = f
+    if cells.get("dest") and pdv["dest"].get(sid):
+        out[cells["dest"]] = pdv["dest"][sid]
+    if cells.get("number"):
+        out[cells["number"]] = f"{when:%d%m%Y}-{STORE_ABBR.get(sid, sid)}-01"
+    if cells.get("date"):
+        out[cells["date"]] = f"{when:%d/%m/%Y}"
+    return out
 
 
 def parse_moq(path):
@@ -1063,7 +1205,7 @@ def _borrow(scheda, res, members, lent, fill, items, relaxed=False):
     return False
 
 
-PLAN_MODES = ("auto", "all_bms", "direct_only")
+PLAN_MODES = ("auto", "all_bms", "direct_only", "pdv")
 
 
 def bms_ordered(b):
@@ -1131,6 +1273,12 @@ def plan_supplier(scheda, demand, fill=None, stores=None, colli=None, mode="auto
     if mode == "direct_only":
         for sid in to_bms:
             res["stores"][sid]["status"] = "dropped"
+        return res
+    if mode == "pdv" or scheda.get("pdv"):
+        # 门店采购（2026-11-03 用户定）：每家店的单都要各自达到起订量（差一点可以凑单），不够的这次不订；没有 BMS
+        for sid in to_bms:
+            res["stores"][sid]["status"] = "wait"
+        res["mode"] = "pdv"
         return res
 
     def evaluate(members):
@@ -1542,6 +1690,90 @@ def write_order_file(scheda, per_store_lines, out_path, extra=None, headers=None
     return out_path
 
 
+def _inline_str(ref, text, style):
+    import html
+    t = html.escape(str(text), quote=False).replace("\n", "&#10;")
+    return f'<c r="{ref}"{style} t="inlineStr"><is><t xml:space="preserve">{t}</t></is></c>'
+
+
+def _set_text_cells(xml, values):
+    """values: {格子（如 F2）: 文字}：写成文字格（保留原来的格式）；没有这一格就加上"""
+    for ref, text in values.items():
+        m = re.match(r"([A-Z]+)(\d+)$", ref)
+        if not m:
+            continue
+        col, row = m.group(1), int(m.group(2))
+        cell_re = re.compile(r'<c\b[^>]*\br="' + ref + r'"[^>]*?(?:/>|>.*?</c>)', re.S)
+        cm = cell_re.search(xml)
+        style = ""
+        if cm:
+            st = re.search(r'\bs="(\d+)"', cm.group(0).split(">")[0])
+            style = f' s="{st.group(1)}"' if st else ""
+            xml = xml[:cm.start()] + _inline_str(ref, text, style) + xml[cm.end():]
+            continue
+        row_re = re.compile(r'<row\b[^>]*\br="' + str(row) + r'"[^>]*?(/>|>(.*?)</row>)', re.S)
+        rm = row_re.search(xml)
+        if not rm:
+            continue
+        new = _inline_str(ref, text, "")
+        if rm.group(1) == "/>":
+            xml = xml[:rm.start()] + rm.group(0)[:-2] + ">" + new + "</row>" + xml[rm.end():]
+            continue
+        inner = rm.group(2)
+        pos = len(inner)
+        for c2 in re.finditer(r'<c\b[^>]*\br="([A-Z]+)\d+"', inner):
+            if _col_num(c2.group(1)) > _col_num(col):
+                pos = c2.start()
+                break
+        xml = xml[:rm.start(2) + pos] + new + xml[rm.start(2) + pos:]
+    return xml
+
+
+def write_pdv_file(scheda, sid, lines, out_path, when=None):
+    """
+    门店采购：一家店一个订单文件。复制 SCHEDA（图片、格式都保留），GRIGLIA 页 Colli 列写这家店的箱数，
+    表头填开票抬头（Fatturazione）、送货地址（Luogo di destinazione）、订单号、下单日期（从「Dati Filiali」页取这家店那一行）
+    """
+    pdv = scheda["pdv"]
+    sheets = pdv.get("sheets") or [pdv["sheet"]]
+    jobs = {}                                   # {工作表名: (Colli 列, 不订的行用的格式列, {行: 箱数}, 表头文字)}
+    for k, t in enumerate(sheets):
+        cols = (pdv.get("cols") or {}).get(t) or scheda["cols"]
+        if "colli" not in cols:
+            continue
+        pc = cols.get("pack") or (cols["colli"] - 1)
+        plain = _col_letter(pc) if pc and pc >= 1 and pc != cols["colli"] else None
+        cells = {it["row"] - k * PDV_ROW_BLOCK: lines.get(it["row"]) for it in scheda["items"]
+                 if it.get("sheet", sheets[0]) == t}
+        head = pdv_header_values(dict(pdv, cells=(pdv.get("cells_by_sheet") or {}).get(t) or pdv["cells"]), sid, when)
+        jobs[t] = (_col_letter(cols["colli"]), plain, cells, head)
+    tmp = out_path + ".tmp"
+    with zipfile.ZipFile(scheda["path"]) as zin:
+        paths = _sheet_paths(zin)
+        targets = {paths[t]: v for t, v in jobs.items() if t in paths}
+        with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zout:
+            for item in zin.infolist():
+                data = zin.read(item.filename)
+                if item.filename in targets:
+                    colli_col, plain_col, cells, head = targets[item.filename]
+                    x = _set_cells(data.decode("utf-8"), colli_col, cells, plain_col)
+                    x = _set_text_cells(x, head)
+                    data = x.encode("utf-8")
+                elif item.filename == "xl/workbook.xml":
+                    wbx = data.decode("utf-8")
+                    if "<calcPr" in wbx:
+                        if "fullCalcOnLoad" not in wbx:
+                            wbx = re.sub(r"<calcPr\b", '<calcPr fullCalcOnLoad="1"', wbx, count=1)
+                    else:
+                        wbx = wbx.replace("</workbook>", '<calcPr fullCalcOnLoad="1"/></workbook>')
+                    data = wbx.encode("utf-8")
+                elif item.filename == "xl/calcChain.xml":
+                    pass
+                zout.writestr(item, data)
+    os.replace(tmp, out_path)
+    return out_path
+
+
 GRIGLIA_MARK = {"direct": "DIRETTO", "bms": "BMS"}     # 汇总页门店名上面写的去向
 
 
@@ -1667,6 +1899,14 @@ def write_plans(results, out_root, date_tag=None, on_file=None, calc=None):
         folder = os.path.join(out_root, day)
         os.makedirs(folder, exist_ok=True)
         safe = re.sub(r'[\\/:*?"<>|]', "_", sc["name"])
+        if sc.get("pdv"):
+            # 门店采购：一家店一个文件（送货地址、开票抬头各不一样）
+            for sid, st in direct:
+                p = os.path.join(folder, f"Ordine_{safe}_{STORE_SHEETS[sid]}_{date_tag}.xlsx")
+                on_file(n, len(todo), os.path.basename(p))
+                write_pdv_file(sc, sid, st["lines"], p)
+                written.append((p, sc["name"], STORE_SHEETS[sid], st["colli"], st["amount"], st["status"], sc["path"]))
+            continue
         extra = extra_data(sc, calc.get("demand"), calc.get("base"), calc.get("days")) if calc else None
         heads = extra_headers(calc.get("days")) if calc else None
         extra, heads = file_extra(extra, heads)
@@ -1938,8 +2178,8 @@ def allocate(calc, colli, fill, out_root, log=print, date_tag=None, edited=None,
     for i, sc in enumerate(todo):
         progress(0, "running", f"{i + 1} / {len(todo)}", sc["name"], 40.0 * i / max(1, len(todo)))
         pk = (picks or {}).get(sc["path"])
-        plan = plan_supplier(sc, calc["demand"], fill, stores, colli.get(sc["path"], {}),
-                             "manual" if pk is not None else (modes or {}).get(sc["path"], "auto"), picks=pk)
+        mode = "pdv" if sc.get("pdv") else "manual" if pk is not None else (modes or {}).get(sc["path"], "auto")
+        plan = plan_supplier(sc, calc["demand"], fill, stores, colli.get(sc["path"], {}), mode, picks=pk)
         results.append((sc["day"], sc, plan))
         parts = [f"{STORE_SHEETS[s]}:{status_text(STORE_SHEETS[s], st['status'])}" for s, st in plan["stores"].items()
                  if st["status"] != "none"]

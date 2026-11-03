@@ -622,7 +622,7 @@ class DetailWindow(ToolWindow):
         self.table.horizontalHeaderItem(TRANSFER_COL).setText(tr("调货") + " ✎")
         self.table.horizontalHeaderItem(CHANGE_COL).setToolTip(tr("订货箱数 − 建议箱数，括号里是为什么变：调货 / 手动改"))
         self.table.horizontalHeaderItem(REASON_COL).setToolTip(tr("系统为什么这么建议：库存够卖几天、订货周期里大约卖多少"))
-        self.table.horizontalHeaderItem(_col(11)).setToolTip(tr("库存够卖 = 本店库存 ÷ 日均（账面库存是负数时按 0 算）。门店配货、检查订货清单、批发商比价都是这个算法"))
+        self.table.horizontalHeaderItem(_col(11)).setToolTip(tr("库存够卖 = 本店库存 ÷ 日均（账面库存是负数时按 0 算）。总仓采购、检查订货清单、DETERSIVO采购都是这个算法"))
         self.table.horizontalHeaderItem(AFTER_COL).setToolTip(
             tr("到货后够卖 =（库存 + 订的货 + 调进来的 − 调给别的店的）÷ 日均：这次订的货和调的货都到了以后能卖几天；超过凑单天数标黄，可能压货"))
         for k, tip in ((22, tr("月均：新算法 = 日均（加权 + 季节）× 30；原程序算法 = 最长周期销量 ÷ 月数（默认 180 天 ÷ 6）")),
