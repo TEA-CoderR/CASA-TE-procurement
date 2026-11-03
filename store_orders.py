@@ -912,14 +912,51 @@ def export_transfers(transfers, path, date_tag=""):
 
 
 def colli_for(d, pack, algo=None):
-    """建议件数 → SCHEDA 箱数。新算法：凑不成整箱时少订后够安全库存就少订（forecast.to_packs）；原程序算法：件数（已按原程序取整）÷ 每箱件数，向上取整"""
+    """
+    建议件数 → SCHEDA 箱数。新算法：凑不成整箱时少订后够安全库存就少订（forecast.to_packs）；原程序算法：件数（已按原程序取整）÷ 每箱件数，向上取整。
+    在途（d["transit"] 件，已经订了还没到货，apply_transit；2026-11-03 用户：从建议量里扣）先从建议件数里扣掉
+    """
     if not d or d["sugg"] <= 0:
+        return 0
+    tp = max(0.0, float(d.get("transit") or 0))
+    q = d["sugg"] - tp
+    if q <= 1e-9:
         return 0
     if algo and algo.get("engine") == "v2":
         import forecast as F
-        return F.to_packs(d["sugg"], pack, d.get("inv", 0), d.get("daily", 0), algo,
-                          tier=d.get("tier") or "C", cycle=d.get("cycle"))
-    return math.ceil(d["sugg"] / pack)
+        return F.to_packs(q, pack, d.get("inv", 0), d.get("daily", 0), algo,
+                          tier=d.get("tier") or "C", cycle=d.get("cycle"), on_order=tp)
+    return math.ceil(q / pack - 1e-9)
+
+
+def apply_transit(demand, schede, transit):
+    """
+    在途（order_record.compute 的结果）→ demand[门店][编号]["transit"]（件）/ ["transit_info"]；调货用的 need 也扣掉。
+    建议箱数（colli_for）会扣掉在途。返回有在途的 (门店, 编号) 个数
+    """
+    import order_record as REC
+    if not transit:
+        return 0
+    n = 0
+    for sid, dem in demand.items():
+        if not isinstance(sid, int) or not isinstance(dem, dict):
+            continue
+        done = set()
+        for sc in schede:
+            for it in sc["items"]:
+                code = it.get("db_code") or it["code"]
+                d = dem.get(code)
+                if not d or code in done:
+                    continue
+                t = REC.lookup(transit, sid, it.get("ean"), code)
+                if not t:
+                    continue
+                done.add(code)
+                d["transit"] = float(t["pcs"])
+                d["transit_info"] = t
+                d["need"] = max(0.0, float(d.get("need", d["sugg"]) or 0) - float(t["pcs"]))
+                n += 1
+    return n
 
 
 def base_colli(scheda, demand, stores=None):
@@ -2116,7 +2153,7 @@ ALLOCATE_STEPS = ["判断起订量、凑单和 BMS", "生成订单文件", "生�
 
 
 def compute(db, schede_paths, stores, days_list, reorder_cycle, log=print, use_supplier_cycles=True, algo=None,
-            progress=None, cancel=None, moq_overrides=None):
+            progress=None, cancel=None, moq_overrides=None, transit=None):
     """
     返回 {"schede", "demand", "base", "missing", "errors"}；base = {路径: {门店号: {行号: 建议箱数}}}
     progress(步骤下标, 状态, 计数, 说明, 总百分比)；cancel() 返回 True 时抛出取消
@@ -2158,10 +2195,13 @@ def compute(db, schede_paths, stores, days_list, reorder_cycle, log=print, use_s
     missing = demand.pop("_missing", [])
     if missing:
         log(f"⚠ {len(missing)} 个商品在数据库里找不到编号，跳过")
+    n_tr = apply_transit(demand, schede, transit)
+    if n_tr:
+        log(f"在途：{n_tr} 个商品已经订了还没到货，建议量里扣掉了")
     base = {sc["path"]: base_colli(sc, demand, stores) for sc in schede}
     progress(2, "done", "", "", 100.0)
     return {"schede": schede, "demand": demand, "base": base, "missing": missing, "errors": errors,
-            "stores": list(stores), "days": list(days_list)}
+            "stores": list(stores), "days": list(days_list), "transit": transit}
 
 
 def allocate(calc, colli, fill, out_root, log=print, date_tag=None, edited=None, only=None, progress=None, modes=None,

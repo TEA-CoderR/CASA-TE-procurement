@@ -45,7 +45,7 @@ ALL = "__all__"
 # 2026-10-20 第三版：按用户自己排好的顺序做默认（调货只显示调进来的，从哪家调；调出的不显示）
 #   条码 等级 周期 本店库存 日均 库存够卖 需求 每箱件数 | 建议 判断 订货箱数 调货 | 到货后够卖 件价 金额 原因
 # 2026-10-21 加了 36 Codice Fornitore（供应商自己的货号，SCHEDA 里有这一列才有），默认放在条码后面
-# 2026-11-03 加了 37 在途（已经订了、还没到货的箱数，order_record；只显示、不扣），放在库存够卖后面
+# 2026-11-03 加了 37 在途箱数（已经订了、还没到货的箱数，order_record；用户同一天定：从建议量里扣，store_orders.apply_transit），放在库存够卖后面
 _ORDER = [4, 36, 18, 19, 6, 20, 11, 37, 23, 12, 15, 2, 16, 33, 32, 13, 17, 35,
           1, 0, 5, 3, 34, 14, 21, 7, 8, 9, 10, 22, 24, 25, 26, 27, 28, 29, 30, 31]
 TRANSIT_K = 37
@@ -599,7 +599,7 @@ class DetailWindow(ToolWindow):
                                                tr("等级"), tr("周期"), tr("日均"), tr("目标库存"),
                                                tr("月均"), tr("需求（件）")] + [f"GIA.{i}" for i in range(6)] +
                                               ["GIA-period", "period_sales", tr("到货后够卖（天）"),
-                                               tr("调货"), tr("变化（箱）"), tr("原因"), "Codice Fornitore", tr("在途")]),
+                                               tr("调货"), tr("变化（箱）"), tr("原因"), "Codice Fornitore", tr("在途箱数")]),
                                         numeric_cols=[_col(k) for k in list(range(6, 18)) + [19, 20, 21, 32, 34, 37] + _EXTRA])
         self.table.setEditTriggers(QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed |
                                    QAbstractItemView.AnyKeyPressed)
@@ -629,7 +629,7 @@ class DetailWindow(ToolWindow):
         self.table.horizontalHeaderItem(CHANGE_COL).setToolTip(tr("订货箱数 − 建议箱数，括号里是为什么变：调货 / 手动改"))
         self.table.horizontalHeaderItem(REASON_COL).setToolTip(tr("系统为什么这么建议：库存够卖几天、订货周期里大约卖多少"))
         self.table.horizontalHeaderItem(TRANSIT_COL).setToolTip(
-            tr("在途：已经订了、还没到货的箱数（采购订单跟踪里没到货的单 + RECORD ORDINE 里的订单文件）。只是提醒，没从建议里扣；"
+            tr("在途箱数：已经订了、还没到货的箱数（采购订单跟踪里没到货的单 + RECORD ORDINE 里的订单文件），已经从建议里扣掉了；"
                "鼠标停在格子上看是哪几张单"))
         self.table.horizontalHeaderItem(_col(11)).setToolTip(tr("库存够卖 = 本店库存 ÷ 日均（账面库存是负数时按 0 算）。总仓采购、检查订货清单、DETERSIVO采购都是这个算法"))
         self.table.horizontalHeaderItem(AFTER_COL).setToolTip(
@@ -1137,6 +1137,9 @@ class DetailWindow(ToolWindow):
     # ---------- 在途（已经订了、还没到货）----------
     def _transit_of(self, it, sid):
         import order_record as REC
+        x = ((self.page.calc or {}).get("demand") or {}).get(sid, {}).get(it.get("db_code") or it.get("code"))
+        if x and x.get("transit_info"):                 # 计算时已经扣掉的在途
+            return x["transit_info"]
         return REC.lookup(self.transit, sid, it.get("ean"), it.get("db_code") or it.get("code"))
 
     def _transit_text(self, it, sid):
@@ -1162,6 +1165,9 @@ class DetailWindow(ToolWindow):
         """采购订单跟踪里没到货的单 + RECORD ORDINE 订单文件 → 在途列（后台线程）"""
         import threading
         import order_record as REC
+        if (self.page.calc or {}).get("transit") is not None:
+            self.transit = self.page.calc["transit"]       # 计算订货量时已经读好（建议量里扣过了）
+            return
         if not REC.tracking_folder(self.page.settings):
             return
         self._tr_token += 1
@@ -1355,9 +1361,14 @@ class DetailWindow(ToolWindow):
             tin = {"name": S.STORE_SHEETS.get(t["from"], t["from"]), "pieces": t["pieces"], "inv": have,
                    "days": S.cover_days({"inv": have, "daily": dx.get("daily")}) if dx else None,
                    "saved": t["colli_before"] - t["colli_after"]}
-        return R.plain_reason(x.get("inv_raw", x.get("inv")), x.get("daily"), x.get("cycle"), x.get("sugg"),
-                              boxes=self._orig(sc, sid, it["row"]) or None, target=x.get("target"), transfer=tin,
-                              pack=it.get("pack"))
+        tp = float(x.get("transit") or 0)
+        lines = R.plain_reason(x.get("inv_raw", x.get("inv")), x.get("daily"), x.get("cycle"),
+                               max(0, (x.get("sugg") or 0) - tp), boxes=self._orig(sc, sid, it["row"]) or None,
+                               target=x.get("target"), transfer=tin, pack=it.get("pack"))
+        if tp > 0:
+            ti = x.get("transit_info") or {}
+            lines.insert(0, tr("在途：已经订了 {0:g} 箱（{1:g} 件）还没到货，从建议里扣掉了", ti.get("colli") or 0, tp))
+        return lines
 
     def _marks(self, sc, it, sid, n=None):
         """判断后面的提醒（不改订多少）：新算法订了、一箱到货后要卖半年以上 → 慢销；库存是负数 → 库存不准"""
@@ -1369,7 +1380,7 @@ class DetailWindow(ToolWindow):
         mi, mo = self._moves()
         k_ = (sc["path"], sid, it["row"])
         moved = (mi[k_]["pieces"] if k_ in mi else 0) - sum(t_["pieces"] for t_ in mo.get(k_, []))
-        v = S.cover_days(x, n * it["pack"] + moved)
+        v = S.cover_days(x, n * it["pack"] + moved + float(x.get("transit") or 0))
         return R.review_marks(x.get("target") is not None, n > 0, v, x.get("inv_raw", x.get("inv")))
 
     def _transfer_tip(self, sc, it, sid):
@@ -1503,7 +1514,7 @@ class DetailWindow(ToolWindow):
         mi, mo = self._moves()
         k_ = (sc["path"], sid, it["row"])
         moved = (mi[k_]["pieces"] if k_ in mi else 0) - sum(t_["pieces"] for t_ in mo.get(k_, []))
-        v = S.cover_days(x, n * it["pack"] + moved)
+        v = S.cover_days(x, n * it["pack"] + moved + float((x or {}).get("transit") or 0))     # 在途到了也算
         af = self.table.item(r, AFTER_COL)
         af.setText(S.days_text(v))
         af.setData(KEY_ROLE, None if v is None else (1e12 if math.isinf(v) else v))

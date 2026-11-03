@@ -1379,10 +1379,20 @@ class StoreOrderPage:
         self._task = dlg
         dlg.show()
 
+        settings = self.settings
+
         def work():
             try:
+                transit = None
+                try:                               # 在途（已经订了还没到货）：建议量里扣掉（2026-11-03 用户定）
+                    import order_record as REC
+                    if REC.tracking_folder(settings):
+                        transit = REC.cached(settings)
+                except Exception as e:
+                    log(tr("⚠ 在途（RECORD ORDINE）读不了：{0}", e))
                 db = R.make_db(dbs)
                 calc = S.compute(db, chosen, stores, days, cycle, log=lambda m: log(f"[{tr(self.TITLE)}] " + m),
+                                 transit=transit,
                                  use_supplier_cycles=use_cfg, algo=algo, moq_overrides=dict(self.moq_overrides()),
                                  progress=lambda i, st, cnt, det, pct: (dlg.post_step(i, st, cnt, det), dlg.post_progress(pct)),
                                  cancel=lambda: dlg.cancel_event.is_set())

@@ -50,7 +50,7 @@ from reorder_page import short_decision, store_label, algo_widgets
 #   29 = 金额（确定箱数 × 每箱件数 × 件价，有调货的按调货以后的箱数）
 #   2026-11-01 加 30 = 情况（Griglia 商品 · 批发商都没有 / 非 Griglia 商品 · 批发商都没有 / 非 Griglia 商品 · 批发商有），放在判断后面，
 #   待核对的商品也在主表格里显示，右键表头按「情况」筛选、直接改（用户：在列表里直接判断和修改）
-#   2026-11-03 加 31 = 在途（已经订了还没到货的箱数，order_record；只显示、不扣），放在现在够卖后面
+#   2026-11-03 加 31 = 在途箱数（已经订了还没到货的箱数，order_record；用户同一天定：从建议箱数里扣，init_boxes），放在现在够卖后面
 _ORDER = [22, 3, 27, 4, 28, 9, 31, 10, 11, 15, 20, 29, 0, 30, 24, 2, 26, 16, 17, 18, 5, 6, 7, 8, 14, 12, 13, 19, 21, 23, 25, 1]
 SITU = 30
 TRANSIT = 31
@@ -435,6 +435,7 @@ def init_boxes(rows, units=None, algo=None, rules=None):
       A 类保护：A 类商品、库存不够卖一个订货周期、门店要了 → 至少 1 箱（protect = "a_low"）；
       少订有上限：清单要的数量有它的原因（促销、陈列、门店知道的情况），系统最多砍掉清单的 max_cut（默认一半），
         除非现在的库存已经够卖 free_cut_cycles 个订货周期以上（库存明显多）才可以砍得更多 / 不订（limited = True 表示被这条拦住了）
+    2026-11-03：在途（x["transit_pcs"]，已经订了还没到货）最后从建议箱数里扣（在途件数 ÷ 每箱件数，整箱扣；transit_cut = 扣了几箱）
     """
     import forecast as F
     v2 = bool(algo) and algo.get("engine") == "v2"
@@ -498,6 +499,14 @@ def init_boxes(rows, units=None, algo=None, rules=None):
                 sb = floor                             # 少订不超过上限（库存不是明显多）
                 x["limited"] = True
             x["sbox"] = sb
+        # 在途（已经订了还没到货，order_record；2026-11-03 用户：从建议量里扣）：整箱扣，零头不扣
+        x.pop("transit_cut", None)
+        tp = float(x.get("transit_pcs") or 0)
+        if tp > 0 and x["sbox"]:
+            cut = min(x["sbox"], int(tp // pk))
+            if cut > 0:
+                x["sbox"] -= cut
+                x["transit_cut"] = cut
         _set_box(x, x["sbox"])
 AFTER_COL = _col(20)          # 确定订后够卖（跟着确定件数变）
 LIST_AFTER_COL = _col(21)     # 清单订后够卖（按门店清单原来的数量订）
@@ -798,7 +807,7 @@ class OrderCheck:
                                           tr("清单件数"), tr("建议件数"), tr("确定件数"), tr("确定箱数"), tr("等级"), tr("周期"), tr("日均"),
                                           tr("目标库存"), tr("订后够卖"), tr("清单订后够卖（天）"), tr("门店"),
                                           tr("变化（箱）"), tr("调货"), tr("原因"), "Codice Fornitore", tr("供应商"), tr("月销"),
-                                          tr("金额 €"), tr("情况"), tr("在途")]),
+                                          tr("金额 €"), tr("情况"), tr("在途箱数")]),
                                    numeric_cols=[_col(k) for k in list(range(4, 16)) + [17, 18, 19, 20, 21, 23, 28, 29, 31]])
         self.table.setMinimumHeight(380)
         import product_images as PI
@@ -849,7 +858,7 @@ class OrderCheck:
         if isinstance(saved, list) and saved and TRANSIT not in saved:  # 2026-11-03 新加的「在途」：插在现在够卖后面
             saved.insert(saved.index(9) + 1 if 9 in saved else len(saved), TRANSIT)
         self.table.horizontalHeaderItem(_col(TRANSIT)).setToolTip(
-            tr("在途：已经订了、还没到货的箱数（采购订单跟踪里没到货的单 + RECORD ORDINE 里的订单文件）。只是提醒，没从建议里扣；"
+            tr("在途箱数：已经订了、还没到货的箱数（采购订单跟踪里没到货的单 + RECORD ORDINE 里的订单文件），已经从建议里扣掉了；"
                "鼠标停在格子上看是哪几张单"))
         self.table.horizontalHeaderItem(_col(SITU)).setToolTip(
             tr("待核对的商品属于哪一类：Griglia 商品批发商都没有 / 非 Griglia 商品批发商都没有 / 非 Griglia 商品批发商有；正常的空着。右键表头可以只看某一类"))
@@ -1094,6 +1103,11 @@ class OrderCheck:
                 q_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="quotes")
                 t_q = time.time()
                 q_fut = q_pool.submit(lambda: (self._read_quotes(price_dir, log), time.time()))   # 记下读完的时间
+                import order_record as REC
+                tr_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="transit")
+                settings_ = self.settings
+                tr_fut = tr_pool.submit(lambda: REC.cached(settings_) if REC.tracking_folder(settings_) else None)
+                tr_pool.shutdown(wait=False)
                 db = R.make_db(dbs)
                 need = [r["ean"] for x in lists for r in x["rows"] if not r["code"] and r["ean"]]
                 if need:
@@ -1219,6 +1233,21 @@ class OrderCheck:
                                sum(1 for x in rows if x.get("brand"))))
                 except Exception as e:
                     log(tr("⚠ 品牌供应商配单文件读不了：{0}", e))
+                # 在途（已经订了还没到货）：确定建议箱数时扣掉（init_boxes）
+                transit = None
+                try:
+                    transit = tr_fut.result()
+                except Exception as e:
+                    log(tr("⚠ 在途（RECORD ORDINE）读不了：{0}", e))
+                n_tr = 0
+                for x in rows:
+                    t_ = REC.lookup(transit, x.get("store"), x.get("ean"), x.get("code")) if transit else None
+                    x.pop("transit_pcs", None)
+                    if t_:
+                        x["transit_pcs"] = float(t_["pcs"])
+                        n_tr += 1
+                if n_tr:
+                    log(tr("在途：{0} 个商品已经订了还没到货，建议箱数里扣掉了", n_tr))
                 q_files, q_end = q_fut.result()
                 n_q, n_files = self._apply_quotes(rows, price_dir, log, files=q_files)
                 if n_files:
@@ -1232,7 +1261,7 @@ class OrderCheck:
                                                      files={x["store"]: x["path"] for x in lists}, snap=snap,
                                                      quoted=n_q, quote_files=n_files,
                                                      quote_labels=list(q_files.keys()) if q_files else [],
-                                                     store=lists[0]["store"])))
+                                                     store=lists[0]["store"], transit=transit)))
             except Exception as e:
                 import traceback
                 log(tr("❌ 检查清单失败：{0}", e))
@@ -1259,6 +1288,7 @@ class OrderCheck:
             return
         init_boxes(rows, None, self._algo(), self.cfg)
         self.rows, self.meta = rows, meta
+        self.transit = meta.get("transit")            # 在途（检查时读好的，建议箱数里扣过了）
         # 人工改的调货 {(门店, 商品编号): {"from", "pieces", "auto"} 或 0 = 不调}；改过一次就冻结（别的行不再跟着变）
         self.transfer_ov = {}
         self.transfer_frozen = False
@@ -1357,7 +1387,9 @@ class OrderCheck:
     def _load_transit(self):
         """采购订单跟踪里没到货的单 + RECORD ORDINE 订单文件 → 每家店每个商品在途几箱（后台线程，第一次要读很多文件）"""
         import order_record as REC
-        self.transit = None
+        self.transit = (self.meta or {}).get("transit")
+        if self.transit is not None:
+            return                                      # 检查时已经读好（建议箱数里扣过了）
         if not REC.tracking_folder(self.settings):
             return
         self._tr_token = getattr(self, "_tr_token", 0) + 1
@@ -1410,7 +1442,7 @@ class OrderCheck:
                                                                               "daily0": d.get("daily")}) if d else None,
                    "saved": (m.get("colli_before") or 0) - (m.get("colli_after") or 0)}
         pack = x.get("pack") or 0
-        sugg = x.get("suggested") or 0
+        sugg = max(0, (x.get("suggested") or 0) - float(x.get("transit_pcs") or 0))
         lines = R.plain_reason(x.get("inv0"), x.get("daily0"), x.get("cycle"), sugg,
                                boxes=math.ceil(sugg / pack) if pack > 0 and sugg > 0 else None, target=x.get("target"),
                                in_db=x.get("in_db", True), transfer=tin, pack=pack)
@@ -1432,6 +1464,12 @@ class OrderCheck:
                 line += "；" + (tr("A 类：按门店清单订") if (x.get("tier") or "") == "A" else tr("库存按 0 重新算"))
             else:
                 line += "；" + tr("C 类卖得慢，只提醒，订多少你决定")
+            lines.insert(0, line)
+        if x.get("transit_pcs"):
+            t_ = self._transit_of(x) or {}
+            line = tr("在途：已经订了 {0:g} 箱（{1:g} 件）还没到货", t_.get("colli") or 0, x["transit_pcs"])
+            if x.get("transit_cut"):
+                line += "，" + tr("建议少订 {0} 箱", x["transit_cut"])
             lines.insert(0, line)
         if x.get("limited"):
             rr = review_rules(self.cfg)
@@ -1473,7 +1511,7 @@ class OrderCheck:
         have = (m["colli_after"] * _pk(x) + m["pieces"]) if m else x["final"]
         if have <= 0 and not out:
             return None
-        return _cover(x, have - out)
+        return _cover(x, have - out + float(x.get("transit_pcs") or 0))       # 在途到了也算
 
     def _change_text(self, x):
         """确定箱数比门店清单多 / 少几箱（一样就空着，表格干净）"""
@@ -1484,7 +1522,8 @@ class OrderCheck:
         """调货用的「真正要的件数」：确定箱数没改（= 系统建议）就用系统算的件数（零头才能调），改过就按箱数 × 每箱件数"""
         if x.get("sbox") is not None and x["fbox"] == x["sbox"]:
             pk = _pk(x)
-            return int(min(float(x.get("suggested") or 0), x["fbox"] * pk) if pk > 0 else (x.get("suggested") or 0))
+            sug = max(0.0, float(x.get("suggested") or 0) - float(x.get("transit_pcs") or 0))     # 在途扣掉
+            return int(min(sug, x["fbox"] * pk) if pk > 0 else sug)
         return int(x["final"])
 
     def _transfer_text(self, x):
@@ -2324,7 +2363,7 @@ class OrderCheck:
         limit = self._limit()
         v = self._arrive_days(x)
         if v is None:                                  # 不订、也不调：到下次订货就靠现在的库存
-            v = _cover(x)
+            v = _cover(x, float(x.get("transit_pcs") or 0))            # 在途到了也算
             if v is None or not float(x.get("daily0") or 0):
                 return "", "text", ""
             if cyc and v < cyc:

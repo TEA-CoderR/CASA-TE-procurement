@@ -2897,4 +2897,10 @@ TRANSLATIONS = {
     '程序生成的订单文件': ('order file made by the program', "file d'ordine creato dal programma"),
     '自动找到的': ('found automatically', 'trovato in automatico'),
     '选择订单明细文件夹': ('Choose the order details folder', 'Scegli la cartella del dettaglio ordini'),
+    '在途箱数：已经订了、还没到货的箱数（采购订单跟踪里没到货的单 + RECORD ORDINE 里的订单文件），已经从建议里扣掉了；鼠标停在格子上看是哪几张单': ('Cases in transit: already ordered but not arrived yet (open orders in Order tracking + order files in RECORD ORDINE), already subtracted from the suggestion; hover a cell to see which orders', "Colli in arrivo: già ordinati ma non ancora arrivati (ordini aperti nel monitoraggio + file d'ordine in RECORD ORDINE), già tolti dal suggerimento; passa sopra la cella per vedere quali ordini"),
+    '在途：已经订了 {0:g} 箱（{1:g} 件）还没到货': ('In transit: {0:g} cases ({1:g} pcs) ordered, not arrived yet', 'In arrivo: {0:g} colli ({1:g} pz) ordinati, non ancora arrivati'),
+    '在途箱数': ('Cases in transit', 'Colli in arrivo'),
+    '建议少订 {0} 箱': ('suggest {0} cases less', 'suggeriti {0} colli in meno'),
+    '在途：{0} 个商品已经订了还没到货，建议箱数里扣掉了': ('In transit: {0} items ordered but not arrived yet, subtracted from the suggested cases', 'In arrivo: {0} articoli ordinati non ancora arrivati, tolti dai colli suggeriti'),
+    '在途：已经订了 {0:g} 箱（{1:g} 件）还没到货，从建议里扣掉了': ('In transit: {0:g} cases ({1:g} pcs) ordered, not arrived yet; subtracted from the suggestion', 'In arrivo: {0:g} colli ({1:g} pz) ordinati, non ancora arrivati; tolti dal suggerimento'),
 }

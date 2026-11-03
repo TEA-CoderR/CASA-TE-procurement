@@ -8,7 +8,8 @@
   07 RECORD DETERSIVI …        DETERSIVO 每周比价的结果（日期 \\ 门店 \\ ORDINE \\ 确认订单_*.xlsx）
 
 规则（用户定）：
-  · 在途只显示、不从建议量里扣（先看准不准）
+  · 在途箱数从建议量里扣（一开始说只显示，同一天改成要扣）：总仓 / 门店采购 store_orders.apply_transit + colli_for，
+    检查清单 order_check.init_boxes（整箱扣）
   · 订单跟踪里超过 MAX_DAYS（60）天还没标到货的单不算（多半是忘了点到货）
   · DETERSIVO 订单跟踪不记到货 → 不算在途；改成检查清单前把上一周的订单列出来，人勾哪些没到 → 生成扣减文件
     （deter_last_order / write_elim），原来的上传扣减文件留着

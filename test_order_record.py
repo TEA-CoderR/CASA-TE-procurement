@@ -168,3 +168,28 @@ def test_deter_last_order_to_elim_file():
         ws2 = load_workbook(out).active
         assert [c.value for c in ws2[1]][:3] == ["CODICE EAN", "ARTICOLO", "COLLI"]
         assert [c.value for c in ws2[2]][:3] == ["8001", "A", 2]
+
+
+def test_transit_subtracted_from_suggestions():
+    """2026-11-03 用户：在途箱数从建议量里扣"""
+    import store_orders as SO
+    import order_check as OC
+    transit = {"by_ean": {("2", "8001"): {"colli": 1.0, "pcs": 12.0, "orders": [("2026-11-01", "SAIS", 1.0)], "desc": ""}},
+               "by_code": {("2", "100"): {"colli": 1.0, "pcs": 12.0, "orders": [], "desc": ""}}, "orders": {}}
+    sc = {"path": "p", "name": "SAIS", "sheets": {2: "MARLIA", 3: "S.FILIPPO"},
+          "items": [{"row": 5, "code": "100", "db_code": "100", "ean": "8001", "desc": "A", "pack": 6, "price": 1.0}]}
+    demand = {2: {"100": {"sugg": 30, "need": 30, "inv": 0, "daily": 1.0}},
+              3: {"100": {"sugg": 30, "need": 30, "inv": 0, "daily": 1.0}}, "_algo": None}
+    assert SO.apply_transit(demand, [sc], transit) == 1
+    assert demand[2]["100"]["transit"] == 12 and demand[2]["100"]["need"] == 18
+    assert "transit" not in demand[3]["100"]
+    assert SO.base_colli(sc, demand) == {2: {5: 3}, 3: {5: 5}}            # 30 − 12 = 18 件 = 3 箱；别的店不扣
+    assert SO.colli_for({"sugg": 10, "transit": 12}, 6) == 0
+    # 检查清单：整箱扣，零头不扣
+    row = {"in_db": True, "pack": 6, "file_qty": 4, "suggested": 24, "inv0": 0, "daily0": 1.0, "daily": 1.0,
+           "cycle": 30, "tier": "B", "sales": [30, 60, 90, 180], "transit_pcs": 13.0}
+    OC.init_boxes([row])
+    assert row["transit_cut"] == 2 and row["sbox"] == 2 and row["fbox"] == 2
+    row2 = dict(row, transit_pcs=5.0)
+    OC.init_boxes([row2])
+    assert row2["sbox"] == 4 and "transit_cut" not in row2
