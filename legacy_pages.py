@@ -20,7 +20,7 @@ MODULES = {
                ["导入 Excel 数据表", "导出单张表格", "写回结果"]),
     "tracking": ("tracking", "采购订单跟踪", "",
                  "每次生成的采购单自动登记，跟踪到货和 BMS 分货。",
-                 ["门店配货、批发商比价生成的订单自动记成采购单", "用入库记录对账：已下单 → 部分到货 → 已到货，超期提醒",
+                 ["总仓采购、DETERSIVO采购生成的订单自动记成采购单", "用入库记录对账：已下单 → 部分到货 → 已到货，超期提醒",
                   "在途数量自动从订货建议里扣掉", "BMS 到货后的分货进度"]),
 }
 
@@ -70,7 +70,7 @@ class LegacyPage:
             es.buttons.addWidget(pick)
             self._update_btn()
         else:
-            go = QPushButton(tr("去门店配货"))
+            go = QPushButton(tr("去总仓采购"))
             go.setObjectName("Primary")
             go.clicked.connect(lambda: self.win.go_page("store_orders"))
             es.buttons.addWidget(go)

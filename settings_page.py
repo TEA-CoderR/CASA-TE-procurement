@@ -65,7 +65,7 @@ class SettingsPage:
         grid.addWidget(c, 0, 0)
 
         # 算法
-        c, v = _card(tr("订货算法"), tr("门店配货和批发商比价 · 检查清单共用这套设置"))
+        c, v = _card(tr("订货算法"), tr("总仓采购和DETERSIVO采购 · 检查清单共用这套设置"))
         self.algo_info = QLabel("")           # 不显示，参数说明放在算法下拉的鼠标提示里
         row = QHBoxLayout()
         row.addWidget(QLabel(tr("算法")))
@@ -87,9 +87,9 @@ class SettingsPage:
         so = self.settings.setdefault("store_orders", {})
         self.paths = {}
         for key, label, getter, setter, is_file in (
-                ("so_folder", tr("采购配单文件夹（门店配货）"), lambda: so.get("folder", ""),
+                ("so_folder", tr("采购配单文件夹（总仓采购）"), lambda: so.get("folder", ""),
                  lambda p: so.__setitem__("folder", p), False),
-                ("cmp_folder", tr("比价总文件夹（批发商比价）"), lambda: self.settings.get("last_folder", ""),
+                ("cmp_folder", tr("比价总文件夹（DETERSIVO采购）"), lambda: self.settings.get("last_folder", ""),
                  lambda p: self.settings.__setitem__("last_folder", p), False),
                 ("legacy", tr("旧程序 SistemaIntegrato（第二期之前用）"), lambda: self.settings.get("legacy_exe", ""),
                  lambda p: self.settings.__setitem__("legacy_exe", p), True)):
@@ -108,7 +108,7 @@ class SettingsPage:
         grid.addWidget(c, 1, 0)
 
         # 门店与仓库
-        c, v = _card(tr("门店与仓库"), tr("门店配货的「配货设置」里改：哪些门店参与 BMS 凑单、先后顺序"))
+        c, v = _card(tr("门店与仓库"), tr("总仓采购的「配货设置」里改：哪些门店参与 BMS 凑单、先后顺序"))
         fill = dict(S.DEFAULT_FILL, **(so.get("fill") or {}))
         far = set(fill.get("far_stores") or [])
         self.store_chips = []

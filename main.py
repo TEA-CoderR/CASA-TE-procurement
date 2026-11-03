@@ -1461,7 +1461,7 @@ class ManualDialog(QDialog):
         btns.addWidget(b_auto)
         if edit_mode and rules:
             b_fill = QPushButton(tr("加商品凑单…"))
-            b_fill.setToolTip(tr("没达到起订条件的供应商：不换供应商，从它的报价里挑商品多订（订单里已有的多订几箱，或者加这次没订、但卖得快的商品），和门店配货的加商品凑单一样"))
+            b_fill.setToolTip(tr("没达到起订条件的供应商：不换供应商，从它的报价里挑商品多订（订单里已有的多订几箱，或者加这次没订、但卖得快的商品），和总仓采购的加商品凑单一样"))
             b_fill.clicked.connect(self.add_items)
             btns.addWidget(b_fill)
         btns.addStretch()
@@ -2677,13 +2677,16 @@ class MainWindow(QMainWindow):
     # 货物分配系统是主系统；采购管理是其中一个模块
     NAV_GROUPS = [
         (tr("概览"), [("home", tr("工作台"))]),
-        (tr("采购管理"), [("store_orders", tr("门店配货")), ("order", tr("批发商比价")),
+        (tr("采购管理"), [("store_orders", tr("LUCAS定制采购")), ("order", tr("DETERSIVO采购")),
                         ("tracking", tr("采购订单跟踪"))]),
         (tr("分货管理"), [("distribution", tr("分货数据处理")), ("import", tr("导入 / 导出"))]),
         (tr("系统"), [("settings", tr("系统设置")), ("log", tr("运行日志"))]),
     ]
     # 批发商比价里面的几页：侧边栏只放「批发商比价」，进去以后顶部一排标签切换
-    SUB_PAGES = {"order": [("order", tr("比价处理")), ("result", tr("比价结果")), ("history", tr("历史记录")),
+    # LUCAS定制采购（2026-11-03 用户定名，原来的「门店配货」）：总仓采购 = 原来的门店配货（Centrale Acquisti 的 SCHEDA，
+    # 直送 / 并 BMS）；门店采购 = 门店自己采购的供应商（PDV 文件夹，一张单一家店）
+    SUB_PAGES = {"store_orders": [("store_orders", tr("总仓采购")), ("store_pdv", tr("门店采购"))],
+                 "order": [("order", tr("比价处理")), ("result", tr("比价结果")), ("history", tr("历史记录")),
                            ("rules", tr("起订规则")), ("search", tr("缺失查找")),
                            ("griglia", tr("Griglia"))]}
     SUB_PARENT = {k: parent for parent, subs in SUB_PAGES.items() for k, _ in subs}
@@ -2742,6 +2745,8 @@ class MainWindow(QMainWindow):
         from legacy_pages import LegacyPage
         from settings_page import SettingsPage
         self.store_orders = StoreOrderPage(self, settings, _UI)
+        from store_order_page import PdvOrderPage
+        self.store_pdv = PdvOrderPage(self, settings, _UI)
         self.order_check = OrderCheck(self, settings, _UI)
         self.dashboard = DashboardPage(self, settings)
         self.settings_page = SettingsPage(self, settings)
@@ -2758,6 +2763,7 @@ class MainWindow(QMainWindow):
             "import": lambda: (self.import_page.build(), True),
             "home": lambda: (self.dashboard.build(), True),
             "store_orders": lambda: (self.store_orders.build(), False),
+            "store_pdv": lambda: (self.store_pdv.build(), False),
             "order": lambda: (self._page_order(), True),
             "result": lambda: (self._page_result(), True),
             "history": lambda: (self._page_history(), True),
@@ -3235,7 +3241,7 @@ class MainWindow(QMainWindow):
         self.search_icon.setPixmap(icon("search", T("muted"), 14).pixmap(14, 14))
         self.bell_dot.setStyleSheet(f"background:{T('err')}; border-radius:4px;")
         self._set_db_state(getattr(self, "_db_ok", None))
-        for pg in (getattr(self, "dashboard", None), getattr(self, "store_orders", None),
+        for pg in (getattr(self, "dashboard", None), getattr(self, "store_orders", None), getattr(self, "store_pdv", None),
                    getattr(self, "settings_page", None), getattr(self, "order_check", None),
                    getattr(self, "distribution", None), getattr(self, "import_page", None),
                    getattr(self, "griglia_page", None), getattr(self, "tracking", None)):
@@ -3301,7 +3307,7 @@ class MainWindow(QMainWindow):
 
     # ---------- 页面：订单处理 ----------
     def _page_order(self):
-        w, lay = self._page(tr("批发商比价"), tr("几家批发商卖的商品差不多：按最低价给每个商品选供应商，帮有起订量的供应商凑单，把订购数量写回各家报价文件。"))
+        w, lay = self._page(tr("DETERSIVO采购"), tr("几家批发商卖的商品差不多：按最低价给每个商品选供应商，帮有起订量的供应商凑单，把订购数量写回各家报价文件。"))
         from erp_widgets import StepBar, DropZone
         self.cmp_steps = StepBar([(tr("放文件"), ""), (tr("检查门店清单"), ""), (tr("自动比价"), ""), (tr("查看结果"), "")])
         lay.addWidget(self.cmp_steps)
@@ -3348,6 +3354,11 @@ class MainWindow(QMainWindow):
         self.zone_elim.files_dropped.connect(self._drop_eliminare)
         p1.lay.addLayout(zones)
         zr = QHBoxLayout()
+        b_miss = QPushButton(tr("上周没到的…"))
+        b_miss.setObjectName("Link")
+        b_miss.setToolTip(tr("列出每家店上一次的 DETERSIVO 订单，勾上还没到货的 → 自动变成这家店的扣减文件（不用再手动放）"))
+        b_miss.clicked.connect(self.open_deter_arrival)
+        zr.addWidget(b_miss)
         zr.addStretch()
         b_chk = QPushButton(tr("报价表和数据库对比…"))
         b_chk.setObjectName("Link")
@@ -4183,7 +4194,7 @@ class MainWindow(QMainWindow):
 
     def _busy_drop(self):
         if self.running:
-            QMessageBox.information(self, tr("批发商比价"), tr("正在处理中，等处理完再放文件。"))
+            QMessageBox.information(self, tr("DETERSIVO采购"), tr("正在处理中，等处理完再放文件。"))
             return True
         return False
 
@@ -4258,6 +4269,19 @@ class MainWindow(QMainWindow):
             self._after_drop(tr("门店清单放好了：{0}", "、".join(done)))
         if price:
             self._drop_suppliers(price)
+
+    def open_deter_arrival(self):
+        """上周 DETERSIVO 订单里勾还没到货的 → 每家店的扣减文件（deter_arrival.py）"""
+        from deter_arrival import DeterArrivalDialog
+        if self._busy_drop():
+            return
+        dlg = DeterArrivalDialog(self, settings, _UI, self.ws_root())
+        if not dlg.exec():
+            return
+        if dlg.saved:
+            self._after_drop(tr("没到货的做成扣减文件了：{0}", "；".join(tr("{0} {1} 种 · {2:g} 箱", *x) for x in dlg.saved)))
+        else:
+            self._after_drop(tr("上周的都到了：没有扣减文件"))
 
     def _drop_eliminare(self, files):
         """扣减文件 → 3 扣减文件\\门店（按文件名认门店，认不出问一下）"""
@@ -4478,7 +4502,7 @@ class MainWindow(QMainWindow):
         if self.running:
             return
         if not os.path.isdir(folder):
-            QMessageBox.information(self, tr("批发商比价"), tr("找不到这个文件夹：\n{0}", folder))
+            QMessageBox.information(self, tr("DETERSIVO采购"), tr("找不到这个文件夹：\n{0}", folder))
             return
         self.folder_edit.setText(os.path.normpath(folder))
         settings["last_folder"] = self.folder_edit.text()
@@ -4548,7 +4572,7 @@ class MainWindow(QMainWindow):
         b_scen = QPushButton(tr("管理方案"))
         b_scen.clicked.connect(self.edit_scenarios)
         b_tr = QPushButton(tr("门店间调货…"))
-        b_tr.setToolTip(tr("批发商比价的门店间调货（和门店配货分开设，默认不启用）"))
+        b_tr.setToolTip(tr("DETERSIVO采购的门店间调货（和总仓采购分开设，默认不启用）"))
         b_tr.clicked.connect(self.edit_transfers)
         b_names = QPushButton(tr("供应商名称"))
         b_names.setToolTip(tr("给供应商文件起名字（比如 formattato_… 叫 MEGA CASH），方案排除和起订规则都按名字认"))
@@ -4574,7 +4598,7 @@ class MainWindow(QMainWindow):
         """「设置」：比价开关和规则 + 检查门店清单用的订货周期、算法、数据库（两块部件借过来显示，关掉还回去）"""
         oc = self.order_check
         dlg = QDialog(self)
-        dlg.setWindowTitle(tr("批发商比价设置"))
+        dlg.setWindowTitle(tr("DETERSIVO采购设置"))
         dlg.setMinimumWidth(720)
         lay = QVBoxLayout(dlg)
         lay.setContentsMargins(22, 18, 22, 16)
@@ -5534,7 +5558,7 @@ class MainWindow(QMainWindow):
         root_path = self.folder_edit.text().strip()
         dist = os.path.join(root_path, DISTRIBUTUIRE_FOLDER)
         if not root_path or not os.path.isdir(dist):
-            QMessageBox.information(self, tr("缺失查找"), tr("先完成一次比价（批发商比价页点「开始」）。"))
+            QMessageBox.information(self, tr("缺失查找"), tr("先完成一次比价（DETERSIVO采购页点「开始」）。"))
             return
         if not os.path.exists(os.path.join(dist, "缺失报告.xlsx")):
             QMessageBox.information(self, tr("缺失查找"), tr("还没有缺失报告。先完成一次订单处理，再来查找。"))

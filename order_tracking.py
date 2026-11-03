@@ -354,7 +354,7 @@ def rows(st, today=None):
                     "lead": lead, "overdue": overdue, "pending": pending, "days": days, "open": open_,
                     "note": str(o.get("note") or ""), "ref": str(o.get("ref") or ""),
                     "origin": o.get("origin") or "", "last": last, "file": str(o.get("file") or ""),
-                    "colli": o.get("colli"),
+                    "colli": o.get("colli"), "record": str(o.get("record") or ""),
                     "late_by": (today - exp).days if overdue else 0})
     return out
 
@@ -829,7 +829,7 @@ def export_excel(rs, path):
 
 
 # ===================================================================== 程序生成的订单自动登记（2026-11-02 用户：以后都由程序登记，不手填 Excel）
-SOURCES = {"store_orders": "门店配货", "wholesale": "批发商比价"}
+SOURCES = {"store_orders": "总仓采购", "store_pdv": "门店采购", "wholesale": "DETERSIVO采购"}
 
 
 def store_code(name):
@@ -901,18 +901,22 @@ def store_for(settings):
     return Store(folder, me=me).reload()
 
 
-def register_store_orders(settings, written, log=None):
-    """门店配货：write_plans 的结果 [(文件, 供应商, 去向, 箱数, 金额, 状态, SCHEDA)] → 待登记"""
+def register_store_orders(settings, written, log=None, source="store_orders"):
+    """
+    LUCAS定制采购：write_plans 的结果 [(文件, 供应商, 去向, 箱数, 金额, 状态, SCHEDA)] → 待登记。
+    source：总仓采购 "store_orders" / 门店采购 "store_pdv"（两边的单分开：同一家供应商两边都有也不会互相删）
+    """
     st = store_for(settings)
     if st is None:
         return None
     items = [{"store": store_code(dest), "supplier": sup, "colli": colli, "amount": amt, "file": p}
              for p, sup, dest, colli, amt, _status, _sc in written or []]
     sups = {sup_key(x["supplier"]) for x in items}
-    res = register_drafts(st, "store_orders", items, in_scope=lambda o: sup_key(o.get("supplier")) in sups)
+    res = register_drafts(st, source, items, in_scope=lambda o: sup_key(o.get("supplier")) in sups)
     if log:
         from i18n import tr
-        log(tr("[订单跟踪] 门店配货：待登记 新的 {0} 张，更新 {1} 张，删掉 {2} 张", res["new"], res["updated"], res["removed"]))
+        log(tr("[订单跟踪] {0}：待登记 新的 {1} 张，更新 {2} 张，删掉 {3} 张", tr(SOURCES.get(source, source)),
+               res["new"], res["updated"], res["removed"]))
     return res
 
 

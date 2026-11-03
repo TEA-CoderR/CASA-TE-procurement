@@ -21,11 +21,13 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, Q
 
 from i18n import tr
 import order_tracking as OT
+import order_record as REC
 
 
 class _Sig(QObject):
     done = Signal(object)
     exported = Signal(object)
+    transit = Signal(object)
 
 
 def STATUS_LABELS():
@@ -63,7 +65,8 @@ def FIELD_LABELS():
 
 
 def ORIGINS():
-    return {"store_orders": tr("门店配货"), "wholesale": tr("批发商比价"), "app": tr("程序"), "excel": "Excel"}
+    return {"store_orders": tr("总仓采购"), "store_pdv": tr("门店采购"), "wholesale": tr("DETERSIVO采购"),
+            "app": tr("程序"), "excel": "Excel"}
 
 
 def _d(v):
@@ -123,7 +126,7 @@ def history_lines(evs):
 # 订单表的列：(固定编号, 表头, 默认宽度)
 COLS = [(0, "下单日期", 96), (1, "门店", 98), (2, "供应商", 170), (3, "谁下的", 84), (4, "金额 €", 96),
         (5, "状态", 88), (6, "确认", 96), (7, "预计到货", 96), (8, "到货", 96), (9, "天数", 72), (10, "备注", 220),
-        (11, "来源", 110), (12, "最后修改", 150)]
+        (11, "来源", 110), (12, "最后修改", 150), (13, "明细", 104)]
 NUM_COLS = (4, 9)
 HIDDEN = (11, 12)
 
@@ -379,6 +382,9 @@ class TrackingPage:
         self.sig = _Sig()
         self.sig.done.connect(self._sync_done)
         self.sig.exported.connect(self._export_done)
+        self.sig.transit.connect(self._transit_done)
+        self.transit = None                          # order_record.compute 的结果（每张没到货的单对上哪个订单文件）
+        self._transit_busy = self._transit_again = False
         self.syncing = False
         self._bad_mtime = self._try_mtime = None
         self._shown = False
@@ -460,7 +466,7 @@ class TrackingPage:
             sr.addWidget(b)
         sr.addStretch()
         self.pills = {}
-        tips = {"draft": tr("门店配货 / 批发商比价生成的订单，还没确认发给供应商。发了以后选中，右键「确认已下单」"),
+        tips = {"draft": tr("总仓采购 / DETERSIVO采购生成的订单，还没确认发给供应商。发了以后选中，右键「确认已下单」"),
                 "pending": tr("下单 {0} 天以上还没确认的", OT.PENDING_DAYS),
                 "overdue": tr("过了预计到货日还没到（含部分到货）"), "stuck": ""}
         for key, _tok in PILLS:
@@ -543,7 +549,9 @@ class TrackingPage:
         for c, (_f, _h, wd) in enumerate(COLS):
             t.setColumnWidth(c, wd)
         for c, tip in ((4, tr("不含税（Imponibile）")), (7, tr("手动填的，或者 = 下单日期 + 这家供应商以往到货的天数（中位数）。红 = 超期")),
-                       (9, tr("到了：下单到到货用了几天；还没到：已经等了几天"))):
+                       (9, tr("到了：下单到到货用了几天；还没到：已经等了几天")),
+                       (len(COLS) - 1, tr("没到货的单在「RECORD ORDINE」里对上的订单文件：订了几种商品、几箱。双击看是哪些商品；"
+                                          "对错了右键「指定订单文件…」"))):
             hi = t.horizontalHeaderItem(c)
             if hi is not None:
                 hi.setToolTip(tip)
@@ -552,10 +560,15 @@ class TrackingPage:
                                    hide=self._hidden, numeric=NUM_COLS)
         self.ctl.rendered.connect(self._rendered)
         import settings as ST
+        cols_saved = self.cfg.get("orders_columns")
+        if isinstance(cols_saved, list) and cols_saved and 13 not in cols_saved:
+            # 2026-11-03 新加「明细」列：已经存过列顺序的电脑放在「状态」后面一次
+            at = cols_saved.index(5) + 1 if 5 in cols_saved else len(cols_saved)
+            cols_saved.insert(at, 13)
         self.ctl.remember(self.cfg, "orders", lambda: ST.save_settings(self.settings), [f for f, _h, _w in COLS],
                           default_hidden=HIDDEN)
         self.ctl.sort_col, self.ctl.sort_desc = 0, True              # 默认：新的单在上
-        t.cellDoubleClicked.connect(lambda k, _c: self.edit_row(self.ctl.row_at(k)))
+        t.cellDoubleClicked.connect(self._double)
         t.setContextMenuPolicy(Qt.CustomContextMenu)
         t.customContextMenuRequested.connect(self._row_menu)
         v.addWidget(t, 1)
@@ -721,6 +734,7 @@ class TrackingPage:
         self.badge(sum(1 for r in self.rows if r["status"] == "draft"))
         self._update_src()
         self.update_view()
+        self._start_transit()
 
     def _srows(self):
         return [r for r in self.rows if not self.store_sel or r["store"] == self.store_sel]
@@ -870,7 +884,95 @@ class TrackingPage:
             return r["ref"] or ORIGINS().get(r["origin"], "")
         if f == 12:
             return f"{r['last'][1]} · {_when(r['last'][0])}" if r["last"] else ""
+        if f == 13:
+            return self._rec_text(r)
         return ""
+
+    # ---- 明细（在途）----
+    def _rec_info(self, r):
+        if self.transit is None:
+            return None
+        return self.transit["orders"].get(r["id"])
+
+    def _rec_text(self, r):
+        if r["status"] not in REC.OPEN_STATES:
+            return ""
+        if self.transit is None:
+            return "…"
+        info = self._rec_info(r)
+        if info is None:
+            return ""                                  # 超过 60 天：不算在途
+        if r.get("record") == REC.NO_FILE:
+            return tr("不算")
+        if not info["file"]:
+            return tr("没找到")
+        if not info["n"]:
+            return tr("没有这家店")
+        return ("✎ " if info["how"] == "manual" else "") + tr("{0} 种 · {1:g} 箱", info["n"], info["colli"])
+
+    def _start_transit(self):
+        if self._transit_busy:
+            self._transit_again = True
+            return
+        self._transit_busy, self._transit_again = True, False
+        rows, settings = list(self.rows), self.settings
+
+        def work():
+            try:
+                self.sig.transit.emit((REC.cached(settings, rows=rows), None))
+            except Exception as e:
+                self.sig.transit.emit((None, str(e)))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _transit_done(self, payload):
+        res, err = payload
+        self._transit_busy = False
+        if err:
+            self.win.log(tr("⚠ 订单明细（RECORD ORDINE）读不了：{0}", err))
+            res = {"orders": {}, "by_ean": {}, "by_code": {}, "ok": False}
+        self.transit = res
+        if self._transit_again:
+            self._start_transit()
+            return
+        self.render()
+
+    def _double(self, k, c):
+        i = self.ctl.row_at(k)
+        if i is None:
+            return
+        if COLS[c][0] == 13 and self.rows[i]["status"] in REC.OPEN_STATES:
+            self.show_lines(self.rows[i])
+            return
+        self.edit_row(i)
+
+    def show_lines(self, r):
+        info = self._rec_info(r)
+        if not info or not info.get("file"):
+            self.win.show_toast(tr("没找到这张单的订单文件：右键「指定订单文件…」"))
+            return
+        RecordLinesDialog(self.win, self, r, info).exec()
+
+    def _set_record(self, r, value):
+        self.st.set(r["id"], {"record": value})
+        REC.forget()
+        self.refresh()
+
+    def pick_record(self, r):
+        root = REC.record_root(self.settings)
+        start = root if os.path.isdir(root) else ""
+        info = self._rec_info(r) or {}
+        if info.get("path"):
+            start = os.path.dirname(info["path"])
+        p, _ = QFileDialog.getOpenFileName(self.win, tr("这张单的订单文件"), start, tr("Excel 文件 (*.xlsx *.xlsm)"))
+        if not p:
+            return
+        try:
+            rel = os.path.relpath(p, root) if os.path.isdir(root) else p
+        except ValueError:                            # 不同盘
+            rel = p
+        if rel.startswith(".."):
+            rel = p
+        self._set_record(r, rel.replace("\\", "/"))
 
     def _key(self, i, c):
         r = self.rows[i]
@@ -932,6 +1034,21 @@ class TrackingPage:
         note = self.t.item(k, fids.index(10))
         if note is not None and r["note"]:
             note.setToolTip(r["note"])
+        rec = self.t.item(k, fids.index(13))
+        info = self._rec_info(r) if r["status"] in REC.OPEN_STATES else None
+        if rec is not None and info is not None:
+            if not info["file"]:
+                rec.setForeground(QColor(T("faint")))
+                rec.setToolTip(tr("「RECORD ORDINE」里没找到这张单的订单文件（门店 + 供应商 + 下单日期前后几天）。"
+                                  "右键「指定订单文件…」") if info["how"] != "none" or not r.get("record")
+                               else tr("标了「没有订单文件」"))
+            else:
+                how = {"manual": tr("手动指定的"), "program": tr("程序生成的订单文件"), "auto": tr("自动找到的")}.get(info["how"], "")
+                tip = f"{info['file']}\n{how} · " + tr("双击看商品")
+                if info.get("error"):
+                    tip += "\n⚠ " + tr("读不了：{0}", info["error"])
+                    rec.setForeground(QColor(T("err")))
+                rec.setToolTip(tip)
 
     def _rendered(self, n, tot):
         self.count.setText(tr("{0:,} / {1:,}", n, tot))
@@ -978,6 +1095,18 @@ class TrackingPage:
             a_file = m.addAction(tr("打开订单文件"))
             a_file.setEnabled(os.path.exists(sel[0]["file"]))
             m.addSeparator()
+        a_lines = a_pick = a_nofile = a_auto = None
+        if n == 1 and sel[0]["status"] in REC.OPEN_STATES:
+            info = self._rec_info(sel[0]) or {}
+            a_lines = m.addAction(tr("看订了哪些商品"))
+            a_lines.setEnabled(bool(info.get("file")))
+            a_pick = m.addAction(tr("指定订单文件…"))
+            if sel[0].get("record"):
+                a_auto = m.addAction(tr("自动找订单文件"))
+            else:
+                a_nofile = m.addAction(tr("没有订单文件"))
+                a_nofile.setToolTip(tr("这张单不算在途（例如电话订的、没有明细）"))
+            m.addSeparator()
         a_conf = m.addAction(tr("已确认（今天）") + suffix)
         a_arr = m.addAction(tr("已到货（今天）") + suffix)
         a_part = m.addAction(tr("部分到货…") + suffix)
@@ -1000,6 +1129,15 @@ class TrackingPage:
         if a_file is not None and got == a_file:
             from main import open_path
             open_path(sel[0]["file"])
+            return
+        if a_lines is not None and got == a_lines:
+            self.show_lines(sel[0])
+            return
+        if a_pick is not None and got == a_pick:
+            self.pick_record(sel[0])
+            return
+        if got is not None and got in (a_nofile, a_auto):
+            self._set_record(sel[0], REC.NO_FILE if got == a_nofile else None)
             return
         if got == a_edit:
             self.edit_row(self.rows.index(sel[0]))
@@ -1272,12 +1410,24 @@ class TrackingPage:
         g.addWidget(tip_label("Excel", tr("PIANO ACQUISTO MESILE：「从 Excel 同步」读这一份")), 1, 0)
         g.addWidget(e_x, 1, 1)
         g.addWidget(b_x, 1, 2)
-        g.addWidget(tip_label(tr("我的名字"), tr("修改记录里显示的名字")), 2, 0)
-        g.addWidget(e_me, 2, 1)
+        e_rec = QLineEdit(REC.record_root(self.settings))
+        e_rec.setMinimumWidth(420)
+        b_rec = QPushButton(tr("选择…"))
+        b_rec.clicked.connect(lambda: e_rec.setText(QFileDialog.getExistingDirectory(dlg, tr("选择订单明细文件夹"), e_rec.text()) or e_rec.text()))
+        g.addWidget(tip_label(tr("订单明细"), tr("历史订单文件（RECORD ORDINE）：01–05 门店自己订的，06 总仓，07 DETERSIVO。"
+                                              "用来看没到货的单订了哪些商品（在途）")), 2, 0)
+        g.addWidget(e_rec, 2, 1)
+        g.addWidget(b_rec, 2, 2)
+        g.addWidget(tip_label(tr("我的名字"), tr("修改记录里显示的名字")), 3, 0)
+        g.addWidget(e_me, 3, 1)
         cb_auto = QCheckBox(tr("程序生成的订单自动登记"))
-        cb_auto.setToolTip(tr("门店配货、批发商比价生成订单文件时，每家供应商 × 每家门店 / BMS 登记一张「待登记」的单；发给供应商后确认"))
+        cb_auto.setToolTip(tr("总仓采购、DETERSIVO采购生成订单文件时，每家供应商 × 每家门店 / BMS 登记一张「待登记」的单；发给供应商后确认"))
         cb_auto.setChecked(self.cfg.get("auto_register") is not False)
-        g.addWidget(cb_auto, 3, 1)
+        g.addWidget(cb_auto, 4, 1)
+        cb_ded = QCheckBox(tr("建议量扣掉在途"))
+        cb_ded.setToolTip(tr("打开（默认）：总仓采购、门店采购、检查门店清单算建议量时，扣掉已经订了还没到货的数量；关掉：在途箱数只显示，不扣"))
+        cb_ded.setChecked(REC.deduct_on(self.settings))
+        g.addWidget(cb_ded, 5, 1)
         row = QHBoxLayout()
         row.addStretch()
         cancel, ok = QPushButton(tr("取消")), QPushButton(tr("保存"))
@@ -1286,13 +1436,20 @@ class TrackingPage:
         ok.clicked.connect(dlg.accept)
         row.addWidget(cancel)
         row.addWidget(ok)
-        g.addLayout(row, 4, 0, 1, 3)
+        g.addLayout(row, 6, 0, 1, 3)
         if dlg.exec() != QDialog.Accepted:
             return
+        rec = e_rec.text().strip()
+        if rec and os.path.normcase(rec) != os.path.normcase(REC.RECORD_DEFAULT):
+            self.cfg["record"] = rec
+        else:
+            self.cfg.pop("record", None)
+        REC.forget()
         self.cfg["folder"] = e_dir.text().strip()
         self.cfg["excel"] = e_x.text().strip()
         self.cfg["me"] = e_me.text().strip()
         self.cfg["auto_register"] = cb_auto.isChecked()
+        self.cfg["deduct_transit"] = cb_ded.isChecked()
         self._save()
         self.st = None
         self._on_show()
@@ -1638,3 +1795,118 @@ class OrderDialog(QDialog):
         self.changes = {k: v for k, v in vals.items() if (self.order.get(k) or None) != (v or None) or
                         (k == "amount" and self.order.get(k) != v and v is not None)}
         self.accept()
+
+
+class RecordLinesDialog(QDialog):
+    """一张没到货的单订了哪些商品（订单文件里 Colli > 0 的行）"""
+    COLS = [(0, "门店", 90), (1, "条码", 120), (2, "编号", 70), (3, "商品", 300), (4, "每箱", 60), (5, "箱数", 60),
+            (6, "件数", 70)]
+
+    def __init__(self, parent, page, r, info):
+        super().__init__(parent)
+        self.page, self.r, self.info = page, r, info
+        self.setWindowTitle(tr("{0} · {1} · {2}", r["supplier"], r["store_name"], _d(r["date"])))
+        v = QVBoxLayout(self)
+        v.setContentsMargins(16, 14, 16, 12)
+        v.setSpacing(8)
+        top = QHBoxLayout()
+        name = QLabel(os.path.basename(info["file"]) + "  ⓘ")
+        name.setObjectName("Section")
+        name.setToolTip(info["file"])
+        top.addWidget(name, 1)
+        self.search = QLineEdit()
+        self.search.setPlaceholderText(tr("条码、编号、商品"))
+        self.search.setFixedWidth(200)
+        top.addWidget(self.search)
+        self.count = QLabel("")
+        self.count.setObjectName("Faint")
+        top.addWidget(self.count)
+        v.addLayout(top)
+        self.rows = self._load()
+        ui = page.ui
+        self.t = ui.make_table([tr(h) for _f, h, _w in self.COLS], numeric_cols=(4, 5, 6))
+        hh = self.t.horizontalHeader()
+        hh.setSectionResizeMode(QHeaderView.Interactive)
+        hh.setStretchLastSection(False)
+        for c, (_f, _h, wd) in enumerate(self.COLS):
+            self.t.setColumnWidth(c, wd)
+        from erp_widgets import TableSortFilter, fit_to_screen
+        import settings as ST
+        self.ctl = TableSortFilter(self.t, lambda: len(self.rows), self._text, self._fill, key=self._key,
+                                   hide=self._hidden, numeric=(4, 5, 6))
+        self.ctl.rendered.connect(lambda n, tot: self.count.setText(tr("{0:,} / {1:,}", n, tot)))
+        self.ctl.remember(page.cfg, "lines", lambda: ST.save_settings(page.settings), [f for f, _h, _w in self.COLS])
+        self.search.textChanged.connect(lambda _: self.ctl.render())
+        v.addWidget(self.t, 1)
+        foot = QHBoxLayout()
+        tot = QLabel(tr("{0} 种 · {1:g} 箱", len(self.rows), sum(x["colli"] for _s, x in self.rows)))
+        tot.setObjectName("Faint")
+        foot.addWidget(tot)
+        foot.addStretch()
+        b_open = QPushButton(tr("打开文件"))
+        b_open.clicked.connect(self._open)
+        b_close = QPushButton(tr("关闭"))
+        b_close.clicked.connect(self.accept)
+        foot.addWidget(b_open)
+        foot.addWidget(b_close)
+        v.addLayout(foot)
+        self.resize(820, 520)
+        fit_to_screen(self)
+        self.ctl.render()
+
+    def _load(self):
+        idx = REC.Index(REC.cache_path())
+        ent = idx.data.get(self.info["file"]) or {}
+        lines = ent.get("lines")
+        if lines is None:
+            try:
+                lines = REC.read_lines(self.info["path"], REC.folder_store(self.info["file"]))
+            except Exception as e:
+                self.page.win.show_toast(tr("读不了：{0}", e))
+                lines = {}
+        f = {"store": REC.folder_store(self.info["file"])}
+        return REC.order_lines(self.r, f, lines)
+
+    def _text(self, i, c):
+        sid, x = self.rows[i]
+        f = self.COLS[c][0]
+        if f == 0:
+            return REC.STORE_NAMES.get(sid, sid)
+        if f == 1:
+            return x["ean"]
+        if f == 2:
+            return x["code"]
+        if f == 3:
+            return x["desc"]
+        if f == 4:
+            return f"{x['pack']:g}"
+        if f == 5:
+            return f"{x['colli']:g}"
+        if f == 6:
+            return f"{x['colli'] * (x['pack'] or 1):g}"
+        return ""
+
+    def _key(self, i, c):
+        _sid, x = self.rows[i]
+        f = self.COLS[c][0]
+        if f == 4:
+            return x["pack"]
+        if f == 5:
+            return x["colli"]
+        if f == 6:
+            return x["colli"] * (x["pack"] or 1)
+        return None
+
+    def _hidden(self, i):
+        q = self.search.text().strip().lower()
+        if not q:
+            return False
+        _sid, x = self.rows[i]
+        return not any(q in str(v).lower() for v in (x["ean"], x["code"], x["desc"]))
+
+    def _fill(self, i, k):
+        self.page.ui.table_set_row(self.t, k, [self._text(i, c) for c in range(len(self.COLS))])
+
+    def _open(self):
+        from main import open_path
+        open_path(self.info["path"])
