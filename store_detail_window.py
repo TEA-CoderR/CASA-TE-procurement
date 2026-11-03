@@ -1555,7 +1555,9 @@ class DetailWindow(ToolWindow):
         f.setBold(kind in ("transfer", "more", "less"))
         dc.setFont(f)
         oc = self.table.item(r, _col(15))
-        oc.setText(f"{orig:g}" if orig else ("0" if n else ""))
+        sug = self._sugg(sc, sid, it["row"])            # 建议（箱）：没扣在途（订货箱数 = 建议 − 在途）
+        oc.setText(f"{sug:g}" if sug else ("0" if n else ""))
+        oc.setData(KEY_ROLE, float(sug))
         oc.setForeground(QColor(T("muted") if orig == n else T("text")))
         ch = self.table.item(r, CHANGE_COL)
         res = self._change(sc, sid, it["row"], n)
