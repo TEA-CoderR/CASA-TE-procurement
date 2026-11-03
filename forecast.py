@@ -9,7 +9,7 @@
        覆盖天数 P = 下单间隔 R + 到货天数 L
        卖得慢（期间需求 < 20 件）：泊松分布的服务水平分位数
        其余：μ + z·σ·√P
-       上限（卖得快的）：安全库存最多够卖 max_safety_days 天（2026-10-22 用户定，默认 7 天；
+       上限（快的慢的都一样，2026-11-03 起慢卖的也限）：安全库存最多够卖 max_safety_days 天（2026-10-22 用户定，默认 7 天；
          以前是「平均压货最多 max_stock_days 天」，和订货周期绑在一起，周期 30 天时快销品安全库存变成 0）
        有销量的商品至少保留 min_shelf 件陈列
   4. 建议件数 = S − 现有库存（负数当 0）− 在途
@@ -35,7 +35,7 @@ DEFAULT_PARAMS = {
     "service": 0.95,           # 目标服务水平（不缺货的概率）
     "abc_service": True,       # 按 ABC 调整服务水平
     "max_stock_days": 14,      # （旧，已不用）平均库存最多够卖几天
-    "max_safety_days": 7,      # 安全库存最多够卖几天（只限制卖得快的商品）
+    "max_safety_days": 7,      # 安全库存最多够卖几天（卖得快的、卖得慢的都限，2026-11-03）
     "season": True,            # 用去年同期做季节调整
     "pack_threshold": 0.3,     # （旧规则，已不用）零头 ≥ 一箱的 30% 才多订一箱
     "abc_freq_hi": 10,         # 动销兜底：近 13 周 ≥ 10 周有卖 → 最低 B
@@ -178,13 +178,15 @@ def target_stock(daily, sigma_w, inv, tier, params, season=1.0, has_recent_sales
     sd_poisson = math.sqrt(mu)
     sd = max(sigma_w / math.sqrt(7.0) * math.sqrt(P) * season, sd_poisson)
     if mu < 20 and sd <= sd_poisson * 1.3:
-        # 卖得慢：直接用泊松分布的服务水平分位数（件数少，压货金额小，优先保证不断货）
+        # 卖得慢：用泊松分布的服务水平分位数
         S = float(poisson_quantile(mu, svc))
     else:
         S = mu + z_of(svc) * sd
-        # 安全库存最多够卖 max_safety_days 天（不和订货周期绑在一起；A/B/C 的差别交给服务水平）
-        cap = mu + d * max(0.0, float(params.get("max_safety_days", 7)))
-        S = min(S, cap)
+    # 安全库存最多够卖 max_safety_days 天（不和订货周期绑在一起；A/B/C 的差别交给服务水平）。
+    # 2026-11-03 用户定：卖得慢的也一样（以前慢卖商品按泊松分位数不设上限，MARLIA 一个花洒每天 0.14 件、
+    # 60 天周期，防断货多备了 7 件 ≈ 50 天，订完够卖 125 天；现在最多多备 7 天）
+    cap = mu + d * max(0.0, float(params.get("max_safety_days", 7)))
+    S = min(S, cap)
     if has_recent_sales:
         S = max(S, float(params.get("min_shelf", 1)))
     return {"mu": mu, "ss": max(0.0, S - mu), "S": S, "svc": svc}

@@ -2836,4 +2836,5 @@ TRANSLATIONS = {
     'Excel 存过就会自动同步（打开这页时、开着时每 20 秒看一次），一般不用点；想马上同步再点': ('The Excel is synced automatically when it is saved (when this page opens, and every 20 seconds while it is open). Click only to sync right away', "L'Excel si sincronizza da solo quando viene salvato (all'apertura di questa pagina e ogni 20 secondi mentre è aperta). Clicca solo per sincronizzare subito"),
     '⚠ Excel「{0}」表 {1} 列那一块认不出是哪家门店，没读：「{2}」': ('⚠ Excel sheet «{0}», block at column {1}: store not recognised, not read: «{2}»', '⚠ Excel foglio «{0}», blocco in colonna {1}: negozio non riconosciuto, non letto: «{2}»'),
     '⚠ Excel 里有 {0} 块认不出是哪家门店，没读（看日志）': ('⚠ {0} Excel block(s) with an unrecognised store were not read (see log)', "⚠ {0} blocchi dell'Excel con negozio non riconosciuto non sono stati letti (vedi registro)"),
+    '按服务水平多备的货最多够卖几天（卖得快的、卖得慢的都一样）。A/B/C 的差别由服务水平区分': ('Extra stock held for the service level covers at most this many days (same for fast and slow sellers). A/B/C differ by service level', 'La scorta extra per il livello di servizio copre al massimo questi giorni (uguale per articoli veloci e lenti). A/B/C si distinguono per livello di servizio'),
 }

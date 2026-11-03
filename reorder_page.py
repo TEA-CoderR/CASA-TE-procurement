@@ -178,7 +178,7 @@ class AlgoDialog(QDialog):
         line(tr("到货"), tr("下单后几天到货（一般 2–7 天）"), [mk("lead_days", 0, 60, suffix=tr(" 天"))])
         line(tr("服务水平"), tr("不缺货的概率。95 = 100 次里约 5 次可能卖断"),
              [mk("service", 50, 99.5, dec=1, scale=100, suffix=" %")])
-        line(tr("安全库存最多"), tr("按服务水平多备的货最多够卖几天（只限制卖得快的商品；卖得慢的按服务水平保证不断货）。A/B/C 的差别由服务水平区分"),
+        line(tr("安全库存最多"), tr("按服务水平多备的货最多够卖几天（卖得快的、卖得慢的都一样）。A/B/C 的差别由服务水平区分"),
              [mk("max_safety_days", 0, 90, suffix=tr(" 天"))])
         line(tr("最少陈列"), tr("近 13 周有销量的商品至少保留几件"), [mk("min_shelf", 0, 50, suffix=tr(" 件"))])
         self.season = QCheckBox(tr("季节调整"))

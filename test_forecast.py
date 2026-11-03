@@ -28,8 +28,10 @@ def test_demand_rate_weights_and_new_products():
 def test_poisson_for_slow_movers():
     assert F.poisson_quantile(0.4, 0.95) == 2
     assert F.poisson_quantile(0.0, 0.95) == 0
-    # 每月卖 1 件：期间需求 12 天 ≈ 0.4 件 → 目标 2 件（泊松 95%）
+    # 每月卖 1 件：期间需求 12 天 ≈ 0.4 件 → 泊松 95% 是 2 件，但安全库存最多 7 天（2026-11-03 慢卖的也限）→ 陈列 1 件
     t = F.target_stock(1 / 30, 0.5, 0, "C", dict(P, abc_service=False, cycle_c=1.0))
+    assert t["S"] == 1
+    t = F.target_stock(1 / 30, 0.5, 0, "C", dict(P, abc_service=False, cycle_c=1.0, max_safety_days=60))
     assert t["S"] == 2
 
 
@@ -135,3 +137,17 @@ def test_adjust_tier_by_sales_weeks():
     assert F.adjust_tier("A", some, P) == ("B", "down")
     assert F.adjust_tier("C", [1.0] * 4 + [0.0] * 22, P) == ("B", "up")     # 新品每周都卖 → 升 B
     assert F.adjust_tier("B", [0.0] * 26, P) == ("B", None)                  # 没销量：不动
+
+
+def test_slow_mover_safety_capped_by_max_safety_days():
+    """2026-11-03：卖得慢的也受「安全库存最多 7 天」限制（MARLIA 花洒：日均 0.14、周期 60、A 类，以前 17 箱）"""
+    p = dict(F.DEFAULT_PARAMS)
+    p.update({"review_days": 60, "lead_days": 5, "max_safety_days": 7, "service": 0.95, "abc_service": True,
+              "cycle_a": 1.25})
+    t = F.target_stock(0.14, 0.4, 1, "A", p)
+    assert abs(t["mu"] - 0.14 * 80) < 1e-6
+    assert t["S"] <= t["mu"] + 0.14 * 7 + 1e-6
+    assert F.order_qty(t["S"], 1) == 12
+    # 放宽到 60 天：又回到按泊松分位数（不超过 97.5% 分位数）
+    p["max_safety_days"] = 60
+    assert F.order_qty(F.target_stock(0.14, 0.4, 1, "A", p)["S"], 1) == 17
