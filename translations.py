@@ -2907,4 +2907,11 @@ TRANSLATIONS = {
     '建议量扣掉在途': ('Subtract in-transit from suggestions', 'Togli gli arrivi dai suggerimenti'),
     '打开（默认）：总仓采购、门店采购、检查门店清单算建议量时，扣掉已经订了还没到货的数量；关掉：在途箱数只显示，不扣': ('On (default): central purchasing, store purchasing and store list check subtract what is ordered but not arrived yet from the suggestion; off: cases in transit are only shown', 'Attivo (predefinito): centrale acquisti, acquisti negozio e controllo liste tolgono dal suggerimento ciò che è ordinato ma non arrivato; disattivo: i colli in arrivo sono solo mostrati'),
     '在途 {0:g} 箱还没到货：订货箱数 = 建议 {1:g} − 在途 {0:g} = {2:g} 箱': ('{0:g} cases in transit: cases to order = suggested {1:g} − in transit {0:g} = {2:g}', '{0:g} colli in arrivo: colli da ordinare = suggeriti {1:g} − in arrivo {0:g} = {2:g}'),
+    '在途的订单': ('Orders in transit', 'Ordini in arrivo'),
+    '这个商品已经订了、还没到货的单（采购订单跟踪）。货其实到了的：选中点「已到货」，建议量马上重新算；右键还可以看整张单的商品、打开订单文件': ("Orders for this item that are placed but not arrived yet (Order tracking). If the goods actually arrived, select and click 'Arrived': the suggestion is recalculated at once; right-click to see the whole order or open the order file", "Ordini di questo articolo fatti ma non ancora arrivati (monitoraggio ordini). Se la merce è arrivata, seleziona e clicca «Arrivato»: il suggerimento si ricalcola subito; tasto destro per vedere tutto l'ordine o aprire il file"),
+    '这个商品': ('This item', 'Questo articolo'),
+    '选中的单标成今天到货：不再算在途': ('Mark the selected orders as arrived today: no longer in transit', 'Segna gli ordini selezionati come arrivati oggi: non più in arrivo'),
+    '在途重算失败：{0}': ('Recalculating in-transit failed: {0}', 'Ricalcolo degli arrivi non riuscito: {0}'),
+    '已更新 {0} 张单，在途和建议量已重新算': ('{0} orders updated; in-transit and suggestions recalculated', '{0} ordini aggiornati; arrivi e suggerimenti ricalcolati'),
+    '双击看订单、标到货': ('Double-click to see the orders and mark them arrived', 'Doppio clic per vedere gli ordini e segnarli arrivati'),
 }

@@ -940,6 +940,14 @@ def apply_transit(demand, schede, transit):
     建议箱数（colli_for）会扣掉在途。返回有在途的 (门店, 编号) 个数
     """
     import order_record as REC
+    for sid, dem in demand.items():                 # 再算一次（例如标了到货）：先还原上次扣的
+        if isinstance(sid, int) and isinstance(dem, dict):
+            for d in dem.values():
+                if isinstance(d, dict) and "transit" in d:
+                    d.pop("transit", None)
+                    d.pop("transit_info", None)
+                    if "need0" in d:
+                        d["need"] = d["need0"]
     if not transit:
         return 0
     n = 0
@@ -959,7 +967,8 @@ def apply_transit(demand, schede, transit):
                 done.add(code)
                 d["transit"] = float(t["pcs"])
                 d["transit_info"] = t
-                d["need"] = max(0.0, float(d.get("need", d["sugg"]) or 0) - float(t["pcs"]))
+                d.setdefault("need0", float(d.get("need", d["sugg"]) or 0))
+                d["need"] = max(0.0, d["need0"] - float(t["pcs"]))
                 n += 1
     return n
 

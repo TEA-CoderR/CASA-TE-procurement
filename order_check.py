@@ -875,6 +875,7 @@ class OrderCheck:
         self.transfer_ov = {}
         self.transfer_frozen = False
         self.table.cellDoubleClicked.connect(self._edit_transfer)     # 双击「调货」：选调出门店、填件数
+        self.table.cellDoubleClicked.connect(self._open_transit)      # 双击「在途箱数」：看是哪几张单、标到货
         self.table.cellDoubleClicked.connect(self._open_card)         # 双击商品：商品详情窗口
         self.table.horizontalHeaderItem(_col(3)).setToolTip(tr("双击打开商品详情（入库记录、每天销量、各店库存）；名称红色 = 门店在促销"))
         self.table.horizontalHeaderItem(_col(TRANSFER_COL)).setText(tr("调货") + " ✎")
@@ -1552,6 +1553,42 @@ class OrderCheck:
             return
         self.transfer_ov = TR.freeze(self._moves, self.transfer_ov, lambda m: (m["to"], str(m["code"])))
         self.transfer_frozen = True
+
+    def _open_transit(self, k, c):
+        """双击「在途箱数」：这个商品在途的是哪几张单（transit_dialog），到了没标的直接标到货 → 重新扣"""
+        if c != _col(TRANSIT):
+            return
+        i = self.ctl.row_at(k)
+        if i is None:
+            return
+        x = self.rows[i]
+        t = self._transit_of(x)
+        if not t:
+            return
+        from transit_dialog import TransitOrdersDialog
+        TransitOrdersDialog(self.window, self.settings, self.ui, f"{x['name']} · {R.STORES.get(x.get('store'), '')}", t,
+                            on_change=self.reapply_transit).exec()
+
+    def reapply_transit(self, transit):
+        """在途变了：重新扣在途（手动改过确定箱数的行只更新在途，不动箱数）"""
+        import order_record as REC
+        self.transit = transit
+        self.meta["transit"] = transit
+        deduct = REC.deduct_on(self.settings)
+        algo = self._algo()
+        for x in self.rows:
+            t_ = REC.lookup(transit, x.get("store"), x.get("ean"), x.get("code")) if (transit and deduct) else None
+            new = float(t_["pcs"]) if t_ else None
+            if new == x.get("transit_pcs"):
+                continue
+            edited = _edited(x)
+            if new is None:
+                x.pop("transit_pcs", None)
+            else:
+                x["transit_pcs"] = new
+            if not edited and "fbox" in x:
+                init_boxes([x], None, algo, self.cfg)
+        self._replan_in_place()
 
     def _edit_transfer(self, k, c):
         """双击「调货」格：选从哪家门店调、调几件（或者不调）。只改这一行"""
@@ -2310,7 +2347,8 @@ class OrderCheck:
             import order_record as REC
             it = t.item(k, _col(TRANSIT))
             it.setForeground(QColor(T("accent")))
-            it.setToolTip(tr("已经订了、还没到货 {0:g} 箱（{1:g} 件）：", tri["colli"], tri["pcs"]) + "\n" + REC.transit_text(tri))
+            it.setToolTip(tr("已经订了、还没到货 {0:g} 箱（{1:g} 件）：", tri["colli"], tri["pcs"]) + "\n" + REC.transit_text(tri)
+                          + "\n" + tr("双击看订单、标到货"))
         if x.get("promo"):                       # 门店在促销：商品名 / 条码标红
             ptip = self._promo_tip(x)
             for pc in (_col(2), _col(3)):

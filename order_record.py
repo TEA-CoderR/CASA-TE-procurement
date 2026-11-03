@@ -367,7 +367,7 @@ def order_lines(order, f, lines):
 def in_transit(orders, resolved, index, log=None):
     """
     → {"by_ean": {(门店号, 条码): 信息}, "by_code": {(门店号, 编号): 信息}, "orders": {单号: {file, how, n, colli}}}
-    信息 = {"colli", "pcs", "orders": [(下单日 iso, 供应商, 箱数)]}。同一个文件里同一家店只算一次（门店单 + BMS 单对到同一个
+    信息 = {"colli", "pcs", "orders": [(下单日 iso, 供应商, 箱数, 单号)]}。同一个文件里同一家店只算一次（门店单 + BMS 单对到同一个
     文件时不重复）
     """
     by_ean, by_code, info = {}, {}, {}
@@ -385,7 +385,7 @@ def in_transit(orders, resolved, index, log=None):
                 continue
             n += 1
             tot += x["colli"]
-            ent_o = (o["date"].isoformat(), o.get("supplier") or "", x["colli"])
+            ent_o = (o["date"].isoformat(), o.get("supplier") or "", x["colli"], o["id"])
             for key, d in (((sid, x["ean"]), by_ean), ((sid, x["code"]), by_code)):
                 if not key[1]:
                     continue
@@ -418,7 +418,16 @@ def transit_text(t):
     """鼠标提示：哪几张单"""
     if not t:
         return ""
-    return "\n".join(f"{d[8:10]}/{d[5:7]} · {s} · {c:g}" for d, s, c in t["orders"])
+    return "\n".join(f"{o[0][8:10]}/{o[0][5:7]} · {o[1]} · {o[2]:g}" for o in t["orders"])
+
+
+def order_ids(t):
+    """这个商品在途的那几张单的单号（订单跟踪里的）"""
+    out = []
+    for o in (t or {}).get("orders") or []:
+        if len(o) > 3 and o[3] not in out:
+            out.append(o[3])
+    return out
 
 
 # ===================================================================== 一步到位（页面 / 线程里用）

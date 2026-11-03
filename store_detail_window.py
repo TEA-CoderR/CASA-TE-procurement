@@ -625,6 +625,7 @@ class DetailWindow(ToolWindow):
         self.table.horizontalHeaderItem(TRANSFER_COL).setToolTip(
             tr("门店间调货：从哪家门店调进几件（调进来的就少订）。双击可以改：选调出门店、调几件，或者不调（比如过季品）"))
         self.table.cellDoubleClicked.connect(self._edit_transfer)     # 双击「调货」：选调出门店、填件数
+        self.table.cellDoubleClicked.connect(self._open_transit)      # 双击「在途箱数」：看是哪几张单、标到货
         self.table.horizontalHeaderItem(TRANSFER_COL).setText(tr("调货") + " ✎")
         self.table.horizontalHeaderItem(CHANGE_COL).setToolTip(tr("订货箱数 − 建议箱数，括号里是为什么变：调货 / 手动改"))
         self.table.horizontalHeaderItem(REASON_COL).setToolTip(tr("系统为什么这么建议：库存够卖几天、订货周期里大约卖多少"))
@@ -1166,7 +1167,8 @@ class DetailWindow(ToolWindow):
         ti.setData(KEY_ROLE, tb)
         if tri:
             ti.setForeground(QColor(T("accent")))
-            ti.setToolTip(tr("已经订了、还没到货 {0:g} 箱（{1:g} 件）：", tri["colli"], tri["pcs"]) + "\n" + REC.transit_text(tri))
+            ti.setToolTip(tr("已经订了、还没到货 {0:g} 箱（{1:g} 件）：", tri["colli"], tri["pcs"]) + "\n" + REC.transit_text(tri)
+                          + "\n" + tr("双击看订单、标到货"))
         else:
             ti.setToolTip("")
 
@@ -1246,6 +1248,22 @@ class DetailWindow(ToolWindow):
         t.item(r, DEC_COL).setToolTip(why)          # 鼠标停在「判断」上也能看为什么
         t.item(r, DEC_COL).setData(Qt.UserRole + 3, why)
 
+    def _open_transit(self, r, c):
+        """双击「在途箱数」：这个商品在途的是哪几张单（transit_dialog），到了没标的直接标到货 → 重新扣"""
+        if c != TRANSIT_COL or not self.page.calc:
+            return
+        item = self.table.item(r, 0)
+        i = item.data(DI_ROLE) if item is not None else None
+        if i is None:
+            return
+        sc, it, sid = self.detail[i]
+        t = self._transit_of(it, sid)
+        if not t:
+            return
+        from transit_dialog import TransitOrdersDialog
+        TransitOrdersDialog(self, self.page.settings, self.ui, f"{it['desc']} · {S.STORE_SHEETS.get(sid, sid)}", t,
+                            on_change=self.page.reapply_transit).exec()
+
     def _edit_transfer(self, r, c):
         """双击「调货」格：选从哪家门店调、调几件（或者不调）。只改这一行，别的行不跟着变"""
         if c != TRANSFER_COL or not self.page.calc:
@@ -1319,6 +1337,7 @@ class DetailWindow(ToolWindow):
             if rows is not None and (self.detail[i][0]["path"], self.detail[i][1]["row"]) not in rows:
                 continue
             self._style_transfer(i, self.pos[i])
+            self._style_transit(i, self.pos[i])
             self._show_qty(i)
         self.table.setUpdatesEnabled(True)
         self._filling = was

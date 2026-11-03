@@ -200,3 +200,20 @@ def test_transit_subtracted_from_suggestions():
 def test_deduct_switch_default_on():
     assert R.deduct_on({}) and R.deduct_on({"tracking": {}})
     assert not R.deduct_on({"tracking": {"deduct_transit": False}})
+
+
+def test_reapply_transit_is_idempotent():
+    """标了到货再算一次：上次扣的先还原，不会越扣越多"""
+    import store_orders as SO
+    sc = {"path": "p", "name": "SAIS", "sheets": {2: "MARLIA"},
+          "items": [{"row": 5, "code": "100", "db_code": "100", "ean": "8001", "desc": "A", "pack": 6, "price": 1.0}]}
+    demand = {2: {"100": {"sugg": 30, "need": 30, "inv": 0, "daily": 1.0}}, "_algo": None}
+    t1 = {"by_ean": {("2", "8001"): {"colli": 1.0, "pcs": 12.0, "orders": [("2026-11-01", "SAIS", 1.0, "o1")], "desc": ""}},
+          "by_code": {}, "orders": {}}
+    SO.apply_transit(demand, [sc], t1)
+    SO.apply_transit(demand, [sc], t1)
+    assert demand[2]["100"]["need"] == 18
+    assert R.order_ids(demand[2]["100"]["transit_info"]) == ["o1"]
+    SO.apply_transit(demand, [sc], {"by_ean": {}, "by_code": {}, "orders": {}})     # 到了：不再扣
+    assert "transit" not in demand[2]["100"] and demand[2]["100"]["need"] == 30
+    assert SO.base_colli(sc, demand) == {2: {5: 5}}

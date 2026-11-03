@@ -615,6 +615,30 @@ class StoreOrderPage:
             c.pop("transfer_auto_plan", None)
         self.apply_transfers()
 
+    def reapply_transit(self, transit):
+        """
+        在途变了（在途订单窗口里标了到货 / 不算在途）：重新扣，订货箱数 = 建议 − 在途；手动改过的箱数保留。
+        开关关着：只更新订货明细在途列的显示
+        """
+        import order_record as REC
+        c = self.calc
+        if not c:
+            return
+        if REC.deduct_on(self.settings):
+            c["transit"] = transit
+            S.apply_transit(c["demand"], c["schede"], transit)
+            stores = c["stores"]
+            c["base"] = {sc["path"]: S.base_colli(sc, c["demand"], stores) for sc in c["schede"]}
+            c["base_sugg"] = {sc["path"]: S.base_colli(sc, c["demand"], stores, transit=False) for sc in c["schede"]}
+            c.pop("base_orig", None)                  # 调货从新的建议重新算
+            self.apply_transfers()
+            self.result = None
+            self._refresh_matrix()
+            self._update_state()
+        if self.detail_win is not None:
+            self.detail_win.transit = transit
+            self.detail_win.refresh_transfers()
+
     def apply_transfers(self, keep_edits=True, refresh_auto=False):
         """按现在的调货设置重算调货；手动改过的箱数保留。refresh_auto：调货设置改了 → 解冻，按新设置重新建议（人工改的保留）"""
         if not self.calc:
