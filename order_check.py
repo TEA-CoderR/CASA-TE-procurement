@@ -503,7 +503,7 @@ def init_boxes(rows, units=None, algo=None, rules=None):
         x.pop("transit_cut", None)
         tp = float(x.get("transit_pcs") or 0)
         if tp > 0 and x["sbox"]:
-            cut = min(x["sbox"], int(tp // pk))
+            cut = min(x["sbox"], int(tp / pk + 1e-9))
             if cut > 0:
                 x["sbox"] -= cut
                 x["transit_cut"] = cut
@@ -1372,8 +1372,7 @@ class OrderCheck:
         if c == AMOUNT_COL:
             return self._amount(x)
         if c == _col(TRANSIT):
-            t = self._transit_of(x)
-            return t["colli"] if t else 0
+            return self._transit_boxes(x)
         return None
 
     # ---------- 在途（已经订了、还没到货）----------
@@ -1381,9 +1380,17 @@ class OrderCheck:
         import order_record as REC
         return REC.lookup(getattr(self, "transit", None), x.get("store"), x.get("ean"), x.get("code"))
 
-    def _transit_text(self, x):
+    def _transit_boxes(self, x):
+        """在途箱数：扣过的按这一行的箱规折算（在途件数 ÷ 每箱件数，整箱）；只显示的用订单文件里的箱数"""
+        tp, pk = float(x.get("transit_pcs") or 0), _pk(x)
+        if tp > 0 and pk > 0:
+            return float(int(tp / pk + 1e-9))
         t = self._transit_of(x)
-        return f"{t['colli']:g}" if t else ""
+        return float(t["colli"]) if t else 0.0
+
+    def _transit_text(self, x):
+        n = self._transit_boxes(x)
+        return f"{n:g}" if n else ""
 
     def _load_transit(self):
         """采购订单跟踪里没到货的单 + RECORD ORDINE 订单文件 → 每家店每个商品在途几箱（后台线程，第一次要读很多文件）"""

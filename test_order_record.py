@@ -183,8 +183,10 @@ def test_transit_subtracted_from_suggestions():
     assert SO.apply_transit(demand, [sc], transit) == 1
     assert demand[2]["100"]["transit"] == 12 and demand[2]["100"]["need"] == 18
     assert "transit" not in demand[3]["100"]
-    assert SO.base_colli(sc, demand) == {2: {5: 3}, 3: {5: 5}}            # 30 − 12 = 18 件 = 3 箱；别的店不扣
-    assert SO.colli_for({"sugg": 10, "transit": 12}, 6) == 0
+    # 订货箱数 = 建议箱数 − 在途箱数：建议 30 件 = 5 箱，在途 12 件 = 2 箱 → 3 箱；别的店不扣
+    assert SO.base_colli(sc, demand) == {2: {5: 3}, 3: {5: 5}}
+    assert SO.base_colli(sc, demand, transit=False) == {2: {5: 5}, 3: {5: 5}}
+    assert SO.transit_boxes({"transit": 13}, 6) == 2 and SO.transit_boxes({}, 6) == 0
     # 检查清单：整箱扣，零头不扣
     row = {"in_db": True, "pack": 6, "file_qty": 4, "suggested": 24, "inv0": 0, "daily0": 1.0, "daily": 1.0,
            "cycle": 30, "tier": "B", "sales": [30, 60, 90, 180], "transit_pcs": 13.0}

@@ -897,7 +897,7 @@ class DetailWindow(ToolWindow):
                 m2.setText("")
         self._show_months(sid, it.get("db_code") or it["code"], bool(x))
         n = self._cur(sc, sid, it["row"])
-        orig = self._orig(sc, sid, it["row"])
+        orig = self._sugg(sc, sid, it["row"])
         self.why_t.setText(tr("为什么建议 {0:g} 箱", orig) if orig else tr("为什么不用订"))
         lines = self._reason_lines(sc, it, sid)
         if (sc["path"], sid, it["row"]) in self.page.edited:
@@ -1089,7 +1089,8 @@ class DetailWindow(ToolWindow):
         t = self.table
         sc, it, sid = self.detail[i]
         x = calc["demand"].get(sid, {}).get(it.get("db_code") or it["code"])
-        sug_c = self._orig(sc, sid, it["row"])          # 系统建议（调货之前）；调货少订的在「调货」「变化」两列
+        sug_c = self._orig(sc, sid, it["row"])          # 系统建议（调货之前、扣了在途）；调货少订的在「调货」「变化」两列
+        sug_s = self._sugg(sc, sid, it["row"])          # 「建议（箱）」列：没扣在途
         # 库存够卖 = 库存 ÷ 日均（负库存按 0 算），和「订后够卖」、检查订货清单同一个算法
         inv_days = S.days_text(S.cover_days(x)) if x else ""
         vals = _perm([
@@ -1097,7 +1098,7 @@ class DetailWindow(ToolWindow):
             S.item_code(it), it["ean"], it["desc"],
             f"{x.get('inv_raw', x['inv']):g}" if x else "", *([f"{v:g}" for v in x["sales"]] if x else [""] * 4),
             inv_days or "", f"{it['pack']:g}", f"{it['price']:.3f}".rstrip("0").rstrip("."),
-            f"{x['sugg']:,}" if x else "", f"{sug_c:g}" if sug_c else "", "", "",
+            f"{x['sugg']:,}" if x else "", f"{sug_s:g}" if sug_s else "", "", "",
             (x["tier"] or "") if x else "",
             f"{x['cycle']:g}" if x and isinstance(x.get("cycle"), (int, float)) else "",
             f"{x['daily']:.2f}" if x and x.get("daily") else "",
@@ -1105,10 +1106,9 @@ class DetailWindow(ToolWindow):
             self._extra_texts(x, sug_c, d) + ["", self._transfer_text(sc, it, sid), "",
                                               "；".join(self._reason_lines(sc, it, sid)), it.get("sup_code") or "",
                                               self._transit_text(it, sid)])
-        tri = self._transit_of(it, sid)
         keys = _perm(self._sort_keys(i, x, sug_c) + self._extra_keys(x, sug_c, d) +
                      [0.0, self._transfer_key(sc, it, sid), 0.0, vals[REASON_COL].lower(),
-                      str(it.get("sup_code") or ""), tri["colli"] if tri else 0.0])
+                      str(it.get("sup_code") or ""), self._transit_boxes(it, sid)])
         num_cols, nf = self._num_cols, self._num_font
         ro = Qt.ItemIsSelectable | Qt.ItemIsEnabled
         for c in range(len(vals)):
@@ -1142,9 +1142,17 @@ class DetailWindow(ToolWindow):
             return x["transit_info"]
         return REC.lookup(self.transit, sid, it.get("ean"), it.get("db_code") or it.get("code"))
 
-    def _transit_text(self, it, sid):
+    def _transit_boxes(self, it, sid):
+        """在途箱数这一格：扣过的显示扣了几箱（建议 − 在途 = 订货）；只显示的显示订单文件里的箱数"""
+        x = ((self.page.calc or {}).get("demand") or {}).get(sid, {}).get(it.get("db_code") or it.get("code"))
+        if x and x.get("transit_info"):
+            return float(S.transit_boxes(x, it.get("pack")))
         t = self._transit_of(it, sid)
-        return f"{t['colli']:g}" if t else ""
+        return float(t["colli"]) if t else 0.0
+
+    def _transit_text(self, it, sid):
+        n = self._transit_boxes(it, sid)
+        return f"{n:g}" if n else ""
 
     def _style_transit(self, i, r):
         import order_record as REC
@@ -1153,8 +1161,9 @@ class DetailWindow(ToolWindow):
         ti = self.table.item(r, TRANSIT_COL)
         if ti is None:
             return
-        ti.setText(f"{tri['colli']:g}" if tri else "")
-        ti.setData(KEY_ROLE, tri["colli"] if tri else 0.0)
+        tb = self._transit_boxes(it, sid)
+        ti.setText(f"{tb:g}" if tb else "")
+        ti.setData(KEY_ROLE, tb)
         if tri:
             ti.setForeground(QColor(T("accent")))
             ti.setToolTip(tr("已经订了、还没到货 {0:g} 箱（{1:g} 件）：", tri["colli"], tri["pcs"]) + "\n" + REC.transit_text(tri))
@@ -1318,6 +1327,14 @@ class DetailWindow(ToolWindow):
             self._select_row(self.pos[self.cur_di])
 
     # ---------- 调货 / 变化 ----------
+    def _sugg(self, sc, sid, row):
+        """「建议（箱）」列：系统建议的箱数，没扣在途（订货箱数 = 建议 − 在途箱数）"""
+        calc = self.page.calc
+        src = calc.get("base_sugg")
+        if src is None:
+            return self._orig(sc, sid, row)
+        return src.get(sc["path"], {}).get(sid, {}).get(row, 0)
+
     def _orig(self, sc, sid, row):
         """系统建议的箱数（调货之前）"""
         calc = self.page.calc
@@ -1361,13 +1378,13 @@ class DetailWindow(ToolWindow):
             tin = {"name": S.STORE_SHEETS.get(t["from"], t["from"]), "pieces": t["pieces"], "inv": have,
                    "days": S.cover_days({"inv": have, "daily": dx.get("daily")}) if dx else None,
                    "saved": t["colli_before"] - t["colli_after"]}
-        tp = float(x.get("transit") or 0)
-        lines = R.plain_reason(x.get("inv_raw", x.get("inv")), x.get("daily"), x.get("cycle"),
-                               max(0, (x.get("sugg") or 0) - tp), boxes=self._orig(sc, sid, it["row"]) or None,
-                               target=x.get("target"), transfer=tin, pack=it.get("pack"))
-        if tp > 0:
-            ti = x.get("transit_info") or {}
-            lines.insert(0, tr("在途：已经订了 {0:g} 箱（{1:g} 件）还没到货，从建议里扣掉了", ti.get("colli") or 0, tp))
+        lines = R.plain_reason(x.get("inv_raw", x.get("inv")), x.get("daily"), x.get("cycle"), x.get("sugg"),
+                               boxes=self._sugg(sc, sid, it["row"]) or None, target=x.get("target"), transfer=tin,
+                               pack=it.get("pack"))
+        tb = S.transit_boxes(x, it.get("pack"))
+        if tb:
+            lines.append(tr("在途 {0:g} 箱还没到货：订货箱数 = 建议 {1:g} − 在途 {0:g} = {2:g} 箱", tb,
+                            self._sugg(sc, sid, it["row"]), self._orig(sc, sid, it["row"])))
         return lines
 
     def _marks(self, sc, it, sid, n=None):
@@ -1458,7 +1475,7 @@ class DetailWindow(ToolWindow):
                 S.item_code(it), it["ean"], it["desc"].lower(),
                 num(x.get("inv_raw", x["inv"])) if x else None, *([num(v) for v in x["sales"]] if x else [None] * 4),
                 num(inv_days), float(it["pack"]), float(it["price"]),
-                float(x["sugg"]) if x else None, float(sug_c), 0.0, 0.0,
+                float(x["sugg"]) if x else None, float(self._sugg(sc, sid, it["row"])), 0.0, 0.0,
                 (_TIER_RANK.get(x["tier"], 9),) + k0 if x else (9,) + k0,
                 float(x["cycle"]) if x and isinstance(x.get("cycle"), (int, float)) else None,
                 float(x["daily"]) if x and x.get("daily") else None,

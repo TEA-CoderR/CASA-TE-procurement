@@ -914,19 +914,24 @@ def export_transfers(transfers, path, date_tag=""):
 def colli_for(d, pack, algo=None):
     """
     建议件数 → SCHEDA 箱数。新算法：凑不成整箱时少订后够安全库存就少订（forecast.to_packs）；原程序算法：件数（已按原程序取整）÷ 每箱件数，向上取整。
-    在途（d["transit"] 件，已经订了还没到货，apply_transit；2026-11-03 用户：从建议量里扣）先从建议件数里扣掉
+    不管在途：在途在 base_colli 里按箱扣（订货箱数 = 建议箱数 − 在途箱数，2026-11-03 用户：三列放一起一眼看懂）
     """
     if not d or d["sugg"] <= 0:
         return 0
-    tp = max(0.0, float(d.get("transit") or 0))
-    q = d["sugg"] - tp
-    if q <= 1e-9:
-        return 0
     if algo and algo.get("engine") == "v2":
         import forecast as F
-        return F.to_packs(q, pack, d.get("inv", 0), d.get("daily", 0), algo,
-                          tier=d.get("tier") or "C", cycle=d.get("cycle"), on_order=tp)
-    return math.ceil(q / pack - 1e-9)
+        return F.to_packs(d["sugg"], pack, d.get("inv", 0), d.get("daily", 0), algo,
+                          tier=d.get("tier") or "C", cycle=d.get("cycle"))
+    return math.ceil(d["sugg"] / pack)
+
+
+def transit_boxes(d, pack):
+    """在途折成这个 SCHEDA 的箱数（在途件数 ÷ 每箱件数，整箱；零头不算）"""
+    tp = float((d or {}).get("transit") or 0)
+    if tp <= 0:
+        return 0
+    pack = pack if pack and pack > 0 else 1
+    return int(tp / pack + 1e-9)
 
 
 def apply_transit(demand, schede, transit):
@@ -959,8 +964,11 @@ def apply_transit(demand, schede, transit):
     return n
 
 
-def base_colli(scheda, demand, stores=None):
-    """系统建议的箱数：{门店号: {行号: 箱数}}"""
+def base_colli(scheda, demand, stores=None, transit=True):
+    """
+    系统建议的订货箱数：{门店号: {行号: 箱数}}。transit=True：订货箱数 = 建议箱数 − 在途箱数（不到 0）；
+    False：建议箱数（没扣在途，订货明细「建议（箱）」列显示用，calc["base_sugg"]）
+    """
     out = {}
     for sid in (stores or scheda["sheets"].keys()):
         if sid not in scheda["sheets"]:
@@ -968,7 +976,10 @@ def base_colli(scheda, demand, stores=None):
         dem = demand.get(sid, {})
         lines = {}
         for it in scheda["items"]:
-            n = colli_for(dem.get(it.get("db_code") or it["code"]), it["pack"], demand.get("_algo"))
+            d = dem.get(it.get("db_code") or it["code"])
+            n = colli_for(d, it["pack"], demand.get("_algo"))
+            if transit:
+                n = max(0, n - transit_boxes(d, it["pack"]))
             if n > 0:
                 lines[it["row"]] = n
         out[sid] = lines
@@ -2199,9 +2210,10 @@ def compute(db, schede_paths, stores, days_list, reorder_cycle, log=print, use_s
     if n_tr:
         log(f"在途：{n_tr} 个商品已经订了还没到货，建议量里扣掉了")
     base = {sc["path"]: base_colli(sc, demand, stores) for sc in schede}
+    base_sugg = {sc["path"]: base_colli(sc, demand, stores, transit=False) for sc in schede} if n_tr else base
     progress(2, "done", "", "", 100.0)
     return {"schede": schede, "demand": demand, "base": base, "missing": missing, "errors": errors,
-            "stores": list(stores), "days": list(days_list), "transit": transit}
+            "stores": list(stores), "days": list(days_list), "transit": transit, "base_sugg": base_sugg}
 
 
 def allocate(calc, colli, fill, out_root, log=print, date_tag=None, edited=None, only=None, progress=None, modes=None,
