@@ -3200,7 +3200,8 @@ class MainWindow(QMainWindow):
         self.crumb_parent.setText(ptext)
         self.crumb_parent.setVisible(sub)
         self.crumb_sep2.setVisible(sub)
-        self.crumb_cur.setText(text if sub else ptext)
+        # 面包屑最后一段写子页面自己的名字（「LUCAS定制采购 / 总仓采购」，以前第一页会重复写一遍上一级）
+        self.crumb_cur.setText(dict(self.SUB_PAGES[parent]).get(key, text) if sub else ptext)
         # 二级菜单：在这一块里就展开，换到别的模块就收起（同一时间只展开一组）
         for pk, (pb, arrow, wrap) in self.nav_tree.items():
             on = pk == parent

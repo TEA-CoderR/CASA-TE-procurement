@@ -822,13 +822,36 @@ def sync_excel(st, rows, budgets, sheets, blocks=None, mtime=None):
     return res
 
 
+STALE_MAX_MIN = 10       # 本地 Excel 比程序最后写的旧：最多等同步盘这么多分钟
+
+
+def is_stale(st, path, mtime=None, now=None):
+    """
+    本地 Excel 比程序最后一次写进去的旧 = 同步盘还没把新文件传过来，先不读。
+    只等 STALE_MAX_MIN 分钟；旁边有同步盘冲突副本也不等（2026-11-04 测试发现：同步盘换回一个旧版本、修改时间也是旧的，
+    以前会一直「等同步盘」、再也不读 Excel，冲突副本也合并不了）
+    """
+    w = st.xstate.get("write") or {}
+    mtime = os.path.getmtime(path) if mtime is None else mtime
+    if not w.get("mtime") or mtime + 2 >= float(w["mtime"]):
+        return False
+    try:
+        t = datetime.fromisoformat(str(w.get("t")).replace("Z", "+00:00"))
+        now = now or datetime.now(t.tzinfo)
+        if (now - t).total_seconds() > STALE_MAX_MIN * 60:
+            return False
+    except (TypeError, ValueError):
+        return False
+    import excel_sync as XS
+    return not XS.conflict_copies(path)
+
+
 def import_file(st, path):
     """读 Excel（先复制一份再读：原文件可能正被 Excel 打开 / 正在同步）→ sync_excel"""
     import shutil
     import tempfile
     mtime = os.path.getmtime(path)
-    w = st.xstate.get("write") or {}
-    if w.get("mtime") and mtime + 2 < float(w["mtime"]):
+    if is_stale(st, path, mtime):
         # 别的电脑刚写过 Excel，这台电脑的同步盘还没收到新文件：先不读（不然会把旧文件当成「Excel 里改回去了」）
         return {"stale": True, "new": 0, "updated": 0, "removed": 0, "kept": 0, "rows": 0, "sheets": [],
                 "unknown": [], "mtime": mtime}

@@ -20,7 +20,7 @@ import order_record as REC
 import order_tracking as OT
 
 COLS = [(0, "下单日期", 96), (1, "门店", 96), (2, "供应商", 150), (3, "本品箱数", 76), (4, "预计到货", 96),
-        (5, "订单状态", 88), (6, "订单文件", 250)]
+        (5, "订单状态", 120), (6, "订单文件", 330)]
 _FIELDS = ("arrived", "state", "note", "record")
 
 
@@ -131,7 +131,7 @@ class TransitOrdersDialog(QDialog):
         b_close.clicked.connect(self.accept)
         foot.addWidget(b_close)
         v.addLayout(foot)
-        self.resize(900, 360)
+        self.resize(sum(w for _f, _h, w in COLS) + 60, 380)     # 列都放得下（约 1020，1366 的笔记本屏幕放得下）
         fit_to_screen(self)
         self._load()
         if self.rows:

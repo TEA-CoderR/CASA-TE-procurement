@@ -217,3 +217,20 @@ def test_sync_conflict_copy_merged_back_and_moved_away():
     r2 = OT.import_file(st2, x)
     assert r2["new"] == 0 and r2["removed"] == 0
     assert len([o for o in st2.orders.values() if o.get("supplier") == "HANDMADE"]) == 1
+
+
+def test_stale_wait_is_limited_and_skipped_when_conflict_copy():
+    """本地 Excel 比程序写的旧：先等同步盘；超过 10 分钟或者旁边有冲突副本就照常读（2026-11-04 测试发现会一直等）"""
+    from datetime import timezone, timedelta
+    import shutil
+    d, x, st = _setup()
+    st.set(_by_sup(st, "SAIS"), {"note": "x"})
+    assert XS.writeback(st, x, "pc1")["status"] == "ok"
+    old = time.time() - 3600
+    _set_mtime(x, old)                                         # 同步盘换回来的旧版本，修改时间也是旧的
+    assert OT.is_stale(st, x) and OT.import_file(st, x).get("stale")
+    later = datetime.now(timezone.utc) + timedelta(minutes=OT.STALE_MAX_MIN + 1)
+    assert not OT.is_stale(st, x, now=later)
+    cp = x.replace(".xlsx", "_PC1_Conflict.xlsx")
+    shutil.copy2(x, cp)
+    assert not OT.is_stale(st, x) and not OT.import_file(st, x).get("stale")

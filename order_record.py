@@ -67,7 +67,7 @@ def _num(v):
 
 def folder_store(rel):
     """相对 RECORD 文件夹的路径 → "1".."5"（门店文件夹）/ "C"（06 总仓）/ "D"（07 DETERSIVO）/ None"""
-    top = re.split(r"[\\/]", str(rel or ""), 1)[0].strip()
+    top = re.split(r"[\\/]", str(rel or ""), maxsplit=1)[0].strip()
     return STORE_DIRS.get(top[:2]) if top[:2].isdigit() else None
 
 
