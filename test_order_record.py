@@ -134,7 +134,7 @@ def test_grid_in_central_folder_uses_destination():
     with tempfile.TemporaryDirectory() as root:
         p = os.path.join(root, "06 RECORD CENTRALE ACQUISTI", "x.xlsx")
         _grid_file(p, [("1", "8001", "A", 6, 4)], dest="CASA & TE S.FILIPPO\nVia …")
-        assert R.read_lines(p, "C") == {"3": [{"ean": "8001", "code": "1", "desc": "A", "colli": 4.0, "pack": 6.0}]}
+        assert R.read_lines(p, "C") == {"3": [{"ean": "8001", "code": "1", "desc": "A", "colli": 4.0, "pack": 6.0, "price": 1.0}]}
 
 
 def test_deter_last_order_to_elim_file():
@@ -217,3 +217,41 @@ def test_reapply_transit_is_idempotent():
     SO.apply_transit(demand, [sc], {"by_ean": {}, "by_code": {}, "orders": {}})     # 到了：不再扣
     assert "transit" not in demand[2]["100"] and demand[2]["100"]["need"] == 30
     assert SO.base_colli(sc, demand) == {2: {5: 5}}
+
+
+def test_order_file_edits_sync_back_to_tracking():
+    """2026-11-04 用户：在生成的订单文件里减少 / 砍掉箱数 → 订单跟踪的箱数、金额跟着改；程序里后来手改的不动"""
+    import time
+    import order_tracking as OT
+    from openpyxl import load_workbook
+    d = tempfile.mkdtemp()
+    p = os.path.join(d, "out", "Ordine_SAIS_0411.xlsx")
+    # 一个文件：FOIANO 直送；MARLIA + S.FILIPPO 进 BMS。单价 1.0 → 金额 = 箱 × 每箱件数
+    _store_file(p, {"FOIANO": [("A1", "8001", "x", 6, 2), ("A2", "8002", "y", 12, 1)],
+                    "MARLIA": [("A1", "8001", "x", 6, 3)], "S.FILIPPO": [("A2", "8002", "y", 12, 1)]})
+    st = OT.Store(d, me="pc1").reload()
+    today = date.today()
+    OT.register_drafts(st, "store_orders", [
+        {"store": "1", "supplier": "SAIS", "colli": 3, "amount": 24.0, "file": p},
+        {"store": "BMS", "supplier": "SAIS", "colli": 4, "amount": 30.0, "file": p}], today=today)
+    assert R.sync_files(st, {}) == []                                   # 没改过：不动
+    t0 = time.time() - 2
+    wb = load_workbook(p)
+    wb["FOIANO"].cell(7, 5).value = 0                                    # 砍掉 A2
+    wb["MARLIA"].cell(6, 5).value = 1                                    # BMS 里 MARLIA 3 → 1 箱
+    wb.save(p)
+    os.utime(p, (t0, t0))
+    ch = {st.orders[o]["store"]: c for o, c, _r in R.sync_files(st, {})}
+    assert ch == {"1": {"colli": 2, "amount": 12.0}, "BMS": {"colli": 2, "amount": 18.0}}
+    rows = {r["store"]: r for r in OT.rows(st)}
+    assert rows["1"]["from_file"] and rows["1"]["amount"] == 12.0
+    # 程序里有人手改了金额（比文件晚）→ 不再被文件盖掉
+    foiano = OT.draft_id("store_orders", today.isoformat(), "1", "SAIS")
+    st.set(foiano, {"amount": 15.0})
+    assert R.sync_files(st, {}) == [] and st.orders[foiano]["amount"] == 15.0
+    # 重新配货（新文件）：文件读回来的值照样被重新生成的更新
+    bms = OT.draft_id("store_orders", today.isoformat(), "BMS", "SAIS")
+    OT.register_drafts(st, "store_orders", [
+        {"store": "1", "supplier": "SAIS", "colli": 3, "amount": 24.0, "file": p},
+        {"store": "BMS", "supplier": "SAIS", "colli": 5, "amount": 40.0, "file": p}], today=today)
+    assert st.orders[bms]["amount"] == 40.0

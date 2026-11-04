@@ -29,6 +29,7 @@ class _Sig(QObject):
     done = Signal(object)
     exported = Signal(object)
     transit = Signal(object)
+    files = Signal(object)
 
 
 def STATUS_LABELS():
@@ -384,6 +385,7 @@ class TrackingPage:
         self.sig.done.connect(self._sync_done)
         self.sig.exported.connect(self._export_done)
         self.sig.transit.connect(self._transit_done)
+        self.sig.files.connect(self._files_done)
         self.transit = None                          # order_record.compute 的结果（每张没到货的单对上哪个订单文件）
         self._transit_busy = self._transit_again = False
         self.syncing = False
@@ -1043,6 +1045,15 @@ class TrackingPage:
         src = self.t.item(k, fids.index(11))
         if src is not None and r["file"]:
             src.setToolTip(r["file"])
+        if r.get("from_file"):                       # 箱数 / 金额是按改过的订单文件重算的
+            am = self.t.item(k, fids.index(4))
+            if am is not None:
+                f = am.font()
+                f.setItalic(True)
+                am.setFont(f)
+                am.setForeground(QColor(T("accent")))
+                am.setToolTip(tr("按订单文件里改过的箱数重新算的（{0} 箱）\n{1}", r.get("colli") or 0,
+                                 os.path.basename(r["file"]) or r.get("record")))
         note = self.t.item(k, fids.index(10))
         if note is not None and r["note"]:
             note.setToolTip(r["note"])
@@ -1482,6 +1493,7 @@ class TrackingPage:
         Excel 改过（修改时间和上次同步的不一样）就在后台同步一次：打开页面时、页面开着每 20 秒看一次（2026-11-02 用户：不想每次手动点）。
         刚存完 10 秒内先不读（同步盘可能还在传、文件可能只写了一半），下一轮再读
         """
+        self._check_files()
         x = self._excel()
         if not x:
             return
@@ -1507,6 +1519,41 @@ class TrackingPage:
                     self._update_src()
                     return
                 self.sync_excel(manual=False)
+
+    def _check_files(self):
+        """
+        总仓 / 门店采购生成的订单文件改过（减少 / 砍掉箱数）→ 订单跟踪的箱数、金额跟着改（2026-11-04 用户要同步回程序）。
+        后台读，最多 30 秒一次；只打开改过的文件（cache/record_index.json 记着大小 + 修改时间）
+        """
+        if self.st is None or getattr(self, "_files_busy", False) or time.time() - getattr(self, "_files_t", 0) < 30:
+            return
+        self._files_busy, self._files_t = True, time.time()
+        folder, me, settings = self.st.folder, self._me(), self.settings
+
+        def work():
+            msgs = []
+            try:
+                st = OT.Store(folder, me=me)
+                st.reload()
+                idx = REC.Index(REC.cache_path())
+                ch = REC.sync_files(st, settings, log=msgs.append, index=idx)
+                idx.save()
+                self.sig.files.emit((ch, msgs))
+            except Exception as e:
+                self.sig.files.emit(([], [tr("⚠ 订单文件读不了：{0}", e)]))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _files_done(self, payload):
+        ch, msgs = payload
+        self._files_busy = False
+        for m in msgs:
+            self.win.log(tr("订单跟踪：") + m)
+        if ch:
+            self.win.show_toast(tr("✔ 订单文件改过：{0} 张单的箱数 / 金额已更新", len(ch)))
+            if self.st is not None:
+                self.st.reload()
+            if self.page.isVisible():
+                self.refresh()
 
     def _write_on(self):
         return self.cfg.get("write_excel") is not False

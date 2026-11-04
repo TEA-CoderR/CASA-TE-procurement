@@ -369,6 +369,7 @@ def rows(st, today=None):
                     "note": str(o.get("note") or ""), "ref": str(o.get("ref") or ""),
                     "origin": o.get("origin") or "", "last": last, "file": str(o.get("file") or ""),
                     "colli": o.get("colli"), "record": str(o.get("record") or ""),
+                    "from_file": any((m.get(k) or ("", "", ""))[2] == "file" for k in ("amount", "colli")),
                     "late_by": (today - exp).days if overdue else 0})
     return out
 
@@ -956,14 +957,15 @@ def register_drafts(st, source, items, in_scope=None, today=None):
             res["new"] += 1
             continue
         meta = st.meta.get(oid, {})
-        ch = {k: v for k, v in f.items() if cur.get(k) != v and (not meta.get(k) or meta[k][2] == "auto")}
+        # 程序自动写的（auto）和从订单文件读回来的（file，order_record.sync_files）重新生成时照样更新
+        ch = {k: v for k, v in f.items() if cur.get(k) != v and (not meta.get(k) or meta[k][2] in ("auto", "file"))}
         if ch:
             changes.append((oid, ch))
             res["updated"] += 1
     st.set_many(changes, src="auto")
     gone = [oid for oid, o in st.orders.items()
             if o.get("origin") == source and o.get("draft") and o.get("date") == day and oid not in ids
-            and (in_scope is None or in_scope(o)) and all(w[2] == "auto" for w in st.meta.get(oid, {}).values())]
+            and (in_scope is None or in_scope(o)) and all(w[2] in ("auto", "file") for w in st.meta.get(oid, {}).values())]
     if gone:
         st.delete(gone, src="auto")
     res["removed"] = len(gone)

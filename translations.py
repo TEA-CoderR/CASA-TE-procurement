@@ -2970,4 +2970,8 @@ TRANSLATIONS = {
     '同步 Excel': ('Sync Excel', 'Sincronizza Excel'),
     '订单跟踪：同步盘冲突副本 {0} 个已合并（恢复 {1} 处、补回 {2} 张单），副本挪到 Backup Excel\\冲突副本': ('Order tracking: {0} sync conflict copy(ies) merged ({1} cells restored, {2} orders recovered), moved to Backup Excel\\冲突副本', 'Tracking ordini: {0} copia/e in conflitto unite ({1} celle ripristinate, {2} ordini recuperati), spostate in Backup Excel\\冲突副本'),
     '✔ 已合并同步盘冲突副本：恢复 {0} 处、补回 {1} 张单': ('✔ Sync conflict copy merged: {0} cells restored, {1} orders recovered', '✔ Copia in conflitto unita: {0} celle ripristinate, {1} ordini recuperati'),
+    '⚠ 订单文件读不了：{0}': ('⚠ Cannot read order files: {0}', "⚠ Impossibile leggere i file d'ordine: {0}"),
+    '订单跟踪：': ('Order tracking: ', 'Tracking ordini: '),
+    '✔ 订单文件改过：{0} 张单的箱数 / 金额已更新': ('✔ Order files edited: boxes / amount updated on {0} orders', "✔ File d'ordine modificati: colli / importo aggiornati su {0} ordini"),
+    '按订单文件里改过的箱数重新算的（{0} 箱）\n{1}': ('Recalculated from the edited order file ({0} boxes)\n{1}', "Ricalcolato dal file d'ordine modificato ({0} colli)\n{1}"),
 }
