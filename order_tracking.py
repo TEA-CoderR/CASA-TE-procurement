@@ -112,6 +112,9 @@ class Store:
     def _reset(self):
         self.orders, self.meta, self.hist = {}, {}, {}
         self.budgets, self.budget_meta, self.aliases = {}, {}, {}
+        # 和 Excel 双向同步（excel_sync.py）：xbase {单号: {字段: 上次从 Excel 读到的值, "_w_字段": 上次写进 Excel 的值}}
+        # （"_budget" 键下是预算）；xstate {键: 值}（"write" = 最后一次写 Excel：文件修改时间 / 大小 / 谁）
+        self.xbase, self.xstate = {}, {}
         self.deleted = {}          # {单号: 来源}：程序里删掉的单，从 Excel 同步时不再加回来
         self._seen = set()
 
@@ -191,6 +194,10 @@ class Store:
                 self.aliases[oid] = e["to"]
             else:
                 self.aliases.pop(oid, None)
+        elif op == "xbase" and oid:
+            self.xbase.setdefault(oid, {}).update(e.get("f") or {})
+        elif op == "xs" and oid:
+            self.xstate[oid] = e.get("v")
 
     # ---- 写（追加到自己的文件，马上生效）----
     def _write(self, evs):
@@ -244,6 +251,13 @@ class Store:
 
     def set_budget(self, month, store, value, src="app"):
         self._write([self._ev("budget", f"{month}|{store}", src, v=None if value in (None, "") else float(value))])
+
+    def set_xbase(self, changes):
+        """[(单号, {字段: Excel 里的值})]（excel_sync 用；src 记 excel）"""
+        self._write([self._ev("xbase", oid, "excel", f=f) for oid, f in changes if f])
+
+    def set_xstate(self, key, value):
+        self._write([self._ev("xs", key, "excel", v=value)])
 
     def merge_suppliers(self, keys, target):
         """几个供应商键算成同一家（target）；target 自己不用写"""
@@ -503,6 +517,8 @@ def _flag_text(text, out):
         out["state"] = "stuck"
     elif "部分" in t or "PARZIAL" in u:
         out["state"] = "partial"
+    elif u.startswith("ANNULL") or "已取消" in t:          # 程序写回 Excel 的取消（excel_sync）
+        out["state"] = "cancel"
     else:
         out.setdefault("_notes", []).append(t)
 
@@ -607,7 +623,7 @@ def read_excel(path, info=None):
     from openpyxl.utils import get_column_letter
     wb = load_workbook(path, data_only=True)
     try:
-        wf = load_workbook(path, read_only=True)               # 看公式（每周合计有没有 ×1.22）
+        wf = load_workbook(path)                               # 看公式（每周合计有没有 ×1.22；程序写回过的文件没有缓存值）
     except Exception:
         wf = None
     rows, budgets, sheets = [], [], []
@@ -656,7 +672,10 @@ def read_excel(path, info=None):
                     continue
                 sup = str(int(sup)) if isinstance(sup, float) and sup == int(sup) else str(sup).strip()
                 d, dtext = parse_date(ws.cell(r, c).value, ym[0])
-                amt, atext = parse_amount(ws.cell(r, c + 3).value)
+                av = ws.cell(r, c + 3).value
+                if av is None and wf is not None:          # 公式（「=876.91/1.22」）文件里没存结果（程序写回过）：自己算
+                    av = _calc(wf[ws.title].cell(r, c + 3).value)
+                amt, atext = parse_amount(av)
                 out = {"_notes": []}
                 conf, ctext = parse_date(ws.cell(r, c + 4).value, ym[0])
                 arr, rtext = parse_date(ws.cell(r, c + 5).value, ym[0])
@@ -687,63 +706,117 @@ def read_excel(path, info=None):
     return rows, budgets, sheets
 
 
+def _calc(f):
+    """只认数字和 + − × ÷ 括号的简单公式（「=876.91/1.22」）；别的返回 None"""
+    if not isinstance(f, str) or not f.startswith("="):
+        return f
+    e = f[1:].replace(",", ".").replace(" ", "")
+    if not e or not re.fullmatch(r"[0-9.+\-*/()]+", e):
+        return None
+    try:
+        return float(eval(e, {"__builtins__": {}}, {}))
+    except Exception:
+        return None
+
+
 def tr_amount(text):
     return f"金额：{text}"
 
 
-def sync_excel(st, rows, budgets, sheets, blocks=None):
+_MISS = object()
+
+
+def _utc_iso(ts):
+    """文件修改时间 → 和修改记录一样的时间格式（UTC），好比先后"""
+    return datetime.fromtimestamp(ts, timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ") if ts else None
+
+
+def sync_excel(st, rows, budgets, sheets, blocks=None, mtime=None):
     """
-    blocks = 这次真读到的 {(工作表, 门店)}：只删这些块里 Excel 已经没有的单（一块认不出门店 / 标题写错时，不会把那家店的单全删掉）。
-    把 Excel 读到的单写进跟踪记录：新的单加进来；已有的单只更新「最后一次是 Excel 写的」字段（程序里改过的不动）；
-    程序里删掉的单不再加回来；Excel 里已经没有的单（而且程序里没改过）删掉。返回 {"new", "updated", "removed", "kept"}
+    Excel → 程序（2026-11-04 用户定：双向同步，同一格两边都改了「谁最后改的听谁」）。
+    st.xbase 记着每张单每个字段上次从 Excel 读到的值（三方比较）：
+      · Excel 这一格和上次读到的一样 → Excel 没改，程序里的为准（程序改过的由 excel_sync 写回 Excel）
+      · Excel 改了、程序这一格在 Excel 存盘（mtime）之后又改过 → 程序为准；不然 → 用 Excel 的
+      · 以前没记过 xbase 的（老数据）：程序改过的以程序为准（照旧），然后记下 xbase
+    程序生成写进 Excel 的单有 xid（Excel 那一行算出来的单号）→ 对回程序里的单，不会变成两张。
+    blocks = 这次真读到的 {(工作表, 门店)}：只删这些块里 Excel 已经没有的单。返回 {"new", "updated", "removed", "kept", "budgets"}
     """
+    xt = _utc_iso(mtime)
     res = {"new": 0, "updated": 0, "removed": 0, "kept": 0}
-    changes, seen = [], set()
+    changes, bases, seen = [], [], set()
+    xid = {o["xid"]: oid for oid, o in st.orders.items() if o.get("xid")}
     for r in rows:
-        oid = r["id"]
+        oid = xid.get(r["id"], r["id"])
         seen.add(oid)
         if st.deleted.get(oid) == "app":
-            continue
+            continue                                    # 程序里删了：excel_sync 会把 Excel 那一行清掉
         cur, meta = st.orders.get(oid), st.meta.get(oid, {})
-        ch = {}
+        base = st.xbase.get(oid, {})
+        ch, nb = {}, {}
         for f in EXCEL_FIELDS:
             v = r.get(f)
+            if f == "origin" and cur is not None:
+                continue
+            if base.get(f, _MISS) != v:
+                nb[f] = v                               # 包括空的：以后才知道 Excel 是不是改了这一格
             if cur is not None and cur.get(f) == v:
                 continue
             if cur is None and v is None:
                 continue
             w = meta.get(f)
-            if w and w[2] != "excel":
-                continue                                    # 程序里改过：以程序为准
-            if cur is not None and v is None and f not in cur:
-                continue
+            if f in base:
+                if base[f] == v:
+                    continue                            # Excel 没改这一格 → 程序的为准（等写回）
+                if w and w[2] != "excel" and (xt is None or w[0] > xt):
+                    continue                            # 两边都改了，程序改得更晚
+            else:
+                if cur is not None and v is None and f not in cur:
+                    continue
+                if w and w[2] != "excel":
+                    continue                            # 老数据：程序里改过的以程序为准（会写回 Excel）
             ch[f] = v
         if ch:
             changes.append((oid, ch))
             res["new" if cur is None else "updated"] += 1
+        if nb:
+            bases.append((oid, nb))
     st.set_many(changes, src="excel")
+    st.set_xbase(bases)
     gone = []
     read = set(sheets)
     for oid, o in st.orders.items():
         sh = str(o.get("ref") or "").split("!")[0]
-        if o.get("origin") != "excel" or oid in seen or sh not in read:
+        if oid in seen or sh not in read or not (o.get("origin") == "excel" or o.get("xid")):
             continue
         if blocks is not None and (sh, o.get("store")) not in blocks:
             continue
-        if all(w[2] == "excel" for w in st.meta.get(oid, {}).values()):
-            gone.append(oid)
+        m = st.meta.get(oid, {})
+        last_app = max((w[0] for w in m.values() if w[2] != "excel"), default=None)
+        if last_app is None or (xt is not None and xt > last_app):
+            gone.append(oid)                            # Excel 里删了这一行（比程序里最后一次改得晚）
         else:
             res["kept"] += 1
     if gone:
         st.delete(gone, src="excel")
         res["removed"] = len(gone)
-    bud = []
+    bud, bb = [], {}
+    bbase = st.xbase.get("_budget", {})
     for month, store, v in budgets:
         k = f"{month}|{store}"
+        if bbase.get(k, _MISS) != v:
+            bb[k] = v
         w = st.budget_meta.get(k)
-        if st.budgets.get(k) != v and (not w or w[2] == "excel"):
-            bud.append(st._ev("budget", k, "excel", v=v))
+        if st.budgets.get(k) == v:
+            continue
+        if k in bbase:
+            if bbase[k] == v or (w and w[2] != "excel" and (xt is None or w[0] > xt)):
+                continue
+        elif w and w[2] != "excel":
+            continue
+        bud.append(st._ev("budget", k, "excel", v=v))
     st._write(bud)
+    if bb:
+        st.set_xbase([("_budget", bb)])
     res["budgets"] = len(bud)
     return res
 
@@ -752,6 +825,12 @@ def import_file(st, path):
     """读 Excel（先复制一份再读：原文件可能正被 Excel 打开 / 正在同步）→ sync_excel"""
     import shutil
     import tempfile
+    mtime = os.path.getmtime(path)
+    w = st.xstate.get("write") or {}
+    if w.get("mtime") and mtime + 2 < float(w["mtime"]):
+        # 别的电脑刚写过 Excel，这台电脑的同步盘还没收到新文件：先不读（不然会把旧文件当成「Excel 里改回去了」）
+        return {"stale": True, "new": 0, "updated": 0, "removed": 0, "kept": 0, "rows": 0, "sheets": [],
+                "unknown": [], "mtime": mtime}
     tmp = os.path.join(tempfile.mkdtemp(prefix="piano_"), "piano.xlsx")
     shutil.copy2(path, tmp)
     try:
@@ -763,7 +842,8 @@ def import_file(st, path):
         except Exception:
             pass
     st.reload()
-    res = sync_excel(st, rows_, budgets, sheets, info.get("blocks"))
+    res = sync_excel(st, rows_, budgets, sheets, info.get("blocks"), mtime=mtime)
+    res["mtime"] = mtime
     res["rows"], res["sheets"], res["unknown"] = len(rows_), sheets, info.get("unknown") or []
     return res
 

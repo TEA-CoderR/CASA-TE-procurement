@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, Q
 from i18n import tr
 import order_tracking as OT
 import order_record as REC
+import excel_sync as XS
 
 
 class _Sig(QObject):
@@ -411,7 +412,7 @@ class TrackingPage:
         self.src_lbl = QLabel("")
         self.src_lbl.setObjectName("Faint")
         head.addWidget(self.src_lbl, 1)
-        self.btn_sync = QPushButton(tr("从 Excel 同步"))
+        self.btn_sync = QPushButton(tr("同步 Excel"))
         self.btn_sync.setToolTip(tr("Excel 存过就会自动同步（打开这页时、开着时每 20 秒看一次），一般不用点；想马上同步再点"))
         self.btn_sync.clicked.connect(lambda: self.sync_excel(manual=True))
         head.addWidget(self.btn_sync)
@@ -831,10 +832,21 @@ class TrackingPage:
         f = self._folder()
         x = self._excel()
         last = self.cfg.get("synced_at") or ""
-        self.src_lbl.setText(tr("{0} 张单", len(self.rows)) + (tr(" · Excel 同步于 {0}", last) if last else ""))
+        txt = tr("{0} 张单", len(self.rows)) + (tr(" · Excel 同步于 {0}", last) if last else "")
+        n_wait = 0
+        if self._write_on() and self.st is not None:
+            try:
+                n_wait = len(XS.pending(self.st, self._me(), everyone=True))
+            except Exception:
+                n_wait = 0
+        if n_wait:
+            busy = (getattr(self, "_write_state", None) or ("",))[0] == "busy"
+            txt += " · " + (tr("⏳ {0} 处修改等 Excel 关闭后写入", n_wait) if busy else tr("⏳ {0} 处修改待写入 Excel", n_wait))
+        self.src_lbl.setText(txt)
         self.src_lbl.setToolTip(tr("订单记录：{0}\nExcel：{1}", os.path.join(f, OT.DATA_DIR) if f else "—", x or "—"))
         self.btn_sync.setEnabled(bool(x) and not self.syncing)
-        self.btn_sync.setToolTip(tr("把 Excel 里新加的单、改过的日期读进来（程序里改过的不会被盖掉）\n{0}", x or tr("没找到 Excel")))
+        self.btn_sync.setToolTip(tr("和 Excel 双向同步：Excel 里的修改读进来，程序里的修改写进 Excel；同一格两边都改了，以最后修改的为准。"
+                                    "一般不用点（自动进行）\n{0}", x or tr("没找到 Excel")))
 
     # ================================================================ 订单表
     def _hidden(self, i):
@@ -1424,6 +1436,12 @@ class TrackingPage:
         cb_auto.setToolTip(tr("总仓采购、DETERSIVO采购生成订单文件时，每家供应商 × 每家门店 / BMS 登记一张「待登记」的单；发给供应商后确认"))
         cb_auto.setChecked(self.cfg.get("auto_register") is not False)
         g.addWidget(cb_auto, 4, 1)
+        cb_wx = QCheckBox(tr("程序修改写回 Excel"))
+        cb_wx.setToolTip(tr("程序里确认、到货、改备注、新增的订单（确认已下单后）、改的预算，自动写进同步文件夹里的 Excel；"
+                            "Excel 正被人打开时先排队，关了再写；每次写之前备份原文件（共享文件夹「{0}\\{1}」，留最近 {2} 份）",
+                            OT.DATA_DIR, XS.BACKUP_DIR, XS.KEEP_BACKUPS))
+        cb_wx.setChecked(self._write_on())
+        g.addWidget(cb_wx, 6, 1)
         cb_ded = QCheckBox(tr("建议量扣掉在途"))
         cb_ded.setToolTip(tr("打开（默认）：总仓采购、门店采购、检查门店清单算建议量时，扣掉已经订了还没到货的数量；关掉：在途箱数只显示，不扣"))
         cb_ded.setChecked(REC.deduct_on(self.settings))
@@ -1436,7 +1454,7 @@ class TrackingPage:
         ok.clicked.connect(dlg.accept)
         row.addWidget(cancel)
         row.addWidget(ok)
-        g.addLayout(row, 6, 0, 1, 3)
+        g.addLayout(row, 7, 0, 1, 3)
         if dlg.exec() != QDialog.Accepted:
             return
         rec = e_rec.text().strip()
@@ -1450,6 +1468,7 @@ class TrackingPage:
         self.cfg["me"] = e_me.text().strip()
         self.cfg["auto_register"] = cb_auto.isChecked()
         self.cfg["deduct_transit"] = cb_ded.isChecked()
+        self.cfg["write_excel"] = cb_wx.isChecked()
         self._save()
         self.st = None
         self._on_show()
@@ -1473,6 +1492,24 @@ class TrackingPage:
         if mt != self.cfg.get("excel_mtime") and mt != self._bad_mtime and time.time() - mt > 10:
             self._try_mtime = mt
             self.sync_excel(manual=False)
+            return
+        # 程序里改了还没写进 Excel（2026-11-04 用户：双向同步）：Excel 没被人打开就写；开着就等下一轮（20 秒）
+        if self._write_on() and self.st is not None and not self.syncing \
+                and time.time() - getattr(self, "_last_write_try", 0) > 15:
+            try:
+                todo = XS.pending(self.st, self._me())
+            except Exception:
+                todo = []
+            if todo:
+                self._last_write_try = time.time()
+                if XS.locked(x):
+                    self._write_state = ("busy", len(XS.pending(self.st, self._me(), everyone=True)))
+                    self._update_src()
+                    return
+                self.sync_excel(manual=False)
+
+    def _write_on(self):
+        return self.cfg.get("write_excel") is not False
 
     def sync_excel(self, manual=True):
         x = self._excel()
@@ -1483,13 +1520,15 @@ class TrackingPage:
         self.syncing = True
         self.btn_sync.setEnabled(False)
         self.btn_sync.setText(tr("同步中…"))
-        folder, me = self.st.folder, self._me()
+        folder, me, write = self.st.folder, self._me(), self._write_on()
 
         def work():
             try:
                 st = OT.Store(folder, me=me)
                 st.reload()
                 res = OT.import_file(st, x)
+                if write and not res.get("stale"):
+                    res["write"] = XS.writeback(st, x, me, imported=res)      # 程序里的修改写进 Excel
                 res["mtime"] = os.path.getmtime(x)
                 self.sig.done.emit((res, None, manual))
             except Exception as e:
@@ -1499,18 +1538,40 @@ class TrackingPage:
     def _sync_done(self, payload):
         res, err, manual = payload
         self.syncing = False
-        self.btn_sync.setText(tr("从 Excel 同步"))
+        self.btn_sync.setText(tr("同步 Excel"))
         if err:
             self.btn_sync.setEnabled(True)
             if not manual:                # 自动同步失败：这个版本的 Excel 不再自动重试（不然每 20 秒报一次），Excel 再存一次或手动点再试
                 self._bad_mtime = self._try_mtime
             self.win.log(tr("⚠ 订单跟踪：Excel 同步失败：{0}", err))
             if manual:
-                QMessageBox.warning(self.win, tr("从 Excel 同步"), tr("同步失败：{0}", err))
+                QMessageBox.warning(self.win, tr("同步 Excel"), tr("同步失败：{0}", err))
+            return
+        if res.get("stale"):                      # 别的电脑刚写过 Excel、同步盘还没收到：等下一轮
+            self.win.log(tr("订单跟踪：同步盘还没收到最新的 Excel，稍后自动再读"))
+            self.btn_sync.setEnabled(True)
             return
         self.cfg["excel_mtime"] = res.get("mtime")
         self.cfg["synced_at"] = datetime.now().strftime("%m-%d %H:%M")
         self._save()
+        w = res.get("write") or {}
+        st_ = w.get("status")
+        if st_ == "ok":
+            self.cfg["written_at"] = datetime.now().strftime("%m-%d %H:%M")
+            self._save()
+            self.win.log(tr("✔ 订单跟踪：程序里的修改已写入 Excel：{0} 处（写之前已备份原文件：{1}）", w["written"],
+                            os.path.basename(w.get("backup") or "")))
+            if manual or w["written"]:
+                self.win.show_toast(tr("✔ 已写入 Excel：{0} 处", w["written"]))
+        elif st_ in ("busy", "changed"):
+            self.win.log(tr("订单跟踪：Excel 正被打开 / 刚被别人保存，修改先排队，关掉后自动写入"))
+        for kind, oid, why in w.get("failed") or []:
+            o = (self.st.orders.get(oid) if self.st else None) or {}
+            self.win.log(tr("⚠ 没写进 Excel：{0} {1} · {2}（{3}）", _d(OT.to_date(o.get("date"))), o.get("supplier") or oid,
+                            OT.STORE_NAMES.get(str(o.get("store")), ""), why))
+        if w.get("failed"):
+            self.win.show_toast(tr("⚠ {0} 处修改没写进 Excel（看日志）", len(w["failed"])))
+        self._write_state = None
         msg = tr("Excel 同步：新的 {0} 张，更新 {1} 张，Excel 里删掉的 {2} 张", res["new"], res["updated"], res["removed"])
         if res.get("kept"):
             msg += tr("（另有 {0} 张 Excel 里没有了，但程序里改过，留着）", res["kept"])
@@ -1563,8 +1624,10 @@ class TrackingPage:
             return
         if changed and self.page.isVisible():
             self.refresh()
-            return
-        self.badge(sum(1 for o in self.st.orders.values() if o.get("draft") and o.get("state") != "cancel"))
+        else:
+            self.badge(sum(1 for o in self.st.orders.values() if o.get("draft") and o.get("state") != "cancel"))
+        if hasattr(self, "btn_sync"):
+            self._auto_sync()                 # 页面没开着也同步（每分钟）：Excel 改了读进来、程序改了写进去
 
     def export_piano(self):
         """导出成和 PIANO ACQUISTO MESILE 一样的表：拿原来的 Excel 当模板，每月一张、六块门店并排（不改原文件）"""

@@ -149,7 +149,7 @@ def test_read_and_sync_excel():
     wb = load_workbook(x)
     ws = wb["OTT"]
     ws.cell(12, 4, 200.0)
-    ws.cell(12, 6, datetime(2026, 10, 25))                   # Excel 里也填了到货：程序里改过的不盖掉
+    ws.cell(12, 6, datetime(2026, 10, 25))                   # Excel 里也填了到货，而且存得比程序改得晚（2026-11-04 起：谁最后改听谁）
     for k in range(1, 8):
         ws.cell(10, k).value = None
     for k, v in enumerate([datetime(2026, 10, 30), "Colzani", "LUCAS", 42]):
@@ -159,7 +159,7 @@ def test_read_and_sync_excel():
     res = OT.import_file(st2, x)
     assert res["new"] == 1 and res["removed"] == 1 and res["updated"] == 1, res
     o = st2.orders[oid]
-    assert o["amount"] == 200.0 and o["arrived"] == "2026-10-20"
+    assert o["amount"] == 200.0 and o["arrived"] == "2026-10-25"
     assert sun not in st2.orders                             # 程序里删掉的不加回来
     assert by[("1", "Meloni")]["id"] not in st2.orders
     out = os.path.join(d, "exp.xlsx")
