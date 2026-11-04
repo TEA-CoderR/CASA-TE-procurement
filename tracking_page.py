@@ -950,7 +950,7 @@ class TrackingPage:
         if not info or not info.get("file"):
             self.win.show_toast(tr("没找到这张单的订单文件：右键「指定订单文件…」"))
             return
-        RecordLinesDialog(self.win, self, r, info).exec()
+        open_lines(self.win, self, r, info)
 
     def _set_record(self, r, value):
         self.st.set(r["id"], {"record": value})
@@ -1127,8 +1127,8 @@ class TrackingPage:
             self.refresh()
             return
         if a_file is not None and got == a_file:
-            from main import open_path
-            open_path(sel[0]["file"])
+            from erp_widgets import open_file
+            open_file(self.win, sel[0]["file"])
             return
         if a_lines is not None and got == a_lines:
             self.show_lines(sel[0])
@@ -1802,9 +1802,10 @@ class RecordLinesDialog(QDialog):
     COLS = [(0, "门店", 90), (1, "条码", 120), (2, "编号", 70), (3, "商品", 300), (4, "每箱", 60), (5, "箱数", 60),
             (6, "件数", 70)]
 
-    def __init__(self, parent, page, r, info):
+    def __init__(self, parent, page, r, info, rows=None):
         super().__init__(parent)
         self.page, self.r, self.info = page, r, info
+        self._pre = rows                       # 已经在「处理中」窗口里读好的行（open_lines）
         self.setWindowTitle(tr("{0} · {1} · {2}", r["supplier"], r["store_name"], _d(r["date"])))
         v = QVBoxLayout(self)
         v.setContentsMargins(16, 14, 16, 12)
@@ -1855,6 +1856,8 @@ class RecordLinesDialog(QDialog):
         self.ctl.render()
 
     def _load(self):
+        if self._pre is not None:
+            return self._pre
         idx = REC.Index(REC.cache_path())
         ent = idx.data.get(self.info["file"]) or {}
         lines = ent.get("lines")
@@ -1908,5 +1911,26 @@ class RecordLinesDialog(QDialog):
         self.page.ui.table_set_row(self.t, k, [self._text(i, c) for c in range(len(self.COLS))])
 
     def _open(self):
-        from main import open_path
-        open_path(self.info["path"])
+        from erp_widgets import open_file
+        open_file(self, self.info["path"])
+
+
+def read_order_lines(r, info):
+    """一张单在订单文件里的行（读过的用缓存；大文件第一次读要几秒）"""
+    idx = REC.Index(REC.cache_path())
+    ent = idx.data.get(info["file"]) or {}
+    lines = ent.get("lines")
+    if lines is None:
+        lines = REC.read_lines(info["path"], REC.folder_store(info["file"]))
+    return REC.order_lines(r, {"store": REC.folder_store(info["file"])}, lines)
+
+
+def open_lines(parent, page, r, info):
+    """「查看订单明细」：先在「处理中」窗口里读文件，读好再打开明细窗口"""
+    from erp_widgets import BusyDialog
+    rows, err = BusyDialog.run(parent, tr("查看订单明细"), tr("正在读取订单文件 {0}…", os.path.basename(info["file"])),
+                               lambda: read_order_lines(r, info))
+    if err:
+        QMessageBox.warning(parent, tr("查看订单明细"), tr("订单文件读不了：{0}", err))
+        return
+    RecordLinesDialog(parent, page, r, info, rows=rows).exec()

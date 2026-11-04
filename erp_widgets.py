@@ -21,6 +21,87 @@ from theme import T, NUM_FONT, icon
 
 
 # =====================================================================
+# 短任务的「处理中」窗口（读大文件、重算、打开文件…）
+# =====================================================================
+class _BusySig(QObject):
+    done = Signal()
+
+
+class BusyDialog(QDialog):
+    """
+    一句话 + 来回走的进度条，后台线程跑 func，跑完自动关掉，再在界面线程调用 on_done(结果, 错误)。
+    BusyDialog.run(parent, "读取订单明细", "正在读取 xxx.xlsx…", func, on_done)
+    很快就完成的（< 0.3 秒）几乎看不到窗口，不会闪一下
+    """
+    def __init__(self, parent, title, text):
+        super().__init__(parent)
+        self.setObjectName("Dialog")
+        self.setWindowTitle(title)
+        self.setModal(True)
+        self.setMinimumWidth(420)
+        self.setWindowFlag(Qt.WindowCloseButtonHint, False)
+        v = QVBoxLayout(self)
+        v.setContentsMargins(22, 18, 22, 18)
+        v.setSpacing(12)
+        lab = QLabel(text)
+        lab.setWordWrap(True)
+        v.addWidget(lab)
+        bar = QProgressBar()
+        bar.setRange(0, 0)
+        bar.setTextVisible(False)
+        bar.setFixedHeight(6)
+        v.addWidget(bar)
+
+    def reject(self):                    # Esc 不能关：任务还在跑
+        pass
+
+    @staticmethod
+    def run(parent, title, text, func, on_done=None):
+        dlg = BusyDialog(parent, title, text)
+        sig = _BusySig(dlg)
+        sig.done.connect(dlg.accept)
+        box = {}
+
+        def work():
+            try:
+                box["r"] = func()
+            except Exception as e:
+                box["e"] = e
+            sig.done.emit()
+        t = threading.Thread(target=work, daemon=True)
+        t.start()
+        t.join(0.3)
+        if t.is_alive():
+            dlg.exec()
+        t.join()
+        if on_done:
+            on_done(box.get("r"), box.get("e"))
+        return box.get("r"), box.get("e")
+
+
+def open_file(parent, path, label=None):
+    """用系统默认程序（Excel）打开文件，打开的这几秒显示「正在打开」；打不开弹提示。返回 True = 已打开"""
+    import sys
+    from PySide6.QtWidgets import QMessageBox
+    if not path or not os.path.exists(path):
+        QMessageBox.warning(parent, tr("打开订单文件"), tr("找不到文件：\n{0}", path))
+        return False
+
+    def go():
+        if sys.platform == "win32":
+            os.startfile(path)
+        else:
+            import subprocess
+            subprocess.Popen(["xdg-open", path])
+        time.sleep(1.5)                   # 给 Excel 一点启动时间，窗口别一闪就没
+    _r, err = BusyDialog.run(parent, tr("打开订单文件"), tr("正在用 Excel 打开 {0}…\n文件较大时需要几秒钟", label or os.path.basename(path)), go)
+    if err:
+        QMessageBox.warning(parent, tr("打开订单文件"), tr("打开失败：{0}", err))
+        return False
+    return True
+
+
+# =====================================================================
 # 分步条
 # =====================================================================
 class StepBar(QFrame):

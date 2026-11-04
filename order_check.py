@@ -1567,7 +1567,7 @@ class OrderCheck:
             return
         from transit_dialog import TransitOrdersDialog
         TransitOrdersDialog(self.window, self.settings, self.ui, f"{x['name']} · {R.STORES.get(x.get('store'), '')}", t,
-                            on_change=self.reapply_transit).exec()
+                            on_change=self.reapply_transit, tracking=getattr(self.win, "tracking", None)).exec()
 
     def reapply_transit(self, transit):
         """在途变了：重新扣在途（手动改过确定箱数的行只更新在途，不动箱数）"""

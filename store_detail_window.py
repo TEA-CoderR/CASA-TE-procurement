@@ -1262,7 +1262,8 @@ class DetailWindow(ToolWindow):
             return
         from transit_dialog import TransitOrdersDialog
         TransitOrdersDialog(self, self.page.settings, self.ui, f"{it['desc']} · {S.STORE_SHEETS.get(sid, sid)}", t,
-                            on_change=self.page.reapply_transit).exec()
+                            on_change=self.page.reapply_transit,
+                            tracking=getattr(self.page.win, "tracking", None)).exec()
 
     def _edit_transfer(self, r, c):
         """双击「调货」格：选从哪家门店调、调几件（或者不调）。只改这一行，别的行不跟着变"""
