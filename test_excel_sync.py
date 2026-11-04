@@ -147,3 +147,29 @@ def test_other_pc_waits_then_takes_over():
 def test_formula_amount_without_cached_value():
     assert OT._calc("=876.91/1.22") == 876.91 / 1.22
     assert OT._calc("=SUM(A1:A3)") is None and OT._calc(12) == 12
+
+
+def test_program_cells_marked_light_blue_and_unmarked_after_manual_edit():
+    from openpyxl import load_workbook
+    d, x, st = _setup()
+    sais = _by_sup(st, "SAIS")
+    st.set(sais, {"arrived": "2026-11-04"})
+    st.add({"date": "2026-11-04", "store": "1", "supplier": "NEW SUP", "amount": 10.0})
+    assert XS.writeback(st, x, "pc1")["status"] == "ok"
+    ws = load_workbook(x)["NOV"]
+    rgb = lambda c: str(c.fill.fgColor.rgb).upper() if c.fill is not None and c.fill.fill_type else None
+    assert rgb(ws.cell(4, 6)) == XS.MARK_RGB and rgb(ws.cell(4, 2)) is None       # 只标写了的格
+    new_r = next(r for r in range(4, 10) if ws.cell(r, 2).value == "NEW SUP")
+    assert all(rgb(ws.cell(new_r, c)) == XS.MARK_RGB for c in range(1, 8))         # 新增的整行
+    # 有人在 Excel 里手改了程序写的到货日期 → 下次同步去掉这格的标记
+    wb = load_workbook(x)
+    wb["NOV"].cell(4, 6).value = datetime(2026, 11, 5)
+    wb.save(x)
+    _set_mtime(x, time.time() + 60)
+    OT.import_file(st, x)
+    assert st.orders[sais]["arrived"] == "2026-11-05"
+    assert XS.pending(st, "pc1") == [("unmark", sais, ["arrived"])]
+    assert XS.writeback(st, x, "pc1")["status"] == "ok"
+    ws = load_workbook(x)["NOV"]
+    assert rgb(ws.cell(4, 6)) is None and rgb(ws.cell(new_r, 1)) == XS.MARK_RGB
+    assert XS.pending(st, "pc1", everyone=True) == []

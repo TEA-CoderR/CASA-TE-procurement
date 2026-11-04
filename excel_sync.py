@@ -30,6 +30,12 @@ STUCK_TEXT = "卡住了"
 PARTIAL_TEXT = "到了一部分"
 CANCEL_TEXT = "ANNULLATO"
 _MISS = object()
+# 程序写进 Excel 的格子标浅蓝底（2026-11-04 用户要标记，颜色让我自己挑）：原表数据区用了 灰（主题色）、红 FF0000（超期）、
+# 橙 FFC000，表头用 绿 92D050 / ADD88D / 主题绿；字体有紫 7030A0、红、蓝 2D529F / 0070C0 → 浅蓝 DDEBF7 原表没用过，字都看得清
+MARK_RGB = "FFDDEBF7"
+UNMARKED = "\x00"             # xbase["_m_字段"] 是这个 = 标记已经去掉了
+_FIELD_COLS = {"date": (0,), "supplier": (1,), "buyer": (2,), "amount": (3,), "confirmed": (4,), "arrived": (5, 6),
+               "state": (5,)}
 
 
 # ===================================================================== 程序里的单 → Excel 里该是什么样
@@ -91,6 +97,11 @@ def pending(st, me=None, now=None, everyone=False):
                 who, t = _owner(st, oid, diff)
                 if everyone or _mine(who, t, me, now):
                     ops.append(("update", oid, diff))
+            # 程序写的格子后来在 Excel 里被人改了 → 去掉浅蓝标记（不然以为还是程序写的）
+            un = [f for f in WRITE_FIELDS if base.get("_m_" + f, UNMARKED) != UNMARKED
+                  and base.get(f) != base["_m_" + f] and f not in diff]
+            if un:
+                ops.append(("unmark", oid, un))
         elif base is None and o.get("origin") != "excel" and not o.get("xid"):
             s = OT.status(o)
             if s in ("draft", "cancel") or not o.get("date") or not o.get("store") or not o.get("supplier"):
@@ -166,8 +177,28 @@ def _comment(cell, text):
         cell.comment = None
 
 
+def _cols(blk, f):
+    c, _s, note_col = blk
+    if f == "note":
+        return (note_col,) if note_col else (c + 1,)
+    return tuple(c + k for k in _FIELD_COLS.get(f, ()))
+
+
+def _mark(ws, blk, r, fields, on=True):
+    """程序写的格子标浅蓝底 / 去掉标记"""
+    from openpyxl.styles import PatternFill
+    fill = PatternFill("solid", fgColor=MARK_RGB) if on else PatternFill(fill_type=None)
+    for f in fields:
+        for cc in _cols(blk, f):
+            cell = ws.cell(r, cc)
+            if on or (cell.fill is not None and cell.fill.fill_type and
+                      str(getattr(cell.fill.fgColor, "rgb", "")).upper() == MARK_RGB):
+                cell.fill = fill
+
+
 def _write(ws, blk, r, fields):
-    """把字段写进这一行（只写给的字段）"""
+    """把字段写进这一行（只写给的字段），写的格子标浅蓝"""
+    _mark(ws, blk, r, fields)
     c, _store, note_col = blk
     if "date" in fields:
         d = OT.to_date(fields["date"])
@@ -280,6 +311,7 @@ def _append(wb, lay, o, fields):
         if r != src:
             ws.cell(r, cc)._style = copy.copy(ws.cell(src, cc)._style)
     _write(ws, blk, r, fields)
+    _mark(ws, blk, r, WRITE_FIELDS)                   # 程序新增的单：整行浅蓝
     # 上面的每周单数 / 每周合计不动：同事自己维护（每周合计的范围原表已经预留好了行）
     return ws.title, r, c
 
@@ -341,6 +373,9 @@ def apply_ops(src, dst, st, ops):
                 for cc in range(blk[0], blk[0] + 8):
                     ws.cell(r, cc).value = None
                     ws.cell(r, cc).comment = None
+                _mark(ws, blk, r, WRITE_FIELDS, on=False)
+            elif kind == "unmark":
+                _mark(ws, blk, r, val, on=False)
             else:
                 _write(ws, blk, r, val)
             where[oid] = (ws.title, r, blk[0])
@@ -417,7 +452,10 @@ def writeback(st, path, me=None, log=None, imported=None):
         from openpyxl.utils import get_column_letter as L
         bases, sets = [], []
         for kind, oid, val in ops:
-            if kind == "budget" or kind == "clear" or oid not in where:
+            if kind in ("budget", "clear") or oid not in where:
+                continue
+            if kind == "unmark":
+                bases.append((oid, {"_m_" + f: UNMARKED for f in val}))
                 continue
             sh, r, c = where[oid]
             row = by_ref.get(f"{sh}!{L(c + 1)}{r}")
@@ -426,6 +464,8 @@ def writeback(st, path, me=None, log=None, imported=None):
                 continue
             nb = {f: row.get(f) for f in OT.EXCEL_FIELDS}
             nb.update({"_w_" + f: v for f, v in val.items()})
+            # 标了浅蓝的格子写完读回来是什么：以后 Excel 里这格变了 = 有人手改了 → 去掉标记
+            nb.update({"_m_" + f: row.get(f) for f in (WRITE_FIELDS if kind == "append" else val)})
             nb.pop("origin", None)
             bases.append((oid, nb))
             o = st.orders.get(oid, {})
