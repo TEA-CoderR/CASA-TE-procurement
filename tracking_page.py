@@ -1556,6 +1556,11 @@ class TrackingPage:
         self._save()
         w = res.get("write") or {}
         st_ = w.get("status")
+        cf = w.get("conflicts") or {}
+        if cf.get("files"):                       # 同步盘冲突副本：合并回来、挪进备份文件夹
+            self.win.log(tr("订单跟踪：同步盘冲突副本 {0} 个已合并（恢复 {1} 处、补回 {2} 张单），副本挪到 Backup Excel\\冲突副本",
+                            cf["files"], cf["restored"], cf["added"]))
+            self.win.show_toast(tr("✔ 已合并同步盘冲突副本：恢复 {0} 处、补回 {1} 张单", cf["restored"], cf["added"]))
         if st_ == "ok":
             self.cfg["written_at"] = datetime.now().strftime("%m-%d %H:%M")
             self._save()

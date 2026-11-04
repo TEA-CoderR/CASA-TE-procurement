@@ -855,7 +855,7 @@ def find_excel(folder):
     """
     try:
         fs = [f for f in os.listdir(folder) if f.lower().endswith((".xlsx", ".xlsm")) and not f.startswith("~$")
-              and "PIANO" in f.upper()]
+              and "PIANO" in f.upper() and "CONFLICT" not in f.upper() and "冲突" not in f]
     except OSError:
         return ""
     fs.sort(key=lambda f: ("NUOVO" not in f.upper(), "COPIA" in f.upper(), f))

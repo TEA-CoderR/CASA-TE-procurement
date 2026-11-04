@@ -173,3 +173,47 @@ def test_program_cells_marked_light_blue_and_unmarked_after_manual_edit():
     ws = load_workbook(x)["NOV"]
     assert rgb(ws.cell(4, 6)) is None and rgb(ws.cell(new_r, 1)) == XS.MARK_RGB
     assert XS.pending(st, "pc1", everyone=True) == []
+
+
+def test_sync_conflict_copy_merged_back_and_moved_away():
+    """2026-11-04 真实情况：程序写进去的版本被同步盘改名成 …_Conflict.xlsx，原表换回旧版本"""
+    import shutil
+    from openpyxl import load_workbook
+    d, x, st = _setup()
+    old = os.path.join(d, "old.xlsx")
+    shutil.copy2(x, old)                                            # 写之前的原表
+    lampa = _by_sup(st, "LAMPA")
+    st.set(lampa, {"arrived": "2026-11-04"})
+    new = st.add({"date": "2026-11-04", "store": "1", "supplier": "NEW SUP", "amount": 10.0})
+    assert XS.writeback(st, x, "pc1")["status"] == "ok"
+    # 同步盘：程序写的这份变成冲突副本（副本里还有人手加了一行），原表换回旧版本、旁边同事又改了一格
+    cp = os.path.join(d, "PIANO ACQUISTO MESILE  NUOVO_LAPTOP-PC1_11月-04-152013-2026_Conflict.xlsx")
+    wb = load_workbook(x)
+    wb["NOV"].cell(8, 1).value, wb["NOV"].cell(8, 2).value, wb["NOV"].cell(8, 4).value = \
+        datetime(2026, 11, 4), "HANDMADE", 33.0
+    wb.save(cp)
+    _set_mtime(cp, time.time() - 30)
+    shutil.copy2(old, x)
+    wb = load_workbook(x)
+    wb["NOV"].cell(6, 6).value = datetime(2026, 11, 5)               # COLZANI 到货：同事在原表里改的，要留着
+    wb.save(x)
+    _set_mtime(x, time.time() + 60)
+    assert OT.find_excel(d) == x
+    OT.import_file(st, x)                                           # 程序先跟着原表「改回去」
+    assert st.orders[lampa].get("arrived") is None and new not in st.orders
+    res = XS.writeback(st, x, "pc1")
+    assert res["status"] == "ok", res
+    assert res["conflicts"] == {"files": 1, "restored": 1, "added": 2}
+    assert not XS.conflict_copies(x)                                 # 副本挪走了
+    assert os.listdir(os.path.join(st.dir, XS.BACKUP_DIR, XS.CONFLICT_DIR))
+    rows, _b, _s = OT.read_excel(x)
+    by = {r["supplier"]: r for r in rows}
+    assert by["LAMPA"]["arrived"] == "2026-11-04"                   # 恢复并重新写进去
+    assert "NEW SUP" in by and "HANDMADE" in by                     # 程序新增的、副本里手加的都补回来
+    assert by["COLZANI"]["arrived"] == "2026-11-05"                 # 原表里同事的修改没被盖掉
+    assert st.orders[new].get("supplier") == "NEW SUP"
+    assert XS.pending(st, "pc1", everyone=True) == []
+    st2 = OT.Store(d, me="pc2", host="h2").reload()                 # 另一台电脑读：不多出单
+    r2 = OT.import_file(st2, x)
+    assert r2["new"] == 0 and r2["removed"] == 0
+    assert len([o for o in st2.orders.values() if o.get("supplier") == "HANDMADE"]) == 1

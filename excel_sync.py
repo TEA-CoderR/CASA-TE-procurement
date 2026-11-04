@@ -11,6 +11,10 @@ Excel → 程序：order_tracking.import_file / sync_excel（三方比较，xbas
   writeback() 一次写完：Excel / WPS 正开着（有 ~$ 锁文件或文件被锁）就不写，下次再试；先把 Excel 最新的读进来，
   在临时副本上改，读回来核对，原文件备份到「Tracking ordini (programma)\\Backup Excel」（留最近 30 份），
   原文件这段时间没被别人存过才替换；写完记 xbase / xid / xstate["write"]。
+同步盘冲突副本（2026-11-04 真实发生：14:43 / 14:48 程序写进去的版本被同步盘改名成
+「…_LAPTOP-xxx_…_Conflict.xlsx」，原表换回了 14:27 的旧版本，程序跟着把这 10 处当成「Excel 里改回去了」）：
+  merge_conflicts() 每次写之前看有没有冲突副本，有就合并回程序（程序写的被换掉的 → 恢复并重新写；副本里有人手填、
+  原表没有的 → 补回来），然后把副本挪到「Backup Excel\冲突副本」，文件夹里不留。
 谁来写：改这张单的那台电脑写；别的电脑等 10 分钟还没人写才接手（几台电脑同时开着，免得一起写出冲突副本）。
 不依赖界面，测试 test_excel_sync.py。
 """
@@ -30,6 +34,8 @@ STUCK_TEXT = "卡住了"
 PARTIAL_TEXT = "到了一部分"
 CANCEL_TEXT = "ANNULLATO"
 _MISS = object()
+REWRITE = "\x01"              # xbase["_w_字段"] 是这个 = 要重新写一次（冲突副本里恢复回来的）
+CONFLICT_DIR = "冲突副本"       # Backup Excel 下面：合并过的同步盘冲突副本挪到这里
 # 程序写进 Excel 的格子标浅蓝底（2026-11-04 用户要标记，颜色让我自己挑）：原表数据区用了 灰（主题色）、红 FF0000（超期）、
 # 橙 FFC000，表头用 绿 92D050 / ADD88D / 主题绿；字体有紫 7030A0、红、蓝 2D529F / 0070C0 → 浅蓝 DDEBF7 原表没用过，字都看得清
 MARK_RGB = "FFDDEBF7"
@@ -84,7 +90,8 @@ def pending(st, me=None, now=None, everyone=False):
         return bad.get(f"{kind}|{oid}") == repr(val)
     for oid, o in st.orders.items():
         base = st.xbase.get(oid)
-        linked = base is not None and (o.get("origin") == "excel" or o.get("xid"))
+        gone = bool(base and base.get("_gone"))          # 写进去过、后来被同步盘换掉了（冲突副本里恢复的）→ 重新加
+        linked = base is not None and not gone and (o.get("origin") == "excel" or o.get("xid"))
         if linked:
             want = excel_view(o)
             if o.get("kind") == "deter":                 # DETERSIVO 单：确认 / 到货格写的是 DETER，不动
@@ -102,7 +109,7 @@ def pending(st, me=None, now=None, everyone=False):
                   and base.get(f) != base["_m_" + f] and f not in diff]
             if un:
                 ops.append(("unmark", oid, un))
-        elif base is None and o.get("origin") != "excel" and not o.get("xid"):
+        elif gone or (base is None and o.get("origin") != "excel" and not o.get("xid")):
             s = OT.status(o)
             if s in ("draft", "cancel") or not o.get("date") or not o.get("store") or not o.get("supplier"):
                 continue
@@ -424,7 +431,7 @@ def writeback(st, path, me=None, log=None, imported=None):
     busy = Excel 正被人打开；stale = 这台电脑的同步盘还没收到别人刚写的 Excel；changed = 写的时候有人存了 Excel
     """
     log = log or (lambda *_a: None)
-    out = {"status": "nothing", "written": 0, "failed": [], "import": None, "backup": None}
+    out = {"status": "nothing", "written": 0, "failed": [], "import": None, "backup": None, "conflicts": None}
     if not path or not os.path.isfile(path):
         out["status"] = "missing"
         return out
@@ -437,6 +444,7 @@ def writeback(st, path, me=None, log=None, imported=None):
     if imp.get("stale"):
         out["status"] = "stale"
         return out
+    out["conflicts"] = merge_conflicts(st, path, log)
     ops = pending(st, me)
     if not ops:
         return out
@@ -467,6 +475,8 @@ def writeback(st, path, me=None, log=None, imported=None):
             # 标了浅蓝的格子写完读回来是什么：以后 Excel 里这格变了 = 有人手改了 → 去掉标记
             nb.update({"_m_" + f: row.get(f) for f in (WRITE_FIELDS if kind == "append" else val)})
             nb.pop("origin", None)
+            if kind == "append":
+                nb["_gone"] = False
             bases.append((oid, nb))
             o = st.orders.get(oid, {})
             f = {"ref": row["ref"], "xid": row["id"]}
@@ -503,3 +513,143 @@ def writeback(st, path, me=None, log=None, imported=None):
         return out
     finally:
         shutil.rmtree(tmpd, ignore_errors=True)
+
+
+# ===================================================================== 同步盘冲突副本
+def conflict_copies(path):
+    """原表旁边同步盘生成的冲突副本（Synology：原名_电脑名_日期_Conflict.xlsx；也认「conflicted copy」「冲突」）"""
+    d, n = os.path.split(path)
+    stem, ext = os.path.splitext(n)
+    try:
+        names = os.listdir(d or ".")
+    except OSError:
+        return []
+    out = []
+    for f in names:
+        s_, e_ = os.path.splitext(f)
+        if f == n or f.startswith("~$") or e_.lower() != ext.lower() or not s_.startswith(stem):
+            continue
+        if "conflict" in f.lower() or "冲突" in f:
+            out.append(os.path.join(d, f))
+    return sorted(out)
+
+
+def is_conflict_name(name):
+    return "conflict" in name.lower() or "冲突" in name
+
+
+def _hist_vals(st, oid, f):
+    """这张单这一格按时间先后的 [(值, 来源)]"""
+    return [(e["f"][f], e.get("src") or "app") for e in st.hist.get(oid, [])
+            if e.get("op") == "set" and f in (e.get("f") or {})]
+
+
+def _lost_write(st, oid, f, cv, cur):
+    """
+    冲突副本里的 cv 是程序里改的值（谁改的都行），现在的 cur 是从 Excel 读进来的、正好是改之前的旧值
+    → 同步盘把程序写进去的换掉了，不是有人手改
+    """
+    m = st.meta.get(oid, {}).get(f)
+    if m and m[2] != "excel":
+        return False                                    # 现在的值本来就是程序里改的
+    hv = _hist_vals(st, oid, f)
+    for i in range(len(hv) - 1, -1, -1):
+        v, src = hv[i]
+        if src != "excel" and v == cv:
+            before = hv[i - 1][0] if i > 0 else None
+            return cur == before
+    return False
+
+
+def _last_known(st, oid):
+    """删掉的单删之前的样子（按修改记录重放）"""
+    o = {}
+    for e in st.hist.get(oid, []):
+        if e.get("op") == "set":
+            o.update(e.get("f") or {})
+        elif e.get("op") == "del":
+            pass
+    return o
+
+
+def merge_conflicts(st, path, log=None):
+    """
+    合并原表旁边的冲突副本，合并完挪到 Backup Excel\冲突副本。返回 {"files", "restored", "added"}。
+      · 副本里是程序改的值、原表（程序现在）是改之前的旧值 → 恢复（同步盘换掉的），重新写进原表
+      · 副本里有、程序里从来没见过的值（有人在那个版本里手填的）→ 比程序里这一格改得晚就用副本的
+      · 程序新增写进去、后来跟着原表被「删掉」的单 → 恢复，重新加进原表
+      · 程序完全不认识的行（有人在那个版本里加的）→ 补成新单，写进原表
+    """
+    log = log or (lambda *_a: None)
+    out = {"files": 0, "restored": 0, "added": 0}
+    cps = conflict_copies(path)
+    if not cps:
+        return out
+    import hashlib
+    xid = {o["xid"]: oid for oid, o in st.orders.items() if o.get("xid")}
+    dead = {}
+    for oid, src in st.deleted.items():
+        k = _last_known(st, oid)
+        dead[k.get("xid") or oid] = (oid, k, src)
+    for cp in cps:
+        tmpd = tempfile.mkdtemp(prefix="piano_c_")
+        try:
+            tmp = os.path.join(tmpd, "c.xlsx")
+            shutil.copy2(cp, tmp)
+            rows, _b, _s = OT.read_excel(tmp)
+        except Exception as ex:                       # 打不开（还在同步 / 被占用）：下次再试
+            log(f"⚠ 冲突副本读不了：{os.path.basename(cp)}（{ex}）")
+            continue
+        finally:
+            shutil.rmtree(tmpd, ignore_errors=True)
+        tc = OT._utc_iso(os.path.getmtime(cp))
+        sets, xb, n_rest, n_add = [], [], 0, 0
+        for r in rows:
+            rid = r["id"]
+            oid = xid.get(rid, rid)
+            o = st.orders.get(oid)
+            if o is not None:
+                ch = {}
+                for f in WRITE_FIELDS:
+                    cv, cur = r.get(f), o.get(f)
+                    if cv == cur or (f in ("confirmed", "arrived") and o.get("kind") == "deter"):
+                        continue
+                    if _lost_write(st, oid, f, cv, cur):
+                        ch[f] = cv
+                    elif cv is not None and not any(v == cv for v, _src in _hist_vals(st, oid, f)):
+                        m = st.meta.get(oid, {}).get(f)
+                        if m is None or m[0] < tc:
+                            ch[f] = cv
+                if ch:
+                    sets.append((oid, ch))
+                    xb.append((oid, {"_w_" + f: REWRITE for f in ch}))
+                    n_rest += len(ch)
+            elif rid in dead:
+                doid, k, src = dead[rid]
+                if src == "excel" and k.get("origin") != "excel" and doid not in st.orders:
+                    sets.append((doid, k))
+                    xb.append((doid, {"_gone": True}))
+                    n_add += 1
+            else:
+                nid = "c" + hashlib.md5((os.path.basename(cp) + "|" + str(r.get("ref"))).encode("utf-8")).hexdigest()[:12]
+                if nid in st.orders or nid in st.deleted:
+                    continue
+                f = {k: r.get(k) for k in OT.EXCEL_FIELDS if k not in ("ref", "origin") and r.get(k) is not None}
+                f["origin"] = "app"
+                f["note"] = (f.get("note") + " · " if f.get("note") else "") + "冲突副本补回"
+                sets.append((nid, f))
+                n_add += 1
+        st.set_many(sets, src="app")
+        st.set_xbase(xb)
+        dst_dir = os.path.join(st.dir, BACKUP_DIR, CONFLICT_DIR)
+        try:
+            os.makedirs(dst_dir, exist_ok=True)
+            shutil.move(cp, os.path.join(dst_dir, os.path.basename(cp)))
+        except OSError as ex:
+            log(f"⚠ 冲突副本挪不走：{os.path.basename(cp)}（{ex}）")
+        out["files"] += 1
+        out["restored"] += n_rest
+        out["added"] += n_add
+        log(f"合并同步盘冲突副本 {os.path.basename(cp)}：恢复 {n_rest} 处、补回 {n_add} 张单，副本挪到 "
+            f"{BACKUP_DIR}\\{CONFLICT_DIR}")
+    return out

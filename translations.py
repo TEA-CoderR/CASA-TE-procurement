@@ -2968,4 +2968,6 @@ TRANSLATIONS = {
     '订单跟踪：Excel 正被打开 / 刚被别人保存，修改先排队，关掉后自动写入': ('Order tracking: Excel is open or was just saved by someone else; changes are queued and written automatically once it is closed', 'Monitoraggio ordini: Excel è aperto o appena salvato da altri; le modifiche restano in coda e vengono scritte alla chiusura'),
     '订单跟踪：同步盘还没收到最新的 Excel，稍后自动再读': ('Order tracking: the sync folder has not received the latest Excel yet; it will be read again shortly', "Monitoraggio ordini: la cartella sincronizzata non ha ancora l'ultimo Excel; verrà riletto a breve"),
     '同步 Excel': ('Sync Excel', 'Sincronizza Excel'),
+    '订单跟踪：同步盘冲突副本 {0} 个已合并（恢复 {1} 处、补回 {2} 张单），副本挪到 Backup Excel\\冲突副本': ('Order tracking: {0} sync conflict copy(ies) merged ({1} cells restored, {2} orders recovered), moved to Backup Excel\\冲突副本', 'Tracking ordini: {0} copia/e in conflitto unite ({1} celle ripristinate, {2} ordini recuperati), spostate in Backup Excel\\冲突副本'),
+    '✔ 已合并同步盘冲突副本：恢复 {0} 处、补回 {1} 张单': ('✔ Sync conflict copy merged: {0} cells restored, {1} orders recovered', '✔ Copia in conflitto unita: {0} celle ripristinate, {1} ordini recuperati'),
 }
