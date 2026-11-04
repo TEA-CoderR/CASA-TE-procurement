@@ -6,7 +6,7 @@ import os
 import threading
 
 import pandas as pd
-from PySide6.QtCore import Qt, QObject, Signal
+from PySide6.QtCore import Qt, QObject, Signal, QTimer
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QPushButton, QLineEdit,
                                QFrame, QRadioButton, QButtonGroup, QFileDialog, QMessageBox, QTableWidgetItem,
@@ -55,6 +55,8 @@ def fill_table(t, df, text_cols=(), max_rows=MAX_ROWS, row_color=None):
     n = min(len(df), max_rows)
     t.setRowCount(n)
     tc = {str(c) for c in text_cols}
+    t.setUpdatesEnabled(False)                 # 分货表几千行：填完再一次画出来
+    QTimer.singleShot(0, lambda: t.setUpdatesEnabled(True))     # 万一中途出错也会恢复
     for i in range(n):
         color = row_color(i) if row_color else None
         for j, c in enumerate(cols):
@@ -70,6 +72,7 @@ def fill_table(t, df, text_cols=(), max_rows=MAX_ROWS, row_color=None):
             if color:
                 it.setBackground(QColor(color))
             t.setItem(i, j, it)
+    t.setUpdatesEnabled(True)
     t.horizontalHeader().setSortIndicator(-1, Qt.AscendingOrder)     # 保持文件里的顺序，点表头再排序
     t.setSortingEnabled(True)
     return n

@@ -27,6 +27,18 @@ class _BusySig(QObject):
     done = Signal()
 
 
+# ---- 现在在跑的任务（卡顿记录 hang.log 里写「卡住时正在做什么」，main._start_hang_watchdog 读）----
+RUNNING = {}            # id → 任务名
+
+
+def task_started(key, title):
+    RUNNING[key] = title
+
+
+def task_ended(key):
+    RUNNING.pop(key, None)
+
+
 class BusyDialog(QDialog):
     """
     一句话 + 来回走的进度条，后台线程跑 func，跑完自动关掉，再在界面线程调用 on_done(结果, 错误)。
@@ -69,11 +81,13 @@ class BusyDialog(QDialog):
                 box["e"] = e
             sig.done.emit()
         t = threading.Thread(target=work, daemon=True)
+        task_started(id(dlg), f"{title}：{text}")
         t.start()
         t.join(0.3)
         if t.is_alive():
             dlg.exec()
         t.join()
+        task_ended(id(dlg))
         if on_done:
             on_done(box.get("r"), box.get("e"))
         return box.get("r"), box.get("e")
@@ -199,6 +213,7 @@ class TaskDialog(QDialog):
 
     def __init__(self, parent, title, subtitle, steps, cancellable=True, auto_close=True):
         super().__init__(parent)
+        task_started(id(self), f"{title}：{subtitle}")
         self.setObjectName("Dialog")
         self.setWindowTitle(title)
         self.setModal(True)
@@ -410,6 +425,7 @@ class TaskDialog(QDialog):
 
     def _on_finished(self, ok, message):
         self.is_done = True
+        task_ended(id(self))
         self.timer.stop()
         self._tick()
         if ok:
@@ -435,6 +451,7 @@ class TaskDialog(QDialog):
             self.accept()
 
     def to_background(self):
+        RUNNING[id(self)] = RUNNING.get(id(self), self.windowTitle()) + "（后台运行）"
         self.in_background = True
         self.setModal(False)
         self.hide()
@@ -1654,13 +1671,14 @@ class RowSorter(QObject):
             blocked = t.signalsBlocked()
             t.blockSignals(True)
             cols = t.columnCount()
-            rows = [[t.takeItem(r, c) for c in range(cols)] for r in range(n)]
-            hidden = [t.isRowHidden(r) for r in range(n)]
-            for k, r in enumerate(order):
-                for c in range(cols):
-                    if rows[r][c] is not None:
-                        t.setItem(k, c, rows[r][c])
-                t.setRowHidden(k, hidden[r])
+            with frozen(t):
+                rows = [[t.takeItem(r, c) for c in range(cols)] for r in range(n)]
+                hidden = [t.isRowHidden(r) for r in range(n)]
+                for k, r in enumerate(order):
+                    for c in range(cols):
+                        if rows[r][c] is not None:
+                            t.setItem(k, c, rows[r][c])
+                    t.setRowHidden(k, hidden[r])
             t.blockSignals(blocked)
             t.viewport().update()
         if self.on_sorted:
@@ -1883,6 +1901,25 @@ class HeaderFilter(QObject):
                 if got == a:
                     fn()
                     break
+
+
+class frozen:
+    """
+    with frozen(表格): 填很多行 / 藏很多行 / 换行顺序时先停刷新，做完一次画出来
+    （2026-11-04 实测：3000 行 × 38 列从 4.3 秒降到 2.2 秒）。可以套着用，最外层结束才恢复
+    """
+
+    def __init__(self, t):
+        self.t = t
+
+    def __enter__(self):
+        self.was = self.t.updatesEnabled()
+        self.t.setUpdatesEnabled(False)
+        return self.t
+
+    def __exit__(self, *exc):
+        self.t.setUpdatesEnabled(self.was)
+        return False
 
 
 class TableSortFilter(QObject):

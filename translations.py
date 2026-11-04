@@ -2974,4 +2974,7 @@ TRANSLATIONS = {
     '订单跟踪：': ('Order tracking: ', 'Tracking ordini: '),
     '✔ 订单文件改过：{0} 张单的箱数 / 金额已更新': ('✔ Order files edited: boxes / amount updated on {0} orders', "✔ File d'ordine modificati: colli / importo aggiornati su {0} ordini"),
     '按订单文件里改过的箱数重新算的（{0} 箱）\n{1}': ('Recalculated from the edited order file ({0} boxes)\n{1}', "Ricalcolato dal file d'ordine modificato ({0} colli)\n{1}"),
+    '正在读取 {0}…': ('Reading {0}…', 'Lettura di {0}…'),
+    '正在读取 {0} 个文件…': ('Reading {0} files…', 'Lettura di {0} file…'),
+    '正在生成 {0} 家门店的主订单…': ('Creating the main orders for {0} stores…', 'Creazione degli ordini principali per {0} negozi…'),
 }

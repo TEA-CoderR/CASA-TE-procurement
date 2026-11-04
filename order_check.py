@@ -2090,6 +2090,8 @@ class OrderCheck:
                 total += len(allk)
                 tips.append(title)
             t.blockSignals(True)
+            t.setUpdatesEnabled(False)                 # 几百行：填完再一次画出来
+            QTimer.singleShot(0, lambda t=t: t.setUpdatesEnabled(True))     # 万一中途出错也会恢复
             t.setRowCount(len(idx))
             for r, i in enumerate(idx):
                 x = self.rows[i]
@@ -2109,6 +2111,7 @@ class OrderCheck:
                         self._style_prob_cell(it, x)
                     else:
                         it.setFlags(it.flags() & ~Qt.ItemIsEditable)
+            t.setUpdatesEnabled(True)
             t.blockSignals(False)
             if getattr(t, "_hf", None) is not None and t._hf.active():
                 t._hf.reapply()
@@ -2711,68 +2714,78 @@ class OrderCheck:
             QMessageBox.warning(self.win, tr("确认，开始比价"), tr("还没有工作文件夹。"))
             return
         folders = {sid: R.batch_store_folder(root_dir, sid) for sid in self.meta["stores"] if self._to_order(sid)}
-        made, problems = [], []
         tag = datetime.now().strftime("%Y%m%d_%H%M")
         day_dir = R.batch_folder(root_dir)
         os.makedirs(day_dir, exist_ok=True)
-        all_tf = None
-        if moves:                                  # 整批的调货单放在这一天的文件夹里（每家店的也放一份在它自己的文件夹）
-            try:
-                import store_orders as SO
-                all_tf = SO.export_transfers(moves, os.path.join(day_dir, f"调货单_全部门店_{tag}.xlsx"))
-            except Exception as e:
-                problems.append(tr("调货单没写上：{0}", e))
-        for sid in self.meta["stores"]:
-            if sid not in folders:                 # 没有要订的：不建文件夹、不生成主订单
-                continue
-            root = R.make_store_folder(folders[sid])
-            if hasattr(self.win, "sync_prices"):
-                self.win.sync_prices(root)             # 共用的供应商报价（工作文件夹\\2 供应商报价）复制一份过来
-            try:
-                n_el = W.copy_elim(root_dir, sid, root)  # 这家店的扣减文件复制进它的 eliminare
-                if n_el:
-                    self.win.log(tr("[文件] {0}：扣减文件 {1} 个", R.STORES.get(sid), n_el))
-            except Exception as e:
-                problems.append(tr("{0}：扣减文件没复制过去：{1}", R.STORES.get(sid), e))
-            rows = []
-            for x in self.rows:
-                if x.get("store") != sid:
-                    continue
-                y = dict(x)
-                left = new_final.get((sid, str(x.get("code"))))
-                if left is not None:                       # 调货以后还要订的箱数
-                    _set_box(y, int(math.ceil(left / _pk(x) - 1e-9)) if _pk(x) > 0 else 0)
-                rows.append(y)
-            mine = [m for m in moves if sid in (m["from"], m["to"])]
-            try:
-                path, written, skipped = R.write_checked_order(rows, root, sid)
-            except Exception as e:
-                problems.append(tr("{0}：写入失败：{1}", R.STORES.get(sid), e))
-                continue
-            tf = None
-            if mine:
+        made, problems = [], []
+
+        def work():
+            """写主订单、复制报价 / 扣减文件、调货单、库存快照、门店报告（全是读写文件，几家店加起来要好几秒）：
+            后台线程里做，界面显示进度（2026-11-04 提速：以前在界面线程里做，点了会卡住）"""
+            all_tf = None
+            if moves:                                  # 整批的调货单放在这一天的文件夹里（每家店的也放一份在它自己的文件夹）
                 try:
                     import store_orders as SO
-                    tf = SO.export_transfers(mine, os.path.join(root, f"调货单_{R.STORES.get(sid)}_{tag}.xlsx"))
+                    all_tf = SO.export_transfers(moves, os.path.join(day_dir, f"调货单_全部门店_{tag}.xlsx"))
                 except Exception as e:
-                    problems.append(tr("{0}：调货单没写上：{1}", R.STORES.get(sid), e))
-            if True:                                   # 一定要存（没查到其他门店库存也存空的）：没有快照的主订单会被当成旧系统文件
+                    problems.append(tr("调货单没写上：{0}", e))
+            for sid in self.meta["stores"]:
+                if sid not in folders:                 # 没有要订的：不建文件夹、不生成主订单
+                    continue
+                root = R.make_store_folder(folders[sid])
+                if hasattr(self.win, "sync_prices"):
+                    self.win.sync_prices(root)             # 共用的供应商报价（工作文件夹\\2 供应商报价）复制一份过来
                 try:
-                    R.save_snapshot(path, sid, self.meta.get("snap") or {}, rows, transfers=mine, transfers_file=tf)
+                    n_el = W.copy_elim(root_dir, sid, root)  # 这家店的扣减文件复制进它的 eliminare
+                    if n_el:
+                        self.win.log(tr("[文件] {0}：扣减文件 {1} 个", R.STORES.get(sid), n_el))
                 except Exception as e:
-                    problems.append(tr("{0}：门店库存快照没存上：{1}", R.STORES.get(sid), e))
-            try:                                       # 发给门店的提醒：非 Griglia 商品下次别加、这次批发商没货的
-                rep = write_problem_report(self.rows, os.path.join(root, report_name(sid)), store=sid,
-                                           url=self.settings.get("image_url") or None, sources=self.meta.get("quote_labels"))
-                if rep:
-                    self.win.log(tr("✔ 门店报告：{0}", rep))
-            except Exception as e:
-                problems.append(tr("{0}：门店提醒没写上：{1}", R.STORES.get(sid), e))
-            self.win.log(tr("✔ 采购主订单：{0}（{1} 个商品）", path, written))
-            if skipped:
-                self.win.log(tr("⚠ {0} 个商品没有条码，没写进主订单：{1}", len(skipped),
-                                "、".join(f"{x['code']} {x['name'][:20]}" for x in skipped[:10])))
-            made.append((sid, root, written, len(skipped)))
+                    problems.append(tr("{0}：扣减文件没复制过去：{1}", R.STORES.get(sid), e))
+                rows = []
+                for x in self.rows:
+                    if x.get("store") != sid:
+                        continue
+                    y = dict(x)
+                    left = new_final.get((sid, str(x.get("code"))))
+                    if left is not None:                       # 调货以后还要订的箱数
+                        _set_box(y, int(math.ceil(left / _pk(x) - 1e-9)) if _pk(x) > 0 else 0)
+                    rows.append(y)
+                mine = [m for m in moves if sid in (m["from"], m["to"])]
+                try:
+                    path, written, skipped = R.write_checked_order(rows, root, sid)
+                except Exception as e:
+                    problems.append(tr("{0}：写入失败：{1}", R.STORES.get(sid), e))
+                    continue
+                tf = None
+                if mine:
+                    try:
+                        import store_orders as SO
+                        tf = SO.export_transfers(mine, os.path.join(root, f"调货单_{R.STORES.get(sid)}_{tag}.xlsx"))
+                    except Exception as e:
+                        problems.append(tr("{0}：调货单没写上：{1}", R.STORES.get(sid), e))
+                if True:                                   # 一定要存（没查到其他门店库存也存空的）：没有快照的主订单会被当成旧系统文件
+                    try:
+                        R.save_snapshot(path, sid, self.meta.get("snap") or {}, rows, transfers=mine, transfers_file=tf)
+                    except Exception as e:
+                        problems.append(tr("{0}：门店库存快照没存上：{1}", R.STORES.get(sid), e))
+                try:                                       # 发给门店的提醒：非 Griglia 商品下次别加、这次批发商没货的
+                    rep = write_problem_report(self.rows, os.path.join(root, report_name(sid)), store=sid,
+                                               url=self.settings.get("image_url") or None, sources=self.meta.get("quote_labels"))
+                    if rep:
+                        self.win.log(tr("✔ 门店报告：{0}", rep))
+                except Exception as e:
+                    problems.append(tr("{0}：门店提醒没写上：{1}", R.STORES.get(sid), e))
+                self.win.log(tr("✔ 采购主订单：{0}（{1} 个商品）", path, written))
+                if skipped:
+                    self.win.log(tr("⚠ {0} 个商品没有条码，没写进主订单：{1}", len(skipped),
+                                    "、".join(f"{x['code']} {x['name'][:20]}" for x in skipped[:10])))
+                made.append((sid, root, written, len(skipped)))
+            return all_tf
+
+        from erp_widgets import BusyDialog
+        all_tf, err = BusyDialog.run(self.win, tr("确认，开始比价"), tr("正在生成 {0} 家门店的主订单…", len(folders)), work)
+        if err:
+            problems.append(str(err))
         if not made:
             if problems:
                 QMessageBox.critical(self.win, tr("确认，开始比价"), "\n".join(problems))

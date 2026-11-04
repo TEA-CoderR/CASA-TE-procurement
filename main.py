@@ -24,11 +24,21 @@ from PySide6.QtWidgets import (QAbstractSpinBox,
     QStyledItemDelegate, QSizePolicy, QScrollArea, QGraphicsDropShadowEffect, QStyle, QInputDialog,
 )
 
-from service import run_process
+def run_process(*a, **k):
+    """比价（service 要加载 openpyxl 和 Excel 自动化，打开程序时先不加载，第一次比价时才加载）"""
+    from service import run_process as _run
+    return _run(*a, **k)
+
+
 from order_check import OrderCheck
 from store_order_page import StoreOrderPage
 import history
-from matcher import find_missing_items
+def find_missing_items(*a, **k):
+    """缺失查找（matcher 要加载 openpyxl：用到时才加载）"""
+    from matcher import find_missing_items as _f
+    return _f(*a, **k)
+
+
 from settings import load_settings, save_settings, match_rules, SETTINGS_PATH
 from i18n import tr, kind_of, set_language, get_language, LANGS
 from config import (ORDINE_FOLDER, ELIMINARE_FOLDER, DISTRIBUTUIRE_FOLDER,
@@ -2666,6 +2676,19 @@ CMP_STAGES = [(0, "备份、打开主订单"), (10, "扣减已处理数量"), (2
               (62, "选供应商、起订量凑单"), (70, "写回供应商文件"), (96, "保存主订单")]
 
 
+def _preload_libs():
+    """
+    打开程序时窗口先出来，读 Excel（openpyxl）、比价（service：Excel 自动化）、分货 / 导入（pandas）这些大的库
+    在后台先读进来（2026-11-04 提速），用到时不用再等
+    """
+    import importlib
+    for name in ("openpyxl", "service", "matcher", "pandas"):
+        try:
+            importlib.import_module(name)
+        except Exception:
+            pass
+
+
 def _all_pages(side, sub_pages):
     """侧边栏的页面 + 批发商比价里的标签页（不在侧边栏上的）。
     注意：不能在 class 里直接写这个列表推导式——class 里的变量在推导式里看不到，启动就会报错闪退。"""
@@ -2750,17 +2773,14 @@ class MainWindow(QMainWindow):
         self.order_check = OrderCheck(self, settings, _UI)
         self.dashboard = DashboardPage(self, settings)
         self.settings_page = SettingsPage(self, settings)
-        from distribution_page import DistributionPage
-        from import_page import ImportPage
-        self.distribution = DistributionPage(self, settings, _UI)
-        self.import_page = ImportPage(self, settings, _UI)
+        self.distribution = self.import_page = None     # 分货 / 导入页要用 pandas（加载要 1 秒左右）：第一次建页面时才加载
         from griglia_page import GrigliaPage
         self.griglia_page = GrigliaPage(self, settings, _UI)
         from tracking_page import TrackingPage
         self.tracking = TrackingPage(self, settings, _UI)
         builders = {
-            "distribution": lambda: (self.distribution.build(), True),
-            "import": lambda: (self.import_page.build(), True),
+            "distribution": lambda: (self._make_distribution().build(), True),
+            "import": lambda: (self._make_import().build(), True),
             "home": lambda: (self.dashboard.build(), True),
             "store_orders": lambda: (self.store_orders.build(), False),
             "store_pdv": lambda: (self.store_pdv.build(), False),
@@ -2774,17 +2794,21 @@ class MainWindow(QMainWindow):
             "settings": lambda: (self.settings_page.build(), True),
             "log": lambda: (self._page_log(), True),
         }
-        self.pages = []
+        # 打开程序时只建工作台（和它要用的总仓采购），窗口先出来；其他页面等窗口出来以后一页一页建（2026-11-04 提速）。
+        # 窗口出来以前 / 页面没建完时点了别的页面：先把剩下的一次建完（_ensure_all）再切过去
+        self._builders = builders
+        self._LegacyPage = LegacyPage
+        self.pages = [None] * len(self.NAV)
         self.legacy_pages = []
-        for key, _ in self.NAV:
-            if key in builders:
-                pg, scroll = builders[key]()
-            else:
-                lp = LegacyPage(self, settings, key)
-                self.legacy_pages.append(lp)
-                pg, scroll = lp.build(), True
-            self.pages.append(pg)
-            self.stack.addWidget(self._scroll(pg) if scroll else pg)
+        self._startup_done = False
+        for _ in self.NAV:
+            self.stack.addWidget(QWidget())                 # 先占位
+        theme.set_theme(settings.get("theme", "light"))     # 主题先套上：第一页出来就是对的样子
+        QApplication.instance().setStyleSheet(build_qss())
+        self._qss_theme = settings.get("theme", "light")
+        keys = [k for k, _ in self.NAV]
+        for key in ("store_orders", "home"):
+            self._build_page(keys.index(key))
 
         self.toast = QLabel(self)
         self.toast.setObjectName("Toast")
@@ -2794,9 +2818,59 @@ class MainWindow(QMainWindow):
         self.tick = QTimer(self, interval=1000, timeout=self._tick)
 
         QShortcut(QKeySequence("Ctrl+O"), self, activated=lambda: open_path(self.ws_root()))
-        QShortcut(QKeySequence("F5"), self, activated=self.start_check)
-        QShortcut(QKeySequence("F6"), self, activated=self.start)
+        QShortcut(QKeySequence("F5"), self, activated=lambda: (self._ensure_all(), self.start_check()))
+        QShortcut(QKeySequence("F6"), self, activated=lambda: (self._ensure_all(), self.start()))
 
+        self.go_page("home")
+        QTimer.singleShot(0, self._build_next)
+        QTimer.singleShot(0, lambda: threading.Thread(target=_preload_libs, daemon=True).start())
+
+    # ---------- 页面分批建（打开程序时窗口先出来）----------
+    def _build_page(self, i):
+        if self.pages[i] is not None:
+            return
+        key = self.NAV[i][0]
+        if key in self._builders:
+            pg, scroll = self._builders[key]()
+        else:
+            lp = self._LegacyPage(self, settings, key)
+            self.legacy_pages.append(lp)
+            pg, scroll = lp.build(), True
+        self.pages[i] = pg
+        cur = self.stack.currentIndex()
+        old = self.stack.widget(i)
+        self.stack.removeWidget(old)
+        old.deleteLater()
+        self.stack.insertWidget(i, self._scroll(pg) if scroll else pg)
+        if cur == i:
+            self.stack.setCurrentIndex(i)
+
+    LAZY_PAGES = ("distribution", "import")      # 要加载 pandas 的页面：点进去才建（后台先把 pandas 读好）
+
+    def _build_next(self):
+        """窗口出来以后：一次建一页，每页之间让界面喘口气；全建完再做启动时的其余工作"""
+        if self._startup_done:
+            return
+        todo = [i for i, pg in enumerate(self.pages) if pg is None and self.NAV[i][0] not in self.LAZY_PAGES]
+        if todo:
+            self._build_page(todo[0])
+            QTimer.singleShot(0, self._build_next)
+            return
+        self._finish_startup()
+
+    def _ensure_all(self):
+        """要用到别的页面了（切页面、快捷键、从别处调过来）：没建完的一次建完"""
+        if self._startup_done:
+            return
+        for i, pg in enumerate(self.pages):
+            if pg is None and self.NAV[i][0] not in self.LAZY_PAGES:
+                self._build_page(i)
+        self._finish_startup()
+
+    def _finish_startup(self):
+        if self._startup_done:
+            return
+        self._startup_done = True
         import reorder_service as _RS
         if settings.get("last_folder") and os.path.isdir(settings["last_folder"]) and _RS.batch_root_of(settings["last_folder"]):
             self.folder_edit.setText(settings["last_folder"])      # 上次在看的门店比价文件夹
@@ -2804,8 +2878,8 @@ class MainWindow(QMainWindow):
         self._purge_history()
         self._load_saved_result()
         self.refresh_history()
-        self.apply_theme()
-        self.go_page("home")
+        # 样式表开头已经套过（套一次要零点几秒）；这期间换过深浅色才再套
+        self.apply_theme(qss=settings.get("theme", "light") != self._qss_theme)
         self.log(tr("{0} {1} 启动 {2:%Y-%m-%d %H:%M:%S}", APP_NAME, APP_VERSION, datetime.now()))
         QTimer.singleShot(300, self.check_db)
         self.db_timer = QTimer(self, interval=5 * 60 * 1000, timeout=self.check_db)
@@ -2813,6 +2887,18 @@ class MainWindow(QMainWindow):
         from update_ui import Updater
         self.updater = Updater(self, settings)
         self.updater.start_auto()
+        if self.NAV[self.stack.currentIndex()][0] == "home":
+            self.dashboard.refresh()
+
+    def _make_distribution(self):
+        from distribution_page import DistributionPage
+        self.distribution = DistributionPage(self, settings, _UI)
+        return self.distribution
+
+    def _make_import(self):
+        from import_page import ImportPage
+        self.import_page = ImportPage(self, settings, _UI)
+        return self.import_page
 
     # ---------- 框架 ----------
     def _scroll(self, w):
@@ -3185,6 +3271,10 @@ class MainWindow(QMainWindow):
 
     def go(self, i):
         """i = 页面在 NAV 里的位置（侧边栏的页面在前，批发商比价里的标签页在后）"""
+        if not self._startup_done and self.NAV[i][0] != "home":
+            self._ensure_all()
+        if self.pages[i] is None:
+            self._build_page(i)
         self.stack.setCurrentIndex(i)
         key, text = self.NAV[i]
         parent = self.SUB_PARENT.get(key, key)
@@ -3228,9 +3318,12 @@ class MainWindow(QMainWindow):
             return
         self.go_page(self._last_sub.get(key, key))
 
-    def apply_theme(self):
+    def apply_theme(self, qss=True):
+        if not getattr(self, "_startup_done", True):
+            return                                       # 页面还没建完：建完时会套一次
         theme.set_theme(settings.get("theme", "light"))
-        QApplication.instance().setStyleSheet(build_qss())
+        if qss:
+            QApplication.instance().setStyleSheet(build_qss())
         for b, ic in self.nav_btns:
             b.setIcon(icon(ic, "#FFFFFF" if b.isChecked() else T("side_text")))
         for pk, (pb, _arrow, _wrap) in self.nav_tree.items():
@@ -4245,15 +4338,32 @@ class MainWindow(QMainWindow):
             return
         root = self.ws_root()
         price, done, bad = [], [], []
+
+        def check():
+            """先在后台把拖进来的文件都看一遍（打开 Excel 要时间，几个文件一起拖进来以前会卡住）：
+            {文件: "price" / None（门店清单，读得了）/ 读不了的原因}"""
+            import reorder_service as RS_
+            out = {}
+            for f in files:
+                if self._looks_like_price(f):
+                    out[f] = "price"
+                    continue
+                try:
+                    RS_.parse_order_file(f)
+                    out[f] = None
+                except Exception as e:
+                    out[f] = str(e) or e.__class__.__name__
+            return out
+        from erp_widgets import BusyDialog
+        kinds, err = BusyDialog.run(self, tr("门店清单"), tr("正在读取 {0} 个文件…", len(files)), check)
+        kinds = kinds or {}
         for f in files:
-            if self._looks_like_price(f):
+            kind = kinds.get(f, err or "?")
+            if kind == "price":
                 price.append(f)                 # 放错地方的报价表：放到供应商报价里
                 continue
-            try:
-                import reorder_service as RS_
-                RS_.parse_order_file(f)
-            except Exception as e:
-                bad.append(f"{os.path.basename(f)}：{e}")
+            if kind is not None:
+                bad.append(f"{os.path.basename(f)}：{kind}")
                 continue
             sid = W.guess_store(f) or self._ask_store(os.path.basename(f), tr("门店清单"))
             if not sid:
@@ -5592,6 +5702,8 @@ class MainWindow(QMainWindow):
             self.miss_status.setText(tr("没有缺失的商品。"))
             return
         t = self.miss_table
+        t.setUpdatesEnabled(False)            # 几百上千行：填完再一次画出来
+        QTimer.singleShot(0, lambda: t.setUpdatesEnabled(True))     # 万一中途出错也会恢复
         t.setRowCount(len(results))
         found = web_found = 0
         for i, (ean, art, count, matches, web_source, web_art, st) in enumerate(results):
@@ -5608,6 +5720,7 @@ class MainWindow(QMainWindow):
                                      f"{ba}　EAN {be}　{bs}"])
                 t.item(i, 7).setToolTip(tr("EAN: {0}\nARTICOLO: {1}\n供应商: {2}", be, ba, bs) +
                                         (tr("\n来源: {0}", web_source) if web_source and "http" in str(web_source) else ""))
+        t.setUpdatesEnabled(True)
         msg = tr("{0} 个缺失商品，本地找到可能的替代品 {1} 个", len(results), found)
         if use_web and web_found:
             msg += tr("，网络找到 {0} 个", web_found)
@@ -5626,8 +5739,10 @@ class MainWindow(QMainWindow):
     def _filter_missing(self, text):
         t = self.miss_table
         hf = getattr(self, "miss_hf", None)
-        for r in range(t.rowCount()):
-            t.setRowHidden(r, self._miss_base(r) or (hf is not None and not hf.accepts(r)))
+        from erp_widgets import frozen
+        with frozen(t):
+            for r in range(t.rowCount()):
+                t.setRowHidden(r, self._miss_base(r) or (hf is not None and not hf.accepts(r)))
 
     def run_web(self):
         from matcher import search_web_ean
@@ -5820,30 +5935,88 @@ class WheelGuard(QObject):
         return False
 
 
+HANG_SEC = 5            # 界面这么多秒没反应就记一笔（以前 15 秒，大多数卡顿记不下来）
+
+
+class _ClickRecorder(QObject):
+    """记下最后点的按钮 / 菜单（卡顿记录里写「卡之前点了什么」）"""
+    last = ("", 0.0)
+
+    def eventFilter(self, obj, ev):
+        try:
+            from PySide6.QtCore import QEvent
+            from PySide6.QtWidgets import QAbstractButton
+            if ev.type() == QEvent.MouseButtonRelease and isinstance(obj, QAbstractButton):
+                txt = obj.text() or obj.toolTip()[:30] or obj.objectName()
+                if txt:
+                    _ClickRecorder.last = (txt.replace("\n", " "), time.time())
+        except Exception:
+            pass
+        return False
+
+
 def _start_hang_watchdog(app):
     """
-    界面卡住时自动记下「卡在哪一行代码」：界面每 2 秒报一次平安；超过 15 秒没报（界面卡住了），
-    就把所有线程正在执行的代码写进 logs/hang.log（不会关掉程序）。用来查「点了以后程序卡住」这类问题
+    界面卡住时自动记下「卡在哪一行代码」（logs/hang.log，不会关掉程序）。
+    2026-11-04 改：界面每秒报一次平安；超过 HANG_SEC（5 秒）没报 → 写下卡住时间、当时在跑的任务、最后点的按钮、
+    所有线程正在执行的代码；恢复后再写一句「共卡了 n 秒」。电脑睡眠 / 休眠醒来不算卡（看门狗自己也睡过头了）。
+    另外 60 秒的兜底（faulthandler 自己的线程，后台代码一直占着 Python 时也能记下来）
     """
     try:
         import faulthandler
         from datetime import datetime as _dt
         os.makedirs(LOG_DIR, exist_ok=True)
         f = open(os.path.join(LOG_DIR, "hang.log"), "a", encoding="utf-8")
-        f.write(f"\n=== {APP_NAME} 启动 {_dt.now():%Y-%m-%d %H:%M:%S}（下面如果出现 Timeout，就是界面卡住时各线程在做什么）\n")
+        f.write(f"\n=== {APP_NAME} {APP_VERSION} 启动 {_dt.now():%Y-%m-%d %H:%M:%S}"
+                f"（下面「界面卡住」那几行就是卡的时候在做什么）\n")
         f.flush()
         app._hang_file = f
+        state = {"beat": time.time()}
 
         def beat():
+            state["beat"] = time.time()
             faulthandler.cancel_dump_traceback_later()
-            faulthandler.dump_traceback_later(15, repeat=False, file=f, exit=False)
+            faulthandler.dump_traceback_later(60, repeat=False, file=f, exit=False)
 
         t = QTimer(app)
-        t.setInterval(2000)
+        t.setInterval(1000)
         t.timeout.connect(beat)
         t.start()
         app._hang_timer = t
+        rec = _ClickRecorder(app)
+        app.installEventFilter(rec)
+        app._click_rec = rec
         beat()
+
+        def watch():
+            from erp_widgets import RUNNING
+            last_loop, hung_since = time.time(), None
+            while True:
+                time.sleep(1)
+                now = time.time()
+                if now - last_loop > HANG_SEC:          # 看门狗自己也停了这么久 = 电脑睡眠 / 休眠，不算界面卡
+                    state["beat"], hung_since = now, None
+                last_loop = now
+                gap = now - state["beat"]
+                if hung_since is None and gap >= HANG_SEC:
+                    hung_since = state["beat"]
+                    click, ct = _ClickRecorder.last
+                    try:
+                        f.write(f"\n[{_dt.now():%Y-%m-%d %H:%M:%S}] 界面卡住 {gap:.0f} 秒"
+                                f" · 正在跑：{'、'.join(RUNNING.values()) or '（没有任务窗口）'}"
+                                f" · 最后点的：{('「' + click + '」 ' + str(int(now - ct)) + ' 秒前') if click else '—'}\n")
+                        faulthandler.dump_traceback(file=f, all_threads=True)
+                        f.flush()
+                    except Exception:
+                        pass
+                elif hung_since is not None and gap < 2:
+                    try:
+                        f.write(f"[{_dt.now():%Y-%m-%d %H:%M:%S}] 恢复：共卡了 {state['beat'] - hung_since:.0f} 秒\n")
+                        f.flush()
+                    except Exception:
+                        pass
+                    hung_since = None
+        threading.Thread(target=watch, daemon=True, name="hang-watchdog").start()
     except Exception as e:
         file_logger.info(f"卡顿记录没开：{e}")
 
