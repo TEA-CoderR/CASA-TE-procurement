@@ -214,7 +214,7 @@ class SettingsPage:
         grid.addWidget(c, 2, 1)
         # 邮箱（第 1 阶段：只读摸底；以后收清单 / 报价、发订单）
         c, v = _card(tr("邮箱"), tr("公司邮箱（阿里云企业邮箱）。现在只做「邮件摸底」：只读最近几周的发件人、主题、附件名，"
-                                    "不读正文、不改已读状态、不发信。安全密码只存在这台电脑。"))
+                                    "不读正文、不改已读状态、不发信。密码只加密存在这台电脑。"))
         r = QHBoxLayout()
         self.mail_info = QLabel("")
         r.addWidget(self.mail_info, 1)
@@ -308,7 +308,7 @@ class SettingsPage:
             self.mail_info.setText(tr("还没设置邮箱"))
             return
         ok = sum(1 for a in accs if CMD.mail_password(a["address"]))
-        self.mail_info.setText(tr("{0} 个邮箱 · {1} 个已填安全密码", len(accs), ok))
+        self.mail_info.setText(tr("{0} 个邮箱 · {1} 个已填密码", len(accs), ok))
 
     def edit_mail(self):
         from mail_page import MailAccountsDialog

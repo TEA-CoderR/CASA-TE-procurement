@@ -22,7 +22,7 @@ def survey_dir():
 
 
 class MailAccountsDialog(QDialog):
-    """左边邮箱列表，右边地址 / 安全密码 / 服务器；按钮：新邮箱 · 保存 · 测试连接 · 删除"""
+    """左边邮箱列表，右边地址 / 密码 / 服务器；按钮：新邮箱 · 保存 · 测试连接 · 删除"""
 
     def __init__(self, win, settings):
         super().__init__(win)
@@ -46,8 +46,8 @@ class MailAccountsDialog(QDialog):
         self.addr = QLineEdit()
         self.addr.setPlaceholderText("ordine.foiano@casa-te.com")
         g.addWidget(self.addr, 0, 1, 1, 3)
-        g.addWidget(tip_label(tr("安全密码"), tr("阿里邮箱网页版：设置 → 账户与安全 → 第三方客户端安全密码。"
-                                                "不是登录密码；只保存在这台电脑（Windows 加密），不进共享文件夹，同事看不到。")), 1, 0)
+        g.addWidget(tip_label(tr("密码"), tr("邮箱的登录密码，或阿里邮箱网页版「设置 → 账户与安全 → 第三方客户端安全密码」生成的安全密码"
+                                            "（推荐：能单独作废，改登录密码也不受影响）。只加密保存在这台电脑，不进共享文件夹，同事看不到。")), 1, 0)
         self.pw = QLineEdit()
         self.pw.setEchoMode(QLineEdit.Password)
         g.addWidget(self.pw, 1, 1, 1, 3)
@@ -98,7 +98,7 @@ class MailAccountsDialog(QDialog):
             has = bool(CMD.mail_password(a["address"]))
             it = QListWidgetItem(("✓ " if has else "⚠ ") + a["address"])
             it.setData(Qt.UserRole, a["address"])
-            it.setToolTip(tr("安全密码已保存在这台电脑") if has else tr("还没填安全密码"))
+            it.setToolTip(tr("密码已保存在这台电脑") if has else tr("还没填密码"))
             self.lst.addItem(it)
         self.lst.blockSignals(False)
         rows = [self.lst.item(i).data(Qt.UserRole) for i in range(self.lst.count())]
@@ -122,7 +122,7 @@ class MailAccountsDialog(QDialog):
         self.port.setValue(a["port"])
         self.pw.clear()
         has = bool(CMD.mail_password(a["address"]))
-        self.pw.setPlaceholderText(tr("已保存（要改才填）") if has else tr("填网页版生成的安全密码"))
+        self.pw.setPlaceholderText(tr("已保存（要改才填）") if has else tr("填登录密码或安全密码"))
         self.msg.setText("")
 
     def _new(self):
@@ -132,7 +132,7 @@ class MailAccountsDialog(QDialog):
             w.clear()
         self.host.setText(MC.DEFAULT_HOST)
         self.port.setValue(MC.DEFAULT_PORT)
-        self.pw.setPlaceholderText(tr("填网页版生成的安全密码"))
+        self.pw.setPlaceholderText(tr("填登录密码或安全密码"))
         self.msg.setText("")
         self.addr.setFocus()
 
@@ -169,7 +169,7 @@ class MailAccountsDialog(QDialog):
         if not addr:
             return
         if QMessageBox.question(self, tr("删除邮箱"),
-                                tr("从程序里删掉 {0}（连同这台电脑保存的安全密码）？\n邮箱本身和里面的信不受影响。", addr)) \
+                                tr("从程序里删掉 {0}（连同这台电脑保存的密码）？\n邮箱本身和里面的信不受影响。", addr)) \
                 != QMessageBox.Yes:
             return
         CMD.mail_remove_account(self.settings, addr)
@@ -187,7 +187,7 @@ def run_survey(win, settings):
         return
     missing = [a["address"] for a in accs if not CMD.mail_password(a["address"])]
     if missing:
-        QMessageBox.information(win, tr("邮件摸底"), tr("这些邮箱还没填安全密码，会跳过：\n{0}", "\n".join(missing)))
+        QMessageBox.information(win, tr("邮件摸底"), tr("这些邮箱还没填密码，会跳过：\n{0}", "\n".join(missing)))
     days = int((settings.get("mail") or {}).get("survey_days") or 28)
     dlg = TaskDialog(win, tr("邮件摸底"), tr("{0} 个邮箱 · 最近 {1} 天 · 只读信头", len(accs), days),
                      [a["address"] for a in accs], cancellable=True)

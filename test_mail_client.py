@@ -101,7 +101,7 @@ def test_wrong_password_is_explained():
     acc = {"address": "info@casa-te.com", "host": M.DEFAULT_HOST, "port": 993}
     with pytest.raises(M.MailError) as e:
         M.test_account(acc, "bad", factory=FakeIMAP)
-    assert "第三方客户端安全密码" in str(e.value)
+    assert "密码对不对" in str(e.value)
     with pytest.raises(M.MailError):
         M.test_account(acc, "", factory=FakeIMAP)
     assert M.test_account(acc, "good", factory=FakeIMAP) == (3, 2)

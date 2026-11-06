@@ -6,7 +6,7 @@
 · 只取信头（BODY.PEEK[HEADER.FIELDS …]）和结构（BODYSTRUCTURE，用来看附件名），不下载正文和附件；
 · 不删、不移动、不发信。
 
-密码：每个邮箱在网页版生成的「第三方客户端安全密码」，存在本机保管处（credentials.py，名字 mail.<地址>），
+密码：登录密码或网页版生成的「第三方客户端安全密码」（用户 11-06 定：先用登录密码，以后换安全密码），存在本机保管处（credentials.py，名字 mail.<地址>），
 不写进 settings.json、不进共享文件夹。设置里只存地址 / 服务器 / 端口（settings["mail"]["accounts"]）。
 """
 import email
@@ -50,7 +50,7 @@ def accounts(settings):
 def connect(acc, password, factory=None):
     """登录，返回连接。factory 测试用（假的 IMAP）"""
     if not password:
-        raise MailError(f"{acc['address']}：还没填安全密码")
+        raise MailError(f"{acc['address']}：还没填密码")
     try:
         conn = (factory or (lambda h, p: imaplib.IMAP4_SSL(h, p, timeout=TIMEOUT)))(acc["host"], acc["port"])
     except OSError as e:
@@ -60,7 +60,7 @@ def connect(acc, password, factory=None):
     except imaplib.IMAP4.error as e:
         a = e.args[0] if e.args else ""
         msg = a.decode("utf-8", "replace") if isinstance(a, bytes) else str(a)
-        raise MailError(f"{acc['address']}：登录失败。请检查：① 填的是网页版生成的「第三方客户端安全密码」，不是登录密码；"
+        raise MailError(f"{acc['address']}：登录失败。请检查：① 密码对不对（登录密码，或网页版生成的「第三方客户端安全密码」）；"
                         f"② 管理员已给这个账号开通 IMAP、允许第三方客户端。（服务器回复：{msg}）")
     try:
         conn._simple_command("ID", '("name" "CASATE-procurement" "version" "1")')
