@@ -1432,6 +1432,13 @@ class StoreOrderPage:
 
         threading.Thread(target=work, daemon=True).start()
 
+    def _back_to_page(self):
+        """后台任务做完、用户选「查看结果」：回到这一页（总仓采购 / 门店采购）"""
+        try:
+            self.win.go_page(self.CFG_KEY)
+        except Exception:
+            pass
+
     def _computed(self, payload):
         calc, err = payload
         self.running = False
@@ -1469,9 +1476,10 @@ class StoreOrderPage:
         self._show_view(0)
         # 订货明细窗口在后台先分批载入（不显示），第一次点开就不用等
         QTimer.singleShot(500, self._prewarm_detail)
-        self.win.show_toast(msg)
         if hasattr(self.win, "dashboard"):
             self.win.dashboard.refresh()
+        from erp_widgets import ask_return
+        ask_return(self.win, getattr(self, "_task", None), msg, self._back_to_page)
 
     # =================================================================
     # ③ 明细（独立窗口）
@@ -1789,6 +1797,7 @@ class StoreOrderPage:
         dlg = TaskDialog(self.win, tr("正在配货、生成订单"), tr("{0} 家供应商", len(calc["schede"])),
                          [tr(x) for x in S.ALLOCATE_STEPS], cancellable=False)
         dlg.went_background.connect(lambda: self.win.show_toast(tr("订单在后台生成，完成后会提醒")))
+        self._task = dlg
         dlg.show()
 
         def work():
@@ -1826,8 +1835,10 @@ class StoreOrderPage:
         self._fill_result()
         self._show_view(1)
         tk = res.get("tracked")
-        self.win.show_toast(tr("{0}完成：{1} 个订单文件", tr(self.TITLE), len(S.written_files(res["written"])))
-                            + (tr(" · {0} 张待登记（采购订单跟踪）", tk["drafts"]) if tk and tk.get("drafts") else ""))
+        from erp_widgets import ask_return
+        msg = (tr("{0}完成：{1} 个订单文件", tr(self.TITLE), len(S.written_files(res["written"])))
+               + (tr(" · {0} 张待登记（采购订单跟踪）", tk["drafts"]) if tk and tk.get("drafts") else ""))
+        ask_return(self.win, getattr(self, "_task", None), msg, lambda: (self._back_to_page(), self.win.show_toast(msg)))
         if tk and hasattr(self.win, "tracking"):
             self.win.tracking.badge(tk.get("drafts"))
         if hasattr(self.win, "dashboard"):

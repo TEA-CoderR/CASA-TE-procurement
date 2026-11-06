@@ -2977,4 +2977,10 @@ TRANSLATIONS = {
     '正在读取 {0}…': ('Reading {0}…', 'Lettura di {0}…'),
     '正在读取 {0} 个文件…': ('Reading {0} files…', 'Lettura di {0} file…'),
     '正在生成 {0} 家门店的主订单…': ('Creating the main orders for {0} stores…', 'Creazione degli ordini principali per {0} negozi…'),
+    '后台任务完成': ('Background task finished', 'Attività in background completata'),
+    '现在回到任务页面查看结果吗？': ('Go back to the task page to see the results now?', 'Tornare ora alla pagina del lavoro per vedere i risultati?'),
+    '查看结果': ('View results', 'Vedi risultati'),
+    '稍后': ('Later', 'Più tardi'),
+    '订货清单检查完成': ('Order list check finished', 'Controllo della lista ordini completato'),
+    '比价在后台进行，全部门店比完会提醒': ('Price comparison running in the background; you will be notified when all stores are done', 'Confronto prezzi in background: avviso quando tutti i negozi sono finiti'),
 }

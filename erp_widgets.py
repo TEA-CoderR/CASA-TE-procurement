@@ -817,6 +817,34 @@ class EmptyState(QWidget):
         v.addLayout(self.buttons)
 
 
+
+def ask_return(win, dlg, text, go):
+    """任务做完：没点过「后台运行」→ 直接 go()（打开结果）；点过 → 弹窗问要不要回到任务页面（用户 2026-11-06：
+    后台运行完只弹右下角通知不够，要能确认回去）。选「稍后」只留一条通知，结果页之后照常能打开"""
+    if dlg is None or not getattr(dlg, "in_background", False):
+        go()
+        return
+    dlg.in_background = False                   # 只问一次
+    from PySide6.QtWidgets import QMessageBox
+    if win.isMinimized():
+        win.showNormal()
+    win.raise_()
+    win.activateWindow()
+    box = QMessageBox(win)
+    box.setIcon(QMessageBox.Information)
+    box.setWindowTitle(tr("后台任务完成"))
+    box.setText(text)
+    box.setInformativeText(tr("现在回到任务页面查看结果吗？"))
+    yes = box.addButton(tr("查看结果"), QMessageBox.AcceptRole)
+    box.addButton(tr("稍后"), QMessageBox.RejectRole)
+    box.setDefaultButton(yes)
+    box.exec()
+    if box.clickedButton() is yes:
+        go()
+    elif hasattr(win, "show_toast"):
+        win.show_toast(text)
+
+
 # =====================================================================
 # 独立窗口基类
 # =====================================================================

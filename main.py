@@ -4547,11 +4547,20 @@ class MainWindow(QMainWindow):
             self.cmp_steps.set_current(1)
             self.order_check.run_lists(items)
 
+    def _cmp_went_bg(self):
+        if getattr(self, "_in_batch", False):
+            if not getattr(self, "_batch_bg", False):
+                self.show_toast(tr("比价在后台进行，全部门店比完会提醒"))
+            self._batch_bg = True
+        else:
+            self.show_toast(tr("比价在后台进行，完成后会提醒"))
+
     def run_batch(self, folders, msg="", warn=False):
         """检查清单确认后：几家门店的比价文件夹一家一家自动比价（不再弹确认；方案对比按推荐的选）"""
         self._batch_queue = list(folders)
         self._batch_results = []
         self._in_batch = True
+        self._batch_bg = False
         if msg:
             self.banner_folder.show_msg(msg, "warn" if warn else "ok")
         self.refresh_ws()
@@ -4583,6 +4592,13 @@ class MainWindow(QMainWindow):
         self.banner_folder.show_msg(msg, "warn" if bad else "ok")
         self.refresh_folder()
         self.cmp_steps.set_state(3, "done" if ok else "todo", "")
+        bg = getattr(self, "_batch_bg", False)
+        self._batch_bg = False
+        if ok and bg:                                   # 点过「后台运行」：问要不要回去看结果
+            from erp_widgets import ask_return
+            ask_return(self, type("_Bg", (), {"in_background": True})(), msg.split("。")[0],
+                       lambda: self.go_page("result"))
+            return
         self.show_toast(msg.split("。")[0])
         if ok:
             self.go_page("result")
@@ -4989,8 +5005,10 @@ class MainWindow(QMainWindow):
         self._cmp_task = TaskDialog(self, tr("正在比价分配"), tr("{0} · {1} 家供应商",
                                                               os.path.basename(os.path.normpath(root_path)), len(info["suppliers"])),
                                     [tr(x) for _, x in CMP_STAGES], cancellable=False)
-        self._cmp_task.went_background.connect(lambda: self.show_toast(tr("比价在后台进行，完成后会提醒")))
+        self._cmp_task.went_background.connect(self._cmp_went_bg)
         self._cmp_task.show()
+        if auto and getattr(self, "_batch_bg", False):    # 一批里前面那家点过「后台运行」：后面几家也在后台比，不再一家弹一次
+            self._cmp_task.to_background()
         self.cmp_steps.set_current(2)
 
         ordine_file = os.path.join(root_path, ORDINE_FOLDER, info["ordine"])
@@ -5373,9 +5391,10 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(300, self._run_next_in_batch)
             return
         self.cmp_steps.set_state(3, "done", "")
-        self.go_page("result")
         self.refresh_folder()
-        self.show_toast(tr("{0} 比价完成", store))
+        from erp_widgets import ask_return
+        ask_return(self, dlg, tr("{0} 比价完成", store),
+                   lambda: (self.go_page("result"), self.show_toast(tr("{0} 比价完成", store))))
 
     def show_transfers(self, *_):
         s = self.last_summary or {}

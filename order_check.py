@@ -1093,6 +1093,7 @@ class OrderCheck:
                          [tr("读取清单、对上商品编号"), tr("查询门店销量与库存"), tr("查询五家门店库存（调货用）"),
                           tr("读取供应商报价（箱规、件价）"), tr("对比清单数量")], cancellable=False)
         dlg.went_background.connect(lambda: self.win.show_toast(tr("清单在后台检查，完成后会提醒")))
+        self._task = dlg
         dlg.show()
 
         def work():
@@ -1323,8 +1324,10 @@ class OrderCheck:
         self.summary_row.show()
         self.window.setWindowTitle(tr("检查门店订货清单 — {0} · {1} 个商品",
                                       "、".join(store_label(k) for k in meta["stores"]), len(rows)))
-        self.window.bring_up()
-        self.msg.setText(tr("✔ {0}：{1} 个商品", "、".join(store_label(k) for k in meta["stores"]), len(rows)))
+        done = tr("✔ {0}：{1} 个商品", "、".join(store_label(k) for k in meta["stores"]), len(rows))
+        self.msg.setText(done)
+        from erp_widgets import ask_return
+        ask_return(self.win, getattr(self, "_task", None), tr("订货清单检查完成") + "\n" + done, self.window.bring_up)
 
     def _vals(self, i):
         """数据行 i 每一列显示的文字（按屏幕上的列顺序）"""
