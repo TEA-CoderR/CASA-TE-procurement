@@ -4,7 +4,7 @@
 """
 import json
 
-COMPANY_DEFAULTS_VER = 11          # v3.3.15 发布时同步
+COMPANY_DEFAULTS_VER = 12          # v3.3.16 发布时同步
 
 COMPANY_DEFAULTS = json.loads(r'''
 {
@@ -224,7 +224,7 @@ COMPANY_DEFAULTS = json.loads(r'''
   ],
   "card_rec_columns_ver": 2,
   "card_rec_widths": {
-   "1": 100,
+   "1": 106,
    "2": 70,
    "3": 70,
    "4": 165,
@@ -299,9 +299,9 @@ COMPANY_DEFAULTS = json.loads(r'''
    "2": 130,
    "20": 76,
    "21": 104,
-   "22": 80,
+   "22": 0,
    "23": 0,
-   "24": 110,
+   "24": 0,
    "25": 0,
    "26": 0,
    "27": 203,
@@ -408,6 +408,7 @@ COMPANY_DEFAULTS = json.loads(r'''
    20,
    22,
    11,
+   37,
    7,
    8,
    9,
@@ -470,6 +471,7 @@ COMPANY_DEFAULTS = json.loads(r'''
    "34": 0,
    "35": 380,
    "36": 76,
+   "37": 78,
    "4": 130,
    "5": 76,
    "6": 71,
@@ -689,7 +691,32 @@ COMPANY_DEFAULTS = json.loads(r'''
   },
   "sups_cols_hidden": [],
   "sups_cols_hidden_ver": 1,
-  "sups_columns_ver": 1
+  "sups_columns_ver": 1,
+  "transit_dlg2_cols_hidden": [],
+  "transit_dlg2_cols_hidden_ver": 1,
+  "transit_dlg2_columns": [
+   0,
+   1,
+   2,
+   3,
+   4,
+   5,
+   6
+  ],
+  "transit_dlg2_columns_ver": 1,
+  "transit_dlg2_widths": {
+   "0": 112,
+   "1": 96,
+   "2": 150,
+   "3": 76,
+   "4": 119,
+   "5": 120,
+   "6": 330
+  },
+  "transit_dlg_cols_hidden": [],
+  "transit_dlg_cols_hidden_ver": 1,
+  "transit_dlg_columns_ver": 1,
+  "written_at": "11-06 12:52"
  },
  "wholesale_transfer": {
   "enabled": false,
