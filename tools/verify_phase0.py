@@ -90,10 +90,19 @@ except Exception:
 step("5. 全部自动测试（Windows 上）")
 try:
     import pytest  # noqa: F401
-    tests = sorted(glob.glob("test_*.py"))
+    # 只跑 git 里的测试：文件夹里还有 4 月的旧脚本（test_fix.py 等，不在 git），有的一导入就退出，会让整个测试中断
+    try:
+        tests = subprocess.run(["git", "ls-files", "test_*.py"], capture_output=True, text=True,
+                               encoding="utf-8", timeout=30).stdout.split()
+    except Exception:
+        tests = []
+    # 加上最近改过的（这个文件夹的 git 记录可能还没提交新加的测试）；4 月的旧脚本都早于 2026-09
+    recent = [f for f in glob.glob("test_*.py") if os.path.getmtime(f) >= time.mktime((2026, 9, 1, 0, 0, 0, 0, 0, -1))]
+    tests = sorted(set(tests) | set(recent))
+    print(f"  跑 {len(tests)} 个测试文件")
     p = subprocess.run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", *tests],
                        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=900)
-    tail = "\n".join(p.stdout.strip().splitlines()[-25:])
+    tail = "\n".join((p.stdout + p.stderr).strip().splitlines()[-40:])
     print(tail)
     res(p.returncode == 0, "pytest 全部通过" if p.returncode == 0 else "pytest 有没通过的")
 except ImportError:
