@@ -1936,9 +1936,22 @@ class TableSortFilter(QObject):
     """
     rendered = Signal(int, int)          # (显示行数, 总行数)
     MAX_AUTO_W = 420
+    LAZY_FIRST, LAZY_CHUNK = 60, 40      # lazy：先画这么多行，剩下的每次画这么多行
 
-    def __init__(self, table, count, text, fill, key=None, hide=None, parent=None, numeric=()):
+    def __init__(self, table, count, text, fill, key=None, hide=None, parent=None, numeric=(), lazy=False):
+        """
+        lazy=True（2026-11-04 提速，用在一行要算很多东西的大表格：检查清单）：排序 / 筛选 / 搜索时只马上画屏幕上看得见的行，
+        剩下的一小批一小批地画（每批之间界面照常响应）；往下拉到还没画的行马上画。
+        这时直接读格子（table.item(k, c)）之前先 ensure(k)；要一次画完用 flush()；数据变了要重画的行用 invalidate()
+        """
         super().__init__(parent or table)
+        self.lazy, self._filled, self._next = lazy, set(), 0
+        if lazy:
+            self._lazy_timer = QTimer(self)
+            self._lazy_timer.setSingleShot(True)
+            self._lazy_timer.setInterval(0)
+            self._lazy_timer.timeout.connect(self._fill_chunk)
+            table.verticalScrollBar().valueChanged.connect(lambda _v: self._fill_view())
         self.t, self.count, self.text, self.fill = table, count, text, fill
         self.numeric = set(numeric)          # 导出时这几列写成数字（EAN 这类编号保持文字）
         self.key, self.hide = key, hide
@@ -2018,6 +2031,85 @@ class TableSortFilter(QObject):
                 return (0, v, "") if isinstance(v, (int, float)) else (1, 0.0, str(v).lower())
         return _sort_key(self.text(i, c))
 
+    # ---- lazy：先画看得见的行 ----
+    def _fill_one(self, k):
+        if k in self._filled or not 0 <= k < len(self.visible):
+            return
+        self._filled.add(k)
+        self.fill(self.visible[k], k)
+
+    def ensure(self, k):
+        """表格第 k 行还没画就马上画（lazy 时直接读格子之前用）"""
+        if self.lazy and k not in self._filled:
+            t = self.t
+            b = t.signalsBlocked()
+            t.blockSignals(True)
+            self._fill_one(k)
+            t.blockSignals(b)
+
+    def view_rows(self):
+        """屏幕上看得见的表格行（上下各多算一点）"""
+        t, n = self.t, len(self.visible)
+        top = t.rowAt(0)
+        top = 0 if top < 0 else top
+        bottom = t.rowAt(max(0, t.viewport().height() - 1))
+        bottom = top + 40 if bottom < 0 else bottom
+        return range(max(0, top - 10), min(n, bottom + 30))
+
+    def _fill_view(self):
+        if not self.lazy:
+            return
+        todo = [k for k in self.view_rows() if k not in self._filled]
+        if not todo:
+            return
+        t = self.t
+        b = t.signalsBlocked()
+        t.blockSignals(True)
+        for k in todo:
+            self._fill_one(k)
+        t.blockSignals(b)
+
+    def _fill_chunk(self):
+        n, t = len(self.visible), self.t
+        b = t.signalsBlocked()
+        t.blockSignals(True)
+        done = 0
+        while self._next < n and done < self.LAZY_CHUNK:
+            if self._next not in self._filled:
+                self._fill_one(self._next)
+                done += 1
+            self._next += 1
+        t.blockSignals(b)
+        if self._next < n:
+            self._lazy_timer.start()
+
+    def flush(self):
+        """剩下没画的行一次画完（要读整张表格子之前用；平时不用）"""
+        if not self.lazy:
+            return
+        self._lazy_timer.stop()
+        t = self.t
+        b = t.signalsBlocked()
+        t.blockSignals(True)
+        t.setUpdatesEnabled(False)
+        for k in range(len(self.visible)):
+            self._fill_one(k)
+        t.setUpdatesEnabled(True)
+        t.blockSignals(b)
+
+    def invalidate(self, ks=None):
+        """数据变了：这些表格行（None = 全部）要重画。看得见的马上画，其余的一批一批重画"""
+        if not self.lazy:
+            return False
+        if ks is None:
+            self._filled.clear()
+        else:
+            self._filled.difference_update(ks)
+        self._next = 0
+        self._fill_view()
+        self._lazy_timer.start()
+        return True
+
     def render(self):
         n = self.count()
         order = list(range(n))
@@ -2028,11 +2120,22 @@ class TableSortFilter(QObject):
         t = self.t
         t.setUpdatesEnabled(False)
         t.blockSignals(True)
+        if self.lazy:
+            self._lazy_timer.stop()
+            t.clearContents()                      # 旧的格子不能留着（还没画的行会显示成别的商品）
         t.setRowCount(len(vis))
-        self.visible, self.pos = vis, {}
-        for k, i in enumerate(vis):
-            self.pos[i] = k
-            self.fill(i, k)
+        self.visible, self.pos = vis, {i: k for k, i in enumerate(vis)}
+        if self.lazy:
+            self._filled, self._next = set(), 0
+            for k in range(min(len(vis), self.LAZY_FIRST)):
+                self._fill_one(k)
+            for k in self.view_rows():
+                self._fill_one(k)
+            if len(vis) > len(self._filled):
+                self._lazy_timer.start()
+        else:
+            for k, i in enumerate(vis):
+                self.fill(i, k)
         t.blockSignals(False)
         t.setUpdatesEnabled(True)
         hh = t.horizontalHeader()

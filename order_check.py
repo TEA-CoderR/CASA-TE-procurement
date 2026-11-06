@@ -848,8 +848,9 @@ class OrderCheck:
         self.table.itemChanged.connect(self._edited)
         # 点表头排序、右键表头按列筛选；上面「判断」「等级」两个下拉框快速筛选
         from erp_widgets import TableSortFilter, ColumnFilterBox
-        self.ctl = TableSortFilter(self.table, lambda: len(self.rows), self._text, self._fill_row, key=self._key,
-                                   hide=self._hidden, numeric=tuple(_col(k) for k in list(range(4, 16)) + [17, 18, 19, 20, 21, 23, 28, 29, 31]))
+        # lazy：一行要算判断 / 颜色 / 原因，1500 行全画要 2 秒（办公电脑上更久）→ 先画看得见的，剩下的一批批画（2026-11-04）
+        self.ctl = TableSortFilter(self.table, lambda: len(self.rows), self._text, self._fill_row_safe, key=self._key,
+                                   hide=self._hidden, lazy=True, numeric=tuple(_col(k) for k in list(range(4, 16)) + [17, 18, 19, 20, 21, 23, 28, 29, 31]))
         # 列可以拖动换位置、拖宽度，下次打开照旧（右键表头是筛选，所以「恢复默认列顺序」放在下面）
         from erp_widgets import remember_columns
         saved = self.cfg.get("check_columns")
@@ -2429,6 +2430,7 @@ class OrderCheck:
         return float((self.settings.get("store_orders") or {}).get("fill", {}).get("max_stock_days") or 60)
 
     def _style_edit(self, i, k):
+        self.ctl.ensure(k)                      # lazy：这一行可能还没画
         x = self.rows[i]
         T = self.ui.T
         # 判断：跟着确定件数变
@@ -2469,8 +2471,23 @@ class OrderCheck:
             ch.setText(self._change_text(x))
             ch.setForeground(QColor(T("accent") if d > 0 else T("warn") if d < 0 else T("faint")))
 
+    def _fill_row_safe(self, i, k):
+        """表格（lazy 时一批批）画一行：画的时候改格子不算人工修改"""
+        was = self._filling
+        self._filling = True
+        try:
+            self._fill_row(i, k)
+        finally:
+            self._filling = was
+
     def _refresh_rows(self, idx):
-        """只重画这几行（改一个调货不用整张表重画）"""
+        """只重画这几行（改一个调货不用整张表重画）；很多行时：看得见的马上画，其余的一批批重画"""
+        if len(idx) > 80:
+            ks = [k for k in (self.ctl.pos.get(i) for i in idx) if k is not None]
+            if self.ctl.invalidate(ks):
+                if self._cur_i in idx:
+                    self._show_drawer(self._cur_i)
+                return
         was = self._filling
         self._filling = True
         self.table.blockSignals(True)
