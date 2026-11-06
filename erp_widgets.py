@@ -21,6 +21,101 @@ from theme import T, NUM_FONT, icon
 
 
 # =====================================================================
+# 短任务的「处理中」窗口（读大文件、重算、打开文件…）
+# =====================================================================
+class _BusySig(QObject):
+    done = Signal()
+
+
+# ---- 现在在跑的任务（卡顿记录 hang.log 里写「卡住时正在做什么」，main._start_hang_watchdog 读）----
+RUNNING = {}            # id → 任务名
+
+
+def task_started(key, title):
+    RUNNING[key] = title
+
+
+def task_ended(key):
+    RUNNING.pop(key, None)
+
+
+class BusyDialog(QDialog):
+    """
+    一句话 + 来回走的进度条，后台线程跑 func，跑完自动关掉，再在界面线程调用 on_done(结果, 错误)。
+    BusyDialog.run(parent, "读取订单明细", "正在读取 xxx.xlsx…", func, on_done)
+    很快就完成的（< 0.3 秒）几乎看不到窗口，不会闪一下
+    """
+    def __init__(self, parent, title, text):
+        super().__init__(parent)
+        self.setObjectName("Dialog")
+        self.setWindowTitle(title)
+        self.setModal(True)
+        self.setMinimumWidth(420)
+        self.setWindowFlag(Qt.WindowCloseButtonHint, False)
+        v = QVBoxLayout(self)
+        v.setContentsMargins(22, 18, 22, 18)
+        v.setSpacing(12)
+        lab = QLabel(text)
+        lab.setWordWrap(True)
+        v.addWidget(lab)
+        bar = QProgressBar()
+        bar.setRange(0, 0)
+        bar.setTextVisible(False)
+        bar.setFixedHeight(6)
+        v.addWidget(bar)
+
+    def reject(self):                    # Esc 不能关：任务还在跑
+        pass
+
+    @staticmethod
+    def run(parent, title, text, func, on_done=None):
+        dlg = BusyDialog(parent, title, text)
+        sig = _BusySig(dlg)
+        sig.done.connect(dlg.accept)
+        box = {}
+
+        def work():
+            try:
+                box["r"] = func()
+            except Exception as e:
+                box["e"] = e
+            sig.done.emit()
+        t = threading.Thread(target=work, daemon=True)
+        task_started(id(dlg), f"{title}：{text}")
+        t.start()
+        t.join(0.3)
+        if t.is_alive():
+            dlg.exec()
+        t.join()
+        task_ended(id(dlg))
+        if on_done:
+            on_done(box.get("r"), box.get("e"))
+        return box.get("r"), box.get("e")
+
+
+def open_file(parent, path, label=None):
+    """用系统默认程序（Excel）打开文件，打开的这几秒显示「正在打开」；打不开弹提示。返回 True = 已打开"""
+    import sys
+    from PySide6.QtWidgets import QMessageBox
+    if not path or not os.path.exists(path):
+        QMessageBox.warning(parent, tr("打开订单文件"), tr("找不到文件：\n{0}", path))
+        return False
+
+    def go():
+        if sys.platform == "win32":
+            os.startfile(path)
+        else:
+            import subprocess
+            subprocess.Popen(["xdg-open", path])
+        time.sleep(1.5)                   # 给 Excel 一点启动时间，窗口别一闪就没
+    _r, err = BusyDialog.run(parent, tr("打开订单文件"), tr("正在用 Excel 打开 {0}…\n文件较大时需要几秒钟", label or os.path.basename(path)), go)
+    if err:
+        QMessageBox.warning(parent, tr("打开订单文件"), tr("打开失败：{0}", err))
+        return False
+    return True
+
+
+# =====================================================================
 # 分步条
 # =====================================================================
 class StepBar(QFrame):
@@ -118,6 +213,7 @@ class TaskDialog(QDialog):
 
     def __init__(self, parent, title, subtitle, steps, cancellable=True, auto_close=True):
         super().__init__(parent)
+        task_started(id(self), f"{title}：{subtitle}")
         self.setObjectName("Dialog")
         self.setWindowTitle(title)
         self.setModal(True)
@@ -329,6 +425,7 @@ class TaskDialog(QDialog):
 
     def _on_finished(self, ok, message):
         self.is_done = True
+        task_ended(id(self))
         self.timer.stop()
         self._tick()
         if ok:
@@ -354,9 +451,12 @@ class TaskDialog(QDialog):
             self.accept()
 
     def to_background(self):
+        RUNNING[id(self)] = RUNNING.get(id(self), self.windowTitle()) + "（后台运行）"
         self.in_background = True
-        self.setModal(False)
+        # 顺序不能反：先藏再改成不独占。显示中先 setModal(False) 的话，Qt 藏窗口时不会把它从「独占窗口」名单里拿掉
+        # → 别的窗口全部点不了，任务完成也不解除（2026-11-06 用户：点后台运行后整个程序点不动）
         self.hide()
+        self.setModal(False)
         self.went_background.emit()
 
     def request_cancel(self):
@@ -715,6 +815,34 @@ class EmptyState(QWidget):
         self.buttons = QHBoxLayout()
         self.buttons.setAlignment(Qt.AlignCenter)
         v.addLayout(self.buttons)
+
+
+
+def ask_return(win, dlg, text, go):
+    """任务做完：没点过「后台运行」→ 直接 go()（打开结果）；点过 → 弹窗问要不要回到任务页面（用户 2026-11-06：
+    后台运行完只弹右下角通知不够，要能确认回去）。选「稍后」只留一条通知，结果页之后照常能打开"""
+    if dlg is None or not getattr(dlg, "in_background", False):
+        go()
+        return
+    dlg.in_background = False                   # 只问一次
+    from PySide6.QtWidgets import QMessageBox
+    if win.isMinimized():
+        win.showNormal()
+    win.raise_()
+    win.activateWindow()
+    box = QMessageBox(win)
+    box.setIcon(QMessageBox.Information)
+    box.setWindowTitle(tr("后台任务完成"))
+    box.setText(text)
+    box.setInformativeText(tr("现在回到任务页面查看结果吗？"))
+    yes = box.addButton(tr("查看结果"), QMessageBox.AcceptRole)
+    box.addButton(tr("稍后"), QMessageBox.RejectRole)
+    box.setDefaultButton(yes)
+    box.exec()
+    if box.clickedButton() is yes:
+        go()
+    elif hasattr(win, "show_toast"):
+        win.show_toast(text)
 
 
 # =====================================================================
@@ -1573,13 +1701,14 @@ class RowSorter(QObject):
             blocked = t.signalsBlocked()
             t.blockSignals(True)
             cols = t.columnCount()
-            rows = [[t.takeItem(r, c) for c in range(cols)] for r in range(n)]
-            hidden = [t.isRowHidden(r) for r in range(n)]
-            for k, r in enumerate(order):
-                for c in range(cols):
-                    if rows[r][c] is not None:
-                        t.setItem(k, c, rows[r][c])
-                t.setRowHidden(k, hidden[r])
+            with frozen(t):
+                rows = [[t.takeItem(r, c) for c in range(cols)] for r in range(n)]
+                hidden = [t.isRowHidden(r) for r in range(n)]
+                for k, r in enumerate(order):
+                    for c in range(cols):
+                        if rows[r][c] is not None:
+                            t.setItem(k, c, rows[r][c])
+                    t.setRowHidden(k, hidden[r])
             t.blockSignals(blocked)
             t.viewport().update()
         if self.on_sorted:
@@ -1804,6 +1933,25 @@ class HeaderFilter(QObject):
                     break
 
 
+class frozen:
+    """
+    with frozen(表格): 填很多行 / 藏很多行 / 换行顺序时先停刷新，做完一次画出来
+    （2026-11-04 实测：3000 行 × 38 列从 4.3 秒降到 2.2 秒）。可以套着用，最外层结束才恢复
+    """
+
+    def __init__(self, t):
+        self.t = t
+
+    def __enter__(self):
+        self.was = self.t.updatesEnabled()
+        self.t.setUpdatesEnabled(False)
+        return self.t
+
+    def __exit__(self, *exc):
+        self.t.setUpdatesEnabled(self.was)
+        return False
+
+
 class TableSortFilter(QObject):
     """
     管一张 QTableWidget 的排序和按列筛选（数据行 i ↔ 表格行 k 的对应由它维护）：
@@ -1818,9 +1966,22 @@ class TableSortFilter(QObject):
     """
     rendered = Signal(int, int)          # (显示行数, 总行数)
     MAX_AUTO_W = 420
+    LAZY_FIRST, LAZY_CHUNK = 60, 40      # lazy：先画这么多行，剩下的每次画这么多行
 
-    def __init__(self, table, count, text, fill, key=None, hide=None, parent=None, numeric=()):
+    def __init__(self, table, count, text, fill, key=None, hide=None, parent=None, numeric=(), lazy=False):
+        """
+        lazy=True（2026-11-04 提速，用在一行要算很多东西的大表格：检查清单）：排序 / 筛选 / 搜索时只马上画屏幕上看得见的行，
+        剩下的一小批一小批地画（每批之间界面照常响应）；往下拉到还没画的行马上画。
+        这时直接读格子（table.item(k, c)）之前先 ensure(k)；要一次画完用 flush()；数据变了要重画的行用 invalidate()
+        """
         super().__init__(parent or table)
+        self.lazy, self._filled, self._next = lazy, set(), 0
+        if lazy:
+            self._lazy_timer = QTimer(self)
+            self._lazy_timer.setSingleShot(True)
+            self._lazy_timer.setInterval(0)
+            self._lazy_timer.timeout.connect(self._fill_chunk)
+            table.verticalScrollBar().valueChanged.connect(lambda _v: self._fill_view())
         self.t, self.count, self.text, self.fill = table, count, text, fill
         self.numeric = set(numeric)          # 导出时这几列写成数字（EAN 这类编号保持文字）
         self.key, self.hide = key, hide
@@ -1900,6 +2061,85 @@ class TableSortFilter(QObject):
                 return (0, v, "") if isinstance(v, (int, float)) else (1, 0.0, str(v).lower())
         return _sort_key(self.text(i, c))
 
+    # ---- lazy：先画看得见的行 ----
+    def _fill_one(self, k):
+        if k in self._filled or not 0 <= k < len(self.visible):
+            return
+        self._filled.add(k)
+        self.fill(self.visible[k], k)
+
+    def ensure(self, k):
+        """表格第 k 行还没画就马上画（lazy 时直接读格子之前用）"""
+        if self.lazy and k not in self._filled:
+            t = self.t
+            b = t.signalsBlocked()
+            t.blockSignals(True)
+            self._fill_one(k)
+            t.blockSignals(b)
+
+    def view_rows(self):
+        """屏幕上看得见的表格行（上下各多算一点）"""
+        t, n = self.t, len(self.visible)
+        top = t.rowAt(0)
+        top = 0 if top < 0 else top
+        bottom = t.rowAt(max(0, t.viewport().height() - 1))
+        bottom = top + 40 if bottom < 0 else bottom
+        return range(max(0, top - 10), min(n, bottom + 30))
+
+    def _fill_view(self):
+        if not self.lazy:
+            return
+        todo = [k for k in self.view_rows() if k not in self._filled]
+        if not todo:
+            return
+        t = self.t
+        b = t.signalsBlocked()
+        t.blockSignals(True)
+        for k in todo:
+            self._fill_one(k)
+        t.blockSignals(b)
+
+    def _fill_chunk(self):
+        n, t = len(self.visible), self.t
+        b = t.signalsBlocked()
+        t.blockSignals(True)
+        done = 0
+        while self._next < n and done < self.LAZY_CHUNK:
+            if self._next not in self._filled:
+                self._fill_one(self._next)
+                done += 1
+            self._next += 1
+        t.blockSignals(b)
+        if self._next < n:
+            self._lazy_timer.start()
+
+    def flush(self):
+        """剩下没画的行一次画完（要读整张表格子之前用；平时不用）"""
+        if not self.lazy:
+            return
+        self._lazy_timer.stop()
+        t = self.t
+        b = t.signalsBlocked()
+        t.blockSignals(True)
+        t.setUpdatesEnabled(False)
+        for k in range(len(self.visible)):
+            self._fill_one(k)
+        t.setUpdatesEnabled(True)
+        t.blockSignals(b)
+
+    def invalidate(self, ks=None):
+        """数据变了：这些表格行（None = 全部）要重画。看得见的马上画，其余的一批一批重画"""
+        if not self.lazy:
+            return False
+        if ks is None:
+            self._filled.clear()
+        else:
+            self._filled.difference_update(ks)
+        self._next = 0
+        self._fill_view()
+        self._lazy_timer.start()
+        return True
+
     def render(self):
         n = self.count()
         order = list(range(n))
@@ -1910,11 +2150,22 @@ class TableSortFilter(QObject):
         t = self.t
         t.setUpdatesEnabled(False)
         t.blockSignals(True)
+        if self.lazy:
+            self._lazy_timer.stop()
+            t.clearContents()                      # 旧的格子不能留着（还没画的行会显示成别的商品）
         t.setRowCount(len(vis))
-        self.visible, self.pos = vis, {}
-        for k, i in enumerate(vis):
-            self.pos[i] = k
-            self.fill(i, k)
+        self.visible, self.pos = vis, {i: k for k, i in enumerate(vis)}
+        if self.lazy:
+            self._filled, self._next = set(), 0
+            for k in range(min(len(vis), self.LAZY_FIRST)):
+                self._fill_one(k)
+            for k in self.view_rows():
+                self._fill_one(k)
+            if len(vis) > len(self._filled):
+                self._lazy_timer.start()
+        else:
+            for k, i in enumerate(vis):
+                self.fill(i, k)
         t.blockSignals(False)
         t.setUpdatesEnabled(True)
         hh = t.horizontalHeader()

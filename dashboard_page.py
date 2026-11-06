@@ -213,10 +213,7 @@ class DashboardPage:
 
         def work():
             for p in paths:
-                try:
-                    so.moq[p] = S.parse_moq(p)
-                except Exception as e:
-                    so.moq[p] = dict(S.read_moq(None), raw=tr("读不出来：{0}", e))
+                S.load_moq_into(so.moq, p)              # 总仓采购同时在读同一个文件时只读一次
             self._moq_loading = False
             self.sig.moq_loaded.emit()
 

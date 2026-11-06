@@ -615,6 +615,30 @@ class StoreOrderPage:
             c.pop("transfer_auto_plan", None)
         self.apply_transfers()
 
+    def reapply_transit(self, transit):
+        """
+        在途变了（在途订单窗口里标了到货 / 不算在途）：重新扣，订货箱数 = 建议 − 在途；手动改过的箱数保留。
+        开关关着：只更新订货明细在途列的显示
+        """
+        import order_record as REC
+        c = self.calc
+        if not c:
+            return
+        if REC.deduct_on(self.settings):
+            c["transit"] = transit
+            S.apply_transit(c["demand"], c["schede"], transit)
+            stores = c["stores"]
+            c["base"] = {sc["path"]: S.base_colli(sc, c["demand"], stores) for sc in c["schede"]}
+            c["base_sugg"] = {sc["path"]: S.base_colli(sc, c["demand"], stores, transit=False) for sc in c["schede"]}
+            c.pop("base_orig", None)                  # 调货从新的建议重新算
+            self.apply_transfers()
+            self.result = None
+            self._refresh_matrix()
+            self._update_state()
+        if self.detail_win is not None:
+            self.detail_win.transit = transit
+            self.detail_win.refresh_transfers()
+
     def apply_transfers(self, keep_edits=True, refresh_auto=False):
         """按现在的调货设置重算调货；手动改过的箱数保留。refresh_auto：调货设置改了 → 解冻，按新设置重新建议（人工改的保留）"""
         if not self.calc:
@@ -1254,10 +1278,7 @@ class StoreOrderPage:
 
             def work():
                 for p in todo:
-                    try:
-                        self.moq[p] = S.parse_moq(p)
-                    except Exception as e:
-                        self.moq[p] = dict(S.read_moq(None), raw=tr("读不出来：{0}", e))
+                    S.load_moq_into(self.moq, p)            # 工作台同时在读同一个文件时只读一次
                 self.sig.listed.emit(token)
 
             threading.Thread(target=work, daemon=True).start()
@@ -1411,6 +1432,13 @@ class StoreOrderPage:
 
         threading.Thread(target=work, daemon=True).start()
 
+    def _back_to_page(self):
+        """后台任务做完、用户选「查看结果」：回到这一页（总仓采购 / 门店采购）"""
+        try:
+            self.win.go_page(self.CFG_KEY)
+        except Exception:
+            pass
+
     def _computed(self, payload):
         calc, err = payload
         self.running = False
@@ -1448,9 +1476,10 @@ class StoreOrderPage:
         self._show_view(0)
         # 订货明细窗口在后台先分批载入（不显示），第一次点开就不用等
         QTimer.singleShot(500, self._prewarm_detail)
-        self.win.show_toast(msg)
         if hasattr(self.win, "dashboard"):
             self.win.dashboard.refresh()
+        from erp_widgets import ask_return
+        ask_return(self.win, getattr(self, "_task", None), msg, self._back_to_page)
 
     # =================================================================
     # ③ 明细（独立窗口）
@@ -1768,6 +1797,7 @@ class StoreOrderPage:
         dlg = TaskDialog(self.win, tr("正在配货、生成订单"), tr("{0} 家供应商", len(calc["schede"])),
                          [tr(x) for x in S.ALLOCATE_STEPS], cancellable=False)
         dlg.went_background.connect(lambda: self.win.show_toast(tr("订单在后台生成，完成后会提醒")))
+        self._task = dlg
         dlg.show()
 
         def work():
@@ -1805,8 +1835,10 @@ class StoreOrderPage:
         self._fill_result()
         self._show_view(1)
         tk = res.get("tracked")
-        self.win.show_toast(tr("{0}完成：{1} 个订单文件", tr(self.TITLE), len(S.written_files(res["written"])))
-                            + (tr(" · {0} 张待登记（采购订单跟踪）", tk["drafts"]) if tk and tk.get("drafts") else ""))
+        from erp_widgets import ask_return
+        msg = (tr("{0}完成：{1} 个订单文件", tr(self.TITLE), len(S.written_files(res["written"])))
+               + (tr(" · {0} 张待登记（采购订单跟踪）", tk["drafts"]) if tk and tk.get("drafts") else ""))
+        ask_return(self.win, getattr(self, "_task", None), msg, lambda: (self._back_to_page(), self.win.show_toast(msg)))
         if tk and hasattr(self.win, "tracking"):
             self.win.tracking.badge(tk.get("drafts"))
         if hasattr(self.win, "dashboard"):

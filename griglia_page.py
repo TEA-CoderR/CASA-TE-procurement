@@ -45,8 +45,9 @@ class _Tab:
         self.t = ui.make_table(heads, stretch_col=None, numeric_cols=numeric)
         v.addWidget(self.t, 1)
         from erp_widgets import TableSortFilter
+        # lazy：新品「全部」一万多行，打字搜索时以前每个字都要把整张表重画（2 秒）→ 先画看得见的（2026-11-04）
         self.ctl = TableSortFilter(self.t, lambda: len(self.rows), lambda i, c: self.rows[i][c], self._fill,
-                                   key=lambda i, c: self.keys[i][c], hide=self._hidden, numeric=numeric)
+                                   key=lambda i, c: self.keys[i][c], hide=self._hidden, numeric=numeric, lazy=True)
         self.ctl.rendered.connect(lambda n, tot: self.count.setText(tr("{0:,} / {1:,}", n, tot)))
         self.search.textChanged.connect(lambda _: self.ctl.render())
 

@@ -213,14 +213,11 @@ class ImportPage:
         p, _ = QFileDialog.getOpenFileName(self.win, tr("选择商品清单"), start, tr("Excel 文件 (*.xlsx *.xls)"))
         if not p:
             return
-        QApplication.setOverrideCursor(Qt.WaitCursor)
-        try:
-            df = pd.read_excel(p)
-        except Exception as e:
-            QApplication.restoreOverrideCursor()
+        from erp_widgets import BusyDialog          # 读 Excel 在后台，界面显示进度（以前读大文件时会卡住）
+        df, e = BusyDialog.run(self.win, tr("导入 / 导出"), tr("正在读取 {0}…", os.path.basename(p)), lambda: pd.read_excel(p))
+        if e is not None or df is None:
             QMessageBox.warning(self.win, tr("导入 / 导出"), tr("读不了这个文件：\n{0}", e))
             return
-        QApplication.restoreOverrideCursor()
         codes, col = D.detect_codes(df)
         if not codes:
             QMessageBox.warning(self.win, tr("导入 / 导出"),

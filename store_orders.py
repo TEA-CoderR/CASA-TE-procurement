@@ -663,6 +663,32 @@ def pdv_header_values(pdv, sid, when=None):
     return out
 
 
+_MOQ_GUARD = None
+_MOQ_LOCKS = {}
+
+
+def load_moq_into(moq, p):
+    """
+    读一个 SCHEDA 的起订量放进 moq（{路径: 起订量}）。几个线程同时要同一个文件时只读一次，后到的等它读完直接用
+    （2026-11-06：打开程序时工作台和总仓采购两个后台线程同时把今天的 SCHEDA 各读一遍）
+    """
+    global _MOQ_GUARD
+    import threading
+    if _MOQ_GUARD is None:
+        _MOQ_GUARD = threading.Lock()
+    with _MOQ_GUARD:
+        lk = _MOQ_LOCKS.setdefault(p, threading.Lock())
+    with lk:
+        if p in moq:
+            return moq[p]
+        try:
+            moq[p] = parse_moq(p)
+        except Exception as e:
+            from i18n import tr
+            moq[p] = dict(read_moq(None), raw=tr("读不出来：{0}", e))
+        return moq[p]
+
+
 def parse_moq(path):
     """只读起订量（列表里显示用，比 parse_scheda 快）：返回文件里读到的 moq dict（还没套手动修改）"""
     from openpyxl import load_workbook
@@ -940,6 +966,14 @@ def apply_transit(demand, schede, transit):
     建议箱数（colli_for）会扣掉在途。返回有在途的 (门店, 编号) 个数
     """
     import order_record as REC
+    for sid, dem in demand.items():                 # 再算一次（例如标了到货）：先还原上次扣的
+        if isinstance(sid, int) and isinstance(dem, dict):
+            for d in dem.values():
+                if isinstance(d, dict) and "transit" in d:
+                    d.pop("transit", None)
+                    d.pop("transit_info", None)
+                    if "need0" in d:
+                        d["need"] = d["need0"]
     if not transit:
         return 0
     n = 0
@@ -959,7 +993,8 @@ def apply_transit(demand, schede, transit):
                 done.add(code)
                 d["transit"] = float(t["pcs"])
                 d["transit_info"] = t
-                d["need"] = max(0.0, float(d.get("need", d["sugg"]) or 0) - float(t["pcs"]))
+                d.setdefault("need0", float(d.get("need", d["sugg"]) or 0))
+                d["need"] = max(0.0, d["need0"] - float(t["pcs"]))
                 n += 1
     return n
 

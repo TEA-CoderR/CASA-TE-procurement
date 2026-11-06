@@ -30,7 +30,7 @@ RECORD_DEFAULT = r"D:\SynologyDrive\SynologyDrive\2 Griglia per gli ordini\01 RE
 MAX_DAYS = 60            # 下单超过这么多天还没标到货：不算在途
 SCAN_DAYS = 90           # 只看最近这么多天的订单文件（旧文件不读，省时间）
 DATE_BEFORE, DATE_AFTER = 7, 10      # 文件日期在下单日前 7 天 … 后 10 天
-CACHE_VER = 1
+CACHE_VER = 2           # 2：明细多了单价（price，订单文件改过 → 金额跟着算）
 OPEN_STATES = ("ordered", "confirmed", "partial", "stuck")
 STORE_DIRS = {"01": "1", "02": "2", "03": "3", "04": "4", "05": "5", "06": "C", "07": "D"}
 STORE_NAMES = {"1": "FOIANO", "2": "MARLIA", "3": "S.FILIPPO", "4": "S.MARCO", "5": "S.CONCORDIO"}
@@ -67,7 +67,7 @@ def _num(v):
 
 def folder_store(rel):
     """相对 RECORD 文件夹的路径 → "1".."5"（门店文件夹）/ "C"（06 总仓）/ "D"（07 DETERSIVO）/ None"""
-    top = re.split(r"[\\/]", str(rel or ""), 1)[0].strip()
+    top = re.split(r"[\\/]", str(rel or ""), maxsplit=1)[0].strip()
     return STORE_DIRS.get(top[:2]) if top[:2].isdigit() else None
 
 
@@ -218,7 +218,7 @@ def read_lines(path, folder_sid=None):
                 if not e and not c:
                     continue
                 out.setdefault(sid, []).append({"ean": e, "code": c, "desc": str(g("desc") or "").strip(),
-                                                "colli": n, "pack": _num(g("pack")) or 1})
+                                                "colli": n, "pack": _num(g("pack")) or 1, "price": _num(g("price"))})
         return out
     finally:
         wb.close()
@@ -367,7 +367,7 @@ def order_lines(order, f, lines):
 def in_transit(orders, resolved, index, log=None):
     """
     → {"by_ean": {(门店号, 条码): 信息}, "by_code": {(门店号, 编号): 信息}, "orders": {单号: {file, how, n, colli}}}
-    信息 = {"colli", "pcs", "orders": [(下单日 iso, 供应商, 箱数)]}。同一个文件里同一家店只算一次（门店单 + BMS 单对到同一个
+    信息 = {"colli", "pcs", "orders": [(下单日 iso, 供应商, 箱数, 单号)]}。同一个文件里同一家店只算一次（门店单 + BMS 单对到同一个
     文件时不重复）
     """
     by_ean, by_code, info = {}, {}, {}
@@ -385,7 +385,7 @@ def in_transit(orders, resolved, index, log=None):
                 continue
             n += 1
             tot += x["colli"]
-            ent_o = (o["date"].isoformat(), o.get("supplier") or "", x["colli"])
+            ent_o = (o["date"].isoformat(), o.get("supplier") or "", x["colli"], o["id"])
             for key, d in (((sid, x["ean"]), by_ean), ((sid, x["code"]), by_code)):
                 if not key[1]:
                     continue
@@ -418,7 +418,16 @@ def transit_text(t):
     """鼠标提示：哪几张单"""
     if not t:
         return ""
-    return "\n".join(f"{d[8:10]}/{d[5:7]} · {s} · {c:g}" for d, s, c in t["orders"])
+    return "\n".join(f"{o[0][8:10]}/{o[0][5:7]} · {o[1]} · {o[2]:g}" for o in t["orders"])
+
+
+def order_ids(t):
+    """这个商品在途的那几张单的单号（订单跟踪里的）"""
+    out = []
+    for o in (t or {}).get("orders") or []:
+        if len(o) > 3 and o[3] not in out:
+            out.append(o[3])
+    return out
 
 
 # ===================================================================== 一步到位（页面 / 线程里用）
@@ -636,3 +645,105 @@ def write_elim(lines, path):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     wb.save(path)
     return path
+
+
+# ===================================================================== 订单文件改过 → 订单跟踪的箱数 / 金额
+SYNC_SOURCES = ("store_orders", "store_pdv")      # LUCAS定制采购（总仓 / 门店采购）生成的订单文件
+FILE_SRC = "file"                                 # 修改记录里的来源：从订单文件读回来的
+
+
+def _to_date(v):
+    import order_tracking as OT
+    return OT.to_date(v)
+
+
+def _sig_iso(ts):
+    from datetime import timezone
+    return datetime.fromtimestamp(ts, timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def file_totals(st, today=None, index=None, root=None, log=None, max_days=MAX_DAYS):
+    """
+    程序生成的单（总仓 / 门店采购）→ 它的订单文件现在一共几箱、多少钱：{单号: (箱数, 金额 或 None, 文件修改时间, 文件)}。
+    文件优先用手动指定的（RECORD ORDINE 里那份），没有就用程序生成的那份；这台电脑打不开的跳过。
+    一个文件里直送门店和 BMS 写在一起：门店单只算那家店的页，BMS 单算这个文件里没有自己直送单的门店。
+    金额 = 箱数 × 每箱件数 × 单价（和生成时一样算）；文件里没有单价 → 金额 None（只改箱数）
+    """
+    today = today or date.today()
+    cand, direct = [], {}
+    for oid, o in st.orders.items():
+        if o.get("origin") not in SYNC_SOURCES:
+            continue
+        p = str(o.get("file") or "")
+        if p:
+            direct.setdefault(os.path.normcase(p), set()).add(str(o.get("store") or ""))
+        if o.get("state") == "cancel" or str(o.get("record") or "") == NO_FILE:
+            continue
+        d = _to_date(o.get("date"))
+        if d is None or (today - d).days > max_days:
+            continue
+        cand.append(dict(o, id=oid, date=d))
+    if not cand:
+        return {}
+    res = resolve(cand, [], root)
+    idx = index or Index(None)
+    out = {}
+    for o in cand:
+        f, how = res.get(o["id"], (None, "none"))
+        if f is None or how not in ("manual", "program"):
+            continue
+        lines = idx.lines(f, log)
+        if (idx.data.get(f["rel"]) or {}).get("error"):
+            continue
+        sid = str(o.get("store") or "")
+        if sid in STORE_NAMES:
+            ls = order_lines(o, f, lines)
+        else:                                          # BMS：去掉这个文件里有直送单的门店
+            own = direct.get(os.path.normcase(str(o.get("file") or "")), set()) if how == "program" else set()
+            ls = [(s_, x) for s_, x in order_lines(o, f, lines) if s_ not in own]
+        colli = round(sum(x["colli"] for _s, x in ls), 3)
+        priced = [x for _s, x in ls if x.get("price")]
+        amt = round(sum(x["colli"] * (x["pack"] or 1) * x["price"] for x in priced), 2) \
+            if (priced and len(priced) == len(ls)) else (0.0 if not ls else None)
+        out[o["id"]] = (colli, amt, f["mtime"], f["rel"])
+    return out
+
+
+def sync_files(st, settings=None, today=None, log=None, index=None):
+    """
+    订单文件里改了箱数（减少 / 整行砍掉）→ 订单跟踪这张单的箱数、金额跟着改（2026-11-04 用户：在生成的订单文件里减少或者砍掉箱数，
+    要同步回程序）。谁最后改听谁：程序里人手改金额 / 箱数比文件晚，就不动。改了的金额照常写回 PIANO Excel。
+    返回 [(单号, {改了什么}, 文件)]
+    """
+    tot = file_totals(st, today, index=index, root=record_root(settings), log=log)
+    changes = []
+    for oid, (colli, amt, mtime, rel) in tot.items():
+        o = st.orders.get(oid) or {}
+        meta = st.meta.get(oid, {})
+        ft = _sig_iso(mtime)
+        ch = {}
+        for k, v in (("colli", colli), ("amount", amt)):
+            if v is None:
+                continue
+            cur = o.get(k)
+            try:
+                same = cur is not None and abs(float(cur) - float(v)) < 0.01
+            except (TypeError, ValueError):
+                same = False
+            if same:
+                continue
+            w = meta.get(k)
+            if w and w[2] not in ("auto", FILE_SRC) and w[0] > ft:
+                continue                                # 程序里有人改得比文件晚
+            ch[k] = v
+        if ch:
+            changes.append((oid, ch, rel))
+    if changes:
+        st.set_many([(oid, ch) for oid, ch, _r in changes], src=FILE_SRC)
+        if log:
+            for oid, ch, rel in changes:
+                o = st.orders.get(oid) or {}
+                log(f"订单文件改过 → {o.get('supplier')} · {STORE_NAMES.get(str(o.get('store')), o.get('store'))}："
+                    + "、".join(f"{'箱数' if k == 'colli' else '金额'} {v:g}" for k, v in ch.items())
+                    + f"（{os.path.basename(rel)}）")
+    return changes
