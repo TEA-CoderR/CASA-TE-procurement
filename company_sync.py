@@ -18,7 +18,8 @@ MODULE = "company_defaults.py"
 
 # 顶层不同步的（个人的 / 这台电脑的）
 SKIP_TOP = {"last_folder", "theme", "language", "db", "wholesale_root", "wholesale_batch", "user_name", "user_site",
-            "company_defaults_ver", "use_web", "window", "geometry", "last_dir"}
+            "company_defaults_ver", "use_web", "window", "geometry", "last_dir",
+            "mail"}   # 邮箱是每个人自己的（2026-11-06）
 # 某一块里面不同步的
 SKIP_IN = {"store_orders": {"folder", "day", "skip", "moq_override", "stores", "last_dir"},
            "reorder": {"store", "last_dir", "last_file"},

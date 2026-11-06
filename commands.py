@@ -368,3 +368,61 @@ def confirm_orders(st, ids, via="desktop", today=None):
     n = OT.confirm_drafts(st, ids, today=today)
     audit(st.me, via, "confirm_orders", {"ids": ids}, {"confirmed": n})
     return n
+
+
+# ===================================================================== 邮件（第 1 阶段：只读摸底）
+def mail_password(address):
+    import credentials
+    import mail_client as MC
+    return credentials.get(MC.cred_name(address))
+
+
+def mail_save_account(settings, address, password=None, host=None, port=None):
+    """加 / 改一个邮箱：地址、服务器存设置，安全密码存本机保管处（password=None 不改密码）"""
+    import credentials
+    import mail_client as MC
+    address = (address or "").strip()
+    if not address or "@" not in address:
+        raise ValueError(tr("邮箱地址不对：{0}", address))
+    box = settings.setdefault("mail", {}).setdefault("accounts", [])
+    acc = next((a for a in box if (a.get("address") or "").lower() == address.lower()), None)
+    if acc is None:
+        acc = {"address": address}
+        box.append(acc)
+    acc["host"] = (host or acc.get("host") or MC.DEFAULT_HOST).strip()
+    acc["port"] = int(port or acc.get("port") or MC.DEFAULT_PORT)
+    if password is not None:
+        credentials.set(MC.cred_name(address), password)
+    return acc
+
+
+def mail_remove_account(settings, address):
+    import credentials
+    import mail_client as MC
+    box = (settings.get("mail") or {}).get("accounts") or []
+    settings.setdefault("mail", {})["accounts"] = [a for a in box if (a.get("address") or "").lower() != address.lower()]
+    credentials.delete(MC.cred_name(address))
+
+
+def mail_test(settings, address):
+    """测试连接：返回给人看的一句话；失败抛 mail_client.MailError"""
+    import mail_client as MC
+    acc = next(a for a in MC.accounts(settings) if a["address"].lower() == address.lower())
+    nf, n = MC.test_account(acc, mail_password(address))
+    return tr("✔ 连上了：{0} 个文件夹，收件箱 {1} 封", nf, n)
+
+
+def mail_survey(settings, out_dir, days=28, log=print, progress=None, cancel=None, actor=None, via="desktop"):
+    """邮件摸底（只读）：所有设置了的邮箱，收件箱 + 已发送，最近 days 天的信头 → Excel。返回 (路径, 信数, 错误)"""
+    import mail_client as MC
+    from datetime import datetime
+    accs = MC.accounts(settings)
+    if not accs:
+        raise RuntimeError(tr("还没设置邮箱（系统设置 → 邮箱）"))
+    rows, summary, errors = MC.survey(accs, mail_password, days=days, log=log, progress=progress, cancel=cancel)
+    os.makedirs(out_dir, exist_ok=True)
+    path = os.path.join(out_dir, f"邮件摸底_{datetime.now():%Y%m%d_%H%M}.xlsx")
+    MC.write_survey(path, rows, summary, days)
+    audit(actor or settings.get("user_name") or "", via, "mail_survey",
+          {"mailboxes": [a["address"] for a in accs], "days": days}, {"mails": len(rows), "errors": len(errors)})
+    return path, len(rows), errors

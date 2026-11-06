@@ -212,6 +212,21 @@ class SettingsPage:
             v.addLayout(r)
         v.addStretch()
         grid.addWidget(c, 2, 1)
+        # 邮箱（第 1 阶段：只读摸底；以后收清单 / 报价、发订单）
+        c, v = _card(tr("邮箱"), tr("公司邮箱（阿里云企业邮箱）。现在只做「邮件摸底」：只读最近几周的发件人、主题、附件名，"
+                                    "不读正文、不改已读状态、不发信。安全密码只存在这台电脑。"))
+        r = QHBoxLayout()
+        self.mail_info = QLabel("")
+        r.addWidget(self.mail_info, 1)
+        b = QPushButton(tr("管理邮箱…"))
+        b.clicked.connect(self.edit_mail)
+        r.addWidget(b)
+        b = QPushButton(tr("邮件摸底…"))
+        b.setToolTip(tr("每个邮箱的收件箱和已发送，最近 4 周：按发件人汇总成一张 Excel，放在「文档\\CASATE 邮件摸底」"))
+        b.clicked.connect(self.mail_survey)
+        r.addWidget(b)
+        v.addLayout(r)
+        grid.addWidget(c, 3, 0, 1, 2)
         grid.setColumnStretch(0, 1)
         grid.setColumnStretch(1, 1)
         lay.addLayout(grid)
@@ -221,6 +236,7 @@ class SettingsPage:
 
     # ---------- ----------
     def refresh(self):
+        self._mail_refresh()
         from fenpei.config import DatabaseConfig as D
         d = self.settings.get("db") or {}
         self.db_info.setText(tr("{0}@{1}:{2} · 数据库 {3}", d.get("user") or D.USER, d.get("host") or D.HOST,
@@ -283,6 +299,25 @@ class SettingsPage:
     def _image_size_changed(self, _i):
         self.settings["image_size"] = self.img_size.currentData() or "m"
         save_settings(self.settings)
+
+    def _mail_refresh(self):
+        import mail_client as MC
+        import commands as CMD
+        accs = MC.accounts(self.settings)
+        if not accs:
+            self.mail_info.setText(tr("还没设置邮箱"))
+            return
+        ok = sum(1 for a in accs if CMD.mail_password(a["address"]))
+        self.mail_info.setText(tr("{0} 个邮箱 · {1} 个已填安全密码", len(accs), ok))
+
+    def edit_mail(self):
+        from mail_page import MailAccountsDialog
+        MailAccountsDialog(self.win, self.settings).exec()
+        self._mail_refresh()
+
+    def mail_survey(self):
+        from mail_page import run_survey
+        run_survey(self.win, self.settings)
 
     def edit_db(self):
         from reorder_page import DbDialog
