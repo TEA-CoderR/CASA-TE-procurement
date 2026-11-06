@@ -453,8 +453,10 @@ class TaskDialog(QDialog):
     def to_background(self):
         RUNNING[id(self)] = RUNNING.get(id(self), self.windowTitle()) + "（后台运行）"
         self.in_background = True
-        self.setModal(False)
+        # 顺序不能反：先藏再改成不独占。显示中先 setModal(False) 的话，Qt 藏窗口时不会把它从「独占窗口」名单里拿掉
+        # → 别的窗口全部点不了，任务完成也不解除（2026-11-06 用户：点后台运行后整个程序点不动）
         self.hide()
+        self.setModal(False)
         self.went_background.emit()
 
     def request_cancel(self):
