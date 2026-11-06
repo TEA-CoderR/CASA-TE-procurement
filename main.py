@@ -2848,7 +2848,7 @@ class MainWindow(QMainWindow):
 
         self.go_page("home")
         QTimer.singleShot(0, self._build_next)
-        QTimer.singleShot(0, lambda: threading.Thread(target=_preload_libs, daemon=True).start())
+        # 提前读大库（openpyxl / pandas …）放到页面全建完以后（_finish_startup）：启动时和建页面、读 SCHEDA 抢时间（11-06 实测）
 
     # ---------- 页面分批建（打开程序时窗口先出来）----------
     def _build_page(self, i):
@@ -2932,6 +2932,7 @@ class MainWindow(QMainWindow):
         # 样式表开头已经套过（套一次要零点几秒）；这期间换过深浅色才再套
         self.apply_theme(qss=settings.get("theme", "light") != self._qss_theme)
         mark("apply_theme")
+        QTimer.singleShot(5000, lambda: threading.Thread(target=_preload_libs, daemon=True).start())
         self.log(tr("{0} {1} 启动 {2:%Y-%m-%d %H:%M:%S}", APP_NAME, APP_VERSION, datetime.now()))
         self._log_boot_times(steps)
         QTimer.singleShot(300, self.check_db)

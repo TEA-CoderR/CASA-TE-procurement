@@ -534,9 +534,26 @@ class MoqDialog(QDialog):
 # =====================================================================
 # 页面
 # =====================================================================
+class _OnFirstShow(QObject):
+    """页面第一次显示时调用一次 fn（之后就不管了）"""
+    def __init__(self, widget, fn):
+        super().__init__(widget)
+        self.fn = fn
+        widget.installEventFilter(self)
+
+    def eventFilter(self, obj, ev):
+        from PySide6.QtCore import QEvent
+        if ev.type() == QEvent.Show and self.fn:
+            fn, self.fn = self.fn, None
+            obj.removeEventFilter(self)
+            fn()
+        return False
+
+
 class StoreOrderPage:
     """LUCAS定制采购 · 总仓采购（原来的门店配货）：Centrale Acquisti 的 SCHEDA，够起订量直送门店、不够并进 BMS"""
     CFG_KEY = "store_orders"                  # settings.json 里存设置的地方
+    LIST_ON_SHOW = False                      # True = 第一次显示这一页才列文件夹（门店采购）
     TITLE = "总仓采购"
     TITLE_TIP = "品牌供应商直接送店 · 每家店单独满起订量才直送，差一点自动凑单，差太多并到 BMS"
     DEFAULT_FOLDER = r"D:\CasaTe\采购配单"
@@ -733,7 +750,10 @@ class StoreOrderPage:
         self.views.addWidget(_scroll(self._build_result()))
         outer.addWidget(self.views, 1)
         outer.addWidget(self._build_action_bar())
-        self.refresh_list()
+        if self.LIST_ON_SHOW:                       # 门店采购：第一次点进这一页才列文件夹（同步盘上列一次要 1 秒多，11-06）
+            self._show_hook = _OnFirstShow(page, lambda: QTimer.singleShot(0, self.refresh_list))
+        else:
+            self.refresh_list()
         self._update_state()
         return page
 
@@ -2112,6 +2132,7 @@ class PdvOrderPage(StoreOrderPage):
     DEFAULT_FOLDER = S.PDV_DEFAULT_FOLDER
     TRACK_SOURCE = "store_pdv"
     PDV = True
+    LIST_ON_SHOW = True
     LEGEND = (("ok", "下单"), ("far", "这次不订"), ("err", "紧急缺货"))
 
     def __init__(self, win, settings, ui):

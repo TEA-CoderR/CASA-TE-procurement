@@ -503,7 +503,9 @@ class TrackingPage:
         self.badge_timer.setInterval(60000)
         self.badge_timer.timeout.connect(self.check_badge)
         self.badge_timer.start()
-        QTimer.singleShot(1500, self.check_badge)
+        # 第一次数待登记 / 同步 Excel 放到打开程序 30 秒后：它要读共享文件夹的记录和整张 PIANO 表，
+        # 和启动抢时间会让界面卡几秒（11-06 hang.log）。点进订单跟踪页时照样马上读
+        QTimer.singleShot(30000, self.check_badge)
         return w
 
     def _build_orders(self):
