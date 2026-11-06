@@ -7,6 +7,7 @@ import os
 import re
 import sys
 import time
+_BOOT_T0 = time.perf_counter()        # 启动用时从这里算（2026-11-06）
 import copy
 import logging
 import threading
@@ -2743,6 +2744,7 @@ class MainWindow(QMainWindow):
 
     def __init__(self):
         super().__init__()
+        self._boot_times = []                   # 启动用时：每页建了多久（_finish_startup 写进日志）
         self.setWindowTitle(f"{APP_NAME} {APP_VERSION}")
         self.setWindowIcon(app_icon())
         self.resize(1280, 840)
@@ -2853,6 +2855,7 @@ class MainWindow(QMainWindow):
         if self.pages[i] is not None:
             return
         key = self.NAV[i][0]
+        t_page = time.perf_counter()
         if key in self._builders:
             pg, scroll = self._builders[key]()
         else:
@@ -2860,6 +2863,7 @@ class MainWindow(QMainWindow):
             self.legacy_pages.append(lp)
             pg, scroll = lp.build(), True
         self.pages[i] = pg
+        getattr(self, "_boot_times", []).append((key, time.perf_counter() - t_page))
         cur = self.stack.currentIndex()
         old = self.stack.widget(i)
         self.stack.removeWidget(old)
@@ -2881,6 +2885,17 @@ class MainWindow(QMainWindow):
             return
         self._finish_startup()
 
+    def _log_boot_times(self, steps):
+        """启动用时写进日志（只写给维护的人看，不翻译）：总共多久、窗口什么时候出来的、每页建了多久、收尾每一步"""
+        total = time.perf_counter() - _BOOT_T0
+        shown = getattr(self, "_boot_shown", None)
+        pages = sorted(getattr(self, "_boot_times", []), key=lambda x: -x[1])
+        slow = " ".join(f"{k} {v:.1f}s" for k, v in pages if v >= 0.1) or "都 < 0.1s"
+        tail = " ".join(f"{k} {v:.1f}s" for k, v in steps if v >= 0.1) or "都 < 0.1s"
+        file_logger.info(f"启动用时 {total:.1f} 秒"
+                         + (f"（窗口 {shown:.1f} 秒出来）" if shown is not None else "")
+                         + f" · 建页面 {sum(v for _k, v in pages):.1f} 秒：{slow} · 收尾：{tail}")
+
     def _ensure_all(self):
         """要用到别的页面了（切页面、快捷键、从别处调过来）：没建完的一次建完"""
         if self._startup_done:
@@ -2894,16 +2909,31 @@ class MainWindow(QMainWindow):
         if self._startup_done:
             return
         self._startup_done = True
+        steps = []
+        t = time.perf_counter()
+
+        def mark(name):
+            nonlocal t
+            now = time.perf_counter()
+            steps.append((name, now - t))
+            t = now
         import reorder_service as _RS
         if settings.get("last_folder") and os.path.isdir(settings["last_folder"]) and _RS.batch_root_of(settings["last_folder"]):
             self.folder_edit.setText(settings["last_folder"])      # 上次在看的门店比价文件夹
+        mark("上次文件夹")
         self.refresh_folder()
+        mark("refresh_folder")
         self._purge_history()
+        mark("purge_history")
         self._load_saved_result()
+        mark("load_saved_result")
         self.refresh_history()
+        mark("refresh_history")
         # 样式表开头已经套过（套一次要零点几秒）；这期间换过深浅色才再套
         self.apply_theme(qss=settings.get("theme", "light") != self._qss_theme)
+        mark("apply_theme")
         self.log(tr("{0} {1} 启动 {2:%Y-%m-%d %H:%M:%S}", APP_NAME, APP_VERSION, datetime.now()))
+        self._log_boot_times(steps)
         QTimer.singleShot(300, self.check_db)
         self.db_timer = QTimer(self, interval=5 * 60 * 1000, timeout=self.check_db)
         self.db_timer.start()
@@ -5978,6 +6008,8 @@ class WheelGuard(QObject):
 
 
 HANG_SEC = 5            # 界面这么多秒没反应就记一笔（以前 15 秒，大多数卡顿记不下来）
+HANG_SEC_BOOT = 2       # 刚打开的 90 秒内 2 秒就记（用户 11-06：启动时非常卡，但每次都不到 5 秒）
+BOOT_WINDOW = 90
 
 
 class _ClickRecorder(QObject):
@@ -6033,6 +6065,7 @@ def _start_hang_watchdog(app):
         def watch():
             from erp_widgets import RUNNING
             last_loop, hung_since = time.time(), None
+            started = time.time()
             while True:
                 time.sleep(1)
                 now = time.time()
@@ -6040,7 +6073,8 @@ def _start_hang_watchdog(app):
                     state["beat"], hung_since = now, None
                 last_loop = now
                 gap = now - state["beat"]
-                if hung_since is None and gap >= HANG_SEC:
+                limit = HANG_SEC_BOOT if now - started < BOOT_WINDOW else HANG_SEC
+                if hung_since is None and gap >= limit:
                     hung_since = state["beat"]
                     click, ct = _ClickRecorder.last
                     try:
@@ -6100,6 +6134,7 @@ def main():
     app.setFont(f)
     win = MainWindow()
     win.show()
+    win._boot_shown = time.perf_counter() - _BOOT_T0
     sys.exit(app.exec())
 
 
