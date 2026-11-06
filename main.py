@@ -13,6 +13,29 @@ import threading
 from datetime import datetime
 
 from PySide6.QtCore import Qt, QObject, Signal, QTimer, QRectF, QSize, QByteArray, QPointF
+
+
+def _skip_pyside_source_scan():
+    """
+    PySide6 每读进一个 Python 文件，都会把它的源代码读一遍、看有没有用 PySide6（为了 __feature__ 功能，本程序没用）。
+    从源代码运行时 numpy / pandas / openpyxl 有六百多个文件要读，Windows 上（加上杀毒软件）要好几秒，
+    而且这期间别的线程读代码都要排队 —— 2026-11-06 hang.log：打开程序时后台读 SCHEDA 加载 openpyxl，界面线程等了 6 秒。
+    改成只检查本程序文件夹里的文件，别的库当作没用 PySide6（结果一样：它们本来就不用 __feature__）。打包成 exe 时这步本来就很快
+    """
+    try:
+        import shibokensupport.feature as _F
+        orig = _F._mod_uses_pyside
+        here = os.path.dirname(os.path.abspath(__file__)).lower()
+
+        def mine_only(module):
+            f = str(getattr(module, "__file__", None) or "").lower()
+            return orig(module) if f.startswith(here) else False
+        _F._mod_uses_pyside = mine_only
+    except Exception:
+        pass
+
+
+_skip_pyside_source_scan()
 from PySide6.QtGui import (QColor, QPainter, QPen, QBrush, QFont, QIcon, QPixmap, QFontDatabase,
                            QTextCursor, QPainterPath, QKeySequence, QShortcut)
 from PySide6.QtSvg import QSvgRenderer

@@ -663,6 +663,32 @@ def pdv_header_values(pdv, sid, when=None):
     return out
 
 
+_MOQ_GUARD = None
+_MOQ_LOCKS = {}
+
+
+def load_moq_into(moq, p):
+    """
+    读一个 SCHEDA 的起订量放进 moq（{路径: 起订量}）。几个线程同时要同一个文件时只读一次，后到的等它读完直接用
+    （2026-11-06：打开程序时工作台和总仓采购两个后台线程同时把今天的 SCHEDA 各读一遍）
+    """
+    global _MOQ_GUARD
+    import threading
+    if _MOQ_GUARD is None:
+        _MOQ_GUARD = threading.Lock()
+    with _MOQ_GUARD:
+        lk = _MOQ_LOCKS.setdefault(p, threading.Lock())
+    with lk:
+        if p in moq:
+            return moq[p]
+        try:
+            moq[p] = parse_moq(p)
+        except Exception as e:
+            from i18n import tr
+            moq[p] = dict(read_moq(None), raw=tr("读不出来：{0}", e))
+        return moq[p]
+
+
 def parse_moq(path):
     """只读起订量（列表里显示用，比 parse_scheda 快）：返回文件里读到的 moq dict（还没套手动修改）"""
     from openpyxl import load_workbook

@@ -1278,10 +1278,7 @@ class StoreOrderPage:
 
             def work():
                 for p in todo:
-                    try:
-                        self.moq[p] = S.parse_moq(p)
-                    except Exception as e:
-                        self.moq[p] = dict(S.read_moq(None), raw=tr("读不出来：{0}", e))
+                    S.load_moq_into(self.moq, p)            # 工作台同时在读同一个文件时只读一次
                 self.sig.listed.emit(token)
 
             threading.Thread(target=work, daemon=True).start()

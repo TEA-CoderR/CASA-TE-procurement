@@ -488,3 +488,28 @@ def test_day_folders_italian(tmp_path):
     dd = S.day_dirs(str(tmp_path))
     assert sorted(dd) == ["周一", "周二", "周五"] and dd["周一"].endswith("01 LUNEDI")
     assert [(d, os.path.basename(p)) for d, p in S.list_schede(str(tmp_path))] == [("周一", "SCHEDA X 0726.xlsx")]
+
+
+def test_moq_read_once_when_two_threads_ask():
+    """打开程序时工作台和总仓采购同时读同一个 SCHEDA 的起订量：只读一次（2026-11-06）"""
+    import threading
+    import time
+    import store_orders as S
+    calls = []
+    orig = S.parse_moq
+
+    def slow(p):
+        calls.append(p)
+        time.sleep(0.2)
+        return {"raw": p}
+    S.parse_moq = slow
+    try:
+        moq = {}
+        ts = [threading.Thread(target=S.load_moq_into, args=(moq, p)) for p in ("a", "a", "b", "a")]
+        [t.start() for t in ts]
+        [t.join() for t in ts]
+        assert sorted(calls) == ["a", "b"] and moq == {"a": {"raw": "a"}, "b": {"raw": "b"}}
+        S.parse_moq = lambda p: (_ for _ in ()).throw(ValueError("rotto"))
+        assert "rotto" in S.load_moq_into(moq, "c")["raw"]
+    finally:
+        S.parse_moq = orig
