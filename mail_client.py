@@ -31,6 +31,10 @@ class MailError(Exception):
     """给人看的错误（已经写成业务话）"""
 
 
+class LoginFailed(MailError):
+    """IMAP 登录被拒（密码不对，或这个邮箱没开 IMAP）：diagnose_login 可以分清是哪种"""
+
+
 def cred_name(address):
     return "mail." + (address or "").strip().lower()
 
@@ -60,7 +64,7 @@ def connect(acc, password, factory=None):
     except imaplib.IMAP4.error as e:
         a = e.args[0] if e.args else ""
         msg = a.decode("utf-8", "replace") if isinstance(a, bytes) else str(a)
-        raise MailError(f"{acc['address']}：登录失败。请检查：① 密码对不对（登录密码，或网页版生成的「第三方客户端安全密码」）；"
+        raise LoginFailed(f"{acc['address']}：登录失败。请检查：① 密码对不对（登录密码，或网页版生成的「第三方客户端安全密码」）；"
                         f"② 管理员已给这个账号开通 IMAP、允许第三方客户端。（服务器回复：{msg}）")
     try:
         conn._simple_command("ID", '("name" "CASATE-procurement" "version" "1")')
@@ -440,6 +444,49 @@ def survey(accs, get_password, days=28, log=print, progress=None, cancel=None, f
             if conn is not None:
                 close(conn)
     return rows, summarize(rows), errors
+
+
+ALT_IMAP = {"imap.qiye.aliyun.com": "imap.mxhichina.com", "imap.mxhichina.com": "imap.qiye.aliyun.com"}
+POP_HOSTS = ("pop3.mxhichina.com", "pop.qiye.aliyun.com")
+
+
+def pop_login_ok(address, password, host, factory=None):
+    """用 POP3 只登录一下就退出（和大家邮件软件现在收信的方式一样）：不收信、不删信。True = 密码对"""
+    import poplib
+    try:
+        p = (factory or (lambda h: poplib.POP3_SSL(h, 995, timeout=TIMEOUT)))(host)
+    except OSError:
+        return None                                   # 连不上这个服务器：说明不了密码
+    try:
+        p.user(address)
+        p.pass_(password)
+        return True
+    except poplib.error_proto:
+        return False
+    finally:
+        try:
+            p.quit()
+        except Exception:
+            pass
+
+
+def diagnose_login(acc, password, factory=None, pop_factory=None):
+    """IMAP 登录被拒以后分清原因：("other_host", 地址) 换个服务器地址就能登录 /
+    ("no_imap", None) 密码对（POP3 能登录）但没开 IMAP / ("bad_password", None) POP3 也登录不了"""
+    alt = ALT_IMAP.get(acc["host"].lower())
+    if alt:
+        try:
+            close(connect(dict(acc, host=alt), password, factory=factory))
+            return "other_host", alt
+        except MailError:
+            pass
+    for h in POP_HOSTS:
+        ok = pop_login_ok(acc["address"], password, h, factory=pop_factory)
+        if ok:
+            return "no_imap", None
+        if ok is False:
+            return "bad_password", None
+    return "unknown", None
 
 
 def test_account(acc, password, factory=None):

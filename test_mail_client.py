@@ -121,3 +121,41 @@ def test_survey_continues_after_one_mailbox_fails(tmp_path):
 def test_subject_pattern():
     assert M.subject_pattern("RE: R: Ordine 1234 del 31/10") == "Ordine # del #/#"
     assert M.subject_pattern("回复：报价 44") == "报价 #"
+
+
+class FakePOP:
+    good = "good"
+
+    def __init__(self, host):
+        self.calls = []
+
+    def user(self, u):
+        self.calls.append("user")
+
+    def pass_(self, pw):
+        if pw != self.good:
+            raise M.poplib_error("-ERR auth")
+
+    def quit(self):
+        pass
+
+
+def test_login_failure_is_diagnosed(monkeypatch):
+    import poplib
+    M.poplib_error = poplib.error_proto
+    acc = {"address": "info@casa-te.com", "host": M.DEFAULT_HOST, "port": 993}
+
+    class NoImap(FakeIMAP):                       # 这个邮箱没开 IMAP：哪个服务器、什么密码都登录不了
+        def login(self, user, pw):
+            raise M.imaplib.IMAP4.error(b"LOGIN failed.")
+    with pytest.raises(M.LoginFailed):
+        M.test_account(acc, "good", factory=NoImap)
+    assert M.diagnose_login(acc, "good", factory=NoImap, pop_factory=FakePOP) == ("no_imap", None)
+    assert M.diagnose_login(acc, "wrong", factory=NoImap, pop_factory=FakePOP) == ("bad_password", None)
+
+    class OnlyOldHost(FakeIMAP):                  # 只有老地址认
+        def login(self, user, pw):
+            if self.host != "imap.mxhichina.com":
+                raise M.imaplib.IMAP4.error(b"LOGIN failed.")
+            return super().login(user, pw)
+    assert M.diagnose_login(acc, "good", factory=OnlyOldHost, pop_factory=FakePOP) == ("other_host", "imap.mxhichina.com")

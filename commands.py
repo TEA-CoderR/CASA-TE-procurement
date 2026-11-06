@@ -408,8 +408,23 @@ def mail_test(settings, address):
     """测试连接：返回给人看的一句话；失败抛 mail_client.MailError"""
     import mail_client as MC
     acc = next(a for a in MC.accounts(settings) if a["address"].lower() == address.lower())
-    nf, n = MC.test_account(acc, mail_password(address))
-    return tr("✔ 连上了：{0} 个文件夹，收件箱 {1} 封", nf, n)
+    pw = mail_password(address)
+    try:
+        nf, n = MC.test_account(acc, pw)
+        return tr("✔ 连上了：{0} 个文件夹，收件箱 {1} 封", nf, n)
+    except MC.LoginFailed:
+        why, host = MC.diagnose_login(acc, pw)               # 登录被拒：分清是密码不对还是没开 IMAP
+    if why == "other_host":                                  # 换个服务器地址就行：直接改好
+        mail_save_account(settings, address, None, host, acc["port"])
+        nf, n = MC.test_account(dict(acc, host=host), pw)
+        return tr("✔ 连上了：{0} 个文件夹，收件箱 {1} 封（服务器已改成 {2}）", nf, n, host)
+    if why == "no_imap":
+        raise MC.MailError(tr("{0}：密码是对的（用 POP3 能登录，就是大家邮件软件现在收信的方式），但这个邮箱还没开 IMAP。"
+                              "请在阿里邮箱网页版「设置」里打开 IMAP（客户端设置 / POP3·IMAP 那一项）；找不到的话请管理员在后台"
+                              "给这个账号开通 IMAP。打开 IMAP 不影响大家现在用 POP3 收信。", address))
+    if why == "bad_password":
+        raise MC.MailError(tr("{0}：密码不对（用 POP3 也登录不了）。请重新填一次登录密码，或者用网页版生成的安全密码。", address))
+    raise MC.MailError(tr("{0}：登录被拒，原因看不出来（POP3 服务器也连不上）。请检查网络，或者把这个提示发给管理员。", address))
 
 
 def mail_survey(settings, out_dir, days=28, log=print, progress=None, cancel=None, actor=None, via="desktop"):
