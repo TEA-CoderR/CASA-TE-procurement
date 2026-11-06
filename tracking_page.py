@@ -1146,7 +1146,8 @@ class TrackingPage:
             return
         ids = [r["id"] for r in sel]
         if a_place is not None and got == a_place:
-            OT.confirm_drafts(self.st, [r["id"] for r in drafts])
+            import commands as CMD                      # 业务命令（记审计日志；命令行 / 以后的智能体走同一个）
+            CMD.confirm_orders(self.st, [r["id"] for r in drafts], via="desktop")
             self.refresh()
             return
         if a_file is not None and got == a_file:
