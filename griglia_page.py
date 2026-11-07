@@ -612,6 +612,14 @@ class GrigliaPage:
             self.win.show_toast(tr("Griglia 统计失败：{0}", err))
             return
         self.grid, self.st = grid, st
+        bad = (grid or {}).get("bad_rows") or []
+        if bad:                                       # 源文件有列错位的行：提醒一次（这几行只用编号 / 名称 / 价格）
+            import griglia as G
+            msg = tr("Griglia 第 {0} 行列错位了（{1} 行）：这几行的品牌、供应商、分类、批发商价格没用，请在 Excel 里挪回对的列",
+                     G.bad_rows_text(bad), len(bad))
+            if hasattr(self.win, "log"):
+                self.win.log("⚠ " + msg)
+            self.win.show_toast(msg)
         labels = st["labels"]
         self._labels = labels
         self.tabs.setTabText(0, tr("都不做了（{0}）", len(st["gone"])))

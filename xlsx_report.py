@@ -112,7 +112,7 @@ def add_sheet(wb, name, title, subtitle, cols, rows, marks=None, photo_eans=None
         zebra = PatternFill("solid", fgColor=ZEBRA) if k % 2 else None
         if photo:
             e = PI.norm_ean((photo_eans[k] if k < len(photo_eans) else None) or "")
-            pc = ws.cell(r, 1, f'=_xlfn.IMAGE("{url.format(ean=e)}","",3,{IMG},{IMG})' if e else None)
+            pc = ws.cell(r, 1, f'=IFERROR(_xlfn.IMAGE("{url.format(ean=e)}","",3,{IMG},{IMG}),"")' if e else None)
             pc.border = box
             pc.alignment = center
             if zebra:

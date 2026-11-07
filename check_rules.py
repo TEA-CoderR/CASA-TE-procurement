@@ -210,7 +210,7 @@ def write_problem_report(rows, path, store=None, url=None, when=None, sources=No
             r += 1
             for k, x in enumerate(xs):
                 ean = PI.norm_ean(x.get("ean"))
-                vals = [f'=_xlfn.IMAGE("{url.format(ean=ean)}","",3,{IMG},{IMG})' if ean else "", ean or str(x.get("ean") or ""),
+                vals = [f'=IFERROR(_xlfn.IMAGE("{url.format(ean=ean)}","",3,{IMG},{IMG}),"")' if ean else "", ean or str(x.get("ean") or ""),
                         str(x.get("code") or ""), str(x.get("name") or ""),
                         str(x.get("sup_name") or x.get("quote_sup") or ""), int(x.get("lbox") or 0)]
                 tags = {}

@@ -209,7 +209,7 @@ def test_problem_report(tmp_path=None):
     eans = [r[1] for r in vals if r[1] and str(r[1]).startswith("800")]
     # ① Griglia 没货的在最上面；② 批发商有的在前（品牌供应商有的更前），批发商都没有的最后
     assert eans == ["8000000000035", "8000000000028", "8000000000066", "8000000000011"], eans
-    assert '=_xlfn.IMAGE("https://img.casaete.top/prodotti/8000000000011/01.webp","",3,48,48)' in flat   # 照片 48 像素
+    assert '=IFERROR(_xlfn.IMAGE("https://img.casaete.top/prodotti/8000000000011/01.webp","",3,48,48),"")' in flat   # 照片 48 像素
     assert "EAN alternativo" in flat and "Disp. grossisti" in flat and "Disp. fornitore diretto" in flat and "Consiglio" in flat
     assert "Fornitore" in flat and "Ordinabile" not in flat
     row_a = next(r for r in vals if r[1] == "8000000000011")                     # 订不到（No）：清单 2 箱、确定 2 箱
@@ -328,7 +328,7 @@ def test_export_chosen_tables_styled_with_photos(tmp_path):
     assert "Griglia" in ws["A1"].value and ws["A1"].fill.fgColor.rgb.endswith("1F3A5F")
     assert ws["A1"].font.name == ws.cell(6, 4).font.name == "Microsoft YaHei"          # 清楚的字体（用户 11-07）
     hr = next(r for r in range(1, 8) if ws.cell(r, 2).value == "EAN")
-    assert ws.cell(hr + 1, 1).value.startswith('=_xlfn.IMAGE("https://img.casaete.top/prodotti/8000000000011/')
+    assert ws.cell(hr + 1, 1).value.startswith('=IFERROR(_xlfn.IMAGE("https://img.casaete.top/prodotti/8000000000011/')   # 没图不显示 #VALUE!
     assert ws.cell(hr + 1, 2).value == "8000000000011" and list(ws.tables)          # 表头自带筛选
     out2 = str(tmp_path / "p.xlsx")
     G.export(st, out2, which=["prices", "gone"], rows={"prices": st["prices"], "gone": []})
@@ -360,3 +360,18 @@ def test_right_category_set_preferred():
     assert it["8000000000035"]["cats"] == ["CURA PERSONE", "CAPELLI", "SHAMPOO"]        # 右边空：同一大类用左边补
     assert it["8000000000042"]["cats"] == ["CURA PERSONE", "", ""]                    # 大类不一样：不混
     assert it["8000000000059"]["cats"] == ["X1", "X2", "X3"]                          # 右边整行空：用左边
+
+
+def test_shifted_rows_ignored_and_reported():
+    """2026-11-07：SCHEDA 最下面几行从 Marca 开始往左挪了 9 格 → 大类里是 IVA 22、供应商里是小数；这几行只用前面几列，并报出行号"""
+    import griglia as G
+    head = ["NO.", "Cod.Art.", "Codice EAN", "Descrizione Prodotto", "PREZZO\n NETTO", "Marca", "Fornitore", "CAT.1", "MELONI"]
+    rows = [["x"], head,
+            [1, "11", "8000000000011", "BUONO", 1.0, "ACE", "MELONI SPA", "CASA", 1.1],
+            [2, "28", "8000000000028", "SPOSTATO", 0.6, None, 0.975, 22, 1.19],
+            [3, "35", "8000000000035", "SPOSTATO 2", 0.7, None, 1.05, 22, None]]
+    g = G.parse_rows(rows)
+    bad = g["items"]["8000000000028"]
+    assert bad["supplier"] == "" and bad["cats"] == ["", "", ""] and bad["prices"] == {} and bad["price"] == 0.6
+    assert g["items"]["8000000000011"]["cats"][0] == "CASA" and g["bad_rows"] == [4, 5]
+    assert G.bad_rows_text([2759, 2760, 2761, 2770]) == "2759–2761、2770"

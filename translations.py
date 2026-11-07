@@ -3072,4 +3072,5 @@ TRANSLATIONS = {
     '每张表一个工作表：照片（Excel 365 打开才显示）、彩色表头、斑马纹、表头自带筛选，最便宜的价格绿底、涨价红 / 降价绿、换了供应商橙色': ('One sheet per table: photos (shown in Excel 365), coloured headers, striped rows, built-in header filters; cheapest price green, price up red / down green, changed supplier orange', 'Un foglio per tabella: foto (visibili in Excel 365), intestazioni colorate, righe alternate, filtri nelle intestazioni; prezzo più basso in verde, aumenti in rosso / cali in verde, cambio fornitore in arancione'),
     '{0}（{1:,} 行）': ('{0} ({1:,} rows)', '{0} ({1:,} righe)'),
     '{0}（{1:,} / {2:,} 行）': ('{0} ({1:,} / {2:,} rows)', '{0} ({1:,} / {2:,} righe)'),
+    'Griglia 第 {0} 行列错位了（{1} 行）：这几行的品牌、供应商、分类、批发商价格没用，请在 Excel 里挪回对的列': ('Griglia rows {0} are shifted ({1} rows): brand, supplier, categories and wholesaler prices of these rows were ignored; please move them back to the right columns in Excel', 'Le righe {0} della Griglia sono sfasate ({1} righe): marca, fornitore, categorie e prezzi dei grossisti di queste righe sono stati ignorati; riportarle nelle colonne giuste in Excel'),
 }

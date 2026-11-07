@@ -19,7 +19,7 @@ import hashlib
 from utils import clean_ean
 
 GRID_DIR = "0 Griglia"
-CACHE_VER = 3
+CACHE_VER = 4
 STORES = ("FOIANO", "MARLIA", "S.FILIPPO", "S.MARCO", "S.CONCORDIO")
 EXCEL = (".xlsx", ".xlsm")
 
@@ -67,6 +67,27 @@ DEPT_SHARE = 0.05           # 报价的部门里 Griglia 商品占 ≥ 5% 才算
 FRESH_DAYS = 30             # 「新上架」：这家报价里第一次出现的条码，30 天内都算
 
 
+def _shifted(g):
+    """列错位：本来写文字的供应商 / 品牌 / 大类格子里是数字"""
+    return any(isinstance(g(f), (int, float)) and not isinstance(g(f), bool) for f in ("supplier", "brand", "cat1"))
+
+
+def bad_rows_text(rows):
+    """[2759, 2760, …, 2775] → 「2759–2775」（连着的合成一段）"""
+    out, start, prev = [], None, None
+    for n in sorted(rows):
+        if start is None:
+            start = prev = n
+        elif n == prev + 1:
+            prev = n
+        else:
+            out.append(f"{start}–{prev}" if prev > start else str(start))
+            start = prev = n
+    if start is not None:
+        out.append(f"{start}–{prev}" if prev > start else str(start))
+    return "、".join(out)
+
+
 def _cats(r, col, right):
     """
     大类 / 中类 / 小类：右边那套有大类就用右边的；右边空着的中类 / 小类，左边大类一样才拿左边的补（不混两个大类）；
@@ -105,14 +126,19 @@ def parse_rows(rows):
             right[f] = idx[-1]
     sup_cols = {h: i for i, h in enumerate(heads) if h in _SUP_COLS}
     store_cols = {h: i for i, h in enumerate(heads) if h in STORES}
-    items, by_code = {}, {}
-    for r in rows[hr + 1:]:
+    items, by_code, bad = {}, {}, []
+    for n, r in enumerate(rows[hr + 1:], hr + 2):
         def g(f):
             i = col.get(f)
             return r[i] if i is not None and i < len(r) else None
         e = clean_ean(g("ean"))
         if not e:
             continue
+        if _shifted(g):
+            # 这一行在 Excel 里列错位了（2026-11-07：SCHEDA_DETERSIVI 最下面 17 行从 Marca 开始往左挪了 9 格，
+            # 「大类」里是 IVA 22、「Fornitore」里是小数）：只留错位前面那几列（编号 / 名称 / 箱规 / 价格），其余当空
+            bad.append(n)
+            r = list(r[:col.get("brand", len(r))]) if col.get("brand") is not None else list(r)
         code = str(g("code") or "").strip()
         if code.endswith(".0"):
             code = code[:-2]
@@ -125,7 +151,7 @@ def parse_rows(rows):
         items[e] = it
         if code:
             by_code[code] = e
-    return {"items": items, "suppliers": list(sup_cols), "by_code": by_code}
+    return {"items": items, "suppliers": list(sup_cols), "by_code": by_code, "bad_rows": bad}
 
 
 def parse_rows_any(wb):
