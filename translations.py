@@ -3212,4 +3212,13 @@ TRANSLATIONS = {
     '各店库存': ('Stock by store', 'Giacenza per negozio'),
     '五家门店的库存、够卖几天、这次订几箱；蓝底是这一行的门店': ('Stock, days of cover and boxes ordered at all five stores; the blue row is this line’s store', 'Giacenza, giorni di copertura e colli ordinati nei cinque negozi; la riga blu è il negozio di questa riga'),
     '没有门店库存数据': ('No store stock data', 'Nessun dato di giacenza'),
+    '订 {0:g} 箱': ('Order {0:g} boxes', 'Ordina {0:g} colli'),
+    '快断货': ('Running out', 'In esaurimento'),
+    '箱数多': ('Many boxes', 'Molti colli'),
+    '箱规不一致': ('Pack size differs', 'Confezione diversa'),
+    '建议': ('Suggested', 'Suggerito'),
+    '订货': ('Order', 'Ordine'),
+    '不到一个订货周期（{0:g} 天），下次到货前可能卖断': ('Less than one order cycle ({0:g} days); may run out before the next delivery', 'Meno di un ciclo ordini ({0:g} giorni); può esaurirsi prima della prossima consegna'),
+    '重复编号': ('Duplicate code', 'Codice duplicato'),
+    '扣在途 {0:g} 箱': ('minus {0:g} boxes in transit', 'meno {0:g} colli in arrivo'),
 }

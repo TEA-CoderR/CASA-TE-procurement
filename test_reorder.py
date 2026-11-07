@@ -488,3 +488,14 @@ def test_drawer_key_tags_short_and_ordered():
     x2 = dict(in_db=True, lbox=3, sbox=3, sys_box=1, kept=True, protect="new")
     assert [t for t, _ in OC.key_tags(x2, edited=True)] == ["新品保护", "库存少 · 照清单", "手动改过"]
     assert OC.key_tags(dict(in_db=False)) == [("数据库没有", "err")]
+
+
+def test_detail_drawer_tags():
+    """订货明细详情栏也用短标签（和检查清单一样）"""
+    import store_detail_window as SW
+    x = dict(inv=1, daily=1, decision="🔴 快断货", slow_from=0.9)
+    tags = [t for t, _ in SW.detail_tags(x, {}, transit_boxes=2, moved_in=True, edited=True,
+                                         marks=[("slow", "慢销", "…")], pack_diff=True, many=True)]
+    assert tags[:3] == ["在途 2 箱", "调货", "快断货"] and tags[-1] == "手动改过" and "慢销" in tags
+    assert SW.detail_tags(None, {"dup_of": 3}) == [("重复编号", "muted")]
+    assert SW.detail_tags(None, {}) == [("数据库没有", "err")]
