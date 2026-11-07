@@ -5,7 +5,7 @@ import os
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QLineEdit, QPushButton,
-                               QListWidget, QListWidgetItem, QMessageBox, QSpinBox)
+                               QListWidget, QListWidgetItem, QMessageBox, QSpinBox, QComboBox)
 
 from i18n import tr
 from settings import save_settings
@@ -59,6 +59,15 @@ class MailAccountsDialog(QDialog):
         self.port.setRange(1, 65535)
         self.port.setValue(MC.DEFAULT_PORT)
         g.addWidget(self.port, 2, 3)
+        g.addWidget(tip_label(tr("门店"), tr("邮件核对时，主题里没写门店的信算哪家店（例如 info.s.filippo@ 收到的确认信 = S.FILIPPO）。"
+                                            "采购办公室的邮箱几家店都管，选「不设」")), 3, 0)
+        self.store = QComboBox()
+        import order_tracking as OT
+        self.store.addItem(tr("不设"), "")
+        for code, name in OT.STORES:
+            self.store.addItem(name, code)
+        g.addWidget(self.store, 3, 1)
+        self.addr.editingFinished.connect(self._guess_store)
         btns = QHBoxLayout()
         self.b_new = QPushButton(tr("新邮箱"))
         self.b_new.clicked.connect(self._new)
@@ -73,12 +82,12 @@ class MailAccountsDialog(QDialog):
         for b in (self.b_new, self.b_save, self.b_test, self.b_del):
             btns.addWidget(b)
         btns.addStretch()
-        g.addLayout(btns, 3, 0, 1, 4)
+        g.addLayout(btns, 4, 0, 1, 4)
         self.msg = QLabel("")
         self.msg.setWordWrap(True)
         self.msg.setObjectName("Faint")
-        g.addWidget(self.msg, 4, 0, 1, 4)
-        g.setRowStretch(5, 1)
+        g.addWidget(self.msg, 5, 0, 1, 4)
+        g.setRowStretch(6, 1)
         g.setColumnStretch(1, 1)
         body.addLayout(g, 1)
         v.addLayout(body, 1)
@@ -120,10 +129,20 @@ class MailAccountsDialog(QDialog):
         self.addr.setText(a["address"])
         self.host.setText(a["host"])
         self.port.setValue(a["port"])
+        self.store.setCurrentIndex(max(0, self.store.findData(a.get("store") or "")))
         self.pw.clear()
         has = bool(CMD.mail_password(a["address"]))
         self.pw.setPlaceholderText(tr("已保存（要改才填）") if has else tr("填登录密码或安全密码"))
         self.msg.setText("")
+
+    def _guess_store(self):
+        """新邮箱填好地址：按地址猜门店（info.s.filippo@ → S.FILIPPO），猜不出不动"""
+        if self._current() or self.store.currentIndex() != 0:
+            return
+        import mail_match as MM
+        code = MM.default_store(self.addr.text())
+        if code:
+            self.store.setCurrentIndex(max(0, self.store.findData(code)))
 
     def _new(self):
         self.lst.clearSelection()
@@ -132,6 +151,7 @@ class MailAccountsDialog(QDialog):
             w.clear()
         self.host.setText(MC.DEFAULT_HOST)
         self.port.setValue(MC.DEFAULT_PORT)
+        self.store.setCurrentIndex(0)
         self.pw.setPlaceholderText(tr("填登录密码或安全密码"))
         self.msg.setText("")
         self.addr.setFocus()
@@ -145,7 +165,8 @@ class MailAccountsDialog(QDialog):
                 CMD.mail_remove_account(self.settings, old)
             else:
                 pw = self.pw.text() or None
-            CMD.mail_save_account(self.settings, addr, pw, self.host.text(), self.port.value())
+            CMD.mail_save_account(self.settings, addr, pw, self.host.text(), self.port.value(),
+                                  store=self.store.currentData() or "")
         except ValueError as e:
             QMessageBox.warning(self, tr("邮箱"), str(e))
             return False

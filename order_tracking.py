@@ -11,7 +11,8 @@
   date 下单日期 · store 门店（"1".."5" / "BMS"）· supplier 供应商（照写的）· buyer 谁下的 · amount 金额（不含税）
   confirmed 确认日期 · arrived 到货日期 · expected 手动填的预计到货（空 = 按这家供应商以往的到货天数推算）
   state 特殊情况（partial 部分到货 / stuck 卡住了 / cancel 已取消）· kind（deter = 洗涤用品批发商单，不跟踪确认 / 到货）
-  note 备注 · ref 从 Excel 导入的位置（OTT!B12）· origin（excel / app）
+  note 备注 · ref 从 Excel 导入的位置（OTT!B12）· origin（excel / app / mail）
+  shipped 发货日期 · mails 从邮件认出来的进展 [{k 类别, d 时间, s 主题, f 发件人}]（mail_match，2026-11-07）
 从 Excel 同步（sync_excel）：程序里改过的字段不会被 Excel 盖掉；Excel 里新加的单、程序没动过的字段跟着 Excel 变。
 """
 import os
@@ -42,9 +43,10 @@ EXCEL_FIELDS = ("date", "store", "supplier", "buyer", "amount", "confirmed", "ar
 
 # 状态（显示顺序）
 # draft = 待登记：程序生成了订单文件、还没人确认真的发给供应商（2026-11-02 用户：以后都由程序自动登记，不手填）
-STATUS = ["draft", "ordered", "confirmed", "partial", "arrived", "stuck", "cancel", "deter"]
+# shipped = 已发货：供应商发了 DDT / 发货通知（2026-11-07 从邮件认出来，shipped 字段 = 发货日期）
+STATUS = ["draft", "ordered", "confirmed", "shipped", "partial", "arrived", "stuck", "cancel", "deter"]
 NOT_ORDERED = {"cancel", "draft"}      # 不算进花费、预算、供应商统计
-OPEN = {"ordered", "confirmed", "partial", "stuck"}
+OPEN = {"ordered", "confirmed", "shipped", "partial", "stuck"}
 
 
 # ===================================================================== 小工具
@@ -288,6 +290,8 @@ def status(o):
         return "partial"
     if o.get("state") == "stuck":
         return "stuck"
+    if o.get("shipped"):
+        return "shipped"
     if o.get("confirmed"):
         return "confirmed"
     return "ordered"
@@ -369,6 +373,7 @@ def rows(st, today=None):
                     "note": str(o.get("note") or ""), "ref": str(o.get("ref") or ""),
                     "origin": o.get("origin") or "", "last": last, "file": str(o.get("file") or ""),
                     "colli": o.get("colli"), "record": str(o.get("record") or ""),
+                    "shipped": to_date(o.get("shipped")), "mails": list(o.get("mails") or []),
                     "from_file": any((m.get(k) or ("", "", ""))[2] == "file" for k in ("amount", "colli")),
                     "late_by": (today - exp).days if overdue else 0})
     return out
@@ -974,6 +979,8 @@ def register_drafts(st, source, items, in_scope=None, today=None):
              "amount": round(float(it["amount"]), 2) if it.get("amount") is not None else None,
              "colli": it.get("colli"), "file": it.get("file") or None, "origin": source}
         cur = st.orders.get(oid)
+        if cur is None and st.deleted.get(oid) == "mail":
+            continue                    # 已经和 Excel 手填的那张合并了（mail_match.merge_duplicates），重新配货不再生成
         if cur is None:
             f["draft"] = True
             changes.append((oid, f))

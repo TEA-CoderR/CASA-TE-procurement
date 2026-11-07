@@ -377,7 +377,7 @@ def mail_password(address):
     return credentials.get(MC.cred_name(address))
 
 
-def mail_save_account(settings, address, password=None, host=None, port=None):
+def mail_save_account(settings, address, password=None, host=None, port=None, store=False):
     """加 / 改一个邮箱：地址、服务器存设置，安全密码存本机保管处（password=None 不改密码）"""
     import credentials
     import mail_client as MC
@@ -391,6 +391,8 @@ def mail_save_account(settings, address, password=None, host=None, port=None):
         box.append(acc)
     acc["host"] = (host or acc.get("host") or MC.DEFAULT_HOST).strip()
     acc["port"] = int(port or acc.get("port") or MC.DEFAULT_PORT)
+    if store is not False:                       # 门店：没写门店的信算哪家（None = 不设，几家店都管）
+        acc["store"] = store or ""
     if password is not None:
         credentials.set(MC.cred_name(address), password)
     return acc
@@ -441,3 +443,78 @@ def mail_survey(settings, out_dir, days=28, log=print, progress=None, cancel=Non
     audit(actor or settings.get("user_name") or "", via, "mail_survey",
           {"mailboxes": [a["address"] for a in accs], "days": days}, {"mails": len(rows), "errors": len(errors)})
     return path, len(rows), errors
+
+
+# ===================================================================== 邮件 → 订单跟踪（2026-11-07）
+MAIL_TRACK_DAYS = 21
+
+
+def _mail_ignored_path():
+    from settings import app_dir
+    return os.path.join(app_dir(), "cache", "mail_ignored.json")
+
+
+def mail_ignored():
+    """这台电脑点过「忽略」的建议（键的集合）"""
+    import json
+    try:
+        with open(_mail_ignored_path(), encoding="utf-8") as f:
+            return set(json.load(f))
+    except (OSError, ValueError):
+        return set()
+
+
+def mail_ignore(keys):
+    import json
+    keys = mail_ignored() | set(keys)
+    p = _mail_ignored_path()
+    os.makedirs(os.path.dirname(p), exist_ok=True)
+    with open(p, "w", encoding="utf-8", newline="") as f:
+        json.dump(sorted(keys), f, ensure_ascii=False)
+    return len(keys)
+
+
+def mail_tracking(settings, st=None, days=None, log=print, progress=None, cancel=None, actor=None, via="desktop",
+                  factory=None, today=None):
+    """
+    读所有邮箱（收件箱 + 已发送）最近 days 天的信头（只读，读过的有缓存），对到订单跟踪 → 建议（还没改任何东西）。
+    返回 {"suggest", "missing", "dups", "mails", "errors", "store"}
+    """
+    import mail_client as MC
+    import mail_match as MM
+    accs = MC.accounts(settings)
+    if not accs:
+        raise RuntimeError(tr("还没设置邮箱（系统设置 → 邮箱）"))
+    st = st or tracking_store(settings)
+    days = int(days or (settings.get("mail") or {}).get("track_days") or MAIL_TRACK_DAYS)
+    from settings import app_dir
+    mails, errors = MC.collect(accs, mail_password, days=days, cache_dir=os.path.join(app_dir(), "cache", "mail"),
+                               log=log, progress=progress, cancel=cancel, factory=factory, today=today)
+    own = {a["address"].lower() for a in accs}
+    ign = mail_ignored()
+    res = MM.analyze(mails, st, own, {a["address"].lower(): a.get("store") for a in accs}, today=today, ignored=ign)
+    res["dups"] = MM.dup_suggestions(st, ign)
+    res["mails"], res["errors"], res["store"] = len(mails), errors, st
+    audit(actor or st.me, via, "mail_tracking", {"mailboxes": [a["address"] for a in accs], "days": days},
+          {"mails": len(mails), "suggest": len(res["suggest"]), "missing": len(res["missing"]), "dups": len(res["dups"]),
+           "errors": len(errors)})
+    return res
+
+
+def mail_apply(st, sugs, via="desktop"):
+    """按选中的建议改订单跟踪：邮件进展（确认 / 发货 / 已下单）、合并重复的待登记、补登记。返回 (改了几张, 撤销用)"""
+    import mail_match as MM
+    upd = [s for s in sugs if s["kind"] in ("order", "confirm", "ship")]
+    dup = [s for s in sugs if s["kind"] == "dup"]
+    miss = [s for s in sugs if s["kind"] == "missing"]
+    n1, u1 = MM.apply(st, upd) if upd else (0, [])
+    n2, u2 = MM.merge_duplicates(st, dup) if dup else (0, [])
+    n3, u3 = MM.add_missing(st, miss) if miss else (0, [])
+    audit(st.me, via, "mail_apply", {"keys": [s["key"] for s in sugs]}, {"updated": n1, "merged": n2, "added": n3})
+    return n1 + n2 + n3, u1 + u2 + u3
+
+
+def mail_undo(st, items, via="desktop"):
+    import mail_match as MM
+    MM.undo(st, items)
+    audit(st.me, via, "mail_undo", {"items": len(items)}, None)

@@ -118,6 +118,22 @@ def cmd_confirm(a, settings):
     return 0
 
 
+def cmd_mail(a, settings):
+    """邮件核对（只读）：列出邮件说明的订单进展 / 重复的待登记 / 跟踪里没有的，不改任何东西"""
+    res = CMD.mail_tracking(settings, days=a.days, via="cli")
+    kinds = {"order": tr("已下单"), "confirm": tr("已确认"), "ship": tr("已发货"), "dup": tr("合并重复"),
+             "missing": tr("补登记")}
+    for s in res["suggest"] + res["dups"] + res["missing"]:
+        m = s.get("mail") or {}
+        d = m.get("date").strftime("%d/%m") if m.get("date") else ""
+        print(f"{kinds.get(s['kind'], s['kind'])}\t{d}\t{_store_name(s.get('store'))}\t{s['supplier']}\t{m.get('subject', '')[:70]}")
+    print(tr("读了 {0} 封信：邮件进展 {1} 条 · 重复的待登记 {2} 条 · 跟踪里没有 {3} 条（没改任何东西，要改请在程序里点「邮件核对」）",
+             res["mails"], len(res["suggest"]), len(res["dups"]), len(res["missing"])))
+    for e in res["errors"]:
+        print("⚠ " + e)
+    return 0
+
+
 def main(argv=None):
     settings = load_settings()
     set_language(settings.get("language", "zh"))
@@ -132,8 +148,10 @@ def main(argv=None):
     c = sub.add_parser("confirm", help=tr("确认已下单"))
     c.add_argument("ids", nargs="+")
     c.add_argument("--yes", action="store_true")
+    c = sub.add_parser("mail", help=tr("邮件核对（只读，列出要改的）"))
+    c.add_argument("--days", type=int)
     a = p.parse_args(argv)
-    return {"check": cmd_check, "drafts": cmd_drafts, "confirm": cmd_confirm}[a.cmd](a, settings)
+    return {"check": cmd_check, "drafts": cmd_drafts, "confirm": cmd_confirm, "mail": cmd_mail}[a.cmd](a, settings)
 
 
 if __name__ == "__main__":

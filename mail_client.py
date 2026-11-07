@@ -40,13 +40,15 @@ def cred_name(address):
 
 
 def accounts(settings):
-    """设置里的邮箱 [{"address", "host", "port"}]"""
+    """设置里的邮箱 [{"address", "host", "port", "store"}]；store = 没写门店的信算哪家店（没选过按地址猜，"" = 不设）"""
+    import mail_match as MM
     out = []
     for a in ((settings.get("mail") or {}).get("accounts") or []):
         addr = (a.get("address") or "").strip()
         if addr:
             out.append({"address": addr, "host": (a.get("host") or DEFAULT_HOST).strip(),
-                        "port": int(a.get("port") or DEFAULT_PORT)})
+                        "port": int(a.get("port") or DEFAULT_PORT),
+                        "store": (a.get("store") or None) if "store" in a else MM.default_store(addr)})
     return out
 
 
@@ -275,15 +277,29 @@ def _parse_message(parts):
     return d
 
 
-def fetch_headers(conn, folder, since, log=None, cancel=None):
+def fetch_headers(conn, folder, since, log=None, cancel=None, known=None, info=None):
     """一个文件夹里 since 以后的信：[{uid, date, from, from_name, to, subject, attachments, size, message_id, in_reply_to}]
-    只读（EXAMINE + BODY.PEEK）"""
+    只读（EXAMINE + BODY.PEEK）。known = {uid: 以前读过的这封信}（同一个 UIDVALIDITY 才能用）：这些不再向服务器要；
+    info：放 uidvalidity（给调用的人存缓存）"""
     typ, _ = conn.select(_quote(folder), readonly=True)
     if typ != "OK":
         raise MailError(f"打不开文件夹 {decode_utf7(folder)}")
+    validity = None
+    try:
+        _t, v = conn.response("UIDVALIDITY")
+        validity = (v[0].decode() if isinstance(v[0], bytes) else str(v[0])) if v and v[0] else None
+    except Exception:
+        pass
+    if info is not None:
+        info["uidvalidity"] = validity
+    if known and (validity is None or (info or {}).get("cached_validity") != validity):
+        known = None
     typ, data = conn.uid("SEARCH", None, "SINCE", since.strftime("%d-%b-%Y"))
     uids = (data[0] or b"").split() if data else []
     out = []
+    if known:
+        out = [known[u.decode()] for u in uids if u.decode() in known]
+        uids = [u for u in uids if u.decode() not in known]
     for k in range(0, len(uids), BATCH):
         if cancel is not None and cancel():
             break
@@ -302,7 +318,7 @@ def fetch_headers(conn, folder, since, log=None, cancel=None):
             except Exception:
                 pass
             out.append({
-                "uid": d.get("UID"),
+                "uid": str(d.get("UID") or ""),
                 "date": when.replace(tzinfo=None) if when else None,
                 "from": (frm[0][1] if frm else "").lower(),
                 "from_name": frm[0][0] if frm else "",
@@ -444,6 +460,87 @@ def survey(accs, get_password, days=28, log=print, progress=None, cancel=None, f
             if conn is not None:
                 close(conn)
     return rows, summarize(rows), errors
+
+
+def _cache_load(path):
+    import json
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    for fo in data.values():
+        for r in (fo.get("rows") or {}).values():
+            if r.get("date"):
+                try:
+                    r["date"] = datetime.fromisoformat(r["date"])
+                except ValueError:
+                    r["date"] = None
+    return data
+
+
+def _cache_save(path, data):
+    import json
+    import os
+    out = {}
+    for name, fo in data.items():
+        out[name] = {"validity": fo.get("validity"),
+                     "rows": {u: dict(r, date=r["date"].isoformat() if isinstance(r.get("date"), datetime) else r.get("date"))
+                              for u, r in (fo.get("rows") or {}).items()}}
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8", newline="") as f:
+        json.dump(out, f, ensure_ascii=False)
+    os.replace(tmp, path)
+
+
+def collect(accs, get_password, days=21, cache_dir=None, log=print, progress=None, cancel=None, factory=None, today=None):
+    """
+    订单跟踪用：每个邮箱 收件箱 + 已发送 最近 days 天的信头（和摸底一样只读）。读过的信记在 cache_dir/<邮箱>.json，
+    下次只向服务器要新来的（按 UID，服务器的 UIDVALIDITY 变了就全部重读）。返回 (rows, errors)
+    """
+    import os
+    since = (today or date.today()) - timedelta(days=days)
+    rows, errors = [], []
+    for i, acc in enumerate(accs):
+        if cancel is not None and cancel():
+            break
+        if progress:
+            progress.post_step(i, "running", "", acc["address"])
+            progress.post_progress(100 * i / max(1, len(accs)))
+        path = os.path.join(cache_dir, re.sub(r"[^\w.@-]+", "_", acc["address"].lower()) + ".json") if cache_dir else None
+        cache = _cache_load(path) if path else {}
+        new_cache, conn, n0 = {}, None, len(rows)
+        try:
+            conn = connect(acc, get_password(acc["address"]), factory=factory)
+            for raw, shown, _flags in pick_folders(folders(conn)):
+                label = "INBOX" if raw.upper() == "INBOX" else shown
+                old = cache.get(label) or {}
+                info = {"cached_validity": old.get("validity")}
+                got = fetch_headers(conn, raw, since, cancel=cancel, known=old.get("rows"), info=info)
+                for r in got:
+                    r["mailbox"], r["folder"] = acc["address"], label
+                rows.extend(got)
+                new_cache[label] = {"validity": info.get("uidvalidity"), "rows": {str(r["uid"]): r for r in got if r.get("uid")}}
+            if path:
+                _cache_save(path, new_cache)
+            log(f"  ✔ {acc['address']}：{len(rows) - n0} 封")
+            if progress:
+                progress.post_step(i, "done", str(len(rows) - n0), "")
+        except MailError as e:
+            errors.append(str(e))
+            log(f"  ✘ {e}")
+            if progress:
+                progress.post_step(i, "error", "", str(e))
+        except Exception as e:
+            errors.append(f"{acc['address']}：{e}")
+            log(f"  ✘ {acc['address']}：{e}")
+            if progress:
+                progress.post_step(i, "error", "", str(e))
+        finally:
+            if conn is not None:
+                close(conn)
+    return rows, errors
 
 
 ALT_IMAP = {"imap.qiye.aliyun.com": "imap.mxhichina.com", "imap.mxhichina.com": "imap.qiye.aliyun.com"}
