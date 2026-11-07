@@ -356,11 +356,13 @@ class OrderCheck:
             t.verticalHeader().setDefaultSectionSize(30)
             t.setEditTriggers(QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed |
                               QAbstractItemView.AnyKeyPressed)
-            for c, wd in ((0, 90), (1, 130), (3, 170), (4, 86), (5, 76), (6, 90)):
+            for c, wd in ((0, 90), (1, 130), (3, 170), (4, 86), (5, 76), (6, 110)):
                 t.setColumnWidth(c, wd)
             t.horizontalHeaderItem(4).setToolTip(tr("这周几家批发商的报价里有没有这个商品：都没有 = 比价时会缺失"))
             t.setColumnHidden(4, kind == "noquote")       # Griglia 那页全是「都没有」，不用这一列
             t.itemChanged.connect(lambda it, k=kind: self._prob_edited(k, it))
+            from erp_widgets import StepperDelegate
+            StepperDelegate.install(t, 6)
             from erp_widgets import HeaderFilter      # 右键表头按列筛选
             t._hf = HeaderFilter(t)
             pv.addWidget(t, 1)
@@ -410,7 +412,7 @@ class OrderCheck:
         self.table.horizontalHeaderItem(_col(4)).setToolTip(tr("本店现在的库存（件）"))
         self.table.horizontalHeaderItem(_col(10)).setText(tr("每箱"))
         self.table.horizontalHeaderItem(AMOUNT_COL).setToolTip(tr("金额 = 确定箱数 × 每箱件数 × 件价（有调货的按调货以后的箱数）"))
-        self.table.horizontalHeaderItem(EDIT_COL).setToolTip(tr("确定订几箱：双击修改，0 = 不订"))
+        self.table.horizontalHeaderItem(EDIT_COL).setToolTip(tr("确定订几箱：点 − / ＋ 改 1 箱，双击直接输入，0 = 不订"))
         self.table.horizontalHeaderItem(EDIT_COL).setText(tr("确定") + " ✎")
         self.table.horizontalHeaderItem(_col(10)).setToolTip(
             tr("每箱件数：按 distribuire 里最便宜那家报价的箱规（比价默认挑它）；报价里没有的用数据库箱规。蓝色 = 和数据库不一样"))
@@ -429,6 +431,8 @@ class OrderCheck:
         self.table.horizontalHeaderItem(_col(REASON_COL)).setToolTip(
             tr("系统为什么这么建议：库存够卖几天、订货周期里大约卖多少"))
         self.table.itemChanged.connect(self._edited)
+        from erp_widgets import StepperDelegate        # 确定箱数：− / ＋ 点一下改 1 箱（2026-11-07 用户）
+        StepperDelegate.install(self.table, EDIT_COL)
         # 点表头排序、右键表头按列筛选；上面「判断」「等级」两个下拉框快速筛选
         from erp_widgets import TableSortFilter, ColumnFilterBox
         # lazy：一行要算判断 / 颜色 / 原因，1500 行全画要 2 秒（办公电脑上更久）→ 先画看得见的，剩下的一批批画（2026-11-04）
@@ -1546,7 +1550,7 @@ class OrderCheck:
                     it = t.item(r, c)
                     if c == 6:
                         it.setFlags(it.flags() | Qt.ItemIsEditable)
-                        it.setToolTip(tr("双击修改箱数，0 = 不订"))
+                        it.setToolTip(tr("点 − / ＋ 改 1 箱，双击直接输入，0 = 不订"))
                         self._style_prob_cell(it, x)
                     else:
                         it.setFlags(it.flags() & ~Qt.ItemIsEditable)

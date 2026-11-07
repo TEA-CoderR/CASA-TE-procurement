@@ -131,3 +131,50 @@ def test_finish_compute_in_worker_gives_same_previews(monkeypatch):
     assert ui["colli"] is not calc["base"]                                # 复制的，改箱数不动建议值
     key = P._preview_key(calc["schede"][0], calc, ui["colli"]["/a"], {"x": 1}, None)
     assert key in ui["pv"]                                                # 界面线程按同一个键能取到
+
+
+def test_stepper_buttons_change_box_count():
+    """订货箱数的 − / ＋（2026-11-07）：点一下改 1，等于在格子里输入（itemChanged 照常走）；0 不能再减；不能改的格子没有按钮"""
+    import time
+    from PySide6.QtCore import Qt, QPoint
+    from PySide6.QtTest import QTest
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    from erp_widgets import StepperDelegate
+    t = QtWidgets.QTableWidget(2, 2)
+    t.resize(400, 200)
+    for r, txt in ((0, "1"), (1, "0")):
+        it = QtWidgets.QTableWidgetItem(txt)
+        it.setFlags(it.flags() | Qt.ItemIsEditable)
+        t.setItem(r, 1, it)
+        ro = QtWidgets.QTableWidgetItem("x")
+        ro.setFlags(ro.flags() & ~Qt.ItemIsEditable)
+        t.setItem(r, 0, ro)
+    seen = []
+    t.itemChanged.connect(lambda it: seen.append((it.row(), it.text())))
+    d = StepperDelegate.install(t, 1)
+    t.show()
+    app.processEvents()
+    assert t.columnWidth(1) >= StepperDelegate.MIN_WIDTH
+
+    def click(row, which):
+        rect = t.visualItemRect(t.item(row, 1))
+        minus, plus = d._rects(rect)
+        QTest.mouseClick(t.viewport(), Qt.LeftButton, Qt.NoModifier, (plus if which == "+" else minus).center())
+        end = time.time() + 1
+        while time.time() < end:
+            app.processEvents()
+    click(0, "+")
+    assert t.item(0, 1).text() == "2" and seen[-1] == (0, "2")
+    click(0, "-")
+    click(0, "-")
+    assert t.item(0, 1).text() == "0"
+    n = len(seen)
+    click(1, "-")                                   # 已经是 0：不变
+    assert t.item(1, 1).text() == "0" and len(seen) == n
+    assert t.state() != QtWidgets.QAbstractItemView.EditingState     # 点按钮不弹输入框
+    # on_step 给了就用它（修改分配那种自己算的）
+    got = []
+    d2 = StepperDelegate.install(t, 1, on_step=lambda idx, v: got.append(v), value=lambda idx: 5)
+    d = d2
+    click(1, "+")
+    assert got == [6]

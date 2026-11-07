@@ -1052,10 +1052,12 @@ class FillItemsDialog(QDialog):
         self.table.setTextElideMode(Qt.ElideRight)
         self.table.horizontalHeaderItem(5).setToolTip(tr("库存够卖 = 本店库存 ÷ 日均（账面库存是负数时按 0 算）"))
         self.table.horizontalHeaderItem(10).setToolTip(tr("订后够卖 =（本店库存 + 已订和加的箱数 × 每箱件数）÷ 日均"))
-        self.table.horizontalHeaderItem(self.ADD).setToolTip(tr("双击填要加几箱，0 = 不加"))
+        self.table.horizontalHeaderItem(self.ADD).setToolTip(tr("点 − / ＋ 改 1 箱，双击直接输入，0 = 不加"))
         self.table.setEditTriggers(QAbstractItemView.DoubleClicked | QAbstractItemView.SelectedClicked |
                                    QAbstractItemView.EditKeyPressed | QAbstractItemView.AnyKeyPressed)
         self.table.itemChanged.connect(self._edited)
+        from erp_widgets import StepperDelegate     # 加几箱：− / ＋ 点一下改 1 箱
+        StepperDelegate.install(self.table, self.ADD)
         lay.addWidget(self.table, 1)
         from erp_widgets import TableSortFilter
         self.ctl = TableSortFilter(self.table, lambda: len(self.items), self._text, self._fill, key=self._key,
@@ -1456,8 +1458,12 @@ class ManualDialog(QDialog):
         self.table.setEditTriggers(QAbstractItemView.DoubleClicked | QAbstractItemView.SelectedClicked)
         self.table.cellClicked.connect(self._cell_clicked)
         self.table.setItemDelegateForColumn(6, SupplierComboDelegate(self))
-        if edit_mode:
-            self.table.setItemDelegateForColumn(3, QtyDelegate(self))
+        self.qty_stepper = None
+        if edit_mode:                                # 箱数：− / ＋ 点一下改 1，点中间照旧输入
+            from erp_widgets import StepperDelegate
+            self.qty_stepper = StepperDelegate.install(
+                self.table, 3, base=QtyDelegate(self), value=lambda idx: self._qty(self.rows[idx.data(Qt.UserRole)]),
+                on_step=lambda idx, q: idx.data(Qt.UserRole) is not None and self.set_qty(idx.data(Qt.UserRole), q))
         lay.addWidget(self.table, 1)
         from erp_widgets import TableSortFilter
         self.ctl = TableSortFilter(self.table, lambda: len(self.rows), self._text, self._fill_row,
@@ -1620,6 +1626,8 @@ class ManualDialog(QDialog):
     def _cell_clicked(self, k, col):
         """点「当前供应商」那一格直接弹出下拉（其他列点了只是选中）"""
         it = self.table.item(k, col)
+        if col == 3 and self.qty_stepper is not None and self.qty_stepper.just_stepped():
+            return                                   # 点的是 − / ＋，不弹输入框
         if col in (3, 6) and it is not None and it.flags() & Qt.ItemIsEditable:
             self.table.editItem(it)
 

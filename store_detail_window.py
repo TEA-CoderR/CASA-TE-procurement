@@ -198,8 +198,10 @@ class AddItemsDialog(QDialog):
         self.table.horizontalHeaderItem(11).setToolTip(tr("订后够卖 =（库存 + 已订和加的箱数 × 每箱件数）÷ 日均"))
         self.table.setEditTriggers(QAbstractItemView.DoubleClicked | QAbstractItemView.SelectedClicked |
                                    QAbstractItemView.EditKeyPressed | QAbstractItemView.AnyKeyPressed)
-        self.table.horizontalHeaderItem(self.ADD).setToolTip(tr("双击填要加几箱，0 = 不加"))
+        self.table.horizontalHeaderItem(self.ADD).setToolTip(tr("点 − / ＋ 改 1 箱，双击直接输入，0 = 不加"))
         self.table.itemChanged.connect(self._edited)
+        from erp_widgets import StepperDelegate     # 加几箱：− / ＋ 点一下改 1 箱
+        StepperDelegate.install(self.table, self.ADD)
         from erp_widgets import HeaderFilter        # 右键表头按列筛选（和搜索框、两个勾选一起生效）
         self._base_hide = {}
         self.hf = HeaderFilter(self.table, apply=self._filter,
@@ -284,7 +286,7 @@ class AddItemsDialog(QDialog):
             flags = item.flags() & ~Qt.ItemIsEditable
             if k == self.ADD:
                 flags |= Qt.ItemIsEditable
-                item.setToolTip(tr("双击填要加几箱"))
+                item.setToolTip(tr("点 − / ＋ 改 1 箱，双击直接输入，0 = 不加"))
                 if add:
                     item.setForeground(QColor(T("accent")))
                     f = item.font()
@@ -617,7 +619,7 @@ class DetailWindow(ToolWindow):
             need = hh.fontMetrics().horizontalAdvance(hdr.text() if hdr else "") + 26
             self.table.setColumnWidth(c, max(wd, need))
         self.table.horizontalHeaderItem(EDIT_COL).setText(tr("订货箱数") + " ✎")
-        self.table.horizontalHeaderItem(EDIT_COL).setToolTip(tr("双击修改箱数，0 = 不订"))
+        self.table.horizontalHeaderItem(EDIT_COL).setToolTip(tr("点 − / ＋ 改 1 箱，双击直接输入，0 = 不订"))
         self.table.horizontalHeaderItem(_col(18)).setToolTip(tr("销量等级：A 卖得快，B 一般，C 卖得慢"))
         self.table.horizontalHeaderItem(_col(15)).setToolTip(tr("系统按销量和库存算出来的箱数（调货、手动改之前），和「订货箱数」对比"))
         self.table.horizontalHeaderItem(DEC_COL).setToolTip(
@@ -672,6 +674,8 @@ class DetailWindow(ToolWindow):
                                extra=[(tr("恢复默认列顺序"), self._reset_order),
                                       (tr("显示哪些列…"), lambda: self.cols.menu(self.hf.last_pos))])
         self.table.itemChanged.connect(self._cell_edited)
+        from erp_widgets import StepperDelegate     # 订货箱数：− / ＋ 点一下改 1 箱（2026-11-07 用户）
+        StepperDelegate.install(self.table, EDIT_COL)
         self.table.currentCellChanged.connect(lambda r, c, pr, pc: self._select_row(r))
         mid.addWidget(self.table, 1)
         mid.addWidget(self._build_drawer())
@@ -1138,7 +1142,7 @@ class DetailWindow(ToolWindow):
             item.setData(KEY_ROLE, keys[c])
             if c == EDIT_COL:
                 item.setFlags(ro | Qt.ItemIsEditable)
-                item.setToolTip(tr("双击修改箱数，0 = 不订"))
+                item.setToolTip(tr("点 − / ＋ 改 1 箱，双击直接输入，0 = 不订"))
             else:
                 item.setFlags(ro)
             t.setItem(i, c, item)

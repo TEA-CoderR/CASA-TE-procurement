@@ -946,6 +946,171 @@ class MonthGrid(QWidget):
 DOTS_ROLE = Qt.UserRole + 20
 
 
+class StepperDelegate(QStyledItemDelegate):
+    """
+    「订货箱数」这种能改的数字格：左边「−」右边「＋」两个小按钮，点一下减 / 加 1（不用双击再打字）；双击照旧可以直接输入。
+    2026-11-07 用户：所有列表的订货箱数都要加减器。
+    只在能改的格子（ItemIsEditable）上画按钮。点了以后（等这次鼠标事件处理完）调用 on_step(格子, 新值)；
+    没给 on_step 就把新值写进格子文字 → 表格原来的 itemChanged 处理（和手动输入一样，校验 / 重算 / 撤销都照旧）。
+    value(格子) 取现在的值（默认读格子文字开头的数字）；最小 0。
+    base：原来这一列用的委托（QtyDelegate 之类）——双击输入时的编辑框照用它的。
+    """
+    BTN = 20
+
+    def __init__(self, view, on_step=None, value=None, base=None, minimum=0):
+        super().__init__(view)
+        self.view, self.on_step, self.value_of, self.base, self.minimum = view, on_step, value, base, minimum
+        self.last_step = 0.0          # 刚点过加减（别的「点一下就进编辑」的逻辑可以据此跳过）
+        self._hover = None
+        view.setMouseTracking(True)
+        view.viewport().setMouseTracking(True)
+
+    # ---- 编辑框：交给原来的委托 ----
+    def createEditor(self, parent, opt, idx):
+        return self.base.createEditor(parent, opt, idx) if self.base else super().createEditor(parent, opt, idx)
+
+    def setEditorData(self, ed, idx):
+        return self.base.setEditorData(ed, idx) if self.base else super().setEditorData(ed, idx)
+
+    def setModelData(self, ed, model, idx):
+        return self.base.setModelData(ed, model, idx) if self.base else super().setModelData(ed, model, idx)
+
+    # ---- 值 ----
+    def current(self, idx):
+        if self.value_of:
+            try:
+                return float(self.value_of(idx) or 0)
+            except (TypeError, ValueError):
+                return 0.0
+        import re
+        m = re.match(r"\s*(-?\d+(?:\.\d+)?)", str(idx.data() or "").replace(",", ""))     # 1,234 → 1234
+        return float(m.group(1)) if m else 0.0
+
+    @staticmethod
+    def _editable(idx):
+        return bool(idx.flags() & Qt.ItemIsEditable)
+
+    def _rects(self, r):
+        b = min(self.BTN, max(14, r.height() - 10))
+        y = r.top() + (r.height() - b) // 2
+        from PySide6.QtCore import QRect
+        return QRect(r.left() + 4, y, b, b), QRect(r.right() - 4 - b, y, b, b)
+
+    # ---- 画 ----
+    def paint(self, p, opt, idx):
+        from PySide6.QtWidgets import QStyleOptionViewItem, QApplication, QStyle
+        if not self._editable(idx) or opt.rect.width() < 2 * self.BTN + 24:
+            bg = idx.data(Qt.BackgroundRole)
+            if bg is not None:
+                p.fillRect(opt.rect, bg)
+            return super().paint(p, opt, idx)
+        o = QStyleOptionViewItem(opt)
+        self.initStyleOption(o, idx)
+        o.state &= ~QStyle.State_HasFocus
+        bg = idx.data(Qt.BackgroundRole)
+        if bg is not None:
+            p.fillRect(opt.rect, bg)
+        w = opt.widget
+        (w.style() if w else QApplication.style()).drawPrimitive(QStyle.PE_PanelItemViewItem, o, p, w)
+        minus, plus = self._rects(opt.rect)
+        t = QStyleOptionViewItem(opt)
+        t.state &= ~QStyle.State_HasFocus
+        t.rect = opt.rect.adjusted(minus.width() + 8, 0, -(plus.width() + 8), 0)
+        super().paint(p, t, idx)
+        hov = self._hover
+        row_hover = hov is not None and hov[0] == idx.row() and hov[1] == idx.column()
+        can_minus = self.current(idx) > self.minimum
+        p.save()
+        p.setRenderHint(QPainter.Antialiasing)
+        for rect, sign, ok, which in ((minus, "−", can_minus, "-"), (plus, "+", True, "+")):
+            on = row_hover and hov[2] == which and ok
+            p.setPen(QPen(QColor(T("accent") if on else T("line")), 1))
+            p.setBrush(QColor(T("accent_soft") if on else T("surface")))
+            p.drawRoundedRect(QRectF(rect).adjusted(0.5, 0.5, -0.5, -0.5), 5, 5)
+            p.setPen(QColor(T("accent") if ok else T("faint")))
+            f = QFont(p.font())
+            f.setBold(True)
+            f.setPixelSize(max(11, rect.height() - 6))
+            p.setFont(f)
+            p.drawText(QRectF(rect).adjusted(0, -1, 0, 0), Qt.AlignCenter, sign)
+        p.restore()
+
+    def sizeHint(self, opt, idx):
+        s = super().sizeHint(opt, idx)
+        return QSize(s.width() + 2 * self.BTN + 20, s.height())
+
+    # ---- 点 ----
+    def _which(self, opt, idx, pos):
+        if not self._editable(idx):
+            return None
+        minus, plus = self._rects(opt.rect)
+        if minus.adjusted(-2, -4, 2, 4).contains(pos):
+            return "-"
+        if plus.adjusted(-2, -4, 2, 4).contains(pos):
+            return "+"
+        return None
+
+    def editorEvent(self, ev, model, opt, idx):
+        from PySide6.QtCore import QEvent, QPersistentModelIndex
+        t = ev.type()
+        if t == QEvent.MouseMove:
+            which = self._which(opt, idx, ev.position().toPoint() if hasattr(ev, "position") else ev.pos())
+            hov = (idx.row(), idx.column(), which) if which else None
+            if hov != self._hover:
+                self._hover = hov
+                self.view.viewport().update()
+                self.view.viewport().setCursor(Qt.PointingHandCursor if which else Qt.ArrowCursor)
+            return False
+        if t in (QEvent.MouseButtonPress, QEvent.MouseButtonDblClick, QEvent.MouseButtonRelease):
+            pos = ev.position().toPoint() if hasattr(ev, "position") else ev.pos()
+            which = self._which(opt, idx, pos)
+            if not which or ev.button() != Qt.LeftButton:
+                return super().editorEvent(ev, model, opt, idx)
+            if t == QEvent.MouseButtonRelease:
+                cur = self.current(idx)
+                new = cur + (1 if which == "+" else -1)
+                if new < self.minimum:
+                    return True
+                new = int(new) if float(new).is_integer() else round(new, 2)
+                self.last_step = time.time()
+                pidx = QPersistentModelIndex(idx)
+
+                def go():
+                    if not pidx.isValid():
+                        return
+                    i2 = model.index(pidx.row(), pidx.column())
+                    if self.on_step:
+                        self.on_step(i2, new)
+                    else:
+                        model.setData(i2, str(new))
+                # 这次鼠标事件处理完再改（改的时候表格可能整行重画，鼠标事件中途换掉格子会卡住）
+                QTimer.singleShot(0, go)
+            self.last_step = time.time()
+            return True                    # 加减按钮上的点击不选中、不进编辑
+        return super().editorEvent(ev, model, opt, idx)
+
+    def just_stepped(self, within=0.4):
+        return time.time() - self.last_step < within
+
+    MIN_WIDTH = 104
+
+    @classmethod
+    def install(cls, view, col, **kw):
+        """放到 view 的第 col 列；列太窄（放不下两个按钮 + 数字）时放宽一次（之后用户自己拖窄就照用户的）"""
+        d = cls(view, **kw)
+        view.setItemDelegateForColumn(col, d)
+
+        def widen():
+            try:
+                if not view.isColumnHidden(col) and view.columnWidth(col) < cls.MIN_WIDTH:
+                    view.setColumnWidth(col, cls.MIN_WIDTH)
+            except RuntimeError:
+                pass
+        QTimer.singleShot(0, widen)
+        QTimer.singleShot(800, widen)          # 列宽设置 / 第一次填数据自动量宽之后再看一次
+        return d
+
+
 class DotsDelegate(QStyledItemDelegate):
     def paint(self, p, opt, idx):
         super().paint(p, opt, idx)

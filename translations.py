@@ -3172,4 +3172,7 @@ TRANSLATIONS = {
     '没有放进去，原来的报价都留着：': ('Nothing was added; the current price lists are kept:', 'Nulla è stato inserito; i listini attuali restano:'),
     '比价读不了这份文件（{0}），要先手动整理表头': ('The comparison cannot read this file ({0}); the headers must be prepared by hand first', 'Il confronto non riesce a leggere questo file ({0}); prima vanno sistemate le intestazioni a mano'),
     '这几份没有放进去（原来的留着）：': ('These were not added (the current ones are kept):', 'Questi non sono stati inseriti (restano quelli attuali):'),
+    '点 − / ＋ 改 1 箱，双击直接输入，0 = 不加': ('Click − / + to change by 1 box, double-click to type, 0 = add none', 'Clic su − / + per cambiare di 1 collo, doppio clic per scrivere, 0 = non aggiungere'),
+    '点 − / ＋ 改 1 箱，双击直接输入，0 = 不订': ('Click − / + to change by 1 box, double-click to type, 0 = do not order', 'Clic su − / + per cambiare di 1 collo, doppio clic per scrivere, 0 = non ordinare'),
+    '确定订几箱：点 − / ＋ 改 1 箱，双击直接输入，0 = 不订': ('Boxes to order: click − / + to change by 1, double-click to type, 0 = do not order', 'Colli da ordinare: clic su − / + per cambiare di 1, doppio clic per scrivere, 0 = non ordinare'),
 }

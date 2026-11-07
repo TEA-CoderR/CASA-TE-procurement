@@ -1681,11 +1681,12 @@ def _set_row_cells(xml, values, styles=None):
     return xml
 
 
-FILE_SKIP_HEADS = ("月均", "采购量", "箱数", "需求")     # 程序内部用，不写进给供应商的订单文件
+# 程序内部用，不写进订单文件（2026-11-07 用户：月均要写回去，放在 ROT.180d 后面）
+FILE_SKIP_HEADS = ("采购量", "箱数", "需求")
 
 
 def file_extra(extra, heads):
-    """写进订单文件的附加列：去掉中文名的内部列（月均 / 采购量 / 箱数 / 需求）。返回 (extra, heads)"""
+    """写进订单文件的附加列：去掉内部列（采购量 / 箱数 / 需求），月均留着。返回 (extra, heads)"""
     if not extra or not heads:
         return extra, heads
     keep = [i for i, h in enumerate(heads) if h not in FILE_SKIP_HEADS]

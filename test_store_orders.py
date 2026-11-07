@@ -248,7 +248,7 @@ class WriteTest(unittest.TestCase):
             ws = wb[sc["sheets"][1]]
             self.assertEqual(str(ws.cell(rows[0], c + 1).value).upper().replace("$", ""), f"=H{rows[0]}*G{rows[0]}")
 
-    def test_colli_yellow_only_on_ordered_rows_and_no_chinese_columns(self):
+    def test_colli_yellow_only_on_ordered_rows_and_monthly_column(self):
         from openpyxl import load_workbook
         sc = S.parse_scheda(SAMPLES[-1])
         self.assertIn("sup_code", sc["cols"])                       # Codice Fornitore 读进来了
@@ -266,7 +266,8 @@ class WriteTest(unittest.TestCase):
             self.assertEqual(ws.cell(rows[0], c).value, 3)
             self.assertEqual(ws.cell(rows[1], c).fill.fill_type, ws.cell(rows[1], c - 1).fill.fill_type)
             heads_in_file = [ws.cell(sc["header_row"], k).value for k in range(1, ws.max_column + 1)]
-            self.assertNotIn("月均", heads_in_file)
+            self.assertIn("月均", heads_in_file)             # 2026-11-07 用户：月均要写进订单文件
+            self.assertNotIn("需求", heads_in_file)
             self.assertIn("GIA", heads_in_file)
 
 
@@ -276,8 +277,9 @@ class FileExtraTest(unittest.TestCase):
         vals = list(range(len(heads)))
         extra, h2 = S.file_extra({2: {5: vals, 6: None}}, heads)
         self.assertEqual(h2[:5], ["GIA", "ROT.30d", "ROT.60d", "ROT.90d", "ROT.180d"])
-        self.assertEqual(h2[5], "Livello")
-        self.assertEqual(extra[2][5][5], heads.index("Livello"))
+        self.assertEqual(h2[5:7], ["月均", "Livello"])
+        self.assertEqual(extra[2][5][5], heads.index("月均"))
+        self.assertEqual(extra[2][5][6], heads.index("Livello"))
         self.assertIsNone(extra[2][6])
         self.assertEqual(S.file_extra(None, None), (None, None))
 
