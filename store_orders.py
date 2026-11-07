@@ -797,7 +797,7 @@ def demand_by_store(db, schede, stores, days_list, reorder_cycle, use_supplier_c
                                    use_supplier_cycles=use_supplier_cycles, round_to_db_pack=not v2, algo=algo,
                                    groups=groups, want_raw=True, cycle_factor=store_cycle_factor(algo, sid))
         d = {}
-        for _, r in df.iterrows():
+        for r in R.records(df):
             code = str(int(r["CodArticolo"]))
             s1 = float(r.get("sales_1", 0) or 0)
             s3 = float(r.get("sales_3", 0) or 0)

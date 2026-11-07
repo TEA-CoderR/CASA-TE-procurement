@@ -235,7 +235,7 @@ def codes_from_eans(db, eans):
                 if k == 0:
                     raise RuntimeError(f"用条码查商品编号失败（数据库）：{e}") from e
                 continue              # codbarre（多条码表）没有也不要紧
-            for _, x in df.iterrows():
+            for x in records(df):
                 e = _clean_code(x["CodBarre"])
                 if e and e not in out and x["CodArticolo"]:
                     out[e] = str(int(x["CodArticolo"]))
@@ -260,7 +260,7 @@ def supplier_info(db, codes):
                              f"WHERE p.CodArticolo IN ({ph})", db.engine, params=tuple(chunk))
         except Exception:
             return out
-        for _, x in df.iterrows():
+        for x in records(df):
             out.setdefault(str(int(x["CodArticolo"])), (str(x["ArticoloForn"] or "").strip(), str(x["Nome"] or "").strip()))
     return out
 
@@ -540,7 +540,7 @@ def query_weekly_sales(db, store_id, codes, weeks=None):
                f"FROM vendite_list_{int(store_id)} WHERE CodArticolo IN ({ph}) AND Data >= %s "
                f"GROUP BY CodArticolo, wk")
         df = pd.read_sql(sql, db.engine, params=tuple(chunk) + (since,))
-        for _, r in df.iterrows():
+        for r in records(df):
             try:
                 c, wk = int(r["CodArticolo"]), int(r["wk"])
             except (TypeError, ValueError):
@@ -584,7 +584,7 @@ def query_monthly_sales(db, store_id, codes, months=24, today=None):
                f"FROM vendite_list_{int(store_id)} WHERE CodArticolo IN ({ph}) AND Data >= %s "
                f"GROUP BY CodArticolo, YEAR(Data), MONTH(Data)")
         df = pd.read_sql(sql, db.engine, params=tuple(chunk) + (since,))
-        for _, r in df.iterrows():
+        for r in records(df):
             try:
                 c, y, m = str(int(r["CodArticolo"])), int(r["y"]), int(r["m"])
             except (TypeError, ValueError):
@@ -1042,7 +1042,7 @@ def _query_store_revenue(db, store_id, days=91):
                          f"WHERE Data >= %s GROUP BY CodArticolo", db.engine, params=(since,))
     except Exception:
         return None
-    return {int(r["CodArticolo"]): float(r["rev"] or 0) for _, r in df.iterrows() if r["CodArticolo"] is not None}
+    return {int(r["CodArticolo"]): float(r["rev"] or 0) for r in records(df) if r["CodArticolo"] is not None}
 
 
 def apply_v2(db, store_id, result_df, algo, weekly=None, revenue=None, on_order=None, cycles=None):
@@ -1064,7 +1064,7 @@ def apply_v2(db, store_id, result_df, algo, weekly=None, revenue=None, on_order=
                             "daily_rate", "safety_stock", "target_stock", "service_level", "season_factor",
                             "age_weeks", "weekly_26", "long_daily", "zero_weeks")}
     used = []
-    for i, (_, r) in enumerate(result_df.iterrows()):
+    for i, r in enumerate(records(result_df)):
         c = int(r["CodArticolo"])
         inv = float(r.get("store_inventory", 0) or 0)           # 已经把负数当 0
         tier, _why = F.adjust_tier(tiers.get(c, "C"), weekly.get(c, []), algo)      # 金额定等级，动销兜底
@@ -1095,6 +1095,14 @@ def apply_v2(db, store_id, result_df, algo, weekly=None, revenue=None, on_order=
     result_df["reorder_cycle_used"] = used if used else int(algo.get("review_days", 7))
     result_df["algo"] = "v2"
     return result_df
+
+
+def records(df):
+    """表格每一行变成普通字典（比 df.iterrows() 快十几倍：iterrows 每行要新建一个 Series，
+    几家门店同时算时一直占着 Python，界面会卡）。r["列"] / r.get("列") 照旧能用"""
+    if df is None or not len(df):
+        return []
+    return df.to_dict("records")
 
 
 def _val(row, key, default=None):
@@ -1135,7 +1143,7 @@ def to_rows(result_df, file_rows=None, days_list=None):
         if x.get("code"):
             by_code.setdefault(str(x["code"]), x)
     out = []
-    for _, r in result_df.iterrows():
+    for r in records(result_df):
         code = str(int(r["CodArticolo"])) if _val(r, "CodArticolo") is not None else ""
         fx = by_code.get(code, {})
         pack = _val(r, "qtasmallbox", 0) or 0
@@ -1355,7 +1363,7 @@ def stock_of(df, days_list):
     out = {}
     if df is None or not len(df):
         return out
-    for _, r in df.iterrows():
+    for r in records(df):
         if _val(r, "CodArticolo") is None:
             continue
         code = str(int(r["CodArticolo"]))
@@ -1453,7 +1461,7 @@ def stock_for_eans(db, store_id, eans, days_list=None, reorder_cycle=30, algo=No
     st = stock_of(df, days_list)
     names = {}
     if df is not None and len(df):
-        for _, r in df.iterrows():
+        for r in records(df):
             if _val(r, "CodArticolo") is not None:
                 names[str(int(r["CodArticolo"]))] = str(_val(r, "Descrizione", "") or "").strip()
     out = {}

@@ -3143,6 +3143,9 @@ class MainWindow(QMainWindow):
         h.addWidget(self.crumb_sep2)
         h.addWidget(self.crumb_cur)
         h.addStretch()
+        from erp_widgets import BgTaskPill
+        self.bg_pill = BgTaskPill(bar)          # 后台运行中的任务：进度 + 点一下看详情（没有时藏起来）
+        h.addWidget(self.bg_pill)
         self.search = QLineEdit()
         self.search.setObjectName("Search")
         self.search.setPlaceholderText(tr("搜索功能页面…  Ctrl K"))
@@ -5372,8 +5375,9 @@ class MainWindow(QMainWindow):
             dlg.post_progress(pct)
 
     def _on_done(self, summary):
-        if getattr(self, "tracking", None) is not None:
-            self.tracking.check_badge()               # 比价生成了 Ordini → 订单跟踪的「待登记」个数
+        if getattr(self, "tracking", None) is not None:   # 比价生成了 Ordini → 订单跟踪的「待登记」个数
+            from erp_widgets import when_idle               # 要读共享记录：等界面空下来（别和跳结果页抢）
+            when_idle(self.tracking.check_badge, quiet_ms=1500)
         dlg = getattr(self, "_cmp_task", None)
         if dlg is not None and not dlg.is_done:
             ok = bool(summary and summary.get("ok"))
@@ -6014,20 +6018,35 @@ BOOT_WINDOW = 90
 
 
 class _ClickRecorder(QObject):
-    """记下最后点的按钮 / 菜单（卡顿记录里写「卡之前点了什么」）"""
+    """记下最后点的按钮 / 菜单（卡顿记录里写「卡之前点了什么」）+ 最后一次点鼠标 / 按键的时间（erp_widgets.when_idle 用）。
+    每个界面事件都会经过这里：只比一下事件类型就返回（2026-11-07 以前每次都 import，后台线程忙时界面会更卡）"""
     last = ("", 0.0)
+    _INPUT = None
 
     def eventFilter(self, obj, ev):
+        t = ev.type()
+        if t not in _ClickRecorder._INPUT:
+            return False
         try:
-            from PySide6.QtCore import QEvent
-            from PySide6.QtWidgets import QAbstractButton
-            if ev.type() == QEvent.MouseButtonRelease and isinstance(obj, QAbstractButton):
+            now = time.time()
+            _LAST_INPUT[0] = now
+            if t == _ClickRecorder._RELEASE and isinstance(obj, QAbstractButton):
                 txt = obj.text() or obj.toolTip()[:30] or obj.objectName()
                 if txt:
-                    _ClickRecorder.last = (txt.replace("\n", " "), time.time())
+                    _ClickRecorder.last = (txt.replace("\n", " "), now)
         except Exception:
             pass
         return False
+
+
+def _init_click_recorder():
+    from PySide6.QtCore import QEvent
+    from erp_widgets import LAST_INPUT
+    global _LAST_INPUT, QAbstractButton
+    from PySide6.QtWidgets import QAbstractButton
+    _LAST_INPUT = LAST_INPUT
+    _ClickRecorder._RELEASE = QEvent.MouseButtonRelease
+    _ClickRecorder._INPUT = frozenset((QEvent.MouseButtonPress, QEvent.MouseButtonRelease, QEvent.KeyPress, QEvent.Wheel))
 
 
 def _start_hang_watchdog(app):
@@ -6058,6 +6077,7 @@ def _start_hang_watchdog(app):
         t.timeout.connect(beat)
         t.start()
         app._hang_timer = t
+        _init_click_recorder()
         rec = _ClickRecorder(app)
         app.installEventFilter(rec)
         app._click_rec = rec

@@ -534,6 +534,47 @@ class MoqDialog(QDialog):
 # =====================================================================
 # 页面
 # =====================================================================
+def _preview_key(sc, calc, lines, fill, pk):
+    """起订量检查的模拟配货缓存键（界面线程和计算线程用同一个，计算线程算好的直接能用）"""
+    import json
+    return (sc["path"], id(calc["demand"]), tuple(calc["stores"]),
+            json.dumps(fill, sort_keys=True, default=str), json.dumps(pk, sort_keys=True),
+            tuple(sorted((sid, tuple(sorted(ln.items()))) for sid, ln in lines.items())), json.dumps(S.sc_moq(sc), default=str))
+
+
+def _plan_one(sc, calc, lines, fill, pk):
+    return S.plan_supplier(sc, calc["demand"], fill, calc["stores"], lines, "manual" if pk is not None else "auto", picks=pk)
+
+
+def finish_compute(calc, tcfg, tfar, sup_cfg, fill, picks, log=None):
+    """
+    计算线程里做完原来在界面线程做的收尾（2026-11-07 用户：后台运行完跳回去会卡）：调货、复制建议箱数、
+    每家供应商模拟配货一次（起订量检查的颜色）。结果放进 calc["_ui"]，界面线程只填表
+    """
+    import datetime as _dt
+    calc.setdefault("date", _dt.date.today())    # 周销量按计算当天往回数
+    note = None
+    try:
+        S.apply_transfers(calc, tcfg, tfar, sup_cfg)
+        if calc.get("transfers"):
+            note = tr("[总仓采购] 门店间调货：{0} 个商品", len(calc["transfers"]))
+    except Exception as e:
+        note = tr("[总仓采购] ⚠ 调货计算失败（按原来的建议订）：{0}", e)
+    if note and log:
+        log(note)
+    colli = copy.deepcopy(calc["base"])
+    cache = {}
+    for sc in calc["schede"]:
+        lines = colli.get(sc["path"], {})
+        pk = picks.get(sc["path"])
+        try:
+            cache[_preview_key(sc, calc, lines, fill, pk)] = _plan_one(sc, calc, lines, fill, pk)
+        except Exception:
+            pass                                   # 界面线程到时候自己再算（会报出原来的错）
+    calc["_ui"] = {"colli": colli, "pv": cache}
+    return calc
+
+
 class _OnFirstShow(QObject):
     """页面第一次显示时调用一次 fn（之后就不管了）"""
     def __init__(self, widget, fn):
@@ -1315,8 +1356,7 @@ class StoreOrderPage:
                 t.item(i, 2).setText(S.moq_label(self.moq_of(p), short=True))
                 self._moq_tip(i, p)
         t.blockSignals(False)
-        if hasattr(self.win, "dashboard"):
-            self.win.dashboard.refresh()
+        self._dash_refresh()
 
     def _update_dots(self):
         """各店色块：计算后按起订量检查着色"""
@@ -1421,6 +1461,9 @@ class StoreOrderPage:
         dlg.show()
 
         settings = self.settings
+        tcfg, tfar, sup_cfg = self.transfer_cfg(), self.transfer_far(), self.cfg.get("supplier_cfg")
+        fill_now = copy.deepcopy(self.fill_cfg())
+        picks_now = copy.deepcopy(dict(self.__dict__.get("bms_picks") or {}))
 
         def work():
             try:
@@ -1438,6 +1481,7 @@ class StoreOrderPage:
                                  progress=lambda i, st, cnt, det, pct: (dlg.post_step(i, st, cnt, det), dlg.post_progress(pct)),
                                  cancel=lambda: dlg.cancel_event.is_set())
                 db.engine.dispose()
+                finish_compute(calc, tcfg, tfar, sup_cfg, fill_now, picks_now, log=log)
                 dlg.post_finished(True, tr("完成：{0} 家供应商", len(calc["schede"])))
                 self.sig.computed.emit((calc, None))
             except InterruptedError:
@@ -1451,6 +1495,24 @@ class StoreOrderPage:
                 self.sig.computed.emit((None, str(e)))
 
         threading.Thread(target=work, daemon=True).start()
+
+    def _dash_refresh(self):
+        """工作台：正在看才刷新（要列同步盘文件夹，慢）；没在看的话，点进工作台时本来就会刷新"""
+        d = getattr(self.win, "dashboard", None)
+        if d is None:
+            return
+        try:
+            on_home = self.win.NAV[self.win.stack.currentIndex()][0] == "home"
+        except Exception:
+            on_home = True
+        if on_home and not getattr(d, "_refresh_pending", False):
+            from erp_widgets import when_idle
+            d._refresh_pending = True
+
+            def go():
+                d._refresh_pending = False
+                d.refresh()
+            when_idle(go, quiet_ms=800)
 
     def _back_to_page(self):
         """后台任务做完、用户选「查看结果」：回到这一页（总仓采购 / 门店采购）"""
@@ -1467,16 +1529,14 @@ class StoreOrderPage:
             if err != "__cancel__":
                 self.win.notify(tr("{0}计算失败：{1}", tr(self.TITLE), err))
             return
-        import datetime as _dt
-        calc.setdefault("date", _dt.date.today())    # 周销量按计算当天往回数
+        ui = calc.pop("_ui", None)
+        if ui is None:                               # 没在计算线程收尾（老路径）：照旧在这里做
+            finish_compute(calc, self.transfer_cfg(), self.transfer_far(), self.cfg.get("supplier_cfg"),
+                           self.fill_cfg(), dict(self.__dict__.get("bms_picks") or {}), log=self.win.log)
+            ui = calc.pop("_ui")
         self.calc = calc
-        try:
-            S.apply_transfers(calc, self.transfer_cfg(), self.transfer_far(), self.cfg.get("supplier_cfg"))
-            if calc.get("transfers"):
-                self.win.log(tr("[总仓采购] 门店间调货：{0} 个商品", len(calc["transfers"])))
-        except Exception as e:
-            self.win.log(tr("[总仓采购] ⚠ 调货计算失败（按原来的建议订）：{0}", e))
-        self.colli = copy.deepcopy(calc["base"])
+        self.colli = ui["colli"]
+        self._pv_cache = ui["pv"]                    # 起订量检查的模拟配货已经算好了
         self.edited = set()
         self._refresh_transfer_panel()
         # 默认只勾选订得起来的供应商：有门店单独够起订量（含凑单），或合起来够 BMS 起订量
@@ -1494,10 +1554,11 @@ class StoreOrderPage:
             msg += tr("；{0} 个商品在数据库里找不到", len(calc["missing"]))
         self.detail_title.setText(tr("订货明细 · {0} 行要订", n_lines))
         self._show_view(0)
-        # 订货明细窗口在后台先分批载入（不显示），第一次点开就不用等
-        QTimer.singleShot(500, self._prewarm_detail)
-        if hasattr(self.win, "dashboard"):
-            self.win.dashboard.refresh()
+        # 订货明细窗口在后台先分批载入（不显示），第一次点开就不用等。等界面空下来再做：
+        # 不和「后台任务完成」的弹窗、跳回这一页抢时间（2026-11-07 用户：跳过去会卡一会）
+        from erp_widgets import when_idle
+        when_idle(self._prewarm_detail, quiet_ms=2000)
+        self._dash_refresh()
         from erp_widgets import ask_return
         ask_return(self.win, getattr(self, "_task", None), msg, self._back_to_page)
 
@@ -1560,19 +1621,15 @@ class StoreOrderPage:
         按现在的箱数和配货设置模拟一次配货（和真正配货同一套规则），起订量检查着色用。
         箱数和设置没变的供应商用上次的结果（改一个调货 / 箱数时不用把几十家全部重算一遍）
         """
-        import json
         lines = self.colli.get(sc["path"], {})
         fill = self.fill_cfg()
         pk = self.__dict__.get("bms_picks", {}).get(sc["path"])
-        key = (sc["path"], id(self.calc["demand"]), tuple(self.calc["stores"]),
-               json.dumps(fill, sort_keys=True, default=str), json.dumps(pk, sort_keys=True),
-               tuple(sorted((sid, tuple(sorted(ln.items()))) for sid, ln in lines.items())), json.dumps(S.sc_moq(sc), default=str))
+        key = _preview_key(sc, self.calc, lines, fill, pk)
         cache = self.__dict__.setdefault("_pv_cache", {})
         if key not in cache:
             if len(cache) > 400:
                 cache.clear()
-            cache[key] = S.plan_supplier(sc, self.calc["demand"], fill, self.calc["stores"], lines,
-                                         "manual" if pk is not None else "auto", picks=pk)
+            cache[key] = _plan_one(sc, self.calc, lines, fill, pk)
         return cache[key]
 
     @staticmethod
@@ -1712,8 +1769,8 @@ class StoreOrderPage:
         self.k_edit.setText(tr("{0} 处", len(self.edited)))
         self.k_edit.setStyleSheet(f"color:{T('warn')};" if self.edited else "")
         self._update_dots()
-        if hasattr(self.win, "dashboard") and only_path is None:
-            self.win.dashboard.refresh()
+        if only_path is None:
+            self._dash_refresh()
 
     def _matrix_clicked(self, row, col):
         t = self.mtable
@@ -1861,8 +1918,7 @@ class StoreOrderPage:
         ask_return(self.win, getattr(self, "_task", None), msg, lambda: (self._back_to_page(), self.win.show_toast(msg)))
         if tk and hasattr(self.win, "tracking"):
             self.win.tracking.badge(tk.get("drafts"))
-        if hasattr(self.win, "dashboard"):
-            self.win.dashboard.refresh()
+        self._dash_refresh()
 
     # ---------------- 结果 ----------------
     def _fill_result(self):

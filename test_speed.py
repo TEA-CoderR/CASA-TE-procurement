@@ -264,3 +264,19 @@ def test_export_orders(tmp_path=None):
     assert names == ["Ordine_FOIANO_MEGA CASH_2510.xlsx", "Ordine_FOIANO_MELONI_2510.xlsx"]
     assert len(out) == 2 and os.path.exists(os.path.join(dist, "Canvass 44 New Grieco.xlsx"))
     assert os.path.exists(os.path.join(store_dir, "缺失报告_FOIANO_2510.xlsx"))
+
+
+def test_records_same_as_iterrows():
+    """iterrows 换成 records（快十几倍，后台算的时候界面不卡）：值一样"""
+    import math
+    import pandas as pd
+    import reorder_service as R
+    df = pd.DataFrame({"CodArticolo": [1, 2], "daily_rate": [0.5, float("nan")], "decision_text": ["订", None],
+                       "store_inventory": [3, -1]})
+    a = [dict(r) for _, r in df.iterrows()]
+    b = R.records(df)
+    for x, y in zip(a, b):
+        assert int(x["CodArticolo"]) == int(y["CodArticolo"])
+        assert R._val(x, "daily_rate") == R._val(y, "daily_rate") and R._val(y, "decision_text", "") == R._val(x, "decision_text", "")
+        assert float(x["store_inventory"]) == float(y["store_inventory"]) and R.daily_of(x, [30]) == R.daily_of(y, [30])
+    assert R.records(None) == [] and R.records(df.iloc[0:0]) == []

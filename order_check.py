@@ -9,6 +9,7 @@
 → 再一家一家点「开始处理」做供应商比价分配（每家店各自下单、各自达到起订量）。
 """
 import os
+import copy
 import math
 import threading
 import time
@@ -658,6 +659,7 @@ class OrderCheck:
                   "rows": [dict(r) for r in x["info"]["rows"]]} for x in self.lists]
         log = self.win.log
         price_dir = self._price_dir()
+        box_algo, box_cfg = self._algo(), copy.deepcopy(self.cfg)
         self.running = True
         self.btn_run.setEnabled(False)
         self.msg.setText(tr("正在连接数据库并计算，商品多时要几十秒…"))
@@ -677,6 +679,8 @@ class OrderCheck:
             try:
                 rows, meta = CMD.run_check(self.settings, lists, price_dir=price_dir, log=log, progress=dlg,
                                            days=days, cycle=cycle, use_cfg=use_cfg, algo=algo)
+                init_boxes(rows, None, box_algo, box_cfg)       # 建议箱数也在这里算好（1000 多行，别在界面线程算）
+                meta["_boxed"] = True
                 dlg.post_finished(True, tr("完成：{0} 个商品", len(rows)))
                 self.sig.done.emit((rows, None, meta))
             except Exception as e:
@@ -700,7 +704,8 @@ class OrderCheck:
             self.msg.setText(tr("计算失败"))
             self.win.notify(tr("检查清单失败：{0}", err))
             return
-        init_boxes(rows, None, self._algo(), self.cfg)
+        if not meta.pop("_boxed", False):
+            init_boxes(rows, None, self._algo(), self.cfg)
         self.rows, self.meta = rows, meta
         self.transit = meta.get("transit")            # 在途（检查时读好的，建议箱数里扣过了）
         # 人工改的调货 {(门店, 商品编号): {"from", "pieces", "auto"} 或 0 = 不调}；改过一次就冻结（别的行不再跟着变）
@@ -721,8 +726,25 @@ class OrderCheck:
         self.ctl.filters = {}
         self._replan(render=False)
         self._fill()
+        self._load_transit()                            # 在途列：后台读（检查时一般已经读好，这里直接返回）
+        # 不急的：每月销量（查数据库）、商品详情窗口（建窗口 + 连数据库）等界面空下来再做，
+        # 不和「后台任务完成」弹窗、打开检查窗口抢时间（2026-11-07 用户：跳过去会卡一会）
+        self._m24, self._m24_done = {}, set()           # 上一次检查的每月销量作废（读好之前详情栏显示「正在读」）
+        self._m24_token = getattr(self, "_m24_token", 0) + 1
+        from erp_widgets import when_idle
+        when_idle(self._after_done, quiet_ms=1500)
+        self.summary_row.show()
+        self.window.setWindowTitle(tr("检查门店订货清单 — {0} · {1} 个商品",
+                                      "、".join(store_label(k) for k in meta["stores"]), len(rows)))
+        done = tr("✔ {0}：{1} 个商品", "、".join(store_label(k) for k in meta["stores"]), len(rows))
+        self.msg.setText(done)
+        from erp_widgets import ask_return
+        ask_return(self.win, getattr(self, "_task", None), tr("订货清单检查完成") + "\n" + done, self.window.bring_up)
+
+    def _after_done(self):
+        if not self.rows:
+            return
         self._load_months()                             # 详情栏的近两年每月销量：后台读
-        self._load_transit()                            # 在途列：后台读
         try:                                            # 商品详情窗口：先在后台连好数据库，第一次双击就快
             from product_window import ProductWindow
             if self._card is None:
@@ -731,13 +753,6 @@ class OrderCheck:
             self._card.warm_up()
         except Exception:
             pass
-        self.summary_row.show()
-        self.window.setWindowTitle(tr("检查门店订货清单 — {0} · {1} 个商品",
-                                      "、".join(store_label(k) for k in meta["stores"]), len(rows)))
-        done = tr("✔ {0}：{1} 个商品", "、".join(store_label(k) for k in meta["stores"]), len(rows))
-        self.msg.setText(done)
-        from erp_widgets import ask_return
-        ask_return(self.win, getattr(self, "_task", None), tr("订货清单检查完成") + "\n" + done, self.window.bring_up)
 
     def _vals(self, i):
         """数据行 i 每一列显示的文字（按屏幕上的列顺序）"""

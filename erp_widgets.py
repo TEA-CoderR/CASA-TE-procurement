@@ -39,6 +39,41 @@ def task_ended(key):
     RUNNING.pop(key, None)
 
 
+# ---- 等界面空下来再做（2026-11-07 用户：后台任务完成、跳回结果页时会卡一下）----
+LAST_INPUT = [0.0]      # 最后一次点鼠标 / 按键的时间（main._ClickRecorder 更新）
+
+
+def when_idle(fn, quiet_ms=1500, max_ms=60000):
+    """
+    不急的活（提前建订货明细窗口、刷新工作台…）：等没有弹窗、用户 quiet_ms 内没点没按键时再做，
+    免得刚点完「查看结果」就和跳页面抢时间。最多等 max_ms。只用一个 300 毫秒的定时器，做完就停
+    """
+    from PySide6.QtWidgets import QApplication
+    t0 = time.time()
+    tm = QTimer()
+    tm.setInterval(300)
+
+    def check():
+        now = time.time()
+        busy = QApplication.activeModalWidget() is not None or (now - LAST_INPUT[0]) * 1000 < quiet_ms
+        if busy and (now - t0) * 1000 < max_ms:
+            return
+        tm.stop()
+        _IDLE.discard(tm)
+        try:
+            fn()
+        except Exception:
+            import traceback
+            traceback.print_exc()
+    tm.timeout.connect(check)
+    _IDLE.add(tm)                    # 留个引用，不然定时器会被回收
+    tm.start()
+    return tm
+
+
+_IDLE = set()
+
+
 class BusyDialog(QDialog):
     """
     一句话 + 来回走的进度条，后台线程跑 func，跑完自动关掉，再在界面线程调用 on_done(结果, 错误)。
@@ -388,22 +423,40 @@ class TaskDialog(QDialog):
         if state == "running":
             for k in range(i):
                 if self.rows[k]["state"] == "running":
-                    self._on_step(k, "done", self.rows[k]["cnt"].text(), "")
+                    self._on_step(k, "done", self.rows[k].get("count", ""), "")
         r = self.rows[i]
         if state == "running" and r["t0"] is None:
             r["t0"] = time.time()
         if state in ("done", "error") and r["t0"] is not None:
             r["tm"].setText(self._fmt(time.time() - r["t0"]))
         r["state"] = state
-        r["cnt"].setText(count)
-        r["detail"].setText(detail)
-        r["detail"].setVisible(bool(detail) and state == "running")
+        r["count"], r["text"] = count, detail
+        if self.in_background:            # 藏着的时候只记下来，不重画（换样式表很费时，后台运行时界面要省着用）
+            r["dirty"] = True
+            return
+        self._show_row(i)
+
+    def _show_row(self, i):
+        r = self.rows[i]
+        r["cnt"].setText(r.get("count", ""))
+        r["detail"].setText(r.get("text", ""))
+        r["detail"].setVisible(bool(r.get("text")) and r["state"] == "running")
         self._paint_row(i)
+        r["dirty"] = False
 
     def _on_progress(self, pct):
         self.pct = max(0.0, min(100.0, pct))
+        if self.in_background:
+            return
         self.bar.setValue(int(self.pct * 10))
         self.pct_lbl.setText(f"{self.pct:.0f}%")
+
+    def current_step(self):
+        """现在在做哪一步（后台任务条显示用）"""
+        for r in self.rows:
+            if r["state"] == "running":
+                return r["name"].text()
+        return ""
 
     @staticmethod
     def _fmt(sec):
@@ -411,6 +464,8 @@ class TaskDialog(QDialog):
         return f"{sec // 60:02d}:{sec % 60:02d}"
 
     def _tick(self):
+        if self.in_background and not self.is_done:
+            return
         el = time.time() - self.t0
         self.elapsed_lbl.setText(tr("已用 {0}", self._fmt(el)))
         if self.is_done:
@@ -431,12 +486,13 @@ class TaskDialog(QDialog):
         if ok:
             for i, r in enumerate(self.rows):
                 if r["state"] in ("running", "todo"):
-                    self._on_step(i, "done", r["cnt"].text(), "")
+                    self._on_step(i, "done", r.get("count", ""), "")
             self._on_progress(100)
         else:
             for i, r in enumerate(self.rows):
                 if r["state"] == "running":
-                    self._on_step(i, "error", r["cnt"].text(), "")
+                    self._on_step(i, "error", r.get("count", ""), "")
+        _bg_drop(self)
         if message:
             self.msg.setText(message)
             self.msg.setStyleSheet(f"color:{T('ok') if ok else T('err')};")
@@ -457,7 +513,26 @@ class TaskDialog(QDialog):
         # → 别的窗口全部点不了，任务完成也不解除（2026-11-06 用户：点后台运行后整个程序点不动）
         self.hide()
         self.setModal(False)
+        if self not in BG_TASKS:
+            BG_TASKS.append(self)
+        BgTaskPill.kick()
         self.went_background.emit()
+
+    def to_foreground(self):
+        """后台任务条点一下：把进度窗口拿回来（不独占，照样能点别的；再点「后台运行」又藏起来）"""
+        if self.is_done:
+            return
+        self.in_background = False
+        _bg_drop(self)
+        RUNNING[id(self)] = RUNNING.get(id(self), "").replace("（后台运行）", "")
+        for i, r in enumerate(self.rows):
+            if r.get("dirty"):
+                self._show_row(i)
+        self._on_progress(self.pct)
+        self._tick()
+        self.show()
+        self.raise_()
+        self.activateWindow()
 
     def request_cancel(self):
         self.cancel_event.set()
@@ -475,6 +550,117 @@ class TaskDialog(QDialog):
 # =====================================================================
 # 小折线图
 # =====================================================================
+# ---- 后台运行中的任务 + 顶栏的进度条（2026-11-07 用户：后台运行看不到完成进度）----
+BG_TASKS = []           # 点了「后台运行」、还没做完的 TaskDialog
+
+
+def _bg_drop(dlg):
+    if dlg in BG_TASKS:
+        BG_TASKS.remove(dlg)
+    BgTaskPill.kick()
+
+
+class BgTaskPill(QPushButton):
+    """
+    顶栏上的小进度条：「⏳ 正在计算订货量 · 45%」，底色按进度填满；点一下把进度窗口拿回来
+    （几个任务时弹菜单选）。没有后台任务时藏起来、定时器也停，不占界面时间；有任务时每 0.7 秒看一眼进度，
+    只重画这个小控件
+    """
+    _all = []
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("BgPill")
+        self.setCursor(Qt.PointingHandCursor)
+        self.setFixedHeight(30)
+        self.setMinimumWidth(150)
+        self.setMaximumWidth(280)
+        self.clicked.connect(self._open)
+        self._pct, self._text = 0.0, ""
+        self.timer = QTimer(self, interval=700, timeout=self._refresh)
+        self.hide()
+        BgTaskPill._all.append(self)
+        self.destroyed.connect(lambda *_: BgTaskPill._all.remove(self) if self in BgTaskPill._all else None)
+
+    @classmethod
+    def kick(cls):
+        for p in list(cls._all):
+            try:
+                p._refresh()
+            except RuntimeError:              # 窗口已经关了
+                cls._all.remove(p)
+
+    def _refresh(self):
+        tasks = [d for d in BG_TASKS if not d.is_done]
+        if not tasks:
+            self.timer.stop()
+            self.hide()
+            return
+        if not self.timer.isActive():
+            self.timer.start()
+        pct = min(d.pct for d in tasks)
+        if len(tasks) == 1:
+            d = tasks[0]
+            step = d.current_step()
+            text = f"{d.windowTitle()} · {pct:.0f}%"
+            tip = d.windowTitle() + (f"\n{step}" if step else "") + "\n" + tr("已用 {0}", d._fmt(time.time() - d.t0)) \
+                + "\n" + tr("点一下看进度")
+        else:
+            text = tr("{0} 个后台任务 · {1:.0f}%", len(tasks), pct)
+            tip = "\n".join(f"{d.windowTitle()} · {d.pct:.0f}%" for d in tasks) + "\n" + tr("点一下选一个看进度")
+        if text != self._text or abs(pct - self._pct) >= 0.5:
+            self._text, self._pct = text, pct
+            fm = self.fontMetrics()
+            self.setFixedWidth(max(150, min(280, fm.horizontalAdvance(text) + 46)))
+        self.setToolTip(tip)
+        self.update()                    # 小控件，重画很便宜（转动的小圆点也靠它动）
+        if not self.isVisible():
+            self.show()
+
+    def _open(self):
+        tasks = [d for d in BG_TASKS if not d.is_done]
+        if len(tasks) == 1:
+            tasks[0].to_foreground()
+        elif tasks:
+            from PySide6.QtWidgets import QMenu
+            m = QMenu(self)
+            for d in tasks:
+                m.addAction(f"{d.windowTitle()} · {d.pct:.0f}%", d.to_foreground)
+            m.exec(self.mapToGlobal(self.rect().bottomLeft()))
+        self.kick()
+
+    def paintEvent(self, _e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        r = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+        rad = r.height() / 2
+        p.setPen(QPen(QColor(T("accent")), 1))
+        p.setBrush(QColor(T("surface")))
+        p.drawRoundedRect(r, rad, rad)
+        if self._pct > 0:                         # 进度：底色从左往右填
+            p.save()
+            from PySide6.QtGui import QPainterPath
+            clip = QPainterPath()
+            clip.addRoundedRect(r, rad, rad)
+            p.setClipPath(clip)
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor(T("accent_soft")))
+            p.drawRect(QRectF(r.left(), r.top(), r.width() * self._pct / 100.0, r.height()))
+            p.restore()
+        # 左边一个转动的小圆点表示还在跑（跟着 0.7 秒的刷新换位置，不另开动画）
+        cx, cy = r.left() + 15, r.center().y()
+        p.setPen(QPen(QColor(T("line")), 2))
+        p.setBrush(Qt.NoBrush)
+        p.drawEllipse(QPointF(cx, cy), 6, 6)
+        p.setPen(QPen(QColor(T("accent")), 2))
+        start = int((time.time() * 2 % 4) * 90 * 16)
+        p.drawArc(QRectF(cx - 6, cy - 6, 12, 12), start, 120 * 16)
+        p.setPen(QColor(T("text")))
+        p.drawText(QRectF(r.left() + 28, r.top(), r.width() - 36, r.height()), Qt.AlignVCenter | Qt.AlignLeft,
+                   self.fontMetrics().elidedText(self._text, Qt.ElideRight, int(r.width() - 36)))
+        p.end()
+
+
 class Sparkline(QWidget):
     """周销量柱状图：左边纵轴刻度、下面日期、悬停显示那一周的日期和销量。
     values 从旧到新；end_date 是最后一周的最后一天（计算当天）。"""
