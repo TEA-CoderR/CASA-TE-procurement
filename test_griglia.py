@@ -326,6 +326,7 @@ def test_export_chosen_tables_styled_with_photos(tmp_path):
     assert wb.sheetnames == ["都不做了"]
     ws = wb["都不做了"]
     assert "Griglia" in ws["A1"].value and ws["A1"].fill.fgColor.rgb.endswith("1F3A5F")
+    assert ws["A1"].font.name == ws.cell(6, 4).font.name == "Microsoft YaHei"          # 清楚的字体（用户 11-07）
     hr = next(r for r in range(1, 8) if ws.cell(r, 2).value == "EAN")
     assert ws.cell(hr + 1, 1).value.startswith('=_xlfn.IMAGE("https://img.casaete.top/prodotti/8000000000011/')
     assert ws.cell(hr + 1, 2).value == "8000000000011" and list(ws.tables)          # 表头自带筛选

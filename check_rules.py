@@ -124,6 +124,7 @@ def write_problem_report(rows, path, store=None, url=None, when=None, sources=No
     每段是一个 Excel 表格（自带筛选按钮，一页里两段都能筛）。这家店没有待核对的商品返回 None
     """
     from openpyxl import Workbook
+    from xlsx_report import XL_FONT
     from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
     from openpyxl.utils import get_column_letter
     from openpyxl.worksheet.table import Table, TableStyleInfo
@@ -167,13 +168,13 @@ def write_problem_report(rows, path, store=None, url=None, when=None, sources=No
         last = get_column_letter(ncol)
         ws.merge_cells(f"A1:{last}1")
         ws["A1"] = f"Articoli da verificare – {R.STORES.get(sid, sid)}"
-        ws["A1"].font = Font(size=16, bold=True, color="FFFFFF")
+        ws["A1"].font = Font(name=XL_FONT, size=16, bold=True, color="FFFFFF")
         ws["A1"].fill = PatternFill("solid", fgColor="1F3A5F")
         ws["A1"].alignment = Alignment(horizontal="left", vertical="center", indent=1)
         ws.row_dimensions[1].height = 32
         ws.merge_cells(f"A2:{last}2")
         ws["A2"] = f"CASA&TE · {when:%d/%m/%Y} · {sum(len(p) for p in parts)} articoli"
-        ws["A2"].font = Font(size=10, italic=True, color=MUTED)
+        ws["A2"].font = Font(name=XL_FONT, size=10, color=MUTED)
         ws["A2"].alignment = Alignment(horizontal="left", vertical="center", indent=1)
         ws.row_dimensions[2].height = 20
         ws.freeze_panes = "A3"                       # 标题一直看得到；每段的表头往下翻时 Excel 显示在列号上
@@ -185,14 +186,14 @@ def write_problem_report(rows, path, store=None, url=None, when=None, sources=No
             cols = len(heads)
             ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=ncol)
             c = ws.cell(r, 1, f"{sec['title']}  ({len(xs)})")
-            c.font = Font(size=12, bold=True, color=sec["ink"])
+            c.font = Font(name=XL_FONT, size=12, bold=True, color=sec["ink"])
             c.fill = PatternFill("solid", fgColor=sec["fill"])
             c.alignment = Alignment(horizontal="left", vertical="center", indent=1)
             ws.row_dimensions[r].height = 24
             r += 1
             ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=ncol)
             nc = ws.cell(r, 1, sec["note"])
-            nc.font = Font(size=9, italic=True, color=sec["ink"])
+            nc.font = Font(name=XL_FONT, size=9, color=sec["ink"])
             nc.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True, indent=1)
             ws.row_dimensions[r].height = 28
             r += 1
@@ -201,7 +202,7 @@ def write_problem_report(rows, path, store=None, url=None, when=None, sources=No
                 hc = ws.cell(r, j, h)
                 fill = head_fill.get(j) if sec is sec_a else \
                     ("DDF3F1" if j in (8, 9) else "E7F5EC" if j == 10 else None)
-                hc.font = Font(size=10, bold=True, color=INK)
+                hc.font = Font(name=XL_FONT, size=10, bold=True, color=INK)
                 hc.fill = PatternFill("solid", fgColor=fill or "F3F4F6")
                 hc.alignment = center
                 hc.border = box
@@ -227,11 +228,11 @@ def write_problem_report(rows, path, store=None, url=None, when=None, sources=No
                     dc = ws.cell(r, j, v)
                     dc.border = box
                     dc.alignment = left if j in (4, 5, 10) else center
-                    dc.font = Font(size=10, color=INK, bold=(j == 4))
+                    dc.font = Font(name=XL_FONT, size=10, color=INK, bold=(j == 4))
                     bg = zebra
                     if j in tags:
                         bg, ink = COLORS[tags[j]]
-                        dc.font = Font(size=10, bold=True, color=ink)
+                        dc.font = Font(name=XL_FONT, size=10, bold=True, color=ink)
                     elif sec is sec_a and j == 7:
                         bg = "FFFBEB"                   # 要手填的格：浅黄
                     if bg:
@@ -245,7 +246,7 @@ def write_problem_report(rows, path, store=None, url=None, when=None, sources=No
             ws.add_table(t)
             r += 1
         foot = ws.cell(r, 1, "Foto: si caricano da internet in Excel 365.")
-        foot.font = Font(size=9, italic=True, color=MUTED)
+        foot.font = Font(name=XL_FONT, size=9, color=MUTED)
         ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=ncol)
         ws.page_setup.orientation = "landscape"
         ws.page_setup.fitToWidth = 1

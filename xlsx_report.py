@@ -15,6 +15,9 @@ from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.table import Table, TableStyleInfo
 
+# 字体（2026-11-07 用户：原来的字体看着眼睛难受、不清晰）：微软雅黑，Windows 都有（意大利文 Windows 也有），
+# 中文和拉丁字母都清楚；没有这个字体的电脑 Excel 会自己换一个
+XL_FONT = "Microsoft YaHei"
 INK, MUTED, LINE, ZEBRA = "1F2A37", "6B7280", "E5E7EB", "FAFBFC"
 BAND = "1F3A5F"                              # 标题条深蓝（和门店报告一样）
 HEAD = "F3F4F6"                              # 表头默认浅灰
@@ -73,13 +76,13 @@ def add_sheet(wb, name, title, subtitle, cols, rows, marks=None, photo_eans=None
     # 标题条 + 说明行
     ws.merge_cells(f"A1:{last}1")
     ws["A1"] = title
-    ws["A1"].font = Font(size=16, bold=True, color="FFFFFF")
+    ws["A1"].font = Font(name=XL_FONT, size=16, bold=True, color="FFFFFF")
     ws["A1"].fill = PatternFill("solid", fgColor=BAND)
     ws["A1"].alignment = Alignment(horizontal="left", vertical="center", indent=1)
     ws.row_dimensions[1].height = 32
     ws.merge_cells(f"A2:{last}2")
     ws["A2"] = subtitle
-    ws["A2"].font = Font(size=10, italic=True, color=MUTED)
+    ws["A2"].font = Font(name=XL_FONT, size=10, color=MUTED)
     ws["A2"].alignment = Alignment(horizontal="left", vertical="center", indent=1)
     ws.row_dimensions[2].height = 20
     hr = 4
@@ -87,7 +90,7 @@ def add_sheet(wb, name, title, subtitle, cols, rows, marks=None, photo_eans=None
         ws.merge_cells(f"A3:{last}3")
         bg, ink = TONES.get(tone or "GREY")
         ws["A3"] = note
-        ws["A3"].font = Font(size=9, italic=True, color=ink)
+        ws["A3"].font = Font(name=XL_FONT, size=9, color=ink)
         ws["A3"].fill = PatternFill("solid", fgColor=bg)
         ws["A3"].alignment = Alignment(horizontal="left", vertical="center", wrap_text=True, indent=1)
         ws.row_dimensions[3].height = 26
@@ -95,7 +98,7 @@ def add_sheet(wb, name, title, subtitle, cols, rows, marks=None, photo_eans=None
     # 表头
     for j, c in enumerate(allc, 1):
         hc = ws.cell(hr, j, c.head)
-        hc.font = Font(size=10, bold=True, color=INK)
+        hc.font = Font(name=XL_FONT, size=10, bold=True, color=INK)
         hc.fill = PatternFill("solid", fgColor=HEAD_TONES.get(c.group, HEAD))
         hc.alignment = center
         hc.border = box
@@ -128,15 +131,15 @@ def add_sheet(wb, name, title, subtitle, cols, rows, marks=None, photo_eans=None
             if t:
                 bg, ink = TONES[t]
                 dc.fill = PatternFill("solid", fgColor=bg)
-                dc.font = Font(size=10, bold=True, color=ink)
+                dc.font = Font(name=XL_FONT, size=10, bold=True, color=ink)
             else:
-                dc.font = Font(size=10, color=INK, bold=c.bold)
+                dc.font = Font(name=XL_FONT, size=10, color=INK, bold=c.bold)
                 if zebra:
                     dc.fill = zebra
         ws.row_dimensions[r].height = 42 if photo else 20
     end = hr + max(1, len(rows))
     if not rows:                                                   # 空表也放一行说明，Excel 表格不能是空的
-        ws.cell(hr + 1, 1 + off, "—").font = Font(size=10, italic=True, color=MUTED)
+        ws.cell(hr + 1, 1 + off, "—").font = Font(name=XL_FONT, size=10, color=MUTED)
     # Excel 表格：表头带筛选按钮（照片列不放进去）
     first = get_column_letter(1 + off)
     t = Table(displayName=f"Tabella{len(wb.sheetnames)}", ref=f"{first}{hr}:{last}{end}")
@@ -146,7 +149,7 @@ def add_sheet(wb, name, title, subtitle, cols, rows, marks=None, photo_eans=None
     foot = end + 2
     if photo:
         ws.cell(foot, 1, "Foto: si caricano da internet in Excel 365 · 照片要用 Excel 365 打开才显示").font = \
-            Font(size=9, italic=True, color=MUTED)
+            Font(name=XL_FONT, size=9, color=MUTED)
     # 打印：横向、一页宽
     ws.page_setup.orientation = "landscape"
     ws.page_setup.fitToWidth = 1
