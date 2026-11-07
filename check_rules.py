@@ -285,13 +285,20 @@ def is_new_item(x):
 
 
 # 2026-11-07 用户定：尽可能少砍门店清单（采购部常常又加回去），只有库存真的多才砍：
-#   现在库存够卖 < keep_days 天 → 照清单订，一箱不砍；keep_days ~ free_days 天 → 最多砍掉清单的 max_cut；
-#   ≥ free_days 天 → 才按系统建议（可以少很多 / 不订）。以前按「订货周期」算，周期变成 14 天检查间隔后会砍得更多
-REVIEW_DEFAULTS = {"max_cut": 0.5, "keep_days": 30.0, "free_days": 60.0}
+#   现在库存够卖 < 照清单天数 → 照清单订，一箱不砍；两个天数之间 → 最多砍掉清单的 max_cut；
+#   ≥ 可不订天数 → 才按系统建议（可以少很多 / 不订）。以前按「订货周期」算，周期变成 14 天检查间隔后会砍得更多
+# 2026-11-07 第二次（用户：600 个里每次 200 多个不订太多，库存真的多太多才砍；要按 ABC 分开，不能一条线）：
+#   按等级各一对天数：A 90 / 180、B 60 / 120、C 45 / 90（够卖不到前一个照清单；超过后一个才可以不订；中间最多砍 max_cut）
+#   卖得好的（A）门店要就尽量给，卖得慢的（C）库存多了先砍。没等级的按 B
+REVIEW_DEFAULTS = {"max_cut": 0.5,
+                   "keep_a": 90.0, "free_a": 180.0,
+                   "keep_b": 60.0, "free_b": 120.0,
+                   "keep_c": 45.0, "free_c": 90.0}
 
 
 def review_rules(cfg=None):
-    """检查清单少砍的规则（DETERSIVO采购「设置」里改）：库存够卖几天以下照清单；几天以上才可以不订；中间最多砍几成"""
+    """检查清单少砍的规则（DETERSIVO采购「设置」里改）：按 ABC 各自的天数——库存够卖几天以下照清单；几天以上才可以不订；
+    中间最多砍几成。返回 {"max_cut", "keep_a" …, "free_c"}，用 review_days_for(rr, 等级) 取一个商品的那一对"""
     c = dict(REVIEW_DEFAULTS)
     for k in c:
         try:
@@ -300,6 +307,14 @@ def review_rules(cfg=None):
         except (TypeError, ValueError):
             pass
     return c
+
+
+def review_days_for(rr, tier):
+    """(照清单天数, 可不订天数)：按等级；没等级 / 认不出的按 B"""
+    t = (tier or "B").strip().upper()[:1]
+    t = t.lower() if t in ("A", "B", "C") else "b"
+    keep, free = rr["keep_" + t], rr["free_" + t]
+    return keep, max(keep, free)
 
 
 def _cover_now(x):
@@ -376,6 +391,7 @@ def init_boxes(rows, units=None, algo=None, rules=None):
     2026-11-07（用户：尽可能少砍门店清单，采购部常常又加回去；只有库存真的多才砍，少量库存保留）改成按「现在库存够卖几天」：
       < keep_days（30）天 → 照清单（kept = True）；keep_days ~ free_days（60）天 → 最多砍掉 max_cut（limited = True）；
       ≥ free_days 天 → 按系统建议。没销量、库存不到一箱的也算库存少。cover_now = 用来判断的够卖天数
+    2026-11-07 第二次：天数按 ABC 分开（review_days_for：A 90 / 180、B 60 / 120、C 45 / 90），x["review_days"] = 这一行用的那一对
     2026-11-03：在途（x["transit_pcs"]，已经订了还没到货）最后从建议箱数里扣（在途件数 ÷ 每箱件数，整箱扣；transit_cut = 扣了几箱）
     """
     import forecast as F
@@ -439,10 +455,12 @@ def init_boxes(rows, units=None, algo=None, rules=None):
             x["sbox"] = x["lbox"]
         else:
             sb = min(sys_, x["lbox"])                  # 先不多订：最多订到门店清单的箱数
-            if sb < x["lbox"] and cover < rr["keep_days"]:
+            keep_d, free_d = review_days_for(rr, x.get("tier"))
+            x["review_days"] = (keep_d, free_d)
+            if sb < x["lbox"] and cover < keep_d:
                 sb = x["lbox"]                         # 库存不多：照门店清单，一箱不砍
                 x["kept"] = True
-            elif sb < x["lbox"] and cover < rr["free_days"]:
+            elif sb < x["lbox"] and cover < free_d:
                 floor = int(math.ceil(x["lbox"] * (1 - rr["max_cut"]) - 1e-9))
                 if sb < floor:
                     sb = floor                         # 库存够一阵子但不算多：最多砍掉 max_cut

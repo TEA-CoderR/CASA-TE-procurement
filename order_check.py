@@ -233,35 +233,49 @@ class OrderCheck:
         # 少砍门店清单（2026-10-25 用户定：清单数量有它的原因；2026-11-07：库存真的多才砍）
         from erp_widgets import tip_label
         rr = review_rules(self.cfg)
-        r4 = QHBoxLayout()
-        r4.setSpacing(10)
+        # 按 ABC 各一对天数（2026-11-07 用户：不能同一条线）：一张小网格，表头 A B C 只写一次
+        from PySide6.QtWidgets import QGridLayout
+        g4 = QGridLayout()
+        g4.setHorizontalSpacing(10)
+        g4.setVerticalSpacing(6)
+        for j, t in enumerate(("A", "B", "C")):
+            h = QLabel(t)
+            h.setAlignment(Qt.AlignCenter)
+            h.setObjectName("Muted")
+            g4.addWidget(h, 0, 1 + j)
+        self.review_boxes = {}
 
-        def days_box(key, tip_text, label):
-            r4.addWidget(tip_label(label, tip_text))
-            sb = QSpinBox()
-            sb.setRange(1, 365)
-            sb.setSingleStep(5)
-            sb.setSuffix(tr(" 天"))
-            sb.setValue(int(round(rr[key])))
-            sb.valueChanged.connect(lambda v: (self.cfg.__setitem__(key, float(v)), save_settings(self.settings)))
-            r4.addWidget(sb)
-            r4.addSpacing(12)
-            return sb
-        self.keep_days = days_box("keep_days", tr("现在的库存够卖不到这么多天：照门店清单订，一箱不砍（默认 30 天）。下次检查生效"),
-                                  tr("照清单订：库存少于"))
-        r4.addWidget(tip_label(tr("少订最多"), tr("系统建议比门店清单少订时，最多砍掉清单的几成（默认 50%：清单 4 箱最少订 2 箱）。门店报的数量有它的原因（促销、陈列等），改得太狠反而不好。下次检查生效")))
+        def days_row(r, prefix, label, tip_text):
+            g4.addWidget(tip_label(label, tip_text), r, 0)
+            for j, t in enumerate(("a", "b", "c")):
+                key = f"{prefix}_{t}"
+                sb = QSpinBox()
+                sb.setRange(1, 999)
+                sb.setSingleStep(15)
+                sb.setSuffix(tr(" 天"))
+                sb.setFixedWidth(92)
+                sb.setValue(int(round(rr[key])))
+                sb.valueChanged.connect(lambda v, k=key: (self.cfg.__setitem__(k, float(v)), save_settings(self.settings)))
+                g4.addWidget(sb, r, 1 + j)
+                self.review_boxes[key] = sb
+        days_row(1, "keep", tr("照清单订：库存少于"),
+                 tr("现在的库存够卖不到这么多天：照门店清单订，一箱不砍。按等级分开：卖得好的（A）门店要就尽量给，"
+                    "卖得慢的（C）库存多了先砍（默认 A 90 · B 60 · C 45 天）。下次检查生效"))
+        days_row(2, "free", tr("可不订：库存够卖"),
+                 tr("现在的库存够卖这么多天以上（库存真的多），才按系统建议少订或不订（默认 A 180 · B 120 · C 90 天）；"
+                    "两个天数之间最多砍掉「少订最多」的比例（只要 1 箱的照订）。下次检查生效"))
+        g4.addWidget(tip_label(tr("少订最多"), tr("系统建议比门店清单少订时，最多砍掉清单的几成（默认 50%：清单 4 箱最少订 2 箱）。门店报的数量有它的原因（促销、陈列等），改得太狠反而不好。下次检查生效")), 1, 5)
         self.max_cut = QSpinBox()
         self.max_cut.setRange(0, 100)
         self.max_cut.setSingleStep(10)
         self.max_cut.setSuffix(" %")
+        self.max_cut.setFixedWidth(80)
         self.max_cut.setValue(int(round(rr["max_cut"] * 100)))
         self.max_cut.valueChanged.connect(lambda v: (self.cfg.__setitem__("max_cut", v / 100.0), save_settings(self.settings)))
-        r4.addWidget(self.max_cut)
-        r4.addSpacing(12)
-        self.free_days = days_box("free_days", tr("现在的库存够卖这么多天以上，才按系统建议少订或不订（默认 60 天）；介于两个天数之间的最多砍掉上面的比例。下次检查生效"),
-                                  tr("可不订：库存够卖"))
-        r4.addStretch()
-        pv.addLayout(r4)
+        g4.addWidget(self.max_cut, 1, 6)
+        g4.setColumnMinimumWidth(4, 16)
+        g4.setColumnStretch(7, 1)
+        pv.addLayout(g4)
         p.lay.addWidget(self.params_box)
         self.msg = QLabel("")
         self.msg.setObjectName("Muted")
@@ -922,14 +936,20 @@ class OrderCheck:
             if x.get("transit_cut"):
                 line += "，" + tr("建议少订 {0} 箱", x["transit_cut"])
             lines.insert(0, line)
+        keep_d, free_d = x.get("review_days") or (0, 0)
+        tier_txt = (x.get("tier") or "B")[:1]
         if x.get("kept"):
-            rr = review_rules(self.cfg)
-            lines.append(tr("系统算出来只要 {0:,} 箱，但现在库存只够卖 {1} 天（不到 {2:g} 天），照门店清单 {3:,} 箱订",
-                            x.get("sys_box") or 0, _days(x.get("cover_now") or 0) or "0", rr["keep_days"], x["lbox"]))
+            lines.append(tr("系统算出来只要 {0:,} 箱，但现在库存只够卖 {1} 天（{2} 类不到 {3:g} 天），照门店清单 {4:,} 箱订",
+                            x.get("sys_box") or 0, _days(x.get("cover_now") or 0) or "0", tier_txt, keep_d, x["lbox"]))
         elif x.get("limited"):
             rr = review_rules(self.cfg)
-            lines.append(tr("系统算出来只要 {0:,} 箱；现在库存够卖 {1} 天，还不算多（够卖 {2:g} 天以上才会砍得更多），少订最多砍掉 {3:.0%}，按 {4:,} 箱订",
-                            x.get("sys_box") or 0, _days(x.get("cover_now") or 0) or "0", rr["free_days"], rr["max_cut"], x["sbox"]))
+            lines.append(tr("系统算出来只要 {0:,} 箱；现在库存够卖 {1} 天，还不算多（{2} 类够卖 {3:g} 天以上才会砍得更多），少订最多砍掉 {4:.0%}，按 {5:,} 箱订",
+                            x.get("sys_box") or 0, _days(x.get("cover_now") or 0) or "0", tier_txt, free_d, rr["max_cut"],
+                            x["sbox"]))
+        elif x.get("sys_box") is not None and x["sys_box"] < x["lbox"] and x.get("sbox") is not None \
+                and x["sbox"] < x["lbox"] and free_d and not x.get("protect"):
+            lines.append(tr("现在库存够卖 {0} 天（{1} 类超过 {2:g} 天算库存多），按系统建议 {3:,} 箱订",
+                            _days(x.get("cover_now") or 0) or "∞", tier_txt, free_d, x["sbox"]))
         elif x.get("sys_box") is not None and x["sys_box"] > x["lbox"]:
             lines.append(tr("系统算出来要 {0:,} 箱，多于门店清单，按清单 {1:,} 箱订（先不多订）", x["sys_box"], x["lbox"]))
         if x.get("in_db", True) and x.get("sbox") is not None and x["lbox"] != x["sbox"]:
