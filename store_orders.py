@@ -1681,17 +1681,25 @@ def _set_row_cells(xml, values, styles=None):
     return xml
 
 
-# 程序内部用，不写进订单文件（2026-11-07 用户：月均要写回去，放在 ROT.180d 后面）
+# 程序内部用，不写进订单文件
 FILE_SKIP_HEADS = ("采购量", "箱数", "需求")
+# 2026-11-07 用户：月均要写进订单文件，表头用意大利文，放在 GIA 后面、ROT.30d 前面
+FILE_RENAME = {"月均": "MEDIA MESE"}
+FILE_AFTER = {"月均": "GIA"}
 
 
 def file_extra(extra, heads):
-    """写进订单文件的附加列：去掉内部列（采购量 / 箱数 / 需求），月均留着。返回 (extra, heads)"""
+    """写进订单文件的附加列：去掉内部列（采购量 / 箱数 / 需求），月均改名 MEDIA MESE 挪到 GIA 后面。返回 (extra, heads)"""
     if not extra or not heads:
         return extra, heads
     keep = [i for i, h in enumerate(heads) if h not in FILE_SKIP_HEADS]
+    for h, after in FILE_AFTER.items():
+        if h in heads and after in heads and heads.index(h) in keep:
+            i = heads.index(h)
+            keep.remove(i)
+            keep.insert(keep.index(heads.index(after)) + 1, i)
     out = {sid: {r: ([v[i] for i in keep] if v else v) for r, v in rows.items()} for sid, rows in extra.items()}
-    return out, [heads[i] for i in keep]
+    return out, [FILE_RENAME.get(heads[i], heads[i]) for i in keep]
 
 
 def _write_extra(xml, scheda, rows_vals, headers, row_map):

@@ -266,7 +266,8 @@ class WriteTest(unittest.TestCase):
             self.assertEqual(ws.cell(rows[0], c).value, 3)
             self.assertEqual(ws.cell(rows[1], c).fill.fill_type, ws.cell(rows[1], c - 1).fill.fill_type)
             heads_in_file = [ws.cell(sc["header_row"], k).value for k in range(1, ws.max_column + 1)]
-            self.assertIn("月均", heads_in_file)             # 2026-11-07 用户：月均要写进订单文件
+            self.assertIn("MEDIA MESE", heads_in_file)       # 2026-11-07 用户：月均要写进订单文件（意大利文，GIA 后面）
+            self.assertNotIn("月均", heads_in_file)
             self.assertNotIn("需求", heads_in_file)
             self.assertIn("GIA", heads_in_file)
 
@@ -276,9 +277,9 @@ class FileExtraTest(unittest.TestCase):
         heads = S.extra_headers()
         vals = list(range(len(heads)))
         extra, h2 = S.file_extra({2: {5: vals, 6: None}}, heads)
-        self.assertEqual(h2[:5], ["GIA", "ROT.30d", "ROT.60d", "ROT.90d", "ROT.180d"])
-        self.assertEqual(h2[5:7], ["月均", "Livello"])
-        self.assertEqual(extra[2][5][5], heads.index("月均"))
+        self.assertEqual(h2[:7], ["GIA", "MEDIA MESE", "ROT.30d", "ROT.60d", "ROT.90d", "ROT.180d", "Livello"])
+        self.assertEqual(extra[2][5][1], heads.index("月均"))
+        self.assertEqual(extra[2][5][2], heads.index("ROT.30d"))
         self.assertEqual(extra[2][5][6], heads.index("Livello"))
         self.assertIsNone(extra[2][6])
         self.assertEqual(S.file_extra(None, None), (None, None))
