@@ -1423,6 +1423,9 @@ class DetailWindow(ToolWindow):
         lines = R.plain_reason(x.get("inv_raw", x.get("inv")), x.get("daily"), x.get("cycle"), x.get("sugg"),
                                boxes=self._sugg(sc, sid, it["row"]) or None, target=x.get("target"), transfer=tin,
                                pack=it.get("pack"))
+        sl = R.slow_line(x)
+        if sl:
+            lines.insert(0, sl)
         tb = S.transit_boxes(x, it.get("pack"))
         if tb:
             lines.append(tr("在途 {0:g} 箱还没到货：订货箱数 = 建议 {1:g} − 在途 {0:g} = {2:g} 箱", tb,

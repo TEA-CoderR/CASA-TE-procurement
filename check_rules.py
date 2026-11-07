@@ -305,7 +305,9 @@ def review_rules(cfg=None):
 def _cover_now(x):
     """现在的库存够卖几天（负库存当 0；没销量但有库存 = 无限；都没有 = 0）"""
     d = x.get("daily0") if x.get("daily0") is not None else x.get("daily")
-    d = float(d or 0)
+    # 规则 A（最近卖慢了按最近 4 周算）会让日均变小、够卖天数变大 → 检查清单判断要不要砍时还按原来的加权日均，
+    # 免得砍掉更多门店要的货（2026-11-07 用户：尽量少砍门店清单）
+    d = max(float(d or 0), float(x.get("slow_from") or 0))
     inv = max(0.0, float(x.get("inv0") or 0))
     if d <= 0:
         return float("inf") if inv > 0 else 0.0

@@ -165,3 +165,31 @@ def test_check_interval_limits_days_covered():
     assert boxes(7, 14) == boxes(7, 0)                            # 周期本来就比检查间隔短：照周期
     assert F.review_used(dict(F.DEFAULT_PARAMS, review_days=60)) == 14 and F.DEFAULT_PARAMS["check_days"] == 14
     assert F.review_used(dict(F.DEFAULT_PARAMS, review_days=30, check_days=0), cycle=60) == 60
+
+
+def test_slowdown_uses_recent_four_weeks_when_in_stock():
+    """规则 A（2026-11-07）：开学季文具 9–10 月卖得多、11 月一下子慢了（一直有货）→ 按最近 4 周算，不再多订"""
+    import forecast as F
+    p = dict(F.DEFAULT_PARAMS, season=False, review_days=30)
+    weekly = [3, 2, 3, 2] + [16] * 8 + [0] * 48          # 最近 4 周 10 件，之前 8 周每周 16 件
+    a = F.analyze(weekly, 20, "A", p)
+    assert a["slow_from"] is not None and abs(a["daily"] - 10 / 28) < 1e-9
+    assert a["qty"] == 0                                  # 20 件按每天 0.36 件够卖 50 多天
+    b = F.analyze(weekly, 20, "A", dict(p, slowdown=False))
+    assert b["slow_from"] is None and b["qty"] > 0         # 不用规则 A：还会订
+    # 库存很少（可能是断货才卖得少）→ 不用规则 A
+    c = F.analyze(weekly, 2, "A", p)
+    assert c["slow_from"] is None
+    # 只是稍微慢一点（没到一半）→ 不用
+    d = F.analyze([10, 10, 10, 10] + [16] * 8 + [0] * 48, 60, "A", p)
+    assert d["slow_from"] is None
+    # 新品（不满 8 周）→ 不用
+    e = F.analyze([1, 1, 1, 1, 30, 30] + [0] * 54, 50, "A", p)
+    assert e["slow_from"] is None
+
+
+def test_check_cover_ignores_slowdown():
+    """检查门店清单判断砍不砍时，还按原来的加权日均算够卖天数（规则 A 不让砍得更多）"""
+    import check_rules as CR
+    x = {"daily0": 0.3, "slow_from": 1.2, "inv0": 36}
+    assert abs(CR._cover_now(x) - 30) < 1e-9

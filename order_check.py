@@ -894,6 +894,9 @@ class OrderCheck:
         lines = R.plain_reason(x.get("inv0"), x.get("daily0"), x.get("cycle"), sugg,
                                boxes=math.ceil(sugg / pack) if pack > 0 and sugg > 0 else None, target=x.get("target"),
                                in_db=x.get("in_db", True), transfer=tin, pack=pack)
+        sl = R.slow_line(x)
+        if sl:
+            lines.insert(0, sl)
         if x.get("protect") == "new":
             lines.insert(0, tr("新品保护：近两个月才开始卖（或还没卖过），销量还说明不了什么，按门店清单订"))
         elif x.get("protect") == "empty":

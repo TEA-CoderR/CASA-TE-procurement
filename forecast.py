@@ -55,7 +55,11 @@ DEFAULT_PARAMS = {
     "cycle_c": 0.75,           # C 类不必订够一个周期
     "check_days": 14,          # 检查间隔：最多几天后会再看一次（2026-11-07 用户定）；0 = 不用，照供应商周期
     "warn_boxes": 6,           # 建议超过几箱标黄提醒看一眼（只提醒，不砍）；0 = 不提醒
+    "slowdown": True,          # 最近 4 周明显卖慢了（有货）→ 按最近 4 周算（2026-11-07 用户定，规则 A）
 }
+SLOW_RATIO = 0.5               # 最近 4 周的日均不到加权日均的一半，才算「明显卖慢了」
+SLOW_MIN_AGE = 8               # 上架至少 8 周（新品本来就在爬坡）
+SLOW_STOCK_DAYS = 14           # 现在库存够加权日均卖 14 天以上 = 一直有货，卖得少不是断货造成的
 
 WEEKS = 60                     # 查多少周（季节调整要一年以上）
 _ND = NormalDist()
@@ -305,9 +309,30 @@ def decide(daily, inv, qty, tier, params, total_inv=0, sold_26w=True):
     return "🟢【不用订】库存够", 2
 
 
+def slowdown_rate(weekly, daily, age, inv, params):
+    """
+    规则 A（2026-11-07 用户定）：最近 4 周明显卖慢了、而且一直有货 → 返回最近 4 周的日均；不是 → None。
+    例：开学季的文具 9–10 月卖得多，11 月一下子慢下来，加权日均还被高峰拉着（1.32 件/天，最近 30 天只卖 0.33）→ 多订。
+    有货 = 现在的库存够按加权日均卖 SLOW_STOCK_DAYS 天以上（卖得少不是因为货架空了）
+    """
+    if not params.get("slowdown", True) or daily <= 0 or age < SLOW_MIN_AGE:
+        return None
+    w = [max(0.0, float(x or 0)) for x in (weekly or [])[:4]]
+    if len(w) < 4:
+        return None
+    recent = sum(w) / 28.0
+    if recent >= daily * SLOW_RATIO or inv < daily * SLOW_STOCK_DAYS:
+        return None
+    return recent
+
+
 def analyze(weekly, inv, tier, params, total_inv=0, on_order=0.0):
     """一个商品一家店的完整计算；weekly[0] = 最近 7 天"""
     daily, age = demand_rate(weekly)
+    slow_from = None
+    slow = slowdown_rate(weekly, daily, age, inv, params)
+    if slow is not None:
+        slow_from, daily = daily, slow
     sig = weekly_sigma(weekly, age)
     P = review_used(params) + float(params.get("lead_days", 5))
     season = seasonal_factor(weekly, P) if params.get("season", True) and daily > 0 else 1.0
@@ -316,7 +341,7 @@ def analyze(weekly, inv, tier, params, total_inv=0, on_order=0.0):
     q = order_qty(t["S"], inv, on_order)
     dec, pr = decide(daily * season, inv, q, tier, params, total_inv, age > 0)
     d_eff = daily * season
-    return {"daily": d_eff, "daily_base": daily, "sigma_w": sig, "season": season, "age_weeks": age,
+    return {"daily": d_eff, "daily_base": daily, "slow_from": slow_from, "sigma_w": sig, "season": season, "age_weeks": age,
             "mu": t["mu"], "safety": t["ss"], "target": t["S"], "service": t["svc"], "qty": q,
             "cover_days": (max(0.0, inv) / d_eff) if d_eff > 0 else float("inf"),
             "decision": dec, "priority": pr}

@@ -3175,4 +3175,5 @@ TRANSLATIONS = {
     '点 − / ＋ 改 1 箱，双击直接输入，0 = 不加': ('Click − / + to change by 1 box, double-click to type, 0 = add none', 'Clic su − / + per cambiare di 1 collo, doppio clic per scrivere, 0 = non aggiungere'),
     '点 − / ＋ 改 1 箱，双击直接输入，0 = 不订': ('Click − / + to change by 1 box, double-click to type, 0 = do not order', 'Clic su − / + per cambiare di 1 collo, doppio clic per scrivere, 0 = non ordinare'),
     '确定订几箱：点 − / ＋ 改 1 箱，双击直接输入，0 = 不订': ('Boxes to order: click − / + to change by 1, double-click to type, 0 = do not order', 'Colli da ordinare: clic su − / + per cambiare di 1, doppio clic per scrivere, 0 = non ordinare'),
+    '最近 4 周卖得明显慢了：原来每天约 {0:.1f} 件，最近只有 {1:.1f} 件，按最近 4 周的速度算': ('Sales clearly slowed in the last 4 weeks: about {0:.1f} a day before, only {1:.1f} now; using the last 4 weeks', 'Vendite nettamente rallentate nelle ultime 4 settimane: prima circa {0:.1f} al giorno, ora solo {1:.1f}; si usano le ultime 4 settimane'),
 }

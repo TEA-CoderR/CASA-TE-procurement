@@ -819,6 +819,7 @@ def demand_by_store(db, schede, stores, days_list, reorder_cycle, use_supplier_c
                        "safety": R._val(r, "safety_stock"), "target": R._val(r, "target_stock"),
                        "season": R._val(r, "season_factor"), "weekly": R._val(r, "weekly_26"),
                        "service": R._val(r, "service_level"),
+                       "slow_from": R._val(r, "slow_from"),      # 规则 A：最近卖慢了，原来的加权日均
                        "db_pack": R._val(r, "qtasmallbox"),          # 数据库箱规（和 SCHEDA 每箱件数对照用）
                        "gia_all": [R._val(r, f"Negozio{i}_Giacenza", 0) or 0 for i in range(6)]}   # GIA.0（BMS）~ GIA.5
         return d

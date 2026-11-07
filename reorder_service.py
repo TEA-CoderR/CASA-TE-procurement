@@ -1064,7 +1064,7 @@ def apply_v2(db, store_id, result_df, algo, weekly=None, revenue=None, on_order=
     on_order = on_order or {}
     cols = {k: [] for k in ("suggested_order_qty", "decision_text", "priority", "sales_tier", "inventory_days",
                             "daily_rate", "safety_stock", "target_stock", "service_level", "season_factor",
-                            "age_weeks", "weekly_26", "long_daily", "zero_weeks")}
+                            "age_weeks", "weekly_26", "long_daily", "zero_weeks", "slow_from")}
     used = []
     for i, r in enumerate(records(result_df)):
         c = int(r["CodArticolo"])
@@ -1083,6 +1083,7 @@ def apply_v2(db, store_id, result_df, algo, weekly=None, revenue=None, on_order=
         cols["sales_tier"].append(tier)
         cols["inventory_days"].append(a["cover_days"])
         cols["daily_rate"].append(a["daily"])
+        cols["slow_from"].append(a["slow_from"])          # 规则 A：明显卖慢了，原来的加权日均（没用就是 None）
         cols["safety_stock"].append(a["safety"])
         cols["target_stock"].append(a["target"])
         cols["service_level"].append(a["service"])
@@ -1177,6 +1178,7 @@ def to_rows(result_df, file_rows=None, days_list=None):
             "weekly": _val(r, "weekly_26"),
             "long_daily": _val(r, "long_daily"),
             "zero_weeks": _val(r, "zero_weeks"),
+            "slow_from": _val(r, "slow_from"),
             "season": _val(r, "season_factor"),
             "service": _val(r, "service_level"),
             "safety": _val(r, "safety_stock"),
@@ -1566,6 +1568,19 @@ def reason_text(inv, daily, cycle, sugg, target=None, in_db=True):
     if cycle > 0:
         return tr("库存够卖 {0:.0f} 天{1}，周期 {2:g} 天约卖 {3:.0f} 件 → 订 {4:g} 件", days, neg, cycle, daily * cycle, sugg)
     return tr("库存够卖 {0:.0f} 天{1} → 订 {2:g} 件", days, neg, sugg)
+
+def slow_line(x):
+    """规则 A 的说明（最近 4 周明显卖慢了，按最近 4 周算）；没用到 → None"""
+    from i18n import tr
+    sf = x.get("slow_from") if x else None
+    try:
+        if sf and float(sf) > 0:
+            return tr("最近 4 周卖得明显慢了：原来每天约 {0:.1f} 件，最近只有 {1:.1f} 件，按最近 4 周的速度算",
+                      float(sf), float(x.get("daily") or 0))
+    except (TypeError, ValueError):
+        pass
+    return None
+
 
 def plain_reason(inv, daily, cycle, sugg, boxes=None, target=None, in_db=True, transfer=None, pack=None):
     """
