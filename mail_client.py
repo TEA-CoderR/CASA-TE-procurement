@@ -622,6 +622,62 @@ def fetch_part(conn, folder_raw, uid, section, encoding):
     return _decode_part(raw, encoding)
 
 
+def body_text(raw, limit=4000):
+    """一封信的原文（字节）→ 正文的纯文字（先 text/plain，没有就把 html 去掉标签），最多 limit 个字"""
+    import email
+    import html as _html
+    from email import policy
+    try:
+        msg = email.message_from_bytes(raw, policy=policy.default)
+    except Exception:
+        return ""
+    plain, htm = None, None
+    for part in msg.walk():
+        if part.is_multipart() or part.get_content_disposition() == "attachment":
+            continue
+        ct = part.get_content_type()
+        try:
+            txt = part.get_content()
+        except Exception:
+            continue
+        if not isinstance(txt, str):
+            continue
+        if ct == "text/plain" and plain is None:
+            plain = txt
+        elif ct == "text/html" and htm is None:
+            htm = txt
+    if plain is None and htm:
+        plain = _html.unescape(re.sub(r"<[^>]+>", " ", re.sub(r"(?is)<(script|style).*?</\1>", " ", htm)))
+    return re.sub(r"[ \t\r\f\v]+", " ", plain or "").strip()[:limit]
+
+
+def fetch_bodies(acc, password, rows, factory=None, max_bytes=200000):
+    """
+    读几封信的正文文字（2026-11-07：发货信没写门店，门店写在正文「Ragione sociale: CASA & TE SAN MARCO」）。
+    只读：EXAMINE + BODY.PEEK（不改已读）；每封最多读 max_bytes 字节（附件太大的只读前面，正文一般在最前面）。
+    rows = 同一个邮箱的信头（要有 folder_raw / uid），返回 {(folder, uid): 正文}
+    """
+    out = {}
+    conn = connect(acc, password, factory=factory)
+    try:
+        by_folder = {}
+        for r in rows:
+            by_folder.setdefault(r.get("folder_raw") or "INBOX", []).append(r)
+        for folder, rs in by_folder.items():
+            typ, _ = conn.select(_quote(folder), readonly=True)
+            if typ != "OK":
+                continue
+            for r in rs:
+                typ, data = conn.uid("FETCH", str(r["uid"]), f"(BODY.PEEK[]<0.{int(max_bytes)}>)")
+                raw = next((bytes(it[1]) for it in data or [] if isinstance(it, tuple) and len(it) == 2
+                            and isinstance(it[1], (bytes, bytearray))), None)
+                if raw:
+                    out[(r.get("folder"), str(r["uid"]))] = body_text(raw)
+    finally:
+        close(conn)
+    return out
+
+
 def download(acc, password, items, dest_dir, factory=None):
     """
     items = [{"folder_raw", "uid", "section", "encoding", "name"}]（同一个邮箱）→ 存进 dest_dir，返回 [路径]。只读：EXAMINE + BODY.PEEK

@@ -492,13 +492,74 @@ def mail_tracking(settings, st=None, days=None, log=print, progress=None, cancel
                                log=log, progress=progress, cancel=cancel, factory=factory, today=today)
     own = {a["address"].lower() for a in accs}
     ign = mail_ignored()
-    res = MM.analyze(mails, st, own, {a["address"].lower(): a.get("store") for a in accs}, today=today, ignored=ign)
+    stores = {a["address"].lower(): a.get("store") for a in accs}
+    bodies = _bodies_load()
+    for m in mails:
+        b = bodies.get(_body_key(m))
+        if b is not None:
+            m["body"] = b
+    res = MM.analyze(mails, st, own, stores, today=today, ignored=ign)
+    # 发货 / 确认信没写门店、却对上了几家店的单 → 读这几封信的正文（只读）看是哪家店，再对一次
+    tried = set()
+    for _round in range(3):          # 读了一封的正文、它对上了自己那家店，同一批的下一封信可能又要读
+        need = [e["row"] for e in res["events"] if e.get("need_body") and _body_key(e["row"]) not in tried]
+        if not need:
+            break
+        tried.update(_body_key(m) for m in need)
+        got = 0
+        for acc in accs:
+            rows = [m for m in need if (m.get("mailbox") or "").lower() == acc["address"].lower()]
+            if not rows:
+                continue
+            try:
+                txt = MC.fetch_bodies(acc, mail_password(acc["address"]), rows, factory=factory)
+            except Exception as e:
+                log(f"  ⚠ {acc['address']}：读正文失败（{e}）")
+                continue
+            for m in rows:
+                t = txt.get((m.get("folder"), str(m.get("uid"))))
+                if t is not None:
+                    m["body"] = bodies[_body_key(m)] = t
+                    got += 1
+        if not got:
+            break
+        _bodies_save(bodies)
+        log(tr("  读了 {0} 封发货 / 确认信的正文，看是哪家门店", got))
+        res = MM.analyze(mails, st, own, stores, today=today, ignored=ign)
     res["dups"] = MM.dup_suggestions(st, ign)
     res["mails"], res["errors"], res["store"] = len(mails), errors, st
     audit(actor or st.me, via, "mail_tracking", {"mailboxes": [a["address"] for a in accs], "days": days},
           {"mails": len(mails), "suggest": len(res["suggest"]), "missing": len(res["missing"]), "dups": len(res["dups"]),
            "errors": len(errors)})
     return res
+
+
+def _bodies_path():
+    from settings import app_dir
+    return os.path.join(app_dir(), "cache", "mail_bodies.json")
+
+
+def _body_key(m):
+    return f"{(m.get('mailbox') or '').lower()}|{m.get('folder')}|{m.get('uid')}"
+
+
+def _bodies_load():
+    import json
+    try:
+        with open(_bodies_path(), encoding="utf-8") as f:
+            return dict(json.load(f))
+    except (OSError, ValueError):
+        return {}
+
+
+def _bodies_save(d):
+    import json
+    p = _bodies_path()
+    os.makedirs(os.path.dirname(p), exist_ok=True)
+    if len(d) > 3000:                                   # 只留最近的
+        d = dict(list(d.items())[-3000:])
+    with open(p, "w", encoding="utf-8") as f:
+        json.dump(d, f, ensure_ascii=False)
 
 
 def mail_apply(st, sugs, via="desktop"):

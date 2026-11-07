@@ -300,3 +300,43 @@ def test_missing_order_uses_spelling_from_the_mail():
     t = "Ordine MAGIC MACCIONI BMS 0511"
     assert idx.best_name(idx.find(t), t) == "MAGIC MACCIONI SAS"
     assert OT.sup_key("x") is not None
+
+
+def test_ddt_store_from_body_and_unsure_otherwise(tmp_path):
+    """2026-11-07 用户：一张 DDT 只管一家店，门店写在正文「Ragione sociale」；说不清的默认不勾；
+    确认信不配到还没发出去的待登记上（Royal 8044 = BMS 那张）"""
+    st = _st(tmp_path)
+    for code in ("1", "2", "4"):
+        st.set("s" + code, {"date": "2026-10-20", "store": code, "supplier": "SAIS", "confirmed": "2026-10-20"})
+    st.set("rb", {"date": "2026-11-05", "store": "BMS", "supplier": "ROYAL"})
+    for code in ("1", "2", "4"):
+        st.set("r" + code, {"date": "2026-11-04", "store": code, "supplier": "ROYAL OFFICE SRL", "draft": True,
+                            "origin": "store_orders"})
+    ddt = _mail(**{"from": "notifiche.sais@gmail.com", "subject": "DDT SAIS 0028677 del 21-10-2026",
+                   "date": datetime(2026, 10, 21, 13, 0), "uid": 7})
+    pre = _mail(**{"from": "support@synaptico.com", "subject": "Preordine Nr. 8044 del 05/11/2026 - Royal Office Srl",
+                   "date": datetime(2026, 11, 5, 13, 0)})
+    res = MM.analyze([ddt, pre], st, OWN)
+    sais = [s for s in res["suggest"] if s["supplier"] == "SAIS"]
+    assert sorted(s["store"] for s in sais) == ["1", "2", "4"] and all(s["unsure"] for s in sais)
+    assert [e["row"] is ddt for e in res["events"] if e.get("need_body")] == [True]
+    royal = [s for s in res["suggest"] if "ROYAL" in s["supplier"]]
+    assert [(s["store"], s["field"]) for s in royal] == [("BMS", "confirmed")]
+    # 正文里写了收货门店 → 只配 FOIANO，不再「不确定」
+    ddt["body"] = ("Codice cliente di spedizione: 207569\nRagione sociale: CASA & TE S.R.L. - FOIANO\n"
+                   "DDT numero: 0028677 del 21/10/2026\nPer supporto contattare info@sais.it")
+    res = MM.analyze([ddt, pre], st, OWN)
+    sais = [s for s in res["suggest"] if s["supplier"] == "SAIS"]
+    assert [(s["store"], s["unsure"]) for s in sais] == [("1", False)]
+    assert MM.stores_in_body("Ragione sociale: CASA & TE SAN MARCO S.R.L") == ["4"]
+    assert MM.stores_in_body("Destinazione: FOIANO\nSedi: Foiano, Marlia, S.Marco") == ["1"]
+    assert MM.stores_in_body("Grazie, a presto") == []
+
+
+def test_body_text_from_raw_mail():
+    import mail_client as MC
+    raw = (b"From: a@b.it\r\nSubject: DDT\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=XX\r\n\r\n"
+           b"--XX\r\nContent-Type: text/html; charset=utf-8\r\n\r\n<p>Ragione sociale: <b>CASA &amp; TE SAN MARCO</b></p>\r\n"
+           b"--XX\r\nContent-Type: application/pdf\r\nContent-Disposition: attachment; filename=a.pdf\r\n\r\nAAAA\r\n--XX--\r\n")
+    t = MC.body_text(raw)
+    assert "CASA & TE SAN MARCO" in t and "AAAA" not in t

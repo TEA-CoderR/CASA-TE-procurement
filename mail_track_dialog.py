@@ -53,7 +53,7 @@ class _Tab:
         self.cols = TABS[name]
         self.rows = rows
         for r in rows:
-            r["_on"] = checked
+            r["_on"] = checked and not r.get("unsure")          # 门店不确定的默认不勾
         self.t = self.ui.make_table([tr(h) if h else "" for _f, h, _w in self.cols],
                                     numeric_cols=tuple(c for c, (f, _h, _w) in enumerate(self.cols) if f == 10))
         self.t.setSelectionMode(QAbstractItemView.ExtendedSelection)
@@ -151,6 +151,11 @@ class _Tab:
                                      "是的话别补登记，点「忽略所选」", _d(s["near"])))
                 if f == 2 and not s["store"]:
                     it.setForeground(QColor(T("faint")))
+                if f == 2 and s.get("unsure"):
+                    it.setText(it.text() + " ?")
+                    it.setForeground(QColor(T("warn")))
+                    it.setToolTip(tr("这封信没写是哪家门店，正文里也没认出来，同一批有好几家店的单。"
+                                     "一张 DDT / 确认通常只管一家店：请打开邮件看是哪家，只勾那一家"))
         finally:
             self._filling = False
 

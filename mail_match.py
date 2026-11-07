@@ -118,6 +118,30 @@ def stores_in(text):
 _STORE_SET = {w for w, _c in STORE_WORDS}
 
 
+_DEST_LINE = re.compile(r"(ragione\s+sociale|destinat|destinazione|consegna|spedizione|cliente|intestat|negozio|punto\s+vendita)",
+                       re.I)
+
+
+def stores_in_body(body):
+    """
+    正文里写的是哪家店（发货 / 确认信主题里不写门店，正文写「Ragione sociale: CASA & TE SAN MARCO S.R.L」）。
+    先看「Ragione sociale / Destinazione / Consegna…」那几行，只认出一家才算；整封信只提到一家也算。认不出返回 []。
+    """
+    lines = str(body or "").splitlines()
+    key = [l for l in lines if _DEST_LINE.search(l)]
+    for chunk in (key, lines):
+        found = []
+        for l in chunk:
+            for c in stores_in(l):
+                if c not in found:
+                    found.append(c)
+        if len(found) == 1:
+            return found
+        if len(found) > 1 and chunk is key:
+            return []                       # 收货那几行就写了好几家：说不清
+    return []
+
+
 def default_store(address):
     """邮箱地址 → 默认门店（没写门店的信算这家）；BMS 采购办公室的邮箱管所有门店，不设默认"""
     a = (address or "").lower()
@@ -257,7 +281,7 @@ def analyze(mails, st, own, mailbox_store=None, today=None, ignored=None):
             continue
         k = kind_of(m, own)
         if k:
-            ms.append(dict(m, _date=d, _kind=k))
+            ms.append(dict(m, _date=d, _kind=k, _orig=m))
     ms.sort(key=lambda m: m["_date"])
     learned = {}                               # sender_key → canon 供应商键
     thread = {}                                # Message-ID → [单号]
@@ -300,6 +324,8 @@ def analyze(mails, st, own, mailbox_store=None, today=None, ignored=None):
                     stores.append(s_)
         day = m["_date"].date()
         multi = bool(_PDV.search(subj))
+        if not stores and not multi and not sent and m.get("body"):
+            stores = stores_in_body(m["body"])          # 正文写了收货门店（SAIS 的 DDT 信）
         if not stores and not multi:
             dflt = mailbox_store.get((m.get("mailbox") or "").lower())
             if dflt:
@@ -323,6 +349,9 @@ def analyze(mails, st, own, mailbox_store=None, today=None, ignored=None):
                         cand += ids
                 cand = [oid for oid in cand if lo <= (OT.to_date(st.orders[oid].get("date")) or date.min) <= hi
                         and (not stores or str(st.orders[oid].get("store")) in stores)]
+                if not sent and any(not st.orders[oid].get("draft") for oid in cand):
+                    # 供应商的确认 / 发货信只可能是发出去了的单：有已下单的就不算待登记（Royal 8044 = BMS 那张，不是三张待登记）
+                    cand = [oid for oid in cand if not st.orders[oid].get("draft")]
                 if not cand:
                     continue
                 ref = want or day
@@ -347,8 +376,12 @@ def analyze(mails, st, own, mailbox_store=None, today=None, ignored=None):
                         min(OT.to_date(st.orders[oid].get("date")) for oid in cand)
                     oids = [oid for oid in cand if abs((OT.to_date(st.orders[oid].get("date")) - last).days) <= 1]
                 break
+        # 没写门店、却对上了好几家门店的单：一张 DDT / 确认通常只管一家店 → 标「门店不确定」（默认不勾，要先读正文）
+        unsure = (not sent and not stores and not multi and
+                  len({str(st.orders[o].get("store")) for o in oids}) > 1)
         ev = {"date": day, "kind": kind, "subject": subj, "from": frm, "mailbox": m.get("mailbox"),
-              "message_id": m.get("message_id"), "suppliers": sups, "stores": stores, "orders": oids}
+              "message_id": m.get("message_id"), "suppliers": sups, "stores": stores, "orders": oids,
+              "unsure": unsure, "need_body": False, "row": m.get("_orig", m)}
         events.append(ev)
         if sent and m.get("message_id"):
             thread[m["message_id"].strip()] = oids
@@ -358,6 +391,7 @@ def analyze(mails, st, own, mailbox_store=None, today=None, ignored=None):
             ev["want"] = want
             ev["attachments"] = atts
             unmatched.append(ev)
+        n_before = len(suggest)
         for oid in oids:
             o = st.orders.get(oid) or {}
             s = OT.status(o)
@@ -370,12 +404,15 @@ def analyze(mails, st, own, mailbox_store=None, today=None, ignored=None):
                 # 先确认、再发货：发货信也说明对方收到了订单
                 key = f"{oid}|shipped"
                 if key not in ignored and key not in suggest:
-                    suggest[key] = _sg(key, oid, o, "ship", "shipped", day.isoformat(), m, st)
+                    suggest[key] = dict(_sg(key, oid, o, "ship", "shipped", day.isoformat(), m, st), unsure=unsure)
             if sg:
                 field, _old, val = sg
                 key = f"{oid}|{field}"
                 if key not in ignored and key not in suggest:
-                    suggest[key] = _sg(key, oid, o, "order" if field == "draft" else kind, field, val, m, st)
+                    suggest[key] = dict(_sg(key, oid, o, "order" if field == "draft" else kind, field, val, m, st),
+                                        unsure=unsure)
+        if unsure and len(suggest) > n_before and not m.get("body"):
+            ev["need_body"] = True                     # 有要改的单、门店又说不清：读一下正文
     missing = []
     for ev in unmatched:
         sk = OT.sup_key(ev["supplier_name"])

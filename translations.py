@@ -3232,4 +3232,6 @@ TRANSLATIONS = {
     '{0} 的旧报价挪进 _旧文件': ('{0}’s old price list moves to _旧文件', 'Il vecchio listino di {0} va in _旧文件'),
     '新增一家': ('New supplier', 'Nuovo fornitore'),
     '重复编号的行没有自己的数据库记录，看上面那一行': ('Duplicate-code rows have no database record of their own; see the row above', 'Le righe con codice duplicato non hanno un proprio record; vedi la riga sopra'),
+    '  读了 {0} 封发货 / 确认信的正文，看是哪家门店': ('  Read the body of {0} shipping / confirmation e-mails to find the store', '  Letto il testo di {0} e-mail di spedizione / conferma per capire il negozio'),
+    '这封信没写是哪家门店，正文里也没认出来，同一批有好几家店的单。一张 DDT / 确认通常只管一家店：请打开邮件看是哪家，只勾那一家': ('This e-mail does not say which store, the body did not tell either, and several stores ordered in the same batch. A DDT / confirmation is usually for one store: open the e-mail and tick only that one', "Questa e-mail non indica il negozio, nemmeno nel testo, e nello stesso lotto ci sono ordini di più negozi. Un DDT / conferma di solito è per un solo negozio: apri l'e-mail e spunta solo quello"),
 }
