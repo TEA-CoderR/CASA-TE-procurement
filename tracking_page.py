@@ -1652,6 +1652,9 @@ class TrackingPage:
             self.win.show_toast(tr("已导出：{0}", os.path.basename(p)))
         except Exception as e:
             QMessageBox.warning(self.win, tr("导出 Excel"), tr("导出失败：{0}", e))
+            return
+        from erp_widgets import open_file
+        open_file(self.win, p, tr("导出 Excel"))
 
     def badge(self, n):
         """侧边栏「采购订单跟踪」旁边的小红点数字 = 待登记的单数"""
@@ -1722,11 +1725,8 @@ class TrackingPage:
             return
         self.win.log(tr("✔ 导出 PIANO 表：{0}（{1}）", out, "、".join(f"{n} {k}" for n, k in done)))
         self.win.show_toast(tr("已导出：{0}", os.path.basename(out)))
-        try:
-            from main import open_path
-            open_path(os.path.dirname(out))
-        except Exception:
-            pass
+        from erp_widgets import open_file                      # 打开文件本身（以前打开文件夹）
+        open_file(self.win, out, tr("导出成 PIANO 表"))
 
     def restyle(self):
         if hasattr(self, "panel"):

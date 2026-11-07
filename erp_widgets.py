@@ -2556,6 +2556,7 @@ class TableSortFilter(QObject):
         except Exception as e:
             QMessageBox.critical(parent, tr("导出"), tr("导出失败：{0}", e))
             return None
+        open_file(parent, path, title or tr("导出 Excel"))      # 导出完直接打开（2026-11-07 用户）
         return path
 
 

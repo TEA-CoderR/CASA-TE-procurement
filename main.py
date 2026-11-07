@@ -2614,6 +2614,9 @@ class ScenarioDialog(QDialog):
             wb.save(path)
         except Exception as e:
             QMessageBox.critical(self, tr("导出"), tr("导出失败：{0}", e))
+            return
+        from erp_widgets import open_file
+        open_file(self, path, tr("导出对比"))
 
 
 class ScenarioSettingsDialog(QDialog):
@@ -3757,8 +3760,8 @@ class MainWindow(QMainWindow):
                     sh.column_dimensions[col[0].column_letter].width = min(width + 2, 60)
             wb.save(path)
             self.log(tr("✔ 已导出改动明细：{0}", path))
-            if QMessageBox.question(self, tr("导出"), tr("已导出到：\n{0}\n\n现在打开？", path)) == QMessageBox.Yes:
-                open_path(path)
+            from erp_widgets import open_file                  # 导出完直接打开（2026-11-07 用户）
+            open_file(self, path, tr("导出"))
         except Exception as e:
             QMessageBox.critical(self, tr("导出"), tr("导出失败：{0}", e))
 
@@ -5875,8 +5878,8 @@ class MainWindow(QMainWindow):
                 ws.column_dimensions[col[0].column_letter].width = min(width + 2, 60)
             wb.save(path)
             self.log(tr("✔ 已导出：{0}", path))
-            if QMessageBox.question(self, tr("导出"), tr("已导出到：\n{0}\n\n现在打开？", path)) == QMessageBox.Yes:
-                open_path(path)
+            from erp_widgets import open_file                  # 导出完直接打开（2026-11-07 用户）
+            open_file(self, path, tr("导出"))
         except Exception as e:
             QMessageBox.critical(self, tr("导出"), tr("导出失败：{0}", e))
 

@@ -1796,3 +1796,6 @@ class DetailWindow(ToolWindow):
             self.flash(tr("已导出"))
         except Exception as e:
             QMessageBox.critical(self, tr("导出"), tr("导出失败：{0}", e))
+            return
+        from erp_widgets import open_file
+        open_file(self, path, tr("导出 Excel"))

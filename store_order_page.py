@@ -183,6 +183,9 @@ class TransferDialog(QDialog):
             S.export_transfers(self.ts, path)
         except Exception as e:
             QMessageBox.critical(self, tr("导出"), tr("导出失败：{0}", e))
+            return
+        from erp_widgets import open_file
+        open_file(self, path, tr("导出调货单"))
 
 
 def _card(title, sub=""):

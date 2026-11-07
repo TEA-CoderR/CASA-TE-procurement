@@ -1647,10 +1647,8 @@ class OrderCheck:
         if p:
             self.win.log(tr("✔ 门店报告：{0}", p))
             self.win.show_toast(tr("已导出：{0}", os.path.basename(p)))
-            try:
-                os.startfile(os.path.dirname(p))
-            except Exception:
-                pass
+            from erp_widgets import open_file                  # 一个文件：直接打开（2026-11-07 用户）
+            open_file(self.prob_dlg, p, tr("导出门店报告"))
 
     def _export_prob(self):
         """待核对窗口「导出门店报告」：选一个文件夹，每家店一个意大利文报告（可以直接发给门店）"""
@@ -2060,6 +2058,9 @@ class OrderCheck:
             self.win.show_toast(tr("已导出"))
         except Exception as e:
             QMessageBox.critical(self.win, tr("导出"), tr("导出失败：{0}", e))
+            return
+        from erp_widgets import open_file
+        open_file(self.win, path, tr("导出 Excel"))
 
     def _price_dir(self):
         """共用的供应商报价文件夹：比价根目录（或现在的总文件夹）下面的 distribuire"""

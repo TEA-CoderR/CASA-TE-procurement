@@ -825,6 +825,8 @@ class GrigliaPage:
             self.win.show_toast(tr("导出失败：{0}", err))
             return
         self.win.show_toast(tr("已导出：{0}", os.path.basename(p)))
+        from erp_widgets import open_file                      # 导出完直接打开（2026-11-07 用户）
+        open_file(self.win, p, tr("导出 Excel"))
 
     def _tab_of(self, key):
         return {"gone": self.t_gone, "new": self.t_new, "prices": self.t_price, "odd": self.t_odd}.get(key)
