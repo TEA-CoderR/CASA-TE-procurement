@@ -107,6 +107,19 @@ def parse_rows(rows):
     return {"items": items, "suppliers": list(sup_cols), "by_code": by_code}
 
 
+def parse_rows_any(wb):
+    """
+    找 Griglia 在哪个工作表（2026-11-07：用户换成 SCHEDA_DETERSIVI，第一页是供应商资料，GRIGLIA 在第三页 →
+    以前只读第一页，提示找不到 Codice EAN）：先找名字是 GRIGLIA 的页，再按顺序找表头里有 Codice EAN 的页
+    """
+    sheets = sorted(wb.worksheets, key=lambda ws: 0 if _norm(ws.title) == "GRIGLIA" else 1)
+    for ws in sheets:
+        head = list(ws.iter_rows(max_row=10, values_only=True))      # 先只看前 10 行，不是这页就不整页读
+        if any(_norm(v) == "CODICE EAN" for r in head for v in r):
+            return parse_rows(ws.iter_rows(values_only=True))
+    raise ValueError("Griglia 里找不到「Codice EAN」表头（所有工作表都看过了；表头要在前 10 行）")
+
+
 def load(path, cache_dir=None):
     """读 Griglia（同一个文件读过就用缓存）：parse_rows 的结果 + path / name / mtime"""
     st = os.stat(path)
@@ -123,7 +136,7 @@ def load(path, cache_dir=None):
     from openpyxl import load_workbook
     wb = load_workbook(path, read_only=True, data_only=True)
     try:
-        out = parse_rows(wb.worksheets[0].iter_rows(values_only=True))
+        out = parse_rows_any(wb)
     finally:
         wb.close()
     out.update(path=path, name=os.path.basename(path), mtime=st.st_mtime)

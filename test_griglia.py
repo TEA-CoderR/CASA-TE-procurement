@@ -289,3 +289,21 @@ def test_ean_and_cat3_columns_shown_once():
     old = {"gone_cols_hidden": [1, 7], "gone_ean_shown": True}   # 上一版已经放出过条码的：条码照用户的，只放出小类
     assert GP._show_once(old, "gone") == [7] and old["gone_cols_hidden"] == [1]
     assert 1 not in GP._HIDDEN and 7 not in GP._HIDDEN
+
+
+def test_griglia_found_on_any_sheet(tmp_path):
+    """2026-11-07 用户换成 SCHEDA_DETERSIVI：第一页是供应商资料，GRIGLIA 在第三页 → 以前提示找不到 Codice EAN"""
+    from openpyxl import Workbook
+    import griglia as G
+    wb = Workbook()
+    wb.active.title = "SCHEDA ANAGRAFICA FORNITORI"
+    wb.active.append(["SCHEDA ANAGRAFICA FORNITORI"])
+    wb.create_sheet("STORICO").append(["NEGOZIO", "VENDITE 2025"])
+    ws = wb.create_sheet("GRIGLIA ")
+    ws.append(["Fatturazione :"])
+    ws.append(["NO.", "Cod.Art.", "Codice EAN", "Descrizione Prodotto", "PZ*COLLI", "PREZZO\n NETTO"])
+    ws.append([1, "179132", 8004395125531, "ADORN SHAMPOO", 6, 1.8])
+    p = tmp_path / "SCHEDA_DETERSIVI_061026.xlsx"
+    wb.save(p)
+    g = G.load(str(p))
+    assert list(g["items"]) == ["8004395125531"] and g["items"]["8004395125531"]["price"] == 1.8
