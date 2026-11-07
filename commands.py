@@ -562,6 +562,110 @@ def _bodies_save(d):
         json.dump(d, f, ensure_ascii=False)
 
 
+# ===================================================================== 发订单邮件（2026-11-07，第 3 阶段）
+def _cached_mails():
+    """各邮箱读过的信头缓存（cache/mail/*.json，邮件核对 / 报价检查时存的），不连网"""
+    import glob
+    import json
+    from settings import app_dir
+    rows = []
+    for p in glob.glob(os.path.join(app_dir(), "cache", "mail", "*.json")):
+        try:
+            with open(p, encoding="utf-8") as f:
+                d = json.load(f)
+        except (OSError, ValueError):
+            continue
+        for _label, fo in (d or {}).items():
+            rows.extend((fo or {}).get("rows", {}).values())
+    return rows
+
+
+def order_mail_draft(settings, st, oid, fetch_body=True, factory=None, today=None):
+    """
+    点「待登记」要发的那封信：一起发的单（同一个订单文件）、发件邮箱、收件人、抄送、主题、正文、附件。
+    正文：以前发给这家的最近一封订单信的正文（fetch_body=True 时连邮箱读一下，只读），没有就用默认模板
+    """
+    import mail_client as MC
+    import mail_send as MS
+    o = st.orders.get(oid)
+    if not o:
+        raise RuntimeError(tr("找不到这张单"))
+    ids = MS.group_of(st, oid)
+    stores = MS.stores_of(st, ids)
+    accs = MC.accounts(settings)
+    if not accs:
+        raise RuntimeError(tr("还没设置邮箱（系统设置 → 邮箱）"))
+    own = {a["address"].lower() for a in accs}
+    hist = MS.sent_history(_cached_mails(), st, own)
+    acc = MS.sender_for(stores, accs)
+    supplier = str(o.get("supplier") or "")
+    to, to_src = MS.recipients(st, supplier, hist)
+    subject = MS.subject_for(supplier, stores, today)
+    body, body_src = MS.default_body(supplier, stores), "template"
+    last = MS.last_sent(hist, st, supplier, acc["address"])
+    if fetch_body and last and last.get("uid"):
+        acc_l = next((a for a in accs if a["address"].lower() == (last["mailbox"] or "").lower()), None)
+        if acc_l:
+            try:
+                got = MC.fetch_bodies(acc_l, mail_password(acc_l["address"]), [last], factory=factory)
+                t = got.get((last.get("folder"), str(last.get("uid"))))
+                if t and t.strip():
+                    body, body_src = MS.body_from_last(t, last["subject"], subject, supplier), "last"
+            except Exception:
+                pass
+    files = []
+    f = str(o.get("file") or "").strip()
+    if f:
+        files.append((f, MS.attachment_name(subject, f), os.path.exists(f)))
+    return {"ids": ids, "stores": stores, "supplier": supplier, "from": acc["address"], "accounts": accs,
+            "to": to, "to_src": to_src, "cc": MS.usual_cc(hist), "subject": subject, "body": body, "body_src": body_src,
+            "files": files, "last": last, "amount": sum(float((st.orders.get(k) or {}).get("amount") or 0) for k in ids),
+            "sent_before": [k for k in ids if (st.orders.get(k) or {}).get("sent")]}
+
+
+def send_order(settings, st, ids, frm, to, cc, subject, body, files, via="desktop", force=False,
+               smtp_factory=None, imap_factory=None, today=None):
+    """
+    发订单邮件 → 这几张单变「已下单」（下单日期 = 今天）、收件人存进共享通讯录、记审计日志。
+    files = [(路径, 附件名)]。已经发过的单不再发（force=True 才发）。发信失败抛错，什么都不改
+    """
+    import mail_client as MC
+    import mail_send as MS
+    ids = [k for k in ids if k in st.orders]
+    if not ids:
+        raise RuntimeError(tr("找不到要发的单"))
+    to = [a.strip() for a in to if a.strip()]
+    cc = [a.strip() for a in cc if a.strip()]
+    bad = [a for a in to + cc if not MS.valid_address(a)]
+    if not to or bad:
+        raise RuntimeError(tr("收件人不对：{0}", ", ".join(bad) or tr("没填")))
+    sent_before = [k for k in ids if st.orders[k].get("sent")]
+    if sent_before and not force:
+        raise RuntimeError(tr("这几张单已经发过邮件了，不再重发"))
+    accs = MC.accounts(settings)
+    acc = next((a for a in accs if a["address"].lower() == (frm or "").lower()), None)
+    if acc is None:
+        raise RuntimeError(tr("发件邮箱不在设置里：{0}", frm))
+    pw = mail_password(acc["address"])
+    if not pw:
+        raise RuntimeError(tr("{0} 还没填密码（系统设置 → 邮箱）", acc["address"]))
+    for p, _n in files:
+        if not os.path.exists(p):
+            raise RuntimeError(tr("附件找不到：{0}", p))
+    msg = MS.build(acc["address"], to, cc, subject, body, files)
+    mid, saved = MS.send(acc, pw, msg, smtp_factory=smtp_factory, imap_factory=imap_factory)
+    supplier = str(st.orders[ids[0]].get("supplier") or "")
+    n = MS.mark_sent(st, ids, {"to": to, "from": acc["address"], "subject": subject, "mid": mid}, today=today)
+    try:
+        MS.save_contact(st, supplier, to)
+    except OSError:
+        pass
+    audit(st.me, via, "send_order", {"ids": ids, "from": acc["address"], "to": to, "cc": cc, "subject": subject,
+                                     "files": [n_ for _p, n_ in files], "force": force},
+          {"message_id": mid, "saved_in_sent": saved, "orders": n})
+    return {"mid": mid, "saved": saved, "n": n}
+
+
 def mail_apply(st, sugs, via="desktop"):
     """按选中的建议改订单跟踪：邮件进展（确认 / 发货 / 已下单）、合并重复的待登记、补登记。返回 (改了几张, 撤销用)"""
     import mail_match as MM

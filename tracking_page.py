@@ -591,6 +591,7 @@ class TrackingPage:
                           default_hidden=HIDDEN)
         self.ctl.sort_col, self.ctl.sort_desc = 0, True              # 默认：新的单在上
         t.cellDoubleClicked.connect(self._double)
+        t.cellClicked.connect(self._clicked)
         t.setContextMenuPolicy(Qt.CustomContextMenu)
         t.customContextMenuRequested.connect(self._row_menu)
         v.addWidget(t, 1)
@@ -599,7 +600,7 @@ class TrackingPage:
         self.total.setObjectName("Faint")
         foot.addWidget(self.total)
         foot.addStretch()
-        hint = QLabel(tr("双击改 · 右键快速确认 / 到货"))
+        hint = QLabel(tr("点「✉ 待登记」发订单邮件 · 双击改"))
         hint.setObjectName("Faint")
         foot.addWidget(hint)
         v.addLayout(foot)
@@ -969,6 +970,26 @@ class TrackingPage:
             return
         self.render()
 
+    def _clicked(self, k, c):
+        """点状态格里的「✉ 待登记」→ 发订单邮件"""
+        if COLS[c][0] != 5:
+            return
+        i = self.ctl.row_at(k)
+        if i is None or self.rows[i]["status"] != "draft":
+            return
+        self.send_order(self.rows[i])
+
+    def send_order(self, r):
+        from send_order_dialog import open_send
+
+        def done(info):
+            self.refresh()
+            msg = tr("✓ 已发送给 {0} · {1} 张单已下单", ", ".join(info["to"]), info["n"])
+            if not info.get("saved"):
+                msg += tr("（邮箱「已发送」里没放进去，信是发出去了的）")
+            self.win.show_toast(msg, 5000)
+        open_send(self.win, self.st, self.settings, r["id"], on_sent=done)
+
     def _double(self, k, c):
         i = self.ctl.row_at(k)
         if i is None:
@@ -1049,6 +1070,13 @@ class TrackingPage:
                 tips.append(tr("发货日期 {0}", _d(r["shipped"])))
             if r.get("mails"):
                 tips.append(tr("邮件：") + "\n" + "\n".join(mail_lines(r["mails"])))
+            if r["status"] == "draft":                  # 2026-11-07：点「待登记」发订单邮件
+                st_it.setText("✉ " + st_it.text())
+                tips.insert(0, tr("点一下：发订单邮件给供应商，发完自动变「已下单」"))
+            elif (self.st.orders.get(r["id"]) or {}).get("sent"):
+                sent = self.st.orders[r["id"]]["sent"]
+                tips.insert(0, tr("{0} 用邮件发给 {1}", str(sent.get("at", ""))[:16].replace("T", " "),
+                                  ", ".join(sent.get("to") or [])))
             if tips:
                 st_it.setToolTip("\n".join(tips))
         if r["overdue"]:
@@ -1134,8 +1162,11 @@ class TrackingPage:
         suffix = tr("（{0} 张）", n) if n > 1 else ""
         drafts = [r for r in sel if r["status"] == "draft"]
         a_place = a_file = None
-        if drafts:                                   # 待登记的：发给供应商以后确认
-            a_place = m.addAction(tr("确认已下单（今天）") + (tr("（{0} 张）", len(drafts)) if len(drafts) > 1 else ""))
+        if drafts:                                   # 待登记的：发订单邮件（和点状态格一样）
+            a_place = m.addAction(tr("✉ 发送订单…"))
+            a_place.setEnabled(len(drafts) == 1)
+            if len(drafts) > 1:
+                a_place.setToolTip(tr("一次选一张待登记"))
             f = a_place.font()
             f.setBold(True)
             a_place.setFont(f)
@@ -1156,14 +1187,10 @@ class TrackingPage:
                 a_nofile = m.addAction(tr("没有订单文件"))
                 a_nofile.setToolTip(tr("这张单不算在途（例如电话订的、没有明细）"))
             m.addSeparator()
-        a_conf = m.addAction(tr("已确认（今天）") + suffix)
-        a_arr = m.addAction(tr("已到货（今天）") + suffix)
-        a_part = m.addAction(tr("部分到货…") + suffix)
-        a_stuck = m.addAction(tr("卡住了…") + suffix)
-        a_ok = m.addAction(tr("恢复正常") + suffix)
-        a_ok.setToolTip(tr("去掉「卡住了 / 部分到货 / 已取消」"))
-        m.addSeparator()
-        a_edit = m.addAction(tr("编辑…"))
+        # 2026-11-07 用户：下单 / 确认 / 到货改成全自动（发订单邮件 + 邮件核对），手动的不放在主界面，
+        # 特殊情况双击订单在订单窗口里改
+        a_conf = a_arr = a_part = a_stuck = a_ok = None
+        a_edit = m.addAction(tr("编辑…（手动改确认 / 到货）"))
         a_edit.setEnabled(n == 1)
         a_cancel = m.addAction(tr("取消订单") + suffix)
         a_del = m.addAction(tr("删除") + suffix)
@@ -1172,9 +1199,7 @@ class TrackingPage:
             return
         ids = [r["id"] for r in sel]
         if a_place is not None and got == a_place:
-            import commands as CMD                      # 业务命令（记审计日志；命令行 / 以后的智能体走同一个）
-            CMD.confirm_orders(self.st, [r["id"] for r in drafts], via="desktop")
-            self.refresh()
+            self.send_order(drafts[0])
             return
         if a_file is not None and got == a_file:
             from erp_widgets import open_file
