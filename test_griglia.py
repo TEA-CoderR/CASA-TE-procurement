@@ -342,3 +342,21 @@ def test_export_chosen_tables_styled_with_photos(tmp_path):
     cheap = ws.cell(hr + 1, heads.index("MEGA CASH") + 1)
     assert cheap.fill.fgColor.rgb.endswith("E7F5EC")                                   # 最便宜绿
     assert ws.cell(hr + 1, heads.index("Più economico") + 1).fill.fgColor.rgb.endswith("FFF4E0")   # 换了供应商橙
+
+
+def test_right_category_set_preferred():
+    """2026-11-07 用户定：SCHEDA_DETERSIVI 有两套分类，用右边 CAT.1 / CAT.2 / CAT.3；右边空的用左边补（同一大类才补）"""
+    import griglia as G
+    head = ["Codice EAN", "Descrizione Prodotto", "CAT 3", "CAT 2", "CAT.1", "CAT.1", "CAT.2", "CAT.3"]
+    rows = [head,
+            ["8000000000011", "CASACETO MULTIUSO", None, "BUCATO", "DETERSIVI E CURACASA", "DETERSIVI E CURACASA", "DETERSIVI SUPERFICI", " "],
+            ["8000000000028", "STREP", None, None, None, "CURA PERSONE", "RASATURA E DEPILAZIONE", None],
+            ["8000000000035", "SHAMPOO X", "SHAMPOO", "CAPELLI ", "CURA PERSONE", "CURA PERSONE", None, None],
+            ["8000000000042", "PAMPERS", "PANNOLINI", "BAMBINI", "DETERSIVI E CURACASA", "CURA PERSONE", None, None],
+            ["8000000000059", "VECCHIO", "X3", "X2", "X1", None, None, None]]
+    it = G.parse_rows(rows)["items"]
+    assert it["8000000000011"]["cats"] == ["DETERSIVI E CURACASA", "DETERSIVI SUPERFICI", ""]
+    assert it["8000000000028"]["cats"] == ["CURA PERSONE", "RASATURA E DEPILAZIONE", ""]
+    assert it["8000000000035"]["cats"] == ["CURA PERSONE", "CAPELLI", "SHAMPOO"]        # 右边空：同一大类用左边补
+    assert it["8000000000042"]["cats"] == ["CURA PERSONE", "", ""]                    # 大类不一样：不混
+    assert it["8000000000059"]["cats"] == ["X1", "X2", "X3"]                          # 右边整行空：用左边

@@ -19,7 +19,7 @@ import hashlib
 from utils import clean_ean
 
 GRID_DIR = "0 Griglia"
-CACHE_VER = 2
+CACHE_VER = 3
 STORES = ("FOIANO", "MARLIA", "S.FILIPPO", "S.MARCO", "S.CONCORDIO")
 EXCEL = (".xlsx", ".xlsm")
 
@@ -67,6 +67,21 @@ DEPT_SHARE = 0.05           # 报价的部门里 Griglia 商品占 ≥ 5% 才算
 FRESH_DAYS = 30             # 「新上架」：这家报价里第一次出现的条码，30 天内都算
 
 
+def _cats(r, col, right):
+    """
+    大类 / 中类 / 小类：右边那套有大类就用右边的；右边空着的中类 / 小类，左边大类一样才拿左边的补（不混两个大类）；
+    右边整行都空 → 用左边的
+    """
+    def v(i):
+        return str(r[i] if i is not None and i < len(r) and r[i] is not None else "").strip()
+    left = [v(col.get(f)) for f in ("cat1", "cat2", "cat3")]
+    rt = [v(right.get(f)) for f in ("cat1", "cat2", "cat3")]
+    if not rt[0]:
+        return left if not any(rt) else [left[0]] + [rt[k] or (left[k] if left[0] else "") for k in (1, 2)]
+    same = left[0].upper() == rt[0].upper()
+    return [rt[0]] + [rt[k] or (left[k] if same else "") for k in (1, 2)]
+
+
 def parse_rows(rows):
     """
     Griglia 的所有行（值）→ {"items": {条码: {...}}, "suppliers": [价格列的批发商], "by_code": {商品编号: 条码}}。
@@ -82,6 +97,12 @@ def parse_rows(rows):
         f = _FIELDS.get(h) or ("direct" if h.startswith("FORNITOR") and "DIRETT" in h else None)
         if f and f not in col:
             col[f] = i
+    # 第二套分类（2026-11-07 用户定：SCHEDA_DETERSIVI 最右边 CAT.1 / CAT.2 / CAT.3 比左边 CAT.1 / CAT 2 / CAT 3 全、准，优先用它）
+    right = {}
+    for f, h in (("cat1", "CAT.1"), ("cat2", "CAT.2"), ("cat3", "CAT.3")):
+        idx = [i for i, x in enumerate(heads) if x == h and i != col.get(f)]
+        if idx:
+            right[f] = idx[-1]
     sup_cols = {h: i for i, h in enumerate(heads) if h in _SUP_COLS}
     store_cols = {h: i for i, h in enumerate(heads) if h in STORES}
     items, by_code = {}, {}
@@ -97,7 +118,7 @@ def parse_rows(rows):
             code = code[:-2]
         it = {"ean": e, "code": code, "name": str(g("name") or "").strip(), "brand": str(g("brand") or "").strip(),
               "supplier": str(g("supplier") or "").strip(), "price": _num(g("price")), "best": _num(g("best")),
-              "pack": _num(g("pack")), "cats": [str(g(c) or "").strip() for c in ("cat1", "cat2", "cat3")],
+              "pack": _num(g("pack")), "cats": _cats(r, col, right),
               "direct": str(g("direct") or "").strip(),
               "prices": {h: _num(r[i]) for h, i in sup_cols.items() if i < len(r) and _num(r[i])},
               "stores": [h for h, i in store_cols.items() if i < len(r) and _num(r[i])]}
