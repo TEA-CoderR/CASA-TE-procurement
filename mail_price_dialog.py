@@ -283,8 +283,9 @@ class PriceMailDialog(QDialog):
                 msg = tr("文件被别的程序打开着（例如在 WPS / Excel 里），关掉以后再试一次。\n\n{0}", e)
             QMessageBox.warning(self, tr("放进供应商报价"), msg)
             return
-        done, undo = r
+        done, undo, skipped = r
         save_settings(self.settings)
+        picks = [b for b in picks if b["label"] not in {lab for lab, _w in skipped}]
         self._undo = undo
         for (n, _o), b in zip(done, picks):
             b["newer"], b["_on"], b["current"], b["current_time"] = False, False, n, datetime.now()
@@ -295,6 +296,9 @@ class PriceMailDialog(QDialog):
         self.ctl.render()
         self._update()
         self.status.setText(tr("✓ 已放进 {0} 份报价：{1}", len(done), "、".join(b["label"] for b in picks)))
+        if skipped:
+            QMessageBox.warning(self, tr("放进供应商报价"), tr("这几份没有放进去（原来的留着）：") + "\n" +
+                                "\n".join(f"· {lab}：{why}" for lab, why in skipped))
         self.b_undo.show()
         self.watcher.changed.emit()
         if self.after:

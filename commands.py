@@ -558,10 +558,25 @@ def mail_price_lists(settings, root, days=None, log=print, progress=None, cancel
     return {"found": found, "mails": len(mails), "errors": errors, "labels": sorted(cur)}
 
 
-def mail_import_prices(settings, root, picks, via="desktop", factory=None):
+def _count_price_items(path):
+    """比价能从这份报价读出几个商品（读不了抛 ValueError，带缺哪几列）"""
+    try:
+        import pythoncom                     # 后台线程里可能要开 Excel（.xls 先转 .xlsx）
+        pythoncom.CoInitialize()
+    except Exception:
+        pass
+    import service
+    return len(service._read_price_file(path, log=lambda *a: None))
+
+
+def mail_import_prices(settings, root, picks, via="desktop", factory=None, check=None):
     """
     把选中的价目表附件放进「2 供应商报价」：下载（只读）→ 替换同一家的旧报价（旧的进 _旧文件，不删）→ 名称带到新文件。
-    picks = mail_price_lists 的 found 里选中的。返回 (done = [(新文件名, 替换掉的旧文件名)], undo = 给 mail_undo_prices)
+    picks = mail_price_lists 的 found 里选中的。返回 (done = [(新文件名, 替换掉的旧文件名)], undo = 给 mail_undo_prices,
+    skipped = [(名称, 原因)])。
+    2026-11-07 用户第一次用：邮件里的原文件表头和比价要的不一样（MELONI barcode_pezzo / Prezzo、NEW GRIECO CODICI EAN、
+    PETRILLO Vista 3%），比价读不了 → 只剩一家报价。所以放进去之前先用比价的读法读一遍（check），读不了 / 商品少一大半的不放、旧的留着。
+    check(路径) → 能读出的商品数（读不了抛错），默认用 service._read_price_file；测试可以换
     """
     import json
     import shutil
@@ -589,7 +604,30 @@ def mail_import_prices(settings, root, picks, via="desktop", factory=None):
                                  "encoding": b["part"][2], "name": MP.file_name(b)}], sub, factory=factory)[0]
             if os.path.getsize(path) < 200:
                 raise RuntimeError(tr("{0} 的附件下载下来是空的", b["label"]))
-            plan.append({"src": path, "replace": b.get("current"), "auto": True})
+            plan.append({"src": path, "replace": b.get("current"), "auto": True, "_b": b})
+        # 比价读得了才放：读不了的、商品比现在那份少一大半的不放（旧的留着）
+        check = check or _count_price_items
+        good, skipped = [], []
+        for p in plan:
+            b = p.pop("_b")
+            try:
+                n = check(p["src"])
+            except Exception as e:
+                skipped.append((b["label"], tr("比价读不了这份文件（{0}），要先手动整理表头", e)))
+                continue
+            old_n = None
+            if b.get("current") and os.path.exists(os.path.join(folder, b["current"])):
+                try:
+                    old_n = check(os.path.join(folder, b["current"]))
+                except Exception:
+                    old_n = None
+            if n < 20 or (old_n and n < old_n * 0.5):
+                skipped.append((b["label"], tr("只读出 {0} 个商品（现在那份 {1} 个），看起来格式不对", n, old_n or "?")))
+                continue
+            good.append((p, b))
+        if not good:
+            raise RuntimeError(tr("没有放进去，原来的报价都留着：") + "\n" + "\n".join(f"· {l}：{w}" for l, w in skipped))
+        plan, picks = [p for p, _b in good], [b for _p, b in good]
         old_labels = SN.labels(W.scan(root)["prices"], settings)
         undo = {"folder": folder, "new": [], "restore": [], "names": dict(settings.get("supplier_names") or {}),
                 "ids": [(b["mail"].get("message_id") or "").strip() for b in picks]}
@@ -615,7 +653,7 @@ def mail_import_prices(settings, root, picks, via="desktop", factory=None):
             json.dump([i for i in ids if i][-200:], f)
         audit(settings.get("user_name") or "", via, "mail_import_prices",
               {"labels": [b["label"] for b in picks]}, {"files": [n for n, _o in done]})
-        return done, undo
+        return done, undo, skipped
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 

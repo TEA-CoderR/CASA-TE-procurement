@@ -3168,4 +3168,8 @@ TRANSLATIONS = {
     '[邮件] 看新报价没成功：{0}': ('[Email] Could not check for new price lists: {0}', '[Email] Controllo nuovi listini non riuscito: {0}'),
     '{0} 看过，没有新的': ('Checked at {0}, nothing new', 'Controllato alle {0}, niente di nuovo'),
     '新增 {0}': ('add {0}', 'aggiungi {0}'),
+    '只读出 {0} 个商品（现在那份 {1} 个），看起来格式不对': ('Only {0} items could be read (the current file has {1}); the format looks wrong', 'Letti solo {0} articoli (il file attuale ne ha {1}); il formato sembra sbagliato'),
+    '没有放进去，原来的报价都留着：': ('Nothing was added; the current price lists are kept:', 'Nulla è stato inserito; i listini attuali restano:'),
+    '比价读不了这份文件（{0}），要先手动整理表头': ('The comparison cannot read this file ({0}); the headers must be prepared by hand first', 'Il confronto non riesce a leggere questo file ({0}); prima vanno sistemate le intestazioni a mano'),
+    '这几份没有放进去（原来的留着）：': ('These were not added (the current ones are kept):', 'Questi non sono stati inseriti (restano quelli attuali):'),
 }

@@ -200,7 +200,6 @@ def test_price_list_mails_found_per_wholesaler():
 def test_import_price_list_replaces_old_and_can_undo(tmp_path, monkeypatch):
     import base64
     import commands as CMD
-    import mail_client as MC
     import workspace as W
     from test_mail_client import FakeIMAP
     monkeypatch.setattr("settings.app_dir", lambda: str(tmp_path / "app"))
@@ -222,7 +221,9 @@ def test_import_price_list_replaces_old_and_can_undo(tmp_path, monkeypatch):
     settings = {"mail": {"accounts": [{"address": "info@bmspsrl.com"}]}, "supplier_names": {"petrillo vecchio.xls": "PETRILLO"}}
     pick = {"label": "PETRILLO", "current": "petrillo vecchio.xls", "part": ["2", "Listino 03-11.xls", "BASE64", 1000],
             "mail": _pm("francesco.fratellirana@gmail.com", "Listini F.lli Petrillo", ["Listino 03-11.xls"], datetime(2026, 11, 2))}
-    done, undo = CMD.mail_import_prices(settings, root, [pick], factory=lambda h, p: made.append(F(h, p)) or made[-1])
+    done, undo, skipped = CMD.mail_import_prices(settings, root, [pick], factory=lambda h, p: made.append(F(h, p)) or made[-1],
+                                                 check=lambda p: 500)
+    assert skipped == []
     assert done == [("Listino 03-11.xls", "petrillo vecchio.xls")]
     folder = W.price_dir(root)
     assert sorted(f for f in os.listdir(folder) if f.endswith(".xls")) == ["Listino 03-11.xls"]
@@ -245,3 +246,37 @@ def test_attachment_parts_sections():
               b' NIL) "MIXED" ("BOUNDARY" "b") NIL NIL)')
     bs, _ = MC._parse(MC._tokens([("txt", nested)]))
     assert MC.attachment_parts(bs) == [["2", "image001.jpg", "BASE64", 300], ["3", "Canvass 46 New Grieco.xls", "BASE64", 2600000]]
+
+
+def test_unreadable_price_list_is_not_put_in(tmp_path, monkeypatch):
+    """邮件里的原文件比价读不了（表头不一样）→ 不放进去，旧的留着（2026-11-07 用户第一次用就遇到）"""
+    import base64
+    import pytest
+    import commands as CMD
+    import workspace as W
+    from test_mail_client import FakeIMAP
+    monkeypatch.setattr("settings.app_dir", lambda: str(tmp_path / "app"))
+    monkeypatch.setattr(CMD, "mail_password", lambda a: "good")
+    root = str(tmp_path / "ws")
+    W.ensure(root)
+    old = os.path.join(W.price_dir(root), "Listino_01 - Offerta.xlsx")
+    with open(old, "wb") as f:
+        f.write(b"OLD" * 100)
+
+    class F(FakeIMAP):
+        def uid(self, cmd, *args):
+            if cmd == "FETCH" and "BODY.PEEK[2]" in args[1]:
+                return "OK", [(b"1 (UID 7 BODY[2] {4}", base64.b64encode(b"RAW" * 100)), b")"]
+            return super().uid(cmd, *args)
+
+    def check(p):
+        if open(p, "rb").read(3) == b"RAW":
+            raise ValueError("Listino_01 - Offerta.xlsx 缺少必要列")
+        return 900
+    settings = {"mail": {"accounts": [{"address": "info@bmspsrl.com"}]}, "supplier_names": {}}
+    pick = {"label": "MELONI", "current": "Listino_01 - Offerta.xlsx", "part": ["2", "Listino_01 - Offerta.xlsx", "BASE64", 1000],
+            "mail": _pm("a@gmail.com", "Meloni listino", ["Listino_01 - Offerta.xlsx"], datetime(2026, 11, 5))}
+    with pytest.raises(RuntimeError, match="没有放进去"):
+        CMD.mail_import_prices(settings, root, [pick], factory=F, check=check)
+    assert open(old, "rb").read() == b"OLD" * 100
+    assert pick["mail"]["message_id"] not in CMD._prices_done()
