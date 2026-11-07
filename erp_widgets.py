@@ -1510,6 +1510,7 @@ class DropZone(QFrame):
         self.btn_open.clicked.connect(lambda: self.open_folder.emit())
         top.addWidget(self.btn_pick)
         top.addWidget(self.btn_open)
+        self._top = top
         v.addLayout(top)
         self.list_box = QVBoxLayout()
         self.list_box.setSpacing(2)
@@ -1519,6 +1520,12 @@ class DropZone(QFrame):
         self.hint.setWordWrap(True)
         v.addWidget(self.hint)
         v.addStretch()
+
+    def add_link(self, btn):
+        """标题行右边（「选择文件…」前面）再放一个链接按钮，例如供应商报价的「✉ 邮件」"""
+        btn.setObjectName(btn.objectName() or "Link")
+        btn.setCursor(Qt.PointingHandCursor)
+        self._top.insertWidget(self._top.indexOf(self.btn_pick), btn)
 
     def set_files(self, files, note=""):
         """files: [(文件名, 鼠标提示)]；note：文件列表下面的一行说明（空 = 显示拖入提示）"""

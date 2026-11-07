@@ -248,6 +248,56 @@ def attachment_names(bs):
     return out
 
 
+def _leaf_name(leaf):
+    """一个 BODYSTRUCTURE 叶子（单个部分）的文件名：参数里的 NAME / FILENAME / FILENAME*（不往下钻 message/rfc822）"""
+    found = []
+
+    def walk(x, depth):
+        if not isinstance(x, list) or depth > 3:
+            return
+        if len(x) % 2 == 0 and x and all(isinstance(k, (bytes, str)) for k in x[::2]):
+            for k, v in zip(x[::2], x[1::2]):
+                key = (k.decode() if isinstance(k, bytes) else k).upper()
+                if key in ("FILENAME*", "NAME*") and v:
+                    found.append(_rfc2231(v.decode("utf-8", "replace") if isinstance(v, bytes) else v))
+                elif key in ("FILENAME", "NAME") and v:
+                    found.append(_text(v))
+        for y in x:
+            if isinstance(y, list):
+                walk(y, depth + 1)
+    walk([y for y in leaf if isinstance(y, list)], 0)
+    return found[0] if found else ""
+
+
+def attachment_parts(bs):
+    """BODYSTRUCTURE → 有名字的部分 [[段号, 文件名, 编码, 大小]]（段号给 BODY.PEEK[段号] 取这个附件用）"""
+    out = []
+
+    def walk(x, sec):
+        if not isinstance(x, list) or not x:
+            return
+        if isinstance(x[0], list):                  # multipart：前面几个子部分（都是 list），后面是 MIXED 之类
+            i = 1
+            for y in x:
+                if not isinstance(y, list):
+                    break
+                walk(y, f"{sec}.{i}" if sec else str(i))
+                i += 1
+            return
+
+        def s(v):
+            return (v.decode("ascii", "replace") if isinstance(v, bytes) else (v or "")).upper()
+        name = _leaf_name(x)
+        if name and s(x[0]) != "MESSAGE":
+            try:
+                size = int(x[6]) if len(x) > 6 and x[6] is not None else 0
+            except (TypeError, ValueError):
+                size = 0
+            out.append([sec or "1", name, s(x[5]) if len(x) > 5 else "", size])
+    walk(bs, "")
+    return out
+
+
 def _split_messages(data):
     """imaplib 的 FETCH 回复 → 每封信一组 [(kind, bytes)]：以「序号 (」开头的片段开始一封新信，其余接在后面"""
     msgs = []
@@ -298,6 +348,7 @@ def fetch_headers(conn, folder, since, log=None, cancel=None, known=None, info=N
     uids = (data[0] or b"").split() if data else []
     out = []
     if known:
+        known = {u: r for u, r in known.items() if "parts" in r}       # 老缓存没记附件段号：重读
         out = [known[u.decode()] for u in uids if u.decode() in known]
         uids = [u for u in uids if u.decode() not in known]
     for k in range(0, len(uids), BATCH):
@@ -325,6 +376,7 @@ def fetch_headers(conn, folder, since, log=None, cancel=None, known=None, info=N
                 "to": ", ".join(a for _, a in getaddresses([str(h.get("To") or ""), str(h.get("Cc") or "")]) if a),
                 "subject": str(h.get("Subject") or "").strip(),
                 "attachments": attachment_names(d.get("BODYSTRUCTURE")),
+                "parts": attachment_parts(d.get("BODYSTRUCTURE")),
                 "size": int(d.get("RFC822.SIZE") or 0),
                 "message_id": str(h.get("Message-ID") or "").strip(),
                 "in_reply_to": str(h.get("In-Reply-To") or "").strip(),
@@ -519,7 +571,7 @@ def collect(accs, get_password, days=21, cache_dir=None, log=print, progress=Non
                 info = {"cached_validity": old.get("validity")}
                 got = fetch_headers(conn, raw, since, cancel=cancel, known=old.get("rows"), info=info)
                 for r in got:
-                    r["mailbox"], r["folder"] = acc["address"], label
+                    r["mailbox"], r["folder"], r["folder_raw"] = acc["address"], label, raw
                 rows.extend(got)
                 new_cache[label] = {"validity": info.get("uidvalidity"), "rows": {str(r["uid"]): r for r in got if r.get("uid")}}
             if path:
@@ -541,6 +593,54 @@ def collect(accs, get_password, days=21, cache_dir=None, log=print, progress=Non
             if conn is not None:
                 close(conn)
     return rows, errors
+
+
+def _decode_part(raw, encoding):
+    import base64
+    import quopri
+    enc = (encoding or "").upper()
+    if enc == "BASE64":
+        return base64.b64decode(re.sub(rb"\s+", b"", raw) + b"===")
+    if enc == "QUOTED-PRINTABLE":
+        return quopri.decodestring(raw)
+    return raw
+
+
+def fetch_part(conn, folder_raw, uid, section, encoding):
+    """取一封信里的一个附件（BODY.PEEK：服务器不会把信标成已读），返回解码后的字节"""
+    typ, _ = conn.select(_quote(folder_raw), readonly=True)
+    if typ != "OK":
+        raise MailError(f"打不开文件夹 {decode_utf7(folder_raw)}")
+    typ, data = conn.uid("FETCH", str(uid), f"(BODY.PEEK[{section}])")
+    raw = None
+    for item in data or []:
+        if isinstance(item, tuple) and len(item) == 2 and isinstance(item[1], (bytes, bytearray)):
+            raw = bytes(item[1])
+            break
+    if raw is None:
+        raise MailError("服务器没有返回这个附件（信可能已经被删了或挪走了）")
+    return _decode_part(raw, encoding)
+
+
+def download(acc, password, items, dest_dir, factory=None):
+    """
+    items = [{"folder_raw", "uid", "section", "encoding", "name"}]（同一个邮箱）→ 存进 dest_dir，返回 [路径]。只读：EXAMINE + BODY.PEEK
+    """
+    import os
+    os.makedirs(dest_dir, exist_ok=True)
+    conn = connect(acc, password, factory=factory)
+    out = []
+    try:
+        for it in items:
+            data = fetch_part(conn, it["folder_raw"], it["uid"], it["section"], it.get("encoding"))
+            name = re.sub(r'[\\/:*?"<>|\r\n]+', "_", it.get("name") or "allegato").strip() or "allegato"
+            p = os.path.join(dest_dir, name)
+            with open(p, "wb") as f:
+                f.write(data)
+            out.append(p)
+    finally:
+        close(conn)
+    return out
 
 
 ALT_IMAP = {"imap.qiye.aliyun.com": "imap.mxhichina.com", "imap.mxhichina.com": "imap.qiye.aliyun.com"}

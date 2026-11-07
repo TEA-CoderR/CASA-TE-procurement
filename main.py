@@ -3365,6 +3365,8 @@ class MainWindow(QMainWindow):
             self._last_sub[parent] = key
         if key == "home" and hasattr(self, "dashboard"):
             self.dashboard.refresh()
+        if key == "order" and hasattr(self, "price_mail"):
+            self.price_mail.maybe_check(self.ws_root())      # 后台看邮件里有没有新报价（30 分钟最多一次）
 
     def _side_clicked(self, key):
         """侧边栏一级菜单。有二级菜单的（批发商比价）：不在这一块里 → 展开并回到上次看的那一页；
@@ -3505,6 +3507,16 @@ class MainWindow(QMainWindow):
             zones.addWidget(z, 1)
         self.zone_lists.files_dropped.connect(self._drop_lists)
         self.zone_sup.files_dropped.connect(self._drop_suppliers)
+        # 邮件里批发商的新价目表（mail_price_dialog）：「✉ 邮件」/「✉ 新报价 n」
+        import mail_price_dialog as MPD
+        self.price_mail = MPD.PriceMailWatcher(self, settings)
+        self.btn_price_mail = QPushButton(tr("✉ 邮件"))
+        self.btn_price_mail.setObjectName("Link")
+        self.btn_price_mail.clicked.connect(lambda: MPD.open_dialog(self, settings, _UI, self.price_mail, self.ws_root(),
+                                                                     after=self.refresh_ws))
+        self.price_mail.changed.connect(lambda: MPD.style_button(self.btn_price_mail, self.price_mail, T))
+        self.zone_sup.add_link(self.btn_price_mail)
+        MPD.style_button(self.btn_price_mail, self.price_mail, T)
         self.zone_elim.files_dropped.connect(self._drop_eliminare)
         p1.lay.addLayout(zones)
         zr = QHBoxLayout()

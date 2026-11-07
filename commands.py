@@ -518,3 +518,128 @@ def mail_undo(st, items, via="desktop"):
     import mail_match as MM
     MM.undo(st, items)
     audit(st.me, via, "mail_undo", {"items": len(items)}, None)
+
+
+# ===================================================================== 邮件里的批发商报价 → 2 供应商报价（2026-11-07）
+def _prices_done_path():
+    from settings import app_dir
+    return os.path.join(app_dir(), "cache", "mail_prices_done.json")
+
+
+def _prices_done():
+    import json
+    try:
+        with open(_prices_done_path(), encoding="utf-8") as f:
+            return list(json.load(f))
+    except (OSError, ValueError):
+        return []
+
+
+def mail_price_lists(settings, root, days=None, log=print, progress=None, cancel=None, via="desktop", factory=None,
+                     today=None):
+    """
+    读邮件（只读信头，有缓存）→ 每家批发商最新一封价目表信。root = DETERSIVO采购的工作文件夹。
+    返回 {"found": [...], "mails": 信数, "errors": [...], "labels": [现在的报价名称]}；found 里 newer = 比现在那份新
+    """
+    import mail_client as MC
+    import mail_prices as MP
+    import workspace as W
+    from settings import app_dir
+    accs = [a for a in MC.accounts(settings) if mail_password(a["address"])]
+    if not accs:
+        raise RuntimeError(tr("还没设置邮箱或没填密码（系统设置 → 邮箱）"))
+    cur = MP.current_files(settings, W.price_dir(root))
+    days = int(days or (settings.get("mail") or {}).get("track_days") or MAIL_TRACK_DAYS)
+    mails, errors = MC.collect(accs, mail_password, days=days, cache_dir=os.path.join(app_dir(), "cache", "mail"),
+                               log=log, progress=progress, cancel=cancel, factory=factory, today=today)
+    found = MP.find(mails, list(cur), {a["address"] for a in accs}, done=_prices_done(), current=cur)
+    audit(settings.get("user_name") or "", via, "mail_price_lists", {"days": days},
+          {"mails": len(mails), "new": [b["label"] for b in found if b["newer"]], "errors": len(errors)})
+    return {"found": found, "mails": len(mails), "errors": errors, "labels": sorted(cur)}
+
+
+def mail_import_prices(settings, root, picks, via="desktop", factory=None):
+    """
+    把选中的价目表附件放进「2 供应商报价」：下载（只读）→ 替换同一家的旧报价（旧的进 _旧文件，不删）→ 名称带到新文件。
+    picks = mail_price_lists 的 found 里选中的。返回 (done = [(新文件名, 替换掉的旧文件名)], undo = 给 mail_undo_prices)
+    """
+    import json
+    import shutil
+    import tempfile
+    import file_inbox as FI
+    import mail_client as MC
+    import mail_prices as MP
+    import supplier_names as SN
+    import workspace as W
+    from settings import app_dir
+    folder = W.price_dir(root)
+    accs = {a["address"].lower(): a for a in MC.accounts(settings)}
+    tmp = tempfile.mkdtemp(prefix="casate_listini_")
+    bak = os.path.join(app_dir(), "cache", "mail_prices_undo", datetime_now_tag())
+    try:
+        plan = []
+        for b in picks:
+            m = b["mail"]
+            acc = accs.get((m.get("mailbox") or "").lower())
+            if acc is None:
+                raise RuntimeError(tr("找不到邮箱 {0}", m.get("mailbox")))
+            sub = os.path.join(tmp, str(len(plan)))
+            path = MC.download(acc, mail_password(acc["address"]),
+                               [{"folder_raw": m.get("folder_raw") or m.get("folder"), "uid": m["uid"], "section": b["part"][0],
+                                 "encoding": b["part"][2], "name": MP.file_name(b)}], sub, factory=factory)[0]
+            if os.path.getsize(path) < 200:
+                raise RuntimeError(tr("{0} 的附件下载下来是空的", b["label"]))
+            plan.append({"src": path, "replace": b.get("current"), "auto": True})
+        old_labels = SN.labels(W.scan(root)["prices"], settings)
+        undo = {"folder": folder, "new": [], "restore": [], "names": dict(settings.get("supplier_names") or {}),
+                "ids": [(b["mail"].get("message_id") or "").strip() for b in picks]}
+        os.makedirs(bak, exist_ok=True)
+        for b in picks:                       # 撤销用：替换前的那份先复制一份
+            cur = b.get("current")
+            if cur and os.path.exists(os.path.join(folder, cur)):
+                dst = os.path.join(bak, cur)
+                shutil.copy2(os.path.join(folder, cur), dst)
+                undo["restore"].append((cur, dst))
+        done = FI.apply_suppliers(root, plan, folder=folder)
+        undo["new"] = [n for n, _o in done]
+        # 名称：替换的旧文件的名称带过来；新的一家（以前没有）直接用邮件认出的名称
+        SN.carry_over(settings, done, old_labels)
+        names = settings.setdefault("supplier_names", {})
+        for (new, _old), b in zip(done, picks):
+            if SN.label_of(new, settings) != b["label"]:
+                names[new] = b["label"]
+        ids = _prices_done() + [(b["mail"].get("message_id") or "").strip() for b in picks]
+        p = _prices_done_path()
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(p, "w", encoding="utf-8", newline="") as f:
+            json.dump([i for i in ids if i][-200:], f)
+        audit(settings.get("user_name") or "", via, "mail_import_prices",
+              {"labels": [b["label"] for b in picks]}, {"files": [n for n, _o in done]})
+        return done, undo
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def datetime_now_tag():
+    from datetime import datetime
+    return datetime.now().strftime("%Y%m%d_%H%M%S")
+
+
+def mail_undo_prices(settings, undo, via="desktop"):
+    """撤销 mail_import_prices：新放进来的挪进 _旧文件，原来那份放回去，供应商名称改回去，这几封信下次照样提示"""
+    import json
+    import shutil
+    import workspace as W
+    folder = undo["folder"]
+    for n in undo["new"]:
+        p = os.path.join(folder, n)
+        if os.path.exists(p):
+            W.archive(p, os.path.join(folder, W.OLD))
+    for name, src in undo["restore"]:
+        if os.path.exists(src):
+            shutil.copy2(src, os.path.join(folder, name))
+    settings["supplier_names"] = dict(undo["names"])
+    ids = [i for i in _prices_done() if i not in set(undo["ids"])]
+    with open(_prices_done_path(), "w", encoding="utf-8", newline="") as f:
+        json.dump(ids, f)
+    audit(settings.get("user_name") or "", via, "mail_undo_prices", {"files": undo["new"]}, None)

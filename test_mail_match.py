@@ -158,3 +158,90 @@ def test_collect_uses_cache(tmp_path):
     assert sorted(r["subject"] for r in rows2) == sorted(r["subject"] for r in rows)
     assert all(isinstance(r["date"], datetime) for r in rows2)
     assert all(c[2] is True for c in made[1].calls if c[0] == "select")     # 还是只读打开
+
+
+# ---------------------------------------------------------------- 邮件里的批发商价目表 → 2 供应商报价
+def _pm(frm, subj, atts, when, to="", mailbox="info@bmspsrl.com", mid=None, uid="7"):
+    return {"mailbox": mailbox, "folder": "INBOX", "folder_raw": "INBOX", "from": frm, "from_name": "", "to": to,
+            "subject": subj, "attachments": atts, "parts": [[str(i + 2), a, "BASE64", 50000] for i, a in enumerate(atts)],
+            "message_id": mid or f"<{subj}@{when}>", "in_reply_to": "", "date": when, "uid": uid}
+
+
+def test_price_list_mails_found_per_wholesaler():
+    import mail_prices as MP
+    own = {"info@bmspsrl.com"}
+    labels = ["MEGA CASH", "MELONI", "NEW GRIECO", "PETRILLO"]
+    mails = [
+        # 我们发 Meloni 的订单给他 → 认得他（他发的价目表主题里没写 Meloni）
+        _pm("info@bmspsrl.com", "Ordine Meloni 4PDV", ["Ordine Meloni Foiano 0111.xlsx"], datetime(2026, 11, 1, 15),
+            to="Alessandro <alessandro.gianchecchi78@gmail.com>"),
+        _pm("alessandro.gianchecchi78@gmail.com", "Fwd: Listino 1 con offerta", ["image001.jpg", "Listino_01 - Offerta.xlsx"],
+            datetime(2026, 10, 29, 17, 51)),
+        _pm("alessandro.gianchecchi78@gmail.com", "Meloni listino", ["Listino_01 - Offerta.xlsx"], datetime(2026, 11, 5, 14, 48)),
+        _pm("andrea.comegna2@gmail.com", "AGGIORNAMENTO LISTINO NEW GRIECO CON OFFERTE", ["Canvass 46 New Grieco.xls"],
+            datetime(2026, 11, 5, 22, 15)),
+        _pm("francesco.fratellirana@gmail.com", "*** Listini F.lli Petrillo Dal 03/11 - Al 09/11 ***", ["Listino.xls"],
+            datetime(2026, 11, 2, 9, 0)),
+        # 别的供应商的价目表、没有 Excel 的都不算
+        _pm("infodeambrosi@gmail.com", "LISTINI GIRMI/G3F AGGIORNATI", ["Listino GIRMI.xlsx"], datetime(2026, 11, 3)),
+        _pm("robertorota.lucca@gmail.com", "LISTINO BIACCHI ETTORE", ["LISTINO BIACCHI.pdf"], datetime(2026, 11, 5)),
+    ]
+    cur = {"MELONI": ("Listino_01 - Offerta.xlsx", datetime(2026, 10, 30, 9)),
+           "NEW GRIECO": ("Canvass 46 New Grieco.xls", datetime(2026, 11, 6, 8)),     # 已经手动放过了
+           "PETRILLO": ("petrillo.xls", datetime(2026, 10, 27)), "MEGA CASH": ("formattato.xlsx", datetime(2026, 11, 1))}
+    found = {b["label"]: b for b in MP.find(mails, labels, own, current=cur)}
+    assert set(found) == {"MELONI", "NEW GRIECO", "PETRILLO"}
+    assert found["MELONI"]["mail"]["subject"] == "Meloni listino" and found["MELONI"]["part"][1] == "Listino_01 - Offerta.xlsx"
+    assert found["MELONI"]["newer"] and found["PETRILLO"]["newer"] and not found["NEW GRIECO"]["newer"]
+    done = [found["MELONI"]["mail"]["message_id"]]
+    assert not {b["label"]: b for b in MP.find(mails, labels, own, done=done, current=cur)}["MELONI"]["newer"]
+
+
+def test_import_price_list_replaces_old_and_can_undo(tmp_path, monkeypatch):
+    import base64
+    import commands as CMD
+    import mail_client as MC
+    import workspace as W
+    from test_mail_client import FakeIMAP
+    monkeypatch.setattr("settings.app_dir", lambda: str(tmp_path / "app"))
+    monkeypatch.setattr(CMD, "mail_password", lambda a: "good")
+    root = str(tmp_path / "ws")
+    W.ensure(root)
+    old = os.path.join(W.price_dir(root), "petrillo vecchio.xls")
+    with open(old, "wb") as f:
+        f.write(b"OLD" * 100)
+    content = b"NEWLISTINO" * 100
+
+    class F(FakeIMAP):
+        def uid(self, cmd, *args):
+            if cmd == "FETCH" and "BODY.PEEK[2]" in args[1]:
+                self.calls.append(("uid", cmd) + args)
+                return "OK", [(b"1 (UID 7 BODY[2] {%d}" % len(content), base64.b64encode(content)), b")"]
+            return super().uid(cmd, *args)
+    made = []
+    settings = {"mail": {"accounts": [{"address": "info@bmspsrl.com"}]}, "supplier_names": {"petrillo vecchio.xls": "PETRILLO"}}
+    pick = {"label": "PETRILLO", "current": "petrillo vecchio.xls", "part": ["2", "Listino 03-11.xls", "BASE64", 1000],
+            "mail": _pm("francesco.fratellirana@gmail.com", "Listini F.lli Petrillo", ["Listino 03-11.xls"], datetime(2026, 11, 2))}
+    done, undo = CMD.mail_import_prices(settings, root, [pick], factory=lambda h, p: made.append(F(h, p)) or made[-1])
+    assert done == [("Listino 03-11.xls", "petrillo vecchio.xls")]
+    folder = W.price_dir(root)
+    assert sorted(f for f in os.listdir(folder) if f.endswith(".xls")) == ["Listino 03-11.xls"]
+    assert open(os.path.join(folder, "Listino 03-11.xls"), "rb").read() == content
+    assert settings["supplier_names"] == {"Listino 03-11.xls": "PETRILLO"}         # 名称带到新文件
+    assert all(c[2] is True for c in made[0].calls if c[0] == "select")            # 只读打开
+    assert pick["mail"]["message_id"] in CMD._prices_done()
+    CMD.mail_undo_prices(settings, undo)
+    assert sorted(f for f in os.listdir(folder) if f.endswith(".xls")) == ["petrillo vecchio.xls"]
+    assert settings["supplier_names"] == {"petrillo vecchio.xls": "PETRILLO"}
+    assert pick["mail"]["message_id"] not in CMD._prices_done()
+
+
+def test_attachment_parts_sections():
+    import mail_client as MC
+    nested = (b'((("TEXT" "PLAIN" ("CHARSET" "utf-8") NIL NIL "7BIT" 20 1 NIL NIL NIL)("TEXT" "HTML" ("CHARSET" "utf-8") NIL NIL'
+              b' "7BIT" 20 1 NIL NIL NIL) "ALTERNATIVE" ("BOUNDARY" "a") NIL NIL)("IMAGE" "JPEG" ("NAME" "image001.jpg") "<x>"'
+              b' NIL "BASE64" 300 NIL ("INLINE" ("FILENAME" "image001.jpg")) NIL)("APPLICATION" "VND.MS-EXCEL" ("NAME"'
+              b' "Canvass 46 New Grieco.xls") NIL NIL "BASE64" 2600000 NIL ("ATTACHMENT" ("FILENAME" "Canvass 46 New Grieco.xls"))'
+              b' NIL) "MIXED" ("BOUNDARY" "b") NIL NIL)')
+    bs, _ = MC._parse(MC._tokens([("txt", nested)]))
+    assert MC.attachment_parts(bs) == [["2", "image001.jpg", "BASE64", 300], ["3", "Canvass 46 New Grieco.xls", "BASE64", 2600000]]
