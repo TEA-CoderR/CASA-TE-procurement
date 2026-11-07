@@ -955,15 +955,25 @@ class StepperDelegate(QStyledItemDelegate):
     value(格子) 取现在的值（默认读格子文字开头的数字）；最小 0。
     base：原来这一列用的委托（QtyDelegate 之类）——双击输入时的编辑框照用它的。
     """
-    BTN = 20
+    BTN = 24          # 两头按钮的宽度（= 胶囊高度）
+    PILL_W = 96       # 整个加减器最宽多少（列再宽也不拉长）
 
     def __init__(self, view, on_step=None, value=None, base=None, minimum=0):
         super().__init__(view)
         self.view, self.on_step, self.value_of, self.base, self.minimum = view, on_step, value, base, minimum
         self.last_step = 0.0          # 刚点过加减（别的「点一下就进编辑」的逻辑可以据此跳过）
-        self._hover = None
+        self._hover = None            # (行, 列, "-" / "+" / None)：鼠标在哪个格子、哪个按钮上
         view.setMouseTracking(True)
         view.viewport().setMouseTracking(True)
+        view.viewport().installEventFilter(self)
+
+    def eventFilter(self, obj, ev):
+        from PySide6.QtCore import QEvent
+        if ev.type() == QEvent.Leave and self._hover is not None:     # 鼠标离开表格：去掉悬停效果
+            self._hover = None
+            obj.setCursor(Qt.ArrowCursor)
+            obj.update()
+        return False
 
     # ---- 编辑框：交给原来的委托 ----
     def createEditor(self, parent, opt, idx):
@@ -974,6 +984,11 @@ class StepperDelegate(QStyledItemDelegate):
 
     def setModelData(self, ed, model, idx):
         return self.base.setModelData(ed, model, idx) if self.base else super().setModelData(ed, model, idx)
+
+    def updateEditorGeometry(self, ed, opt, idx):
+        if self.base:
+            return self.base.updateEditorGeometry(ed, opt, idx)
+        return super().updateEditorGeometry(ed, opt, idx)
 
     # ---- 值 ----
     def current(self, idx):
@@ -990,58 +1005,103 @@ class StepperDelegate(QStyledItemDelegate):
     def _editable(idx):
         return bool(idx.flags() & Qt.ItemIsEditable)
 
-    def _rects(self, r):
-        b = min(self.BTN, max(14, r.height() - 10))
-        y = r.top() + (r.height() - b) // 2
+    def _pill(self, r):
+        """格子正中一个胶囊：[ − | 数字 | ＋ ]，返回 (胶囊, 减, 加)"""
         from PySide6.QtCore import QRect
-        return QRect(r.left() + 4, y, b, b), QRect(r.right() - 4 - b, y, b, b)
+        h = min(self.BTN, max(16, r.height() - 8))
+        w = min(self.PILL_W, r.width() - 10)
+        x = r.left() + (r.width() - w) // 2
+        y = r.top() + (r.height() - h) // 2
+        pill = QRect(x, y, w, h)
+        return pill, QRect(x, y, h, h), QRect(x + w - h, y, h, h)
+
+    def _rects(self, r):
+        _, minus, plus = self._pill(r)
+        return minus, plus
+
+    def _fits(self, r):
+        return r.width() >= 2 * self.BTN + 34
 
     # ---- 画 ----
     def paint(self, p, opt, idx):
         from PySide6.QtWidgets import QStyleOptionViewItem, QApplication, QStyle
-        if not self._editable(idx) or opt.rect.width() < 2 * self.BTN + 24:
-            bg = idx.data(Qt.BackgroundRole)
+        from PySide6.QtGui import QPainterPath
+        bg = idx.data(Qt.BackgroundRole)
+        if not self._editable(idx) or not self._fits(opt.rect):
             if bg is not None:
                 p.fillRect(opt.rect, bg)
             return super().paint(p, opt, idx)
         o = QStyleOptionViewItem(opt)
         self.initStyleOption(o, idx)
         o.state &= ~QStyle.State_HasFocus
-        bg = idx.data(Qt.BackgroundRole)
+        text = o.text
+        o.text = ""
         if bg is not None:
             p.fillRect(opt.rect, bg)
         w = opt.widget
         (w.style() if w else QApplication.style()).drawPrimitive(QStyle.PE_PanelItemViewItem, o, p, w)
-        minus, plus = self._rects(opt.rect)
-        t = QStyleOptionViewItem(opt)
-        t.state &= ~QStyle.State_HasFocus
-        t.rect = opt.rect.adjusted(minus.width() + 8, 0, -(plus.width() + 8), 0)
-        super().paint(p, t, idx)
+
+        pill, minus, plus = self._pill(opt.rect)
         hov = self._hover
-        row_hover = hov is not None and hov[0] == idx.row() and hov[1] == idx.column()
+        here = hov is not None and hov[0] == idx.row() and hov[1] == idx.column()
+        on = hov[2] if here else None
         can_minus = self.current(idx) > self.minimum
+        selected = bool(opt.state & QStyle.State_Selected)
+
         p.save()
         p.setRenderHint(QPainter.Antialiasing)
-        for rect, sign, ok, which in ((minus, "−", can_minus, "-"), (plus, "+", True, "+")):
-            on = row_hover and hov[2] == which and ok
-            p.setPen(QPen(QColor(T("accent") if on else T("line")), 1))
-            p.setBrush(QColor(T("accent_soft") if on else T("surface")))
-            p.drawRoundedRect(QRectF(rect).adjusted(0.5, 0.5, -0.5, -0.5), 5, 5)
-            p.setPen(QColor(T("accent") if ok else T("faint")))
-            f = QFont(p.font())
-            f.setBold(True)
-            f.setPixelSize(max(11, rect.height() - 6))
-            p.setFont(f)
-            p.drawText(QRectF(rect).adjusted(0, -1, 0, 0), Qt.AlignCenter, sign)
+        rf = QRectF(pill).adjusted(0.5, 0.5, -0.5, -0.5)
+        rad = rf.height() / 2
+        path = QPainterPath()
+        path.addRoundedRect(rf, rad, rad)
+        # 底：没有底色的格子填白；有底色（例如改过标黄）的不填，底色照样看得见
+        if bg is None:
+            p.fillPath(path, QColor(T("surface")))
+        # 悬停的那个按钮：浅蓝底（裁在胶囊里）
+        if on and (on == "+" or can_minus):
+            p.save()
+            p.setClipPath(path)
+            p.fillRect(minus if on == "-" else plus, QColor(T("accent_soft")))
+            p.restore()
+        # 框：鼠标在这格 / 选中的行 → 蓝框，平时浅灰
+        border = QColor(T("accent")) if (here or selected) else QColor(T("far") if bg is not None else T("line"))
+        p.setPen(QPen(border, 1))
+        p.setBrush(Qt.NoBrush)
+        p.drawPath(path)
+        # 两条分隔线
+        sep = QColor(T("line"))
+        p.setPen(QPen(sep, 1))
+        for x in (minus.right() + 1, plus.left()):
+            p.drawLine(QPointF(x + 0.5, rf.top() + 4), QPointF(x + 0.5, rf.bottom() - 4))
+        # − / ＋：用线画（不靠字体，两边一样粗、正中）
+        arm = max(3.0, minus.height() * 0.17)
+        for rect, which, ok in ((minus, "-", can_minus), (plus, "+", True)):
+            c = QColor(T("accent") if (ok and (on == which or here or selected)) else T("muted"))
+            if not ok:
+                c = QColor(T("faint"))
+                c.setAlpha(110)
+            p.setPen(QPen(c, 1.6, Qt.SolidLine, Qt.RoundCap))
+            cx, cy = QRectF(rect).center().x(), QRectF(rect).center().y()
+            p.drawLine(QPointF(cx - arm, cy), QPointF(cx + arm, cy))
+            if which == "+":
+                p.drawLine(QPointF(cx, cy - arm), QPointF(cx, cy + arm))
+        # 数字：正中，颜色 / 粗细照格子原来的（标红、加粗都保留）
+        fg = idx.data(Qt.ForegroundRole)
+        col = fg.color() if hasattr(fg, "color") else (QColor(fg) if fg is not None else QColor(T("text")))
+        f = QFont(o.font)
+        p.setFont(f)
+        p.setPen(col)
+        mid = QRectF(minus.right() + 2, pill.top(), plus.left() - minus.right() - 3, pill.height())
+        p.drawText(mid, Qt.AlignCenter, p.fontMetrics().elidedText(text, Qt.ElideRight, int(mid.width())))
         p.restore()
 
     def sizeHint(self, opt, idx):
         s = super().sizeHint(opt, idx)
-        return QSize(s.width() + 2 * self.BTN + 20, s.height())
+        return QSize(max(s.width() + 2 * self.BTN + 20, self.MIN_WIDTH), s.height())
 
     # ---- 点 ----
     def _which(self, opt, idx, pos):
-        if not self._editable(idx):
+        if not self._editable(idx) or not self._fits(opt.rect):
             return None
         minus, plus = self._rects(opt.rect)
         if minus.adjusted(-2, -4, 2, 4).contains(pos):
@@ -1055,7 +1115,7 @@ class StepperDelegate(QStyledItemDelegate):
         t = ev.type()
         if t == QEvent.MouseMove:
             which = self._which(opt, idx, ev.position().toPoint() if hasattr(ev, "position") else ev.pos())
-            hov = (idx.row(), idx.column(), which) if which else None
+            hov = (idx.row(), idx.column(), which) if self._editable(idx) and self._fits(opt.rect) else None
             if hov != self._hover:
                 self._hover = hov
                 self.view.viewport().update()
