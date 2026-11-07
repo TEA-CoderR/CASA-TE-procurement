@@ -52,3 +52,17 @@ def test_place_and_scan_and_archive():
     assert W.archive_used(root, [4], [p2]) == 2
     s = W.scan(root)
     assert s["lists"] == [] and s["elim"] == {}
+
+
+def test_dedupe_old_skips_backups():
+    import file_inbox as FI  # noqa: F401
+    root = tempfile.mkdtemp()
+    for sub in ("2 供应商报价/_旧文件", "_备份/x", "ORDINE/_旧订单"):
+        os.makedirs(os.path.join(root, sub))
+    for sub in ("2 供应商报价/_旧文件", "_备份/x", "ORDINE/_旧订单"):
+        for n in ("a.xlsx", "a_20261101_101010.xlsx"):
+            with open(os.path.join(root, sub, n), "w") as f:
+                f.write("same")
+    res = W.dedupe_old(root)
+    assert sorted(len(g) for _, g in res) == [1, 1]
+    assert len(os.listdir(os.path.join(root, "_备份", "x"))) == 2      # 备份不动

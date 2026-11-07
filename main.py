@@ -452,63 +452,114 @@ def scan_folder(root_path):
 
 
 class SupplierDropDialog(QDialog):
-    """拖进来的供应商报价：每个新文件替换哪个旧文件（自动认出的已经选好，认不出的让用户选）"""
+    """
+    拖进来的供应商报价：每个文件选好是哪家供应商（2026-11-07 用户：程序常常认不出，放进去的时候就选好）。
+    认得出的已经选好；同名的旧报价自动替换；名称和起订规则的供应商名称一样，起订规则就一定对得上。
+    """
 
     def __init__(self, parent, plan, existing):
         super().__init__(parent)
-        self.setWindowTitle(tr("更新供应商报价"))
+        import supplier_names as SN
+        self.setWindowTitle(tr("放进供应商报价"))
         self.plan = plan
+        self.labels = SN.labels(existing, settings)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(20, 18, 20, 16)
         lay.setSpacing(10)
-        self.setToolTip(tr("每个新文件替换哪一家的旧报价？旧文件会挪进 distribuire\\_旧文件（不删除）。"))
+        t = QLabel(tr("每个文件是哪家供应商？") + " ⓘ")
+        t.setStyleSheet("font-weight:600;")
+        t.setToolTip(tr("选好供应商以后，同一家的旧报价自动挪进 _旧文件（不删除）；名称和起订规则里的供应商名称一样，"
+                        "起订规则、方案排除就一定认得出。下拉框里没有的可以直接输入新名字。"))
+        lay.addWidget(t)
         g = QGridLayout()
         g.setHorizontalSpacing(12)
         g.setVerticalSpacing(8)
-        hd1, hd2 = QLabel(tr("新文件")), QLabel(tr("替换"))
-        for h in (hd1, hd2):
-            h.setObjectName("Faint")
-        g.addWidget(hd1, 0, 0)
-        g.addWidget(hd2, 0, 1)
-        self.combos = []
+        for c, h in enumerate((tr("文件"), tr("供应商"), "")):
+            hl = QLabel(h)
+            hl.setObjectName("Faint")
+            g.addWidget(hl, 0, c)
+        opts = SN.choices(settings, existing)
+        self.combos, self.notes = [], []
         for i, p in enumerate(plan, 1):
             name = os.path.basename(p["src"])
             l = QLabel(name)
             l.setToolTip(p["src"])
             g.addWidget(l, i, 0)
             cb = QComboBox()
-            cb.addItem(tr("新供应商（不替换）"), "")
-            for e in existing:
-                cb.addItem(tr("替换 {0}", e), e)
-            if p["replace"] and cb.findData(p["replace"]) < 0:
-                cb.addItem(tr("替换 {0}", p["replace"]), p["replace"])
-            cb.setCurrentIndex(max(0, cb.findData(p["replace"] or "")))
-            cb.setMinimumWidth(280)
+            cb.setEditable(True)
+            cb.setInsertPolicy(QComboBox.NoInsert)
+            cb.addItems(opts)
+            rep = p.get("replace")
+            pre = (self.labels.get(rep) if rep and SN.recognized(rep, settings) else
+                   SN.label_of(name, settings) if SN.recognized(name, settings) else "")
+            cb.setCurrentText(pre or "")
+            cb.lineEdit().setPlaceholderText(tr("选择或输入供应商"))
+            cb.setMinimumWidth(220)
+            cb.currentTextChanged.connect(self._update)
             g.addWidget(cb, i, 1)
-            note = QLabel(tr("自动认出") if p["auto"] else tr("认不出是哪家，请选"))
-            note.setObjectName("Faint" if p["auto"] else "")
-            if not p["auto"]:
-                note.setStyleSheet(f"color:{T('warn')};")
+            note = QLabel("")
+            note.setMinimumWidth(200)
             g.addWidget(note, i, 2)
             self.combos.append(cb)
+            self.notes.append(note)
+        g.setColumnStretch(0, 1)
         lay.addLayout(g)
         self.err = QLabel("")
         self.err.setStyleSheet(f"color:{T('err')};")
         lay.addWidget(self.err)
         bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        bb.button(QDialogButtonBox.Ok).setText(tr("放进去"))
+        self.ok = bb.button(QDialogButtonBox.Ok)
+        self.ok.setText(tr("放进去"))
         bb.accepted.connect(self._ok)
         bb.rejected.connect(self.reject)
         lay.addWidget(bb)
-        self.setMinimumWidth(640)
+        self.setMinimumWidth(720)
+        from erp_widgets import fit_to_screen
+        fit_to_screen(self)
+        self._update()
+
+    def _targets(self):
+        """每一行：(供应商名称, 要替换的旧文件或 None)"""
+        import supplier_names as SN
+        out, taken = [], set()
+        for p, cb in zip(self.plan, self.combos):
+            nm = cb.currentText().strip()
+            same = os.path.basename(p["src"])
+            rep = same if same in self.labels else SN.file_for(nm, self.labels, taken)
+            old = p.get("replace")
+            if not rep and nm and old and old not in taken and not SN.recognized(old, settings):
+                rep = old              # 按文件名认出要替换的旧文件，它自己还没有名字 → 照旧替换它（名字记到新文件上）
+            if rep:
+                taken.add(rep)
+            out.append((nm, rep))
+        return out
+
+    def _update(self, *_):
+        for (nm, rep), note in zip(self._targets(), self.notes):
+            if not nm:
+                note.setText(tr("⚠ 请选择供应商"))
+                note.setStyleSheet(f"color:{T('warn')};")
+            elif rep:
+                note.setText(tr("替换 {0}", rep))
+                note.setToolTip(tr("{0} 的旧报价挪进 _旧文件", nm))
+                note.setStyleSheet(f"color:{T('muted')};")
+            else:
+                note.setText(tr("新增一家"))
+                note.setStyleSheet(f"color:{T('accent')};")
+        missing = sum(1 for nm, _ in self._targets() if not nm)
+        self.ok.setEnabled(not missing)
 
     def result_plan(self):
-        return [dict(p, replace=cb.currentData() or None) for p, cb in zip(self.plan, self.combos)]
+        return [dict(p, replace=rep) for p, (nm, rep) in zip(self.plan, self._targets())]
+
+    def picked(self):
+        """{新文件名: 选的供应商名称}"""
+        return {os.path.basename(p["src"]): nm for p, (nm, _) in zip(self.plan, self._targets())}
 
     def _ok(self):
-        picks = [cb.currentData() for cb in self.combos if cb.currentData()]
-        if len(picks) != len(set(picks)):
-            self.err.setText(tr("两个新文件不能替换同一家，请改一下。"))
+        names = [nm.casefold() for nm, _ in self._targets()]
+        if len(names) != len(set(names)):
+            self.err.setText(tr("两个文件不能是同一家供应商，请改一下。"))
             return
         self.accept()
 
@@ -2454,11 +2505,15 @@ class SupplierNamesDialog(QDialog):
             a = QTableWidgetItem(h)
             a.setFlags(a.flags() & ~Qt.ItemIsEditable)
             self.table.setItem(i, 0, a)
-            b = QTableWidgetItem(SN.label_of(h, settings))
+            cb = QComboBox()                       # 和拖入报价时一样：选或输入供应商名称
+            cb.setEditable(True)
+            cb.setInsertPolicy(QComboBox.NoInsert)
+            cb.addItems(SN.choices(settings, self.headers))
+            cb.setCurrentText(SN.label_of(h, settings) if SN.recognized(h, settings) else "")
+            cb.lineEdit().setPlaceholderText(tr("选择或输入供应商"))
             if SN.guessed(h, settings):
-                b.setToolTip(tr("程序猜的名字，可以改"))
-                b.setForeground(QColor(T("muted")))
-            self.table.setItem(i, 1, b)
+                cb.setToolTip(tr("程序猜的名字，可以改"))
+            self.table.setCellWidget(i, 1, cb)
         lay.addWidget(self.table, 1)
         bb = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
         bb.accepted.connect(self._save)
@@ -2469,7 +2524,8 @@ class SupplierNamesDialog(QDialog):
         import supplier_names as SN
         names = settings.setdefault("supplier_names", {})
         for i, h in enumerate(self.headers):
-            v = (self.table.item(i, 1).text() if self.table.item(i, 1) else "").strip()
+            w = self.table.cellWidget(i, 1)
+            v = (w.currentText() if w is not None else "").strip()
             if v and v != SN.stem(h):
                 names[h] = v
             else:
@@ -3524,6 +3580,11 @@ class MainWindow(QMainWindow):
                                                                      after=self.refresh_ws))
         self.price_mail.changed.connect(lambda: MPD.style_button(self.btn_price_mail, self.price_mail, T))
         self.zone_sup.add_link(self.btn_price_mail)
+        self.btn_sup_names = QPushButton(tr("供应商名称"))
+        self.btn_sup_names.setObjectName("Link")
+        self.btn_sup_names.setToolTip(tr("改每个报价文件对应哪家供应商（起订规则、方案排除都按这个名字认）"))
+        self.btn_sup_names.clicked.connect(self.edit_supplier_names)
+        self.zone_sup.add_link(self.btn_sup_names)
         MPD.style_button(self.btn_price_mail, self.price_mail, T)
         self.zone_elim.files_dropped.connect(self._drop_eliminare)
         p1.lay.addLayout(zones)
@@ -4322,6 +4383,7 @@ class MainWindow(QMainWindow):
         root = self.ws_root()
         self.ws_label.setText(root)
         self.ws_label.setToolTip(root)
+        self._dedupe_old_once(root)
         st = W.scan(root)
         self._ws_scan = st
         lists = []
@@ -4330,9 +4392,11 @@ class MainWindow(QMainWindow):
             lists.append(((W.STORES.get(sid) if sid else tr("⚠ 哪家店？")) + " · " + f + (f"  ({t:%d/%m})" if t else ""), tip))
         self.zone_lists.set_files(lists, tr("把门店发来的订货清单拖到这里（一家店一份，新的替换旧的）。清单会一直留着：想重新比价，直接再点「开始」"))
         pr = []
+        import supplier_names as SN
         for f in st["prices"]:
             t, tip = self._file_tip(W.price_dir(root), f)
-            pr.append((f"{f}  ({t:%d/%m})" if t else f, tip))
+            lb = SN.label_of(f, settings) if SN.recognized(f, settings) else tr("⚠ 哪家？")
+            pr.append((f"{lb} · {f}" + (f"  ({t:%d/%m})" if t else ""), tip))
         self.zone_sup.set_files(pr, tr("每周把新的报价拖到这里，自动替换同一家的旧报价（五家店共用）"))
         el = []
         for sid, fs in sorted(st["elim"].items()):
@@ -4494,6 +4558,27 @@ class MainWindow(QMainWindow):
         if done:
             self._after_drop(tr("扣减文件放好了：{0}", "；".join(done)))
 
+    def _dedupe_old_once(self, root):
+        """工作文件夹里 _旧文件 / _旧订单 一模一样的文件只留一份（以前没防重复留下的）：每次打开程序做一次，后台"""
+        done = getattr(self, "_deduped", set())
+        self._deduped = done
+        if not root or root in done:
+            return
+        done.add(root)
+        import workspace as W
+
+        def work():
+            try:
+                res = W.dedupe_old(root)
+            except Exception as e:
+                res = []
+                logging.getLogger("procurement").warning("旧文件去重失败：%s", e)
+            n = sum(len(g) for _, g in res)
+            if n:
+                msg = tr("旧文件夹去重：删掉 {0} 个一模一样的重复文件（每个只留一份）", n)
+                logging.getLogger("procurement").info(msg + " · " + "；".join(f"{os.path.relpath(d, root)}: {', '.join(g)}" for d, g in res))
+        threading.Thread(target=work, daemon=True).start()
+
     def _drop_suppliers(self, files):
         """供应商报价 → 2 供应商报价（按文件名认出是哪家，替换那一家的旧报价；认不出的问一下）"""
         import file_inbox as FI
@@ -4508,19 +4593,17 @@ class MainWindow(QMainWindow):
             self._file_error(e)
             return
         existing = W.scan(root)["prices"]
-        if not all(p["auto"] or p["replace"] for p in plan) and existing:
-            dlg = SupplierDropDialog(self, plan, existing)       # 有认不出的才问
-            if not dlg.exec():
-                return
-            plan = dlg.result_plan()
+        dlg = SupplierDropDialog(self, plan, existing)       # 每个文件选好是哪家供应商（认得出的已经选好）
+        if not dlg.exec():
+            return
+        plan, picked = dlg.result_plan(), dlg.picked()
         import supplier_names as SN
-        old_labels = SN.labels(existing, settings)
         try:
             done = FI.apply_suppliers(root, plan, folder=folder)
         except Exception as e:
             self._file_error(e)
             return
-        if SN.carry_over(settings, done, old_labels):     # 旧文件的供应商名称带到新文件上
+        if SN.apply_names(settings, done, picked):          # 记下每个文件的供应商名称
             save_settings(settings)
         rep = [f"{old} → {new}" for new, old in done if old and old != new]
         add = [new for new, old in done if not old]
@@ -4540,7 +4623,7 @@ class MainWindow(QMainWindow):
         root = self.ws_root()
         name = re.sub(r"\s+\(\d\d/\d\d\)$", "", label)       # 去掉后面的「(日期)」
         if kind == "prices":
-            return os.path.join(W.price_dir(root), name)
+            return os.path.join(W.price_dir(root), name.partition(" · ")[2] or name)     # 去掉前面的「供应商 · 」
         store, _, f = name.partition(" · ")
         if kind == "lists":
             return os.path.join(W.lists_dir(root), f)
@@ -4916,6 +4999,11 @@ class MainWindow(QMainWindow):
 
     def edit_supplier_names(self):
         heads = (self.info or {}).get("suppliers") or []
+        try:
+            import workspace as W
+            heads = W.scan(self.ws_root())["prices"] or heads          # 「2 供应商报价」里现在的文件
+        except Exception:
+            pass
         if not heads:
             QMessageBox.information(self, tr("供应商名称"), tr("「供应商报价」里还没有报价文件，先把报价拖进去。"))
             return

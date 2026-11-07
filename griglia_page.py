@@ -565,9 +565,9 @@ class GrigliaPage:
             for f in os.listdir(d):
                 fp = os.path.join(d, f)
                 if os.path.isfile(fp) and f.lower().endswith(G.EXCEL):
-                    os.makedirs(old, exist_ok=True)
+                    import file_inbox as FI
                     try:
-                        shutil.move(fp, os.path.join(old, f))
+                        FI.archive(fp, old)               # 重名加时间、一模一样的不多存一份
                     except OSError:
                         pass
             shutil.copy2(p, os.path.join(d, os.path.basename(p)))

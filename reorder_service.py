@@ -13,7 +13,6 @@
 import os
 import re
 import math
-import shutil
 from datetime import datetime, timedelta
 
 # 门店编号 → 名字（和原程序「分货」页一致；0 = 仓库）
@@ -1249,12 +1248,8 @@ def write_main_order(rows, root_folder, store_id, from_file=None, prefix="订货
     for f in os.listdir(ordine):
         p = os.path.join(ordine, f)
         if os.path.isfile(p) and f.lower().endswith((".xlsx", ".xls")) and not f.startswith("~$"):
-            os.makedirs(old_dir, exist_ok=True)
-            dst = os.path.join(old_dir, f)
-            if os.path.exists(dst):
-                base, ext = os.path.splitext(f)
-                dst = os.path.join(old_dir, f"{base}_{datetime.now():%Y%m%d_%H%M%S}{ext}")
-            shutil.move(p, dst)
+            import file_inbox as FI
+            FI.archive(p, old_dir)                    # 一模一样的旧订单不多存一份
     name = f"{prefix}_{STORES.get(store_id, store_id)}_{datetime.now():%Y%m%d_%H%M}.xlsx"
     path = os.path.join(ordine, name)
     wb = Workbook()

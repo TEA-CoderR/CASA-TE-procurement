@@ -109,15 +109,32 @@ def scan(root):
 
 
 def archive(path, old_dir):
-    """挪进 old_dir（重名时加时间），返回新路径"""
-    os.makedirs(old_dir, exist_ok=True)
-    name = os.path.basename(path)
-    dst = os.path.join(old_dir, name)
-    if os.path.exists(dst):
-        base, ext = os.path.splitext(name)
-        dst = os.path.join(old_dir, f"{base}_{datetime.now():%Y%m%d_%H%M%S}{ext}")
-    shutil.move(path, dst)
-    return dst
+    """挪进 old_dir（重名时加时间；旧文件夹里已经有一模一样的就不多存一份），返回新路径"""
+    import file_inbox as FI
+    return FI.archive(path, old_dir)
+
+
+OLD_NAMES = ("_旧文件", "_旧订单")
+
+
+def dedupe_old(root, max_depth=4):
+    """
+    工作文件夹里所有 _旧文件 / _旧订单 文件夹：一模一样的文件只留一份（以前没防重复时留下的）。
+    不进 _备份 / .backup（那是每次比价前的完整备份，按时间点留着）。返回 [(文件夹, [删掉的文件名])]
+    """
+    import file_inbox as FI
+    out = []
+    if not root or not os.path.isdir(root):
+        return out
+    base = os.path.abspath(root).rstrip(os.sep).count(os.sep)
+    for d, dirs, _files in os.walk(root):
+        depth = os.path.abspath(d).count(os.sep) - base
+        dirs[:] = [x for x in dirs if x not in ("_备份", ".backup") and depth < max_depth]
+        if os.path.basename(d) in OLD_NAMES:
+            gone = FI.dedupe(d)
+            if gone:
+                out.append((d, gone))
+    return out
 
 
 def place_list(root, src, sid):
@@ -148,6 +165,9 @@ def place_elim(root, src, sid):
     dst = os.path.join(folder, os.path.basename(src))
     if os.path.abspath(src) == os.path.abspath(dst):
         return dst
+    import file_inbox as FI
+    if os.path.exists(dst) and FI.same_content(src, dst):
+        return dst                                     # 一模一样的已经在了
     if os.path.exists(dst):
         archive(dst, os.path.join(folder, OLD))
     shutil.copy2(src, dst)

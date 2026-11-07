@@ -652,6 +652,7 @@ class DetailWindow(ToolWindow):
             tr("门店间调货：从哪家门店调进几件（调进来的就少订）。双击可以改：选调出门店、调几件，或者不调（比如过季品）"))
         self.table.cellDoubleClicked.connect(self._edit_transfer)     # 双击「调货」：选调出门店、填件数
         self.table.cellDoubleClicked.connect(self._open_transit)      # 双击「在途箱数」：看是哪几张单、标到货
+        self.table.cellDoubleClicked.connect(self._open_card)         # 双击商品编号 / 条码 / 名称：商品详情
         self.table.horizontalHeaderItem(TRANSFER_COL).setText(tr("调货") + " ✎")
         self.table.horizontalHeaderItem(CHANGE_COL).setToolTip(tr("订货箱数 − 建议箱数，括号里是为什么变：调货 / 手动改"))
         self.table.horizontalHeaderItem(REASON_COL).setToolTip(tr("系统为什么这么建议：库存够卖几天、订货周期里大约卖多少"))
@@ -797,8 +798,34 @@ class DetailWindow(ToolWindow):
     def _build_drawer(self):
         # 2026-11-07 用户：只留精华、看一眼就懂 → 和检查门店订货清单共用 item_drawer.ItemDrawer
         from item_drawer import ItemDrawer
-        self.drawer = ItemDrawer(350)
+        self._card = None
+        self.drawer = ItemDrawer(350, on_more=lambda: self.open_card(self.cur_di) if self.cur_di is not None else None)
         return self.drawer
+
+    def _open_card(self, r, c):
+        """双击商品编号 / 条码 / 名称：打开商品详情窗口（入库记录、每天销量、各店库存，和检查清单同一个窗口）"""
+        if c not in (_col(3), _col(4), _col(5)):
+            return
+        item = self.table.item(r, 0)
+        i = item.data(DI_ROLE) if item is not None else None
+        if i is not None:
+            self.open_card(i)
+
+    def open_card(self, i):
+        if i is None or not (0 <= i < len(self.detail)):
+            return
+        sc, it, sid = self.detail[i]
+        code = str(it.get("db_code") or it["code"])
+        if code.startswith(S.DUP_PREFIX):
+            self.flash(tr("重复编号的行没有自己的数据库记录，看上面那一行"))
+            return
+        from product_window import ProductWindow
+        if self._card is None:
+            self._card = ProductWindow(self, self.ui, self.page.settings)
+        x = {"code": code, "ean": it.get("ean"), "name": it.get("desc"), "store": sid, "sup_name": sc.get("name"),
+             "sup_code": it.get("sup_code") or ""}
+        vals = self._m24.get((sid, code)) if self._m24_state.get(sid) == "done" else None
+        self._card.show_item(x, (vals or [0.0] * len(self._m24_keys), self._m24_keys) if self._m24_state.get(sid) == "done" else None)
 
     def _select_row(self, r):
         if r < 0 or self.table.item(r, 0) is None:
