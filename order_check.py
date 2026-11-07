@@ -230,12 +230,25 @@ class OrderCheck:
         r3.addWidget(self.btn_run)
         self.btn_run.hide()                  # 页面上的「开始」按钮代替它
         pv.addLayout(r3)
-        # 少订的上限（2026-10-25 用户定：清单数量有它的原因，系统不要改得太狠）
+        # 少砍门店清单（2026-10-25 用户定：清单数量有它的原因；2026-11-07：库存真的多才砍）
         from erp_widgets import tip_label
-        from PySide6.QtWidgets import QDoubleSpinBox
         rr = review_rules(self.cfg)
         r4 = QHBoxLayout()
         r4.setSpacing(10)
+
+        def days_box(key, tip_text, label):
+            r4.addWidget(tip_label(label, tip_text))
+            sb = QSpinBox()
+            sb.setRange(1, 365)
+            sb.setSingleStep(5)
+            sb.setSuffix(tr(" 天"))
+            sb.setValue(int(round(rr[key])))
+            sb.valueChanged.connect(lambda v: (self.cfg.__setitem__(key, float(v)), save_settings(self.settings)))
+            r4.addWidget(sb)
+            r4.addSpacing(12)
+            return sb
+        self.keep_days = days_box("keep_days", tr("现在的库存够卖不到这么多天：照门店清单订，一箱不砍（默认 30 天）。下次检查生效"),
+                                  tr("照清单订：库存少于"))
         r4.addWidget(tip_label(tr("少订最多"), tr("系统建议比门店清单少订时，最多砍掉清单的几成（默认 50%：清单 4 箱最少订 2 箱）。门店报的数量有它的原因（促销、陈列等），改得太狠反而不好。下次检查生效")))
         self.max_cut = QSpinBox()
         self.max_cut.setRange(0, 100)
@@ -245,15 +258,8 @@ class OrderCheck:
         self.max_cut.valueChanged.connect(lambda v: (self.cfg.__setitem__("max_cut", v / 100.0), save_settings(self.settings)))
         r4.addWidget(self.max_cut)
         r4.addSpacing(12)
-        r4.addWidget(tip_label(tr("库存多可不订"), tr("现在的库存够卖这么多个订货周期以上，才可以不受上面的限制（少订更多或不订）。默认 2 个周期。下次检查生效")))
-        self.free_cut = QDoubleSpinBox()
-        self.free_cut.setRange(0.5, 12)
-        self.free_cut.setSingleStep(0.5)
-        self.free_cut.setDecimals(1)
-        self.free_cut.setSuffix(" " + tr("个周期"))
-        self.free_cut.setValue(rr["free_cut_cycles"])
-        self.free_cut.valueChanged.connect(lambda v: (self.cfg.__setitem__("free_cut_cycles", float(v)), save_settings(self.settings)))
-        r4.addWidget(self.free_cut)
+        self.free_days = days_box("free_days", tr("现在的库存够卖这么多天以上，才按系统建议少订或不订（默认 60 天）；介于两个天数之间的最多砍掉上面的比例。下次检查生效"),
+                                  tr("可不订：库存够卖"))
         r4.addStretch()
         pv.addLayout(r4)
         p.lay.addWidget(self.params_box)
@@ -909,10 +915,14 @@ class OrderCheck:
             if x.get("transit_cut"):
                 line += "，" + tr("建议少订 {0} 箱", x["transit_cut"])
             lines.insert(0, line)
-        if x.get("limited"):
+        if x.get("kept"):
             rr = review_rules(self.cfg)
-            lines.append(tr("系统算出来只要 {0:,} 箱；门店清单要 {1:,} 箱有它的原因，少订最多砍掉 {2:.0%}，按 {3:,} 箱订（库存够卖 {4:g} 个订货周期以上才会砍得更多）",
-                            x.get("sys_box") or 0, x["lbox"], rr["max_cut"], x["sbox"], rr["free_cut_cycles"]))
+            lines.append(tr("系统算出来只要 {0:,} 箱，但现在库存只够卖 {1} 天（不到 {2:g} 天），照门店清单 {3:,} 箱订",
+                            x.get("sys_box") or 0, _days(x.get("cover_now") or 0) or "0", rr["keep_days"], x["lbox"]))
+        elif x.get("limited"):
+            rr = review_rules(self.cfg)
+            lines.append(tr("系统算出来只要 {0:,} 箱；现在库存够卖 {1} 天，还不算多（够卖 {2:g} 天以上才会砍得更多），少订最多砍掉 {3:.0%}，按 {4:,} 箱订",
+                            x.get("sys_box") or 0, _days(x.get("cover_now") or 0) or "0", rr["free_days"], rr["max_cut"], x["sbox"]))
         elif x.get("sys_box") is not None and x["sys_box"] > x["lbox"]:
             lines.append(tr("系统算出来要 {0:,} 箱，多于门店清单，按清单 {1:,} 箱订（先不多订）", x["sys_box"], x["lbox"]))
         if x.get("in_db", True) and x.get("sbox") is not None and x["lbox"] != x["sbox"]:

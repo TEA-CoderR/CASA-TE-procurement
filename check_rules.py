@@ -283,11 +283,14 @@ def is_new_item(x):
     return float(s[3]) <= 0 or float(s[3]) - float(s[1]) <= 0
 
 
-REVIEW_DEFAULTS = {"max_cut": 0.5, "free_cut_cycles": 2.0}
+# 2026-11-07 用户定：尽可能少砍门店清单（采购部常常又加回去），只有库存真的多才砍：
+#   现在库存够卖 < keep_days 天 → 照清单订，一箱不砍；keep_days ~ free_days 天 → 最多砍掉清单的 max_cut；
+#   ≥ free_days 天 → 才按系统建议（可以少很多 / 不订）。以前按「订货周期」算，周期变成 14 天检查间隔后会砍得更多
+REVIEW_DEFAULTS = {"max_cut": 0.5, "keep_days": 30.0, "free_days": 60.0}
 
 
 def review_rules(cfg=None):
-    """检查清单的两条限制（批发商比价「设置」里改）：少订最多砍掉清单的几成；库存够卖几个订货周期以上才可以砍得更多 / 不订"""
+    """检查清单少砍的规则（DETERSIVO采购「设置」里改）：库存够卖几天以下照清单；几天以上才可以不订；中间最多砍几成"""
     c = dict(REVIEW_DEFAULTS)
     for k in c:
         try:
@@ -367,6 +370,9 @@ def init_boxes(rows, units=None, algo=None, rules=None):
       A 类保护：A 类商品、库存不够卖一个订货周期、门店要了 → 至少 1 箱（protect = "a_low"）；
       少订有上限：清单要的数量有它的原因（促销、陈列、门店知道的情况），系统最多砍掉清单的 max_cut（默认一半），
         除非现在的库存已经够卖 free_cut_cycles 个订货周期以上（库存明显多）才可以砍得更多 / 不订（limited = True 表示被这条拦住了）
+    2026-11-07（用户：尽可能少砍门店清单，采购部常常又加回去；只有库存真的多才砍，少量库存保留）改成按「现在库存够卖几天」：
+      < keep_days（30）天 → 照清单（kept = True）；keep_days ~ free_days（60）天 → 最多砍掉 max_cut（limited = True）；
+      ≥ free_days 天 → 按系统建议。没销量、库存不到一箱的也算库存少。cover_now = 用来判断的够卖天数
     2026-11-03：在途（x["transit_pcs"]，已经订了还没到货）最后从建议箱数里扣（在途件数 ÷ 每箱件数，整箱扣；transit_cut = 扣了几箱）
     """
     import forecast as F
@@ -406,6 +412,8 @@ def init_boxes(rows, units=None, algo=None, rules=None):
             if need > 0:
                 sys_ = max(sys_, int(math.ceil(need / pk - 1e-9)), 1)
         cover = _cover_now(x)
+        if math.isinf(cover) and max(0.0, float(x.get("inv0") or 0)) < pk:
+            cover = 0.0                                # 没销量、库存还不到一箱：算「库存少」，照清单
         ph = phantom_info(x)
         x["phantom"] = ph
         tier = (x.get("tier") or "")
@@ -421,15 +429,21 @@ def init_boxes(rows, units=None, algo=None, rules=None):
             x["protect"] = "a_low"
         x["sys_box"] = sys_
         x.pop("limited", None)
+        x.pop("kept", None)
+        x["cover_now"] = cover
         if is_new_item(x):
             x["protect"] = "new"
             x["sbox"] = x["lbox"]
         else:
             sb = min(sys_, x["lbox"])                  # 先不多订：最多订到门店清单的箱数
-            floor = int(math.ceil(x["lbox"] * (1 - rr["max_cut"]) - 1e-9))
-            if sb < floor and cover < rr["free_cut_cycles"] * cyc:
-                sb = floor                             # 少订不超过上限（库存不是明显多）
-                x["limited"] = True
+            if sb < x["lbox"] and cover < rr["keep_days"]:
+                sb = x["lbox"]                         # 库存不多：照门店清单，一箱不砍
+                x["kept"] = True
+            elif sb < x["lbox"] and cover < rr["free_days"]:
+                floor = int(math.ceil(x["lbox"] * (1 - rr["max_cut"]) - 1e-9))
+                if sb < floor:
+                    sb = floor                         # 库存够一阵子但不算多：最多砍掉 max_cut
+                    x["limited"] = True
             x["sbox"] = sb
         # 在途（已经订了还没到货，order_record；2026-11-03 用户：从建议量里扣）：整箱扣，零头不扣
         x.pop("transit_cut", None)

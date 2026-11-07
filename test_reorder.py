@@ -328,17 +328,17 @@ def test_check_boxes_no_more_than_list_and_new_item_protection():
     algo = {"engine": "v1"}
     base = {"in_db": True, "pack": 12, "store": 1, "inv0": 0, "daily": None, "sales": [30, 60, 90, 180]}
     rows = [dict(base, file_qty=2, suggested=200),                       # 系统要 17 箱 → 按清单 2 箱
-            dict(base, file_qty=3, suggested=5),                         # 系统要 5 件（不到一箱）→ 1 箱，但少订最多一半 → 2 箱
+            dict(base, file_qty=3, suggested=5),                         # 系统要 5 件（不到一箱）→ 1 箱，但店里没库存 → 照清单 3 箱（2026-11-07）
             dict(base, file_qty=1, suggested=0, inv0=50),                # 库存够 → 不订
             dict(base, file_qty=2, suggested=0, sales=[3, 5, 5, 5]),      # 两个月前还没卖过 → 新品，按清单
             dict(base, file_qty=1, suggested=0, sales=[0, 0, 0, 0]),      # 从没卖过 → 新品，按清单
             dict(base, file_qty=4, in_db=False, pack=0)]                 # 数据库没有 → 清单
     OC.init_boxes(rows, None, algo)
-    assert [x["fbox"] for x in rows] == [2, 2, 0, 2, 1, 4]
+    assert [x["fbox"] for x in rows] == [2, 3, 0, 2, 1, 4]
     assert rows[0]["sys_box"] == 17 and rows[3].get("protect") == "new" and rows[2].get("protect") is None
-    empty = [dict(base, file_qty=3, suggested=0, inv0=-2, sales=[0, 1, 2, 4])]   # 没货了、门店要 → 至少 1 箱（少订最多一半 → 2 箱）
+    empty = [dict(base, file_qty=3, suggested=0, inv0=-2, sales=[0, 1, 2, 4])]   # 没货了、门店要 → 照清单 3 箱（2026-11-07）
     OC.init_boxes(empty, None, algo)
-    assert empty[0]["fbox"] == 2 and empty[0]["protect"] == "empty"
+    assert empty[0]["fbox"] == 3 and empty[0]["protect"] == "empty"
 
 
 def test_check_boxes_a_protection_and_cut_limit():
@@ -453,3 +453,22 @@ def test_store_cycle_factor(monkeypatch):
     assert seen["rc"] == 60 and seen["sup"] == {501: 120, 502: 60}
     assert SO.store_cycle_factor({"store_cycle": {"3": 1.5}}, 3) == 1.5
     assert SO.store_cycle_factor({"store_cycle": {"3": 1.5}}, 2) == 1.0 and SO.store_cycle_factor(None, 1) == 1.0
+
+
+def test_check_keeps_store_list_unless_stock_really_high():
+    """2026-11-07 用户：尽可能少砍门店清单，只有库存真的多才砍。
+    够卖 < 30 天：照清单；30–60 天：最多砍一半；≥ 60 天：按系统；没销量、库存不到一箱：照清单"""
+    import order_check as OC
+    algo = {"engine": "v1"}
+    base = {"in_db": True, "pack": 6, "store": 1, "cycle": 14, "daily": None, "sales": [30, 60, 90, 180],
+            "file_qty": 4, "suggested": 0, "tier": "B"}
+    rows = [dict(base, inv0=10, daily0=0.5),       # 够卖 20 天 → 照清单 4 箱（以前按周期会砍成 2）
+            dict(base, inv0=20, daily0=0.5),       # 40 天 → 最多砍一半：2 箱
+            dict(base, inv0=40, daily0=0.5),       # 80 天 → 按系统 0 箱
+            dict(base, inv0=3, daily0=0),          # 没销量、只有 3 件（不到一箱）→ 照清单
+            dict(base, inv0=12, daily0=0)]         # 没销量、有两箱 → 库存多，可以不订
+    OC.init_boxes(rows, None, algo)
+    assert [x["fbox"] for x in rows] == [4, 2, 0, 4, 0]
+    assert rows[0]["kept"] and rows[1]["limited"] and not rows[2].get("kept") and rows[3]["kept"]
+    OC.init_boxes(rows[:1], None, algo, {"keep_days": 15})                        # 自己调小：20 天就算够一阵子
+    assert rows[0]["fbox"] == 2 and not rows[0].get("kept")
