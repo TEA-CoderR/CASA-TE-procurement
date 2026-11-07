@@ -104,7 +104,7 @@ def test_find_load_export(tmp_path=None):
     st = G.stats(g, {"X": {"9000000000001": _q(1.0)}})
     out = os.path.join(root, "stat.xlsx")
     G.export(st, out)
-    assert load_workbook(out).sheetnames == ["都不做了", "新品", "价格"]
+    assert load_workbook(out).sheetnames == ["都不做了", "新品", "价格", "价格可疑"]
 
 
 def test_workspace_has_grid_folder():
@@ -307,3 +307,37 @@ def test_griglia_found_on_any_sheet(tmp_path):
     wb.save(p)
     g = G.load(str(p))
     assert list(g["items"]) == ["8004395125531"] and g["items"]["8004395125531"]["price"] == 1.8
+
+
+def test_export_chosen_tables_styled_with_photos(tmp_path):
+    """2026-11-07 用户：可以只导出几张表；带 IMAGE 照片、颜色、表头筛选"""
+    from openpyxl import load_workbook
+    import griglia as G
+    st = {"labels": ["MELONI", "MEGA CASH"], "history": True,
+          "gone": [{"ean": "8000000000011", "code": "11", "name": "SAPONE", "cats": ["CASA", "", ""], "supplier": "MELONI",
+                    "best": 1.2}],
+          "new": [], "odd": [],
+          "prices": [{"ean": "8000000000028", "code": "28", "name": "ACE", "cats": ["", "", ""], "supplier": "MELONI SPA",
+                      "ref": 2.0, "best": 2.3, "best_sup": "MEGA CASH", "change": 0.15, "moved": True,
+                      "prices": {"MELONI": 2.5, "MEGA CASH": 2.3}}]}
+    out = str(tmp_path / "g.xlsx")
+    G.export(st, out, which=["gone"], grid_name="SCHEDA.xlsx")
+    wb = load_workbook(out)
+    assert wb.sheetnames == ["都不做了"]
+    ws = wb["都不做了"]
+    assert "Griglia" in ws["A1"].value and ws["A1"].fill.fgColor.rgb.endswith("1F3A5F")
+    hr = next(r for r in range(1, 8) if ws.cell(r, 2).value == "EAN")
+    assert ws.cell(hr + 1, 1).value.startswith('=_xlfn.IMAGE("https://img.casaete.top/prodotti/8000000000011/')
+    assert ws.cell(hr + 1, 2).value == "8000000000011" and list(ws.tables)          # 表头自带筛选
+    out2 = str(tmp_path / "p.xlsx")
+    G.export(st, out2, which=["prices", "gone"], rows={"prices": st["prices"], "gone": []})
+    wb = load_workbook(out2)
+    assert wb.sheetnames == ["都不做了", "价格"]                                    # 顺序照表的顺序
+    ws = wb["价格"]
+    hr = next(r for r in range(1, 8) if ws.cell(r, 2).value == "EAN")
+    heads = [c.value for c in ws[hr]]
+    var = ws.cell(hr + 1, heads.index("Variazione") + 1)
+    assert abs(var.value - 0.15) < 1e-9 and var.fill.fgColor.rgb.endswith("FDECEC")    # 涨 15% 红
+    cheap = ws.cell(hr + 1, heads.index("MEGA CASH") + 1)
+    assert cheap.fill.fgColor.rgb.endswith("E7F5EC")                                   # 最便宜绿
+    assert ws.cell(hr + 1, heads.index("Più economico") + 1).fill.fgColor.rgb.endswith("FFF4E0")   # 换了供应商橙

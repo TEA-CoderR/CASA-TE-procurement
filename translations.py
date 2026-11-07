@@ -3064,4 +3064,12 @@ TRANSLATIONS = {
     '可不订：库存够卖': ('May skip: stock lasts', 'Si può saltare: scorta per'),
     '系统算出来只要 {0:,} 箱，但现在库存只够卖 {1} 天（不到 {2:g} 天），照门店清单 {3:,} 箱订': ('The system needs only {0:,} boxes, but current stock lasts only {1} days (under {2:g}), so the store list of {3:,} boxes is kept', 'Il sistema calcola solo {0:,} colli, ma la scorta attuale dura solo {1} giorni (meno di {2:g}): si ordina la lista del negozio, {3:,} colli'),
     '系统算出来只要 {0:,} 箱；现在库存够卖 {1} 天，还不算多（够卖 {2:g} 天以上才会砍得更多），少订最多砍掉 {3:.0%}，按 {4:,} 箱订': ('The system needs only {0:,} boxes; current stock lasts {1} days, not a lot yet (only from {2:g} days is more cut), so at most {3:.0%} is cut: {4:,} boxes', 'Il sistema calcola solo {0:,} colli; la scorta attuale dura {1} giorni, non ancora molta (si taglia di più solo da {2:g} giorni), quindi si taglia al massimo il {3:.0%}: {4:,} colli'),
+    '按表里现在的筛选和排序': ('Use the current filters and sort order', "Usa i filtri e l'ordinamento attuali"),
+    '勾上：只导出表里现在看得到的行（搜索、右键表头筛选、新品的「几家在做」都算），顺序也一样；不勾：导出整张表': ('Checked: export only the rows currently visible (search, header filters and the new-items supplier count all apply), in the same order; unchecked: export the whole table', "Selezionato: esporta solo le righe visibili ora (ricerca, filtri d'intestazione e numero di grossisti dei nuovi articoli), nello stesso ordine; non selezionato: esporta tutta la tabella"),
+    '导出…': ('Export…', 'Esporta…'),
+    '正在写 {0}…': ('Writing {0}…', 'Scrittura di {0}…'),
+    '导出哪几张表': ('Tables to export', 'Tabelle da esportare'),
+    '每张表一个工作表：照片（Excel 365 打开才显示）、彩色表头、斑马纹、表头自带筛选，最便宜的价格绿底、涨价红 / 降价绿、换了供应商橙色': ('One sheet per table: photos (shown in Excel 365), coloured headers, striped rows, built-in header filters; cheapest price green, price up red / down green, changed supplier orange', 'Un foglio per tabella: foto (visibili in Excel 365), intestazioni colorate, righe alternate, filtri nelle intestazioni; prezzo più basso in verde, aumenti in rosso / cali in verde, cambio fornitore in arancione'),
+    '{0}（{1:,} 行）': ('{0} ({1:,} rows)', '{0} ({1:,} righe)'),
+    '{0}（{1:,} / {2:,} 行）': ('{0} ({1:,} / {2:,} rows)', '{0} ({1:,} / {2:,} righe)'),
 }
