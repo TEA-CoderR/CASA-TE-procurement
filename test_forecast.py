@@ -3,7 +3,7 @@ import math
 
 import forecast as F
 
-P = dict(F.DEFAULT_PARAMS)   # R = 7，L = 5，服务水平 95%，最多压货 14 天
+P = dict(F.DEFAULT_PARAMS, check_days=0)   # R = 7，L = 5，服务水平 95%；这些测试只看周期本身，不用检查间隔
 
 
 def test_demand_rate_weights_and_new_products():
@@ -141,7 +141,7 @@ def test_adjust_tier_by_sales_weeks():
 
 def test_slow_mover_safety_capped_by_max_safety_days():
     """2026-11-03：卖得慢的也受「安全库存最多 7 天」限制（MARLIA 花洒：日均 0.14、周期 60、A 类，以前 17 箱）"""
-    p = dict(F.DEFAULT_PARAMS)
+    p = dict(F.DEFAULT_PARAMS, check_days=0)
     p.update({"review_days": 60, "lead_days": 5, "max_safety_days": 7, "service": 0.95, "abc_service": True,
               "cycle_a": 1.25})
     t = F.target_stock(0.14, 0.4, 1, "A", p)
@@ -151,3 +151,17 @@ def test_slow_mover_safety_capped_by_max_safety_days():
     # 放宽到 60 天：又回到按泊松分位数（不超过 97.5% 分位数）
     p["max_safety_days"] = 60
     assert F.order_qty(F.target_stock(0.14, 0.4, 1, "A", p)["S"], 1) == 17
+
+
+def test_check_interval_limits_days_covered():
+    """2026-11-07 用户定：采购部一两周就会再看一次 → 每次只备到下次检查（默认 14 天），不按供应商的 30 / 60 天周期压货。
+    每天卖 1 件、每箱 6 件、没库存的 A 类：30 天周期以前 7 箱、60 天 13 箱，按 14 天检查 4 箱"""
+    def boxes(review, check):
+        q = dict(F.DEFAULT_PARAMS, review_days=review, lead_days=0, check_days=check)
+        t = F.target_stock(1.0, 4.2, 0, "A", q)
+        return F.to_packs(F.order_qty(t["S"], 0), 6, 0, 1.0, q, "A", cycle=review)
+    assert boxes(30, 0) == 7 and boxes(60, 0) == 13               # 不用检查间隔：和以前一样
+    assert boxes(30, 14) == boxes(60, 14) == 4                    # 供应商周期再长也只备到下次检查
+    assert boxes(7, 14) == boxes(7, 0)                            # 周期本来就比检查间隔短：照周期
+    assert F.review_used(dict(F.DEFAULT_PARAMS, review_days=60)) == 14 and F.DEFAULT_PARAMS["check_days"] == 14
+    assert F.review_used(dict(F.DEFAULT_PARAMS, review_days=30, check_days=0), cycle=60) == 60

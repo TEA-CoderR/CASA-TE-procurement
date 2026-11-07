@@ -20,6 +20,11 @@
      订货周期也按 ABC 乘系数（cycle_a / cycle_b / cycle_c，默认 1.25 / 1 / 0.75）：
      A 类多备一点（订够 1.25 个周期），C 类不必订够一个周期（0.75 个），少压货。
      只影响「要备多少天的货」；判断会不会卖断仍按实际的订货周期
+  7. 检查间隔（2026-11-07 用户定，默认 14 天）：采购部不是一个供应商周期才看一次，而是一两周就会再看、
+       同一家供应商这周订一部分、下周再订另一部分 → 要备几天的货按「下次检查前」算：
+       实际周期 = min(供应商周期（review_days，按配置文件可能是 30 / 60 / 90 天）, 检查间隔 check_days)。
+       以前每天卖 1 件、每箱 6 件的 A 类，30 天周期建议 7 箱、60 天 13 箱；按 14 天是 4 箱。
+       判断会不会卖断、凑整箱、订后够卖的周期都用实际周期
   6. 换成箱（2026-10-22 用户定）：件数凑不成整箱时，先看少订（往下取整）行不行——
        少订后的库存（现有 + 在途 + 整箱数 × 每箱件数）够卖「最低保障线」= 一个订货周期销量 × 系数
        （A 90% / B 70% / C 50%，safety_a / safety_b / safety_c）→ 少订，不为了一两件硬凑一箱；
@@ -48,6 +53,8 @@ DEFAULT_PARAMS = {
     "cycle_a": 1.25,           # A 类订够几个周期（2026-10-22 用户定）
     "cycle_b": 1.0,
     "cycle_c": 0.75,           # C 类不必订够一个周期
+    "check_days": 14,          # 检查间隔：最多几天后会再看一次（2026-11-07 用户定）；0 = 不用，照供应商周期
+    "warn_boxes": 6,           # 建议超过几箱标黄提醒看一眼（只提醒，不砍）；0 = 不提醒
 }
 
 WEEKS = 60                     # 查多少周（季节调整要一年以上）
@@ -64,6 +71,15 @@ def service_for(tier, params):
     if params.get("abc_service", True):
         s += {"A": 0.025, "B": 0.0, "C": -0.05}.get(tier, 0.0)
     return min(max(s, 0.5), 0.995)
+
+
+def review_used(params, cycle=None):
+    """实际按几天备货：这个商品的订货周期（cycle，没给用 review_days）和检查间隔 check_days 取小的"""
+    R = float(cycle if cycle else params.get("review_days", 7))
+    c = float(params.get("check_days") or 0)
+    if c > 0:
+        R = min(R, c)
+    return max(1.0, R)
 
 
 def cycle_factor(tier, params):
@@ -166,7 +182,7 @@ def seasonal_factor(weekly, horizon_days):
 
 def target_stock(daily, sigma_w, inv, tier, params, season=1.0, has_recent_sales=True):
     """返回 dict：mu 期间需求、ss 安全库存、S 目标库存、svc 服务水平"""
-    R = float(params.get("review_days", 7)) * cycle_factor(tier, params)    # 按 ABC：A 多备、C 少备
+    R = review_used(params) * cycle_factor(tier, params)    # 按 ABC：A 多备、C 少备；最多备到下次检查
     L = float(params.get("lead_days", 5))
     P = R + L
     d = daily * season
@@ -218,7 +234,7 @@ def to_packs(qty, pack, inv, daily, params, tier="B", cycle=None, on_order=0.0):
         return full
     if daily <= 0:
         return full                   # 没有销量（只为保留陈列量）不为零头多订一箱
-    R = float(cycle if cycle else params.get("review_days", 7))
+    R = review_used(params, cycle)
     P = R + float(params.get("lead_days", 5))
     after = max(0.0, inv) + max(0.0, on_order) + full * pack
     return full if after >= safety_ratio(tier, params) * daily * P else full + 1
@@ -269,7 +285,7 @@ def adjust_tier(tier, weekly, params):
 
 def decide(daily, inv, qty, tier, params, total_inv=0, sold_26w=True):
     """判断（和建议量一致）：返回 (文字, 优先级)"""
-    R = float(params.get("review_days", 7))
+    R = review_used(params)
     L = float(params.get("lead_days", 5))
     if daily <= 0:
         if not sold_26w and total_inv > 0:
@@ -293,7 +309,7 @@ def analyze(weekly, inv, tier, params, total_inv=0, on_order=0.0):
     """一个商品一家店的完整计算；weekly[0] = 最近 7 天"""
     daily, age = demand_rate(weekly)
     sig = weekly_sigma(weekly, age)
-    P = float(params.get("review_days", 7)) + float(params.get("lead_days", 5))
+    P = review_used(params) + float(params.get("lead_days", 5))
     season = seasonal_factor(weekly, P) if params.get("season", True) and daily > 0 else 1.0
     recent = sum(max(0.0, float(x or 0)) for x in weekly[:13]) > 0
     t = target_stock(daily, sig, inv, tier, params, season, recent)

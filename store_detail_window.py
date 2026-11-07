@@ -79,7 +79,7 @@ KEY_ROLE = Qt.UserRole + 2      # 排序用的值
 _TIER_RANK = {"A": 0, "B": 1, "C": 2}
 # 「看哪些」下拉框
 VIEWS = (("order", "只看要订的"), ("all", "全部商品"), ("changed", "只看有变化的"), ("transfer", "只看调货"),
-         ("edited", "只看手动改过的"), ("urgent", "只看紧急"))
+         ("edited", "只看手动改过的"), ("urgent", "只看紧急"), ("many", "只看箱数多的"))
 
 
 class _SortItem(QTableWidgetItem):
@@ -1002,6 +1002,23 @@ class DetailWindow(ToolWindow):
                 self._show_months(sid, it.get("db_code") or it["code"], bool(x))
 
     # ---------- 填表 ----------
+    def _warn_boxes(self):
+        """建议超过几箱标黄（算法设置「箱数提醒」，2026-11-07 用户定 6 箱；只提醒、不砍）。原程序算法不提醒"""
+        try:
+            from reorder_page import algo_params
+            used = ((self.page.calc or {}).get("demand") or {}).get("_algo") or {}
+            if used.get("engine") != "v2":
+                return 0
+            return float(algo_params(self.page.settings).get("warn_boxes") or 0)
+        except Exception:
+            return 0
+
+    def _many(self, sug):
+        n = getattr(self, "_warn_n", None)
+        if n is None:
+            n = self._warn_n = self._warn_boxes()
+        return bool(n) and (sug or 0) > n
+
     def load(self):
         """
         填订货明细表。上万行（17 家供应商 × 5 家门店）一次填完要好几秒、窗口会卡住，
@@ -1010,6 +1027,7 @@ class DetailWindow(ToolWindow):
         calc = self.page.calc
         stores = calc["stores"]
         d = calc["days"]
+        self._warn_n = self._warn_boxes()
         for i in range(4):
             self.table.horizontalHeaderItem(_col(7 + i)).setText(tr("{0}天", d[i]))
             self.table.horizontalHeaderItem(_col(7 + i)).setToolTip(tr("最近 {0} 天销量", d[i]))
@@ -1578,7 +1596,14 @@ class DetailWindow(ToolWindow):
         sug = self._sugg(sc, sid, it["row"])            # 建议（箱）：没扣在途（订货箱数 = 建议 − 在途）
         oc.setText(f"{sug:g}" if sug else ("0" if n else ""))
         oc.setData(KEY_ROLE, float(sug))
-        oc.setForeground(QColor(T("muted") if orig == n else T("text")))
+        many = self._many(sug)
+        oc.setForeground(QColor(T("warn") if many else T("muted") if orig == n else T("text")))
+        oc.setBackground(QColor(T("warn_soft")) if many else QColor(0, 0, 0, 0))
+        f = oc.font()
+        f.setBold(many)
+        oc.setFont(f)
+        oc.setToolTip(tr("建议 {0:g} 箱，超过 {1:g} 箱：请看一眼要不要订这么多（只提醒，没有自动减少）",
+                         sug, self._warn_n) if many else "")
         ch = self.table.item(r, CHANGE_COL)
         res = self._change(sc, sid, it["row"], n)
         txt, d = res[0], res[1]
@@ -1712,6 +1737,8 @@ class DetailWindow(ToolWindow):
                 hide = not self._transfer_key(sc, it, sid)
             elif not hide and view == "edited":
                 hide = key not in self.page.edited
+            elif not hide and view == "many":
+                hide = not self._many(self._sugg(sc, sid, it["row"]))
             elif not hide and view == "urgent":
                 x = calc["demand"].get(sid, {}).get(it.get("db_code") or it["code"])
                 hide = not (x and "🔴" in (x["decision"] or ""))

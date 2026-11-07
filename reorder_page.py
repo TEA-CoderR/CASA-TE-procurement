@@ -175,12 +175,17 @@ class AlgoDialog(QDialog):
         section(tr("基本"))
         line(tr("订货周期"), tr("多久下一次单。每周订 = 7；这次订的要卖到下次订的货到为止"),
              [mk("review_days", 1, 120, suffix=tr(" 天"))])
+        line(tr("检查间隔"), tr("多久会再看一次要不要订（采购部一两周就会再看，同一家供应商这周订一部分、下周再订另一部分）。"
+                              "每次只备到下次检查前要卖的量：要备的天数 = 订货周期（或供应商自己的周期）和它取小的。0 = 不用，照订货周期"),
+             [mk("check_days", 0, 120, suffix=tr(" 天"), default=14)])
         line(tr("到货"), tr("下单后几天到货（一般 2–7 天）"), [mk("lead_days", 0, 60, suffix=tr(" 天"))])
         line(tr("服务水平"), tr("不缺货的概率。95 = 100 次里约 5 次可能卖断"),
              [mk("service", 50, 99.5, dec=1, scale=100, suffix=" %")])
         line(tr("安全库存最多"), tr("按服务水平多备的货最多够卖几天（卖得快的、卖得慢的都一样）。A/B/C 的差别由服务水平区分"),
              [mk("max_safety_days", 0, 90, suffix=tr(" 天"))])
         line(tr("最少陈列"), tr("近 13 周有销量的商品至少保留几件"), [mk("min_shelf", 0, 50, suffix=tr(" 件"))])
+        line(tr("箱数提醒"), tr("订货明细里建议箱数超过这个数的格子标黄，提醒看一眼（只提醒，不会自动减少）。0 = 不提醒"),
+             [mk("warn_boxes", 0, 99, prefix="> ", suffix=tr(" 箱"), default=6)])
         self.season = QCheckBox(tr("季节调整"))
         self.season.setToolTip(tr("用去年同期做季节调整（数据不够一年或量太小时不调整）"))
         self.season.setChecked(bool(p["season"]))
@@ -205,7 +210,7 @@ class AlgoDialog(QDialog):
         row[0] += 1
 
         # ③ 门店周期（只用在门店配货）：五家店五列
-        section(tr("门店周期"), tr("只用在总仓采购：这家店的订货周期 × 系数（配置文件里供应商自己的周期也一起乘）。销量差、凑不够起订量的店填大于 1，一次订够更久、下单次数少（例如 × 1.5：30 天 → 45 天）；销量好、补货勤的店填小于 1，少压货。1 = 和现在一样"))
+        section(tr("门店周期"), tr("只用在总仓采购：这家店的订货周期 × 系数（配置文件里供应商自己的周期、检查间隔也一起乘）。销量差、凑不够起订量的店填大于 1，一次订够更久、下单次数少（例如 × 1.5：30 天 → 45 天）；销量好、补货勤的店填小于 1，少压货。1 = 和现在一样"))
         stores = [(k, v) for k, v in R.STORES.items() if k]
         head([v for _, v in stores])
         sc = p.get("store_cycle") or {}
@@ -276,6 +281,7 @@ def algo_summary(p):
     return tr("订货周期 {0} 天 + 到货 {1} 天，服务水平 {2:.0%}{3}，安全库存最多 {4} 天",
               p["review_days"], p["lead_days"], p["service"], tr("（按 ABC）") if p.get("abc_service") else "",
               p.get("max_safety_days", 7)) + \
+        (tr("，每 {0:g} 天检查一次（最多备到下次检查）", float(p["check_days"])) if float(p.get("check_days") or 0) > 0 else "") + \
         tr("，最低保障线 A {0:.0%} · B {1:.0%} · C {2:.0%}", p.get("safety_a", 0.9), p.get("safety_b", 0.7), p.get("safety_c", 0.5)) + \
         tr("，周期系数 A ×{0:g} · B ×{1:g} · C ×{2:g}", p.get("cycle_a", 1), p.get("cycle_b", 1), p.get("cycle_c", 1)) + \
         _store_cycle_text(p)

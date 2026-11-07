@@ -516,6 +516,8 @@ def compute_suggestions(db, store_id, product_codes, days_list=None, reorder_cyc
                 return f.result()
             except Exception:
                 return None
+        if factor != 1.0 and float(algo.get("check_days") or 0) > 0:   # 门店周期系数：检查间隔也一起乘
+            algo = dict(algo, check_days=float(algo["check_days"]) * factor)
         result_df = apply_v2(db, store_id, result_df, algo, weekly=got(f_week), revenue=got(f_rev), cycles=cycles)
     if pre is not None:
         pre.shutdown(wait=False)
@@ -1072,7 +1074,7 @@ def apply_v2(db, store_id, result_df, algo, weekly=None, revenue=None, on_order=
         if cycles is not None and i < len(cycles) and cycles[i] is not None \
                 and float(cycles[i]) != float(algo.get("review_days", 7)):
             p = dict(algo, review_days=float(cycles[i]))
-        used.append(int(round(float(p.get("review_days", 7)))))
+        used.append(int(round(F.review_used(p))))     # 实际周期：和检查间隔取小的（订货明细「周期」列、调货留货、检查清单都用它）
         a = F.analyze(weekly.get(c, [0.0] * F.WEEKS), inv, tier, p,
                       total_inv=float(r.get("total_inventory", 0) or 0), on_order=float(on_order.get(c, 0) or 0))
         cols["suggested_order_qty"].append(a["qty"])
@@ -1092,7 +1094,7 @@ def apply_v2(db, store_id, result_df, algo, weekly=None, revenue=None, on_order=
         cols["zero_weeks"].append(zw)          # 最近连续几周一件没卖
     for k, v in cols.items():
         result_df[k] = v
-    result_df["reorder_cycle_used"] = used if used else int(algo.get("review_days", 7))
+    result_df["reorder_cycle_used"] = used if used else int(round(F.review_used(algo)))
     result_df["algo"] = "v2"
     return result_df
 

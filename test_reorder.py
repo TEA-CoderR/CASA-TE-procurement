@@ -172,9 +172,13 @@ def test_apply_v2_supplier_cycles():
     df = pd.DataFrame({"CodArticolo": [1, 2], "store_inventory": [0, 0], "total_inventory": [0, 0],
                        "PrezzoVedi1": [1, 1]})
     weekly = {1: [7.0] * 60, 2: [7.0] * 60}
-    algo = dict(F.DEFAULT_PARAMS, review_days=7)
+    algo = dict(F.DEFAULT_PARAMS, review_days=7, check_days=0)
     out = R.apply_v2(None, 1, df, algo, weekly=weekly, revenue={1: 100, 2: 100}, cycles=[7, 60])
     assert list(out["reorder_cycle_used"]) == [7, 60]
+    # 检查间隔 14 天（默认）：60 天的供应商也只备 14 天，「周期」列写实际用的 14
+    chk = R.apply_v2(None, 1, df, dict(algo, check_days=14), weekly=weekly, revenue={1: 100, 2: 100}, cycles=[7, 60])
+    assert list(chk["reorder_cycle_used"]) == [7, 14]
+    assert chk.loc[1, "suggested_order_qty"] < out.loc[1, "suggested_order_qty"] - 40
     assert out.loc[1, "suggested_order_qty"] > out.loc[0, "suggested_order_qty"] + 40
     same = R.apply_v2(None, 1, df, algo, weekly=weekly, revenue={1: 100, 2: 100})
     assert list(same["reorder_cycle_used"]) == [7, 7]
