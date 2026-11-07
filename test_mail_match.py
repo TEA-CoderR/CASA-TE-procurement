@@ -280,3 +280,23 @@ def test_unreadable_price_list_is_not_put_in(tmp_path, monkeypatch):
         CMD.mail_import_prices(settings, root, [pick], factory=F, check=check)
     assert open(old, "rb").read() == b"OLD" * 100
     assert pick["mail"]["message_id"] not in CMD._prices_done()
+
+
+def test_missing_order_uses_spelling_from_the_mail():
+    """Excel 里有手误的写法（MARLYAMARCHETTI ANGIOLO）：补登记用和信里最对得上的写法"""
+    import mail_match as MM
+    import order_tracking as OT
+
+    class FakeSt:
+        orders = {"a": {"supplier": "MARLYAMARCHETTI ANGIOLO"}, "b": {"supplier": "Marchetti Angiolo"},
+                  "c": {"supplier": "MAGIC"}, "d": {"supplier": "MAGIC MACCIONI SAS"}}
+
+        @staticmethod
+        def canon(k):
+            return k
+    idx = MM.SupplierIndex(FakeSt())
+    t = "Ordine MARCHETTI ANGIOLO S.Filippo 0311"
+    assert idx.best_name(idx.find(t), t) == "Marchetti Angiolo"
+    t = "Ordine MAGIC MACCIONI BMS 0511"
+    assert idx.best_name(idx.find(t), t) == "MAGIC MACCIONI SAS"
+    assert OT.sup_key("x") is not None

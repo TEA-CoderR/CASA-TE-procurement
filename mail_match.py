@@ -179,6 +179,34 @@ class SupplierIndex:
         # 显示名：最常见的写法（一样多取有小写、长一点的）
         self.display = {k: max(c.items(), key=lambda kv: (kv[1], kv[0] != kv[0].upper(), len(kv[0])))[0]
                         for k, c in spell.items()}
+        self.spell = spell
+
+    def best_name(self, ks, text):
+        """几个认出来的供应商里，名字在 text 里出现得最完整的那一家的写法"""
+        got = [self._scored(k, text) for k in ks]
+        got = [g for g in got if g]
+        if got:
+            return max(got)[1]
+        return self.display.get(ks[0], ks[0]) if ks else ""
+
+    def _scored(self, k, text):
+        tw = set(words(text))
+        best = None
+        for n, cnt in (self.spell.get(k) or {}).items():
+            ws = [w for w in words(n) if len(w) >= 3]
+            if not ws:
+                continue
+            hit = sum(1 for w in ws if w in tw)
+            score = (hit, hit == len(ws), cnt, n != n.upper())     # 对上的词最多 → 全对上 → 最常见
+            if hit and (best is None or score > best[0]):
+                best = (score, n)
+        return best
+
+    def name_in(self, k, text):
+        """在 text（邮件主题 / 附件名）里出现得最完整的那种写法；都对不上用最常见的。
+        （Excel 里有手误的写法，例如「MARLYAMARCHETTI ANGIOLO」，信里写的是「MARCHETTI ANGIOLO」）"""
+        g = self._scored(k, text)
+        return g[1] if g else self.display.get(k, k)
 
     def find(self, text):
         """文字里提到的供应商（canon 键的列表，长名字优先）"""
@@ -325,7 +353,7 @@ def analyze(mails, st, own, mailbox_store=None, today=None, ignored=None):
         if sent and m.get("message_id"):
             thread[m["message_id"].strip()] = oids
         if sent and not oids and sups and not any(_like(sups[0], d) for d in deter):
-            ev["supplier_name"] = idx.display.get(sups[0], sups[0])
+            ev["supplier_name"] = idx.best_name(sups, " ".join([subj] + atts))
             ev["multi"] = multi
             ev["want"] = want
             ev["attachments"] = atts
