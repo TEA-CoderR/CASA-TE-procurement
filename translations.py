@@ -3209,4 +3209,7 @@ TRANSLATIONS = {
     '系统要 {0:,} 箱 · 不多订': ('System wants {0:,} · not more', 'Il sistema vuole {0:,} · non di più'),
     '；订货周期 {0:g} 天': ('; order cycle {0:g} days', '; ciclo ordini {0:g} giorni'),
     ' + 订的': (' + ordered', ' + ordinato'),
+    '各店库存': ('Stock by store', 'Giacenza per negozio'),
+    '五家门店的库存、够卖几天、这次订几箱；蓝底是这一行的门店': ('Stock, days of cover and boxes ordered at all five stores; the blue row is this line’s store', 'Giacenza, giorni di copertura e colli ordinati nei cinque negozi; la riga blu è il negozio di questa riga'),
+    '没有门店库存数据': ('No store stock data', 'Nessun dato di giacenza'),
 }

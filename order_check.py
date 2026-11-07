@@ -1281,16 +1281,14 @@ class OrderCheck:
         ov = QVBoxLayout(oth)
         ov.setContentsMargins(12, 10, 12, 10)
         ov.setSpacing(6)
-        ot = QLabel(tr("其他门店") + " ⓘ")
+        ot = QLabel(tr("各店库存") + " ⓘ")
         ot.setStyleSheet("font-weight:600; font-size:12px;")
-        ot.setToolTip(tr("其他门店的库存、够卖几天、这次订几箱；没货也没订的只算个数"))
+        ot.setToolTip(tr("五家门店的库存、够卖几天、这次订几箱；蓝底是这一行的门店"))
         ov.addWidget(ot)
         self.others_w = QWidget()
-        self.others = QGridLayout(self.others_w)
+        self.others = QVBoxLayout(self.others_w)
         self.others.setContentsMargins(0, 0, 0, 0)
-        self.others.setHorizontalSpacing(10)
-        self.others.setVerticalSpacing(4)
-        self.others.setColumnStretch(0, 1)
+        self.others.setSpacing(2)
         ov.addWidget(self.others_w)
         v.addWidget(oth)
         v.addStretch()
@@ -1530,39 +1528,55 @@ class OrderCheck:
                 m2.setText("—")
                 m2.setStyleSheet("")
         self._show_months(x)
-        # 其他门店：有货或这次订了的一家一行；没货也没订的只算个数
+        # 各店库存：五家店一家一行（本店蓝底加粗），没货的字变淡
         while self.others.count():
             w = self.others.takeAt(0).widget()
             if w:
                 w.deleteLater()
         snap = self.meta.get("snap") or {}
-        row, empty = 0, 0
-        for osid in sorted(k for k in snap if k != sid):
-            d = (snap.get(osid) or {}).get(code)
-            if not d:
-                continue
-            ox = self._by_key.get((osid, code))
-            on = int(ox.get("fbox") or 0) if ox else 0
-            oinv = float(d.get("inv") or 0)
-            if oinv <= 0 and not on:
-                empty += 1
-                continue
-            cv = _cover({"in_db": True, "inv0": d.get("inv"), "daily0": d.get("daily")})
-            cells = (R.STORES.get(osid, osid), f"{oinv:g} " + tr("件"), (_days(cv) or "—") + " " + tr("天"),
-                     tr("订 {0} 箱", on) if on else "")
-            for c, txt in enumerate(cells):
+        stores = sorted(set(k for k in snap) | {sid}, key=lambda k: (str(k).isdigit() is False, int(k) if str(k).isdigit() else 0, str(k)))
+        shown = 0
+        for osid in stores:
+            if osid == sid:
+                if not x.get("in_db", True):
+                    continue
+                oinv = float(x.get("store_inv") or 0) if isinstance(x.get("store_inv"), (int, float)) else 0.0
+                cv = _cover(x)
+                on = int(x.get("fbox") or 0)
+            else:
+                d = (snap.get(osid) or {}).get(code)
+                if not d:
+                    continue
+                ox = self._by_key.get((osid, code))
+                on = int(ox.get("fbox") or 0) if ox else 0
+                oinv = float(d.get("inv") or 0)
+                cv = _cover({"in_db": True, "inv0": d.get("inv"), "daily0": d.get("daily")})
+            me = osid == sid
+            empty = oinv <= 0 and not on
+            row = QFrame()
+            row.setStyleSheet(f"QFrame {{ background:{T('accent_soft')}; border-radius:6px; }}" if me else
+                              "QFrame { background:transparent; }")
+            h = QHBoxLayout(row)
+            h.setContentsMargins(8, 4, 8, 4)
+            h.setSpacing(8)
+            col = T("accent") if me else (T("faint") if empty else T("text"))
+            wt = "font-weight:700;" if me else ""
+            cells = ((R.STORES.get(osid, osid), 0, 1), (f"{oinv:g} " + tr("件"), 56, 0),
+                     ((_days(cv) or "—") + " " + tr("天") if oinv > 0 else "—", 56, 0),
+                     (tr("订 {0} 箱", on) if on else "", 62, 0))
+            for c, (txt, wdt, stretch) in enumerate(cells):
                 l = QLabel(txt)
+                l.setStyleSheet(f"background:transparent; color:{T('accent') if (c == 3 and on) else col}; {wt}")
                 if c:
                     l.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-                l.setObjectName("" if c in (0, 1) else "Faint")
-                if c == 3:
-                    l.setStyleSheet(f"color:{T('accent')};")
-                self.others.addWidget(l, row, c)
-            row += 1
-        if empty or not row:
-            l = QLabel(tr("其余 {0} 家没货", empty) if row else (tr("{0} 家都没货", empty) if empty else tr("没有其他门店的数据")))
+                    l.setFixedWidth(wdt)
+                h.addWidget(l, stretch)
+            self.others.addWidget(row)
+            shown += 1
+        if not shown:
+            l = QLabel(tr("没有门店库存数据"))
             l.setObjectName("Faint")
-            self.others.addWidget(l, row, 0, 1, 4)
+            self.others.addWidget(l)
 
     def _replan_in_place(self):
         """改了确定箱数以后重算调货，但表格不重新排序 / 筛选：改过的行留在原地（点表头或换筛选时才重排）"""
