@@ -476,3 +476,15 @@ def test_check_keeps_store_list_unless_stock_really_high():
     assert rows[5]["review_days"] == (90, 180) and rows[7]["review_days"] == (45, 90)
     OC.init_boxes(rows[:1], None, algo, {"keep_b": 30})                          # 自己调小：40 天就算够一阵子
     assert rows[0]["fbox"] == 2 and not rows[0].get("kept")
+
+
+def test_drawer_key_tags_short_and_ordered():
+    """2026-11-07 用户：详情栏只留精华 —— 为什么写成几个短标签，在途 / 保护在前"""
+    import order_check as OC
+    x = dict(in_db=True, lbox=1, sbox=0, sys_box=0, censored={"weeks": 6}, protect=None)
+    tags = [t for t, _ in OC.key_tags(x, transit_boxes=1)]
+    assert tags[:2] == ["在途 1 箱", "断货补算"] and "库存多" in tags
+    assert all(len(t) <= 12 for t in tags)
+    x2 = dict(in_db=True, lbox=3, sbox=3, sys_box=1, kept=True, protect="new")
+    assert [t for t, _ in OC.key_tags(x2, edited=True)] == ["新品保护", "库存少 · 照清单", "手动改过"]
+    assert OC.key_tags(dict(in_db=False)) == [("数据库没有", "err")]
