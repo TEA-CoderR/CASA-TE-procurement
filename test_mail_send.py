@@ -176,3 +176,53 @@ def test_smtp_test_logs_in_only_and_switches_to_other_aliyun_host():
         raise OSError("timed out")
     with pytest.raises(MC.MailError, match="465"):
         CMD._smtp_test(settings, acc, "pw", smtp_factory=blocked)
+
+
+def test_mail_body_and_attachment_cached_locally(tmp_path, monkeypatch):
+    import commands as CMD
+    import settings as SET
+    import credentials
+    monkeypatch.setattr(SET, "app_dir", lambda: str(tmp_path))
+    credentials.set("mail.info@casa-te.com", "pw")
+    m = {"mailbox": "info@casa-te.com", "folder": "INBOX", "folder_raw": "INBOX", "uid": 5}
+    raw = (b"From: a@b.it\r\nSubject: x\r\nContent-Type: multipart/mixed; boundary=XX\r\n\r\n--XX\r\n"
+           b"Content-Type: text/plain; charset=utf-8\r\n\r\nBuongiorno, confermiamo.\r\n--XX\r\n"
+           b"Content-Type: application/pdf; name=ddt.pdf\r\nContent-Transfer-Encoding: base64\r\n\r\nJVBERg==\r\n--XX--\r\n")
+    seen = []
+
+    class IM:
+        def __init__(self, h, p):
+            pass
+
+        def login(self, u, p):
+            return "OK", [b""]
+
+        def _simple_command(self, *a):
+            return "OK", [b""]
+
+        def select(self, f, readonly=False):
+            assert readonly                                   # 只读
+            return "OK", [b"1"]
+
+        def uid(self, cmd, u, what):
+            seen.append(what)
+            assert "PEEK" in what                             # 不改已读
+            if what == "(BODY.PEEK[2])":
+                return "OK", [(b"5 (UID 5 BODY[2] {8}", b"JVBERg=="), b")"]
+            return "OK", [(b"5 (UID 5 BODY[] {%d}" % len(raw), raw), b")"]
+
+        def logout(self):
+            pass
+
+        def close(self):
+            pass
+    settings = {"mail": {"accounts": [dict(ACCS[0])]}}
+    import mail_client as MC
+    monkeypatch.setattr(MC, "_send_id", lambda *a, **k: None, raising=False)
+    assert "confermiamo" in CMD.mail_view_body(settings, m, factory=IM)
+    n = len(seen)
+    assert "confermiamo" in CMD.mail_view_body(settings, m, factory=IM) and len(seen) == n     # 第二次不连网
+    p = CMD.mail_attachment(settings, m, ["2", "ddt.pdf", "BASE64", 6], factory=IM)
+    assert open(p, "rb").read() == b"%PDF" and os.path.basename(p) == "ddt.pdf"
+    CMD.mail_attachment(settings, m, ["2", "ddt.pdf", "BASE64", 6], factory=IM)
+    assert seen.count("(BODY.PEEK[2])") == 1

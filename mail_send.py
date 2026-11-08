@@ -304,8 +304,10 @@ def mark_sent(st, ids, mail, today=None):
         if not o.get("buyer"):
             f["buyer"] = st.me
         mails = list(o.get("mails") or [])
-        mails.append({"k": "order", "d": datetime.now().strftime("%Y-%m-%d %H:%M"), "s": mail["subject"][:120],
-                      "f": mail["from"]})
+        ev = {"k": "order", "d": datetime.now().strftime("%Y-%m-%d %H:%M"), "s": mail["subject"][:120], "f": mail["from"]}
+        if mail.get("mid"):
+            ev["id"] = mail["mid"]
+        mails.append(ev)
         f["mails"] = mails
         ch.append((oid, f))
     st.set_many(ch, src="mail")

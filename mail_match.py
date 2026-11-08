@@ -519,8 +519,9 @@ def add_missing(st, sugs):
             continue
         m = s["mail"]
         ch.append((oid, {"date": s["value"], "store": s["store"], "supplier": s["supplier"], "origin": "mail",
-                         "buyer": st.me, "mails": [{"k": "order", "d": m["date"].strftime("%Y-%m-%d %H:%M"),
-                                                    "s": m["subject"][:120], "f": m["from"]}]}))
+                         "buyer": st.me, "mails": [dict({"k": "order", "d": m["date"].strftime("%Y-%m-%d %H:%M"),
+                                                          "s": m["subject"][:120], "f": m["from"]},
+                                                         **({"id": m["message_id"]} if m.get("message_id") else {}))]}))
         undo_.append(("drop", oid, None))
     st.set_many(ch, src="mail")
     return len(ch), undo_
@@ -558,6 +559,8 @@ def changes_of(sugs, me=None):
                 f["draft"] = None
         ev = {"k": s["kind"], "d": s["mail"]["date"].strftime("%Y-%m-%d %H:%M") if isinstance(s["mail"]["date"], datetime)
               else str(s["mail"]["date"]), "s": s["mail"]["subject"][:120], "f": s["mail"]["from"]}
+        if s["mail"].get("message_id"):              # 订单窗口「邮件」页按它找回这封信
+            ev["id"] = s["mail"]["message_id"]
         f.setdefault("_mails", []).append(ev)
     return out
 
@@ -581,3 +584,54 @@ def apply(st, sugs, src="mail"):
         out.append((oid, f))
     st.set_many(out, src=src)
     return len(out), undo
+
+
+# ===================================================================== 订单窗口「邮件」页（2026-11-08）
+def _minute(v):
+    d = _parse_date(v)
+    return d.strftime("%Y-%m-%d %H:%M") if d else ""
+
+
+def related(o, mails):
+    """
+    一张单的邮件：单上记的事件（o["mails"]：邮件核对 / 程序发信时记的）+ 程序发的那封（o["sent"]）+ 回这几封的信（In-Reply-To）。
+    mails = 本机缓存的信头。返回按日期排的 [{"kind", "date", "subject", "from", "mail"(缓存里那封，找不到 None)}]，
+    同一封信（Message-ID 一样，比如发件箱和抄送收件箱各一份）只留一份，优先「已发送」/ 有附件段号的那份
+    """
+    by_mid, by_key = {}, {}
+    for m in mails:
+        mid = (m.get("message_id") or "").strip()
+        if mid:
+            cur = by_mid.get(mid)
+            if cur is None or (not cur.get("parts") and m.get("parts")):
+                by_mid[mid] = m
+        k = ((m.get("subject") or "")[:120], (m.get("from") or "").lower(), _minute(m.get("date")))
+        by_key.setdefault(k, m)
+    out, seen = [], set()
+
+    def add(kind, m, ev):
+        mid = (m or {}).get("message_id") or ""
+        sig = mid or (m and (m.get("mailbox"), m.get("folder"), m.get("uid"))) or (ev.get("s"), ev.get("d"))
+        if sig in seen:
+            return
+        seen.add(sig)
+        out.append({"kind": kind, "date": _parse_date(m.get("date")) if m else _parse_date(ev.get("d")),
+                    "subject": (m or {}).get("subject") or ev.get("s") or "", "from": ((m or {}).get("from") or ev.get("f") or "").lower(),
+                    "mail": m})
+    for ev in o.get("mails") or []:
+        m = by_mid.get(ev.get("id")) if ev.get("id") else None
+        if m is None:
+            m = by_key.get(((ev.get("s") or "")[:120], (ev.get("f") or "").lower(), ev.get("d") or ""))
+        add(ev.get("k") or "order", m, ev)
+    sent = o.get("sent") or {}
+    if sent.get("mid"):
+        m = by_mid.get(sent["mid"])
+        add("order", m, {"s": sent.get("subject"), "d": (sent.get("at") or "").replace("T", " ")[:16], "f": sent.get("from")})
+    mids = {r["mail"]["message_id"] for r in out if r["mail"] and r["mail"].get("message_id")}
+    for _ in range(2):                                    # 回信，和回信的回信
+        new = [m for m in by_mid.values() if (m.get("in_reply_to") or "").strip() in mids and m["message_id"] not in mids]
+        for m in new:
+            add("reply", m, {})
+            mids.add(m["message_id"])
+    out.sort(key=lambda r: r["date"] or datetime.min)
+    return out

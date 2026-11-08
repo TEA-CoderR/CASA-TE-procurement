@@ -1913,19 +1913,39 @@ class OrderDialog(QDialog):
         self.e_note = QLineEdit(str(o.get("note") or ""))
         lab(tr("备注"), 7, 0)
         g.addWidget(self.e_note, 7, 1, 1, 4)
-        v.addLayout(g)
+        body = QVBoxLayout()
+        body.setSpacing(12)
+        body.addLayout(g)
         if hist:
             hl = QLabel(tr("修改记录"))
             hl.setObjectName("Muted")
-            v.addWidget(hl)
+            body.addWidget(hl)
             lst = QListWidget()
             lst.setMaximumHeight(130)
             lst.addItems(history_lines(hist))
-            v.addWidget(lst)
+            body.addWidget(lst)
         if row and row.get("ref"):
             ref = QLabel(tr("Excel：{0}", row["ref"]))
             ref.setObjectName("Faint")
-            v.addWidget(ref)
+            body.addWidget(ref)
+        self.mail_tab = None
+        if row and row.get("id") and getattr(page, "st", None) is not None:
+            # 2026-11-08：这张单的邮件（发出的订单信、确认、DDT、回信），只读，不会在 Foxmail 里变成已读
+            from order_mail_tab import OrderMailTab
+            tabs = QTabWidget()
+            w = QWidget()
+            w.setLayout(body)
+            body.setContentsMargins(0, 10, 0, 0)
+            body.addStretch()
+            tabs.addTab(w, tr("订单"))
+            self.mail_tab = OrderMailTab(self, page.settings, page.st, row["id"],
+                                         on_count=lambda n: tabs.setTabText(1, tr("邮件（{0}）", n) if n else tr("邮件")))
+            n = len(o.get("mails") or []) + (1 if (o.get("sent") or {}).get("mid") and not o.get("mails") else 0)
+            tabs.addTab(self.mail_tab, tr("邮件（{0}）", n) if n else tr("邮件"))
+            tabs.currentChanged.connect(lambda i: i == 1 and self.mail_tab.activate())
+            v.addWidget(tabs, 1)
+        else:
+            v.addLayout(body)
         row_b = QHBoxLayout()
         if row:
             b_del = QPushButton(tr("删除"))

@@ -653,7 +653,7 @@ def body_text(raw, limit=4000):
     return re.sub(r"[ \t\r\f\v]+", " ", plain or "").strip()[:limit]
 
 
-def fetch_bodies(acc, password, rows, factory=None, max_bytes=200000):
+def fetch_bodies(acc, password, rows, factory=None, max_bytes=200000, text_limit=4000):
     """
     读几封信的正文文字（2026-11-07：发货信没写门店，门店写在正文「Ragione sociale: CASA & TE SAN MARCO」）。
     只读：EXAMINE + BODY.PEEK（不改已读）；每封最多读 max_bytes 字节（附件太大的只读前面，正文一般在最前面）。
@@ -674,7 +674,7 @@ def fetch_bodies(acc, password, rows, factory=None, max_bytes=200000):
                 raw = next((bytes(it[1]) for it in data or [] if isinstance(it, tuple) and len(it) == 2
                             and isinstance(it[1], (bytes, bytearray))), None)
                 if raw:
-                    out[(r.get("folder"), str(r["uid"]))] = body_text(raw)
+                    out[(r.get("folder"), str(r["uid"]))] = body_text(raw, text_limit)
     finally:
         close(conn)
     return out

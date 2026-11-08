@@ -602,6 +602,62 @@ def _bodies_save(d):
         json.dump(d, f, ensure_ascii=False)
 
 
+# ===================================================================== 订单窗口「邮件」页（2026-11-08）
+VIEW_TEXT = 30000                                         # 看信时正文最多读这么多字
+
+
+def order_mails(st, oid):
+    """这张单的邮件（不连网，用本机缓存的信头）：[{"kind", "date", "subject", "from", "mail"}]，见 mail_match.related"""
+    import mail_match as MM
+    o = st.orders.get(oid) or {}
+    return MM.related(o, _cached_mails())
+
+
+def _acc_of(settings, mailbox):
+    import mail_client as MC
+    acc = next((a for a in MC.accounts(settings) if a["address"].lower() == (mailbox or "").lower()), None)
+    if acc is None:
+        raise RuntimeError(tr("这封信在 {0} 里，这个邮箱没在设置里", mailbox))
+    pw = mail_password(acc["address"])
+    if not pw:
+        raise RuntimeError(tr("{0} 还没填密码（系统设置 → 邮箱）", acc["address"]))
+    return acc, pw
+
+
+def mail_view_body(settings, m, factory=None):
+    """一封信的正文（只读：EXAMINE + BODY.PEEK，不会在 Foxmail 里变成已读）。读过的存在 cache/mail_bodies.json"""
+    import mail_client as MC
+    key = "view|" + _body_key(m)
+    cache = _bodies_load()
+    if key in cache:
+        return cache[key]
+    acc, pw = _acc_of(settings, m.get("mailbox"))
+    got = MC.fetch_bodies(acc, pw, [m], factory=factory, max_bytes=400000, text_limit=VIEW_TEXT)
+    text = got.get((m.get("folder"), str(m.get("uid"))))
+    if text is None:
+        raise RuntimeError(tr("服务器上找不到这封信了（可能被删了或挪了文件夹）"))
+    cache[key] = text
+    _bodies_save(cache)
+    return text
+
+
+def mail_attachment(settings, m, part, factory=None):
+    """下载一封信的一个附件到 cache/mail_att/（只读），已经下过的直接用。part = [段号, 文件名, 编码, 大小]。返回路径"""
+    import hashlib
+    import mail_client as MC
+    from settings import app_dir
+    d = os.path.join(app_dir(), "cache", "mail_att", hashlib.sha1(_body_key(m).encode("utf-8")).hexdigest()[:12])
+    import re as _re
+    name = _re.sub(r'[\\/:*?"<>|\r\n]+', "_", part[1] or "allegato").strip() or "allegato"
+    p = os.path.join(d, name)
+    if os.path.exists(p) and os.path.getsize(p) > 0:
+        return p
+    acc, pw = _acc_of(settings, m.get("mailbox"))
+    out = MC.download(acc, pw, [{"folder_raw": m.get("folder_raw") or "INBOX", "uid": m["uid"], "section": part[0],
+                                 "encoding": part[2], "name": name}], d, factory=factory)
+    return out[0]
+
+
 # ===================================================================== 发订单邮件（2026-11-07，第 3 阶段）
 def _cached_mails():
     """各邮箱读过的信头缓存（cache/mail/*.json，邮件核对 / 报价检查时存的），不连网"""
