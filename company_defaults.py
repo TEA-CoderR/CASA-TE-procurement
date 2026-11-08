@@ -4,14 +4,16 @@
 """
 import json
 
-COMPANY_DEFAULTS_VER = 12          # v3.3.16 发布时同步
+COMPANY_DEFAULTS_VER = 13          # v3.3.17 发布时同步
 
 COMPANY_DEFAULTS = json.loads(r'''
 {
  "algo": {
+  "abc_freq_a": 6,
   "abc_freq_hi": 10,
   "abc_freq_lo": 3,
   "abc_service": true,
+  "check_days": 30,
   "cycle_a": 1.25,
   "cycle_b": 1.0,
   "cycle_c": 0.75,
@@ -26,7 +28,15 @@ COMPANY_DEFAULTS = json.loads(r'''
   "safety_b": 0.7,
   "safety_c": 0.5,
   "season": true,
-  "service": 0.95
+  "service": 0.95,
+  "store_cycle": {
+   "1": 1.0,
+   "2": 1.0,
+   "3": 1.0,
+   "4": 1.0,
+   "5": 1.0
+  },
+  "warn_boxes": 6
  },
  "allow_partial_purchase": false,
  "auto_backup": true,
@@ -84,9 +94,9 @@ COMPANY_DEFAULTS = json.loads(r'''
    12,
    13,
    14,
-   886868,
-   354034,
    443332,
+   473160,
+   354034,
    498903
   ],
   "new_columns_ver": 2,
@@ -99,14 +109,14 @@ COMPANY_DEFAULTS = json.loads(r'''
    "13": 63,
    "14": 132,
    "2": 427,
-   "354034": 111,
+   "354034": 84,
    "443332": 106,
+   "473160": 84,
    "498903": 84,
    "5": 111,
    "6": 89,
    "7": 130,
-   "8": 145,
-   "886868": 72
+   "8": 145
   },
   "odd_cols_hidden": [],
   "odd_cols_hidden_ver": 2,
@@ -144,9 +154,9 @@ COMPANY_DEFAULTS = json.loads(r'''
    13,
    14,
    15,
-   886868,
-   354034,
    443332,
+   473160,
+   354034,
    498903
   ],
   "price_columns_ver": 2,
@@ -160,14 +170,14 @@ COMPANY_DEFAULTS = json.loads(r'''
    "15": 66,
    "2": 190,
    "3": 0,
-   "354034": 111,
+   "354034": 84,
    "443332": 106,
+   "473160": 84,
    "498903": 84,
    "5": 179,
    "6": 127,
    "7": 130,
    "8": 160,
-   "886868": 72,
    "9": 131
   }
  },
@@ -284,14 +294,14 @@ COMPANY_DEFAULTS = json.loads(r'''
   ],
   "check_columns_ver": 9,
   "check_widths": {
-   "0": 71,
+   "0": 122,
    "1": 0,
    "10": 52,
    "11": 56,
    "12": 0,
    "13": 0,
    "14": 0,
-   "15": 70,
+   "15": 104,
    "16": 50,
    "17": 50,
    "18": 0,
@@ -299,17 +309,17 @@ COMPANY_DEFAULTS = json.loads(r'''
    "2": 130,
    "20": 76,
    "21": 104,
-   "22": 0,
+   "22": 80,
    "23": 0,
-   "24": 0,
+   "24": 110,
    "25": 0,
    "26": 0,
    "27": 203,
    "28": 60,
    "29": 71,
-   "3": 297,
-   "30": 180,
-   "31": 60,
+   "3": 185,
+   "30": 139,
+   "31": 78,
    "4": 60,
    "5": 0,
    "6": 0,
@@ -443,16 +453,16 @@ COMPANY_DEFAULTS = json.loads(r'''
    "0": 0,
    "1": 0,
    "10": 50,
-   "11": 106,
+   "11": 80,
    "12": 78,
    "13": 62,
    "14": 0,
    "15": 97,
-   "16": 99,
+   "16": 104,
    "17": 80,
    "18": 50,
    "19": 49,
-   "2": 93,
+   "2": 65,
    "20": 60,
    "21": 0,
    "22": 56,
@@ -467,7 +477,7 @@ COMPANY_DEFAULTS = json.loads(r'''
    "30": 0,
    "31": 0,
    "32": 119,
-   "33": 116,
+   "33": 90,
    "34": 0,
    "35": 380,
    "36": 76,
@@ -632,10 +642,10 @@ COMPANY_DEFAULTS = json.loads(r'''
   "use_supplier_cycles": true
  },
  "supplier_names": {
+  "(Prezzi)FlliPetrillo_Base_07_11.xls": "petrillo",
   "(Prezzi)FlliPetrillo_Base_17_10.xlsx": "PETRILLO",
-  "(Prezzi)FlliPetrillo_Base_24_10.xlsx": "petrillo",
   "Canvass 43 New Grieco(1).xlsx": "NEW GRIECO",
-  "Canvass 44 New Grieco.xlsx": "NEW GRIECO",
+  "Canvass 46 New Grieco.xls": "NEW GRIECO",
   "Listino_01 - Offerte(1).xlsx": "MELONI",
   "Ordine FlliPetrillo Foiano 1810.xlsx": "Petrillo",
   "Ordine Mega Cash Foiano 1810.xlsx": "MEGA CASH",
@@ -708,7 +718,7 @@ COMPANY_DEFAULTS = json.loads(r'''
    "0": 112,
    "1": 96,
    "2": 150,
-   "3": 76,
+   "3": 93,
    "4": 119,
    "5": 120,
    "6": 330
@@ -716,7 +726,7 @@ COMPANY_DEFAULTS = json.loads(r'''
   "transit_dlg_cols_hidden": [],
   "transit_dlg_cols_hidden_ver": 1,
   "transit_dlg_columns_ver": 1,
-  "written_at": "11-06 12:52"
+  "written_at": "11-06 21:16"
  },
  "wholesale_transfer": {
   "enabled": false,
