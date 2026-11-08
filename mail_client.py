@@ -49,6 +49,8 @@ def accounts(settings):
             out.append({"address": addr, "host": (a.get("host") or DEFAULT_HOST).strip(),
                         "port": int(a.get("port") or DEFAULT_PORT),
                         "store": (a.get("store") or None) if "store" in a else MM.default_store(addr)})
+            if a.get("smtp"):                             # 发信服务器（测试连接时换过地址才有）
+                out[-1]["smtp"] = str(a["smtp"]).strip()
     return out
 
 

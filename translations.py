@@ -3275,4 +3275,10 @@ TRANSLATIONS = {
     '一次选一张待登记': ('Select one order to register at a time', 'Seleziona un ordine da registrare alla volta'),
     '{0} 用邮件发给 {1}': ('{0} e-mailed to {1}', '{0} inviato via e-mail a {1}'),
     '请在生成订单文件的那台电脑上发': ('Please send from the PC that created the order file', "Invia dal PC che ha creato il file d'ordine"),
+    '✔ 发信：能登录 {0}（只测登录，没发信）': ('✔ Sending: login to {0} OK (login only, nothing sent)', '✔ Invio: accesso a {0} riuscito (solo accesso, nessuna e-mail inviata)'),
+    '✔ 收信：{0} 个文件夹，收件箱 {1} 封': ('✔ Receiving: {0} folders, {1} e-mails in the inbox', '✔ Ricezione: {0} cartelle, {1} e-mail in arrivo'),
+    '✔ 收信：{0} 个文件夹，收件箱 {1} 封（服务器已改成 {2}）': ('✔ Receiving: {0} folders, {1} e-mails in the inbox (server changed to {2})', '✔ Ricezione: {0} cartelle, {1} e-mail in arrivo (server cambiato in {2})'),
+    '✘ 发信：{0} 拒绝了密码。收信能登录说明密码是对的，可能是这个邮箱没开 SMTP：请在阿里邮箱网页版「设置 → 客户端设置」里打开 SMTP，或者用网页版生成的安全密码再试': ('✘ Sending: {0} rejected the password. Receiving works, so the password is right; SMTP may be off for this mailbox: enable SMTP in Aliyun webmail "Settings → Client settings", or try a security password generated in webmail', '✘ Invio: {0} ha rifiutato la password. La ricezione funziona, quindi la password è giusta; forse SMTP non è attivo per questa casella: attivalo nella webmail Aliyun «Impostazioni → Impostazioni client», oppure prova una password di sicurezza generata nella webmail'),
+    '✘ 发信：连不上 {0}:{1}（{2}）。可能是网络 / 防火墙挡了 {1} 端口': ('✘ Sending: cannot reach {0}:{1} ({2}). The network / firewall may block port {1}', '✘ Invio: impossibile raggiungere {0}:{1} ({2}). Rete / firewall potrebbero bloccare la porta {1}'),
+    '✔ 发信：能登录 {0}（发信服务器已改成它，只测登录，没发信）': ('✔ Sending: login to {0} OK (sending server changed to it; login only, nothing sent)', "✔ Invio: accesso a {0} riuscito (server d'invio cambiato; solo accesso, nessuna e-mail inviata)"),
 }

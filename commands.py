@@ -406,20 +406,60 @@ def mail_remove_account(settings, address):
     credentials.delete(MC.cred_name(address))
 
 
-def mail_test(settings, address):
-    """测试连接：返回给人看的一句话；失败抛 mail_client.MailError"""
+def mail_test(settings, address, smtp_factory=None):
+    """测试连接：收信（IMAP）+ 发信（SMTP 只登录、不发信）。返回给人看的两行；有一样不行抛 mail_client.MailError"""
+    import mail_client as MC
+    recv = _imap_test(settings, address)
+    acc = next(a for a in MC.accounts(settings) if a["address"].lower() == address.lower())
+    try:
+        send = _smtp_test(settings, acc, mail_password(address), smtp_factory)
+    except MC.MailError as e:
+        raise MC.MailError(recv + "\n" + str(e))
+    return recv + "\n" + send
+
+
+def _smtp_test(settings, acc, pw, smtp_factory=None):
+    """发信服务器登录一下：密码被拒先换另一个阿里地址试，能登录就记进设置（以后发信用它）"""
+    import smtplib
+    import mail_client as MC
+    import mail_send as MS
+    host, port = MS.smtp_of(acc)
+    try:
+        MS.smtp_check(acc, pw, smtp_factory)
+        return tr("✔ 发信：能登录 {0}（只测登录，没发信）", host)
+    except smtplib.SMTPAuthenticationError:
+        alt = MS.SMTP_ALT.get(host.lower())
+        if alt:
+            try:
+                MS.smtp_check(acc, pw, smtp_factory, host=alt)
+            except (smtplib.SMTPException, OSError):
+                pass
+            else:
+                box = (settings.get("mail") or {}).get("accounts") or []
+                for a in box:
+                    if (a.get("address") or "").lower() == acc["address"].lower():
+                        a["smtp"] = alt
+                return tr("✔ 发信：能登录 {0}（发信服务器已改成它，只测登录，没发信）", alt)
+        raise MC.MailError(tr("✘ 发信：{0} 拒绝了密码。收信能登录说明密码是对的，可能是这个邮箱没开 SMTP："
+                              "请在阿里邮箱网页版「设置 → 客户端设置」里打开 SMTP，或者用网页版生成的安全密码再试", host))
+    except (smtplib.SMTPException, OSError) as e:
+        raise MC.MailError(tr("✘ 发信：连不上 {0}:{1}（{2}）。可能是网络 / 防火墙挡了 {1} 端口", host, port, e))
+
+
+def _imap_test(settings, address):
+    """收信测试：返回给人看的一句话；失败抛 mail_client.MailError"""
     import mail_client as MC
     acc = next(a for a in MC.accounts(settings) if a["address"].lower() == address.lower())
     pw = mail_password(address)
     try:
         nf, n = MC.test_account(acc, pw)
-        return tr("✔ 连上了：{0} 个文件夹，收件箱 {1} 封", nf, n)
+        return tr("✔ 收信：{0} 个文件夹，收件箱 {1} 封", nf, n)
     except MC.LoginFailed:
         why, host = MC.diagnose_login(acc, pw)               # 登录被拒：分清是密码不对还是没开 IMAP
     if why == "other_host":                                  # 换个服务器地址就行：直接改好
         mail_save_account(settings, address, None, host, acc["port"])
         nf, n = MC.test_account(dict(acc, host=host), pw)
-        return tr("✔ 连上了：{0} 个文件夹，收件箱 {1} 封（服务器已改成 {2}）", nf, n, host)
+        return tr("✔ 收信：{0} 个文件夹，收件箱 {1} 封（服务器已改成 {2}）", nf, n, host)
     if why == "no_imap":
         raise MC.MailError(tr("{0}：密码是对的（用 POP3 能登录，就是大家邮件软件现在收信的方式），但这个邮箱还没开 IMAP。"
                               "请在阿里邮箱网页版「设置」里打开 IMAP（客户端设置 / POP3·IMAP 那一项）；找不到的话请管理员在后台"

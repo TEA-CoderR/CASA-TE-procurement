@@ -94,6 +94,24 @@ def sender_for(stores, accounts):
     return bms or accounts[0]
 
 
+SMTP_ALT = {"smtp.qiye.aliyun.com": "smtp.mxhichina.com", "smtp.mxhichina.com": "smtp.qiye.aliyun.com"}
+
+
+def smtp_check(acc, password, smtp_factory=None, host=None):
+    """只登录发信服务器再退出，不发任何信（测试连接用）。失败抛 smtplib / OSError 的错"""
+    import smtplib
+    h, port = smtp_of(acc)
+    s = (smtp_factory or (lambda hh, pp: smtplib.SMTP_SSL(hh, pp, timeout=30)))(host or h, port)
+    try:
+        s.login(acc["address"], password)
+    finally:
+        try:
+            s.quit()
+        except Exception:
+            pass
+    return host or h
+
+
 def smtp_of(acc):
     host = (acc.get("smtp") or SMTP_FOR.get((acc.get("host") or "").lower()) or "smtp.qiye.aliyun.com").strip()
     return host, int(acc.get("smtp_port") or SMTP_PORT)

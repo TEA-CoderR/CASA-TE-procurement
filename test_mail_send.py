@@ -136,3 +136,43 @@ def test_draft_uses_cached_sent_mail_without_network(tmp_path, monkeypatch):
     assert d["ids"] == ["L2"] and d["from"] == "infolucca@casa-te.com"
     assert d["to"] == ["ordini@lampa.it"] and d["cc"] == ["matteohe@casa-te.com"]
     assert d["subject"] == "Ordine Lampa Capannori 0711" and d["body_src"] == "template" and d["files"] == []
+
+
+def test_smtp_test_logs_in_only_and_switches_to_other_aliyun_host():
+    import smtplib
+    import commands as CMD
+    import mail_client as MC
+    calls = []
+
+    class OnlyOld:
+        def __init__(self, host, port):
+            self.host = host
+            calls.append((host, port))
+
+        def login(self, u, p):
+            if self.host != "smtp.mxhichina.com":
+                raise smtplib.SMTPAuthenticationError(535, b"auth failed")
+
+        def send_message(self, msg):                 # 测试连接不许发信
+            raise AssertionError("sent a mail")
+
+        def quit(self):
+            pass
+    settings = {"mail": {"accounts": [dict(ACCS[0])]}}
+    acc = MC.accounts(settings)[0]
+    r = CMD._smtp_test(settings, acc, "pw", smtp_factory=OnlyOld)
+    assert "smtp.mxhichina.com" in r and calls == [("smtp.qiye.aliyun.com", 465), ("smtp.mxhichina.com", 465)]
+    acc = MC.accounts(settings)[0]
+    assert acc["smtp"] == "smtp.mxhichina.com" and MS.smtp_of(acc) == ("smtp.mxhichina.com", 465)
+
+    class Never(OnlyOld):
+        def login(self, u, p):
+            raise smtplib.SMTPAuthenticationError(535, b"auth failed")
+    with pytest.raises(MC.MailError, match="SMTP"):
+        CMD._smtp_test({"mail": {"accounts": [dict(ACCS[0])]}}, MC.accounts({"mail": {"accounts": [ACCS[0]]}})[0],
+                       "pw", smtp_factory=Never)
+
+    def blocked(h, p):
+        raise OSError("timed out")
+    with pytest.raises(MC.MailError, match="465"):
+        CMD._smtp_test(settings, acc, "pw", smtp_factory=blocked)
