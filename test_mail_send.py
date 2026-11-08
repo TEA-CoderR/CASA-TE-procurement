@@ -226,3 +226,29 @@ def test_mail_body_and_attachment_cached_locally(tmp_path, monkeypatch):
     assert open(p, "rb").read() == b"%PDF" and os.path.basename(p) == "ddt.pdf"
     CMD.mail_attachment(settings, m, ["2", "ddt.pdf", "BASE64", 6], factory=IM)
     assert seen.count("(BODY.PEEK[2])") == 1
+
+
+def test_draft_opens_without_network_and_reads_last_body_later(tmp_path, monkeypatch):
+    """发订单窗口不用等邮箱：草稿只用本机缓存；上次那封信的正文读过的直接用，没读过的标 need_last 窗口打开后再读"""
+    import json
+    import commands as CMD
+    import settings as SET
+    monkeypatch.setattr(SET, "app_dir", lambda: str(tmp_path))
+    (tmp_path / "cache" / "mail").mkdir(parents=True)
+    rows = {"5": {"from": "infolucca@casa-te.com", "mailbox": "infolucca@casa-te.com", "folder": "已发送", "uid": 5,
+                  "subject": "Ordine LAMPA Capannori 2010", "attachments": ["Ordine LAMPA Capannori 2010.xlsx"],
+                  "date": "2026-10-20 10:00:00", "to": "ordini@lampa.it"}}
+    (tmp_path / "cache" / "mail" / "lucca.json").write_text(json.dumps({"Sent": {"validity": 1, "rows": rows}}),
+                                                             encoding="utf-8")
+    st = _st(tmp_path / "tr")
+    st.set("L2", {"date": "2026-11-07", "store": "2", "supplier": "LAMPA", "draft": True})
+    calls = []
+    monkeypatch.setattr(CMD, "mail_view_body", lambda s, m, factory=None: calls.append(m["uid"]) or
+                        "Buongiorno,\nordine Ordine LAMPA Capannori 2010\nSaluti")
+    st_ = {"mail": {"accounts": ACCS}}
+    d = CMD.order_mail_draft(st_, st, "L2", fetch_body=False, today=date(2026, 11, 7))
+    assert d["need_last"] and d["body_src"] == "template" and calls == []          # 没连网
+    assert "Capannori 0711" in CMD.order_mail_last_body(st_, d) and calls == [5]
+    CMD._bodies_save({"view|" + CMD._body_key(d["last"]): "Ciao\nOrdine LAMPA Capannori 2010"})
+    d2 = CMD.order_mail_draft(st_, st, "L2", fetch_body=False, today=date(2026, 11, 7))
+    assert d2["body_src"] == "last" and not d2["need_last"] and "0711" in d2["body"] and calls == [5]

@@ -591,7 +591,6 @@ class TrackingPage:
                           default_hidden=HIDDEN)
         self.ctl.sort_col, self.ctl.sort_desc = 0, True              # 默认：新的单在上
         t.cellDoubleClicked.connect(self._double)
-        t.cellClicked.connect(self._clicked)
         t.setContextMenuPolicy(Qt.CustomContextMenu)
         t.customContextMenuRequested.connect(self._row_menu)
         v.addWidget(t, 1)
@@ -600,7 +599,7 @@ class TrackingPage:
         self.total.setObjectName("Faint")
         foot.addWidget(self.total)
         foot.addStretch()
-        hint = QLabel(tr("点「✉ 待登记」发订单邮件 · 双击改"))
+        hint = QLabel(tr("双击「✉ 待登记」发订单邮件 · 双击别的格改订单"))
         hint.setObjectName("Faint")
         foot.addWidget(hint)
         v.addLayout(foot)
@@ -715,6 +714,19 @@ class TrackingPage:
         self.timer.start()
         self._shown = True
         self._auto_sync()                 # 每次打开页面：Excel 存过（修改时间变了）就自动同步
+        self._warm_mail()
+
+    def _warm_mail(self):
+        """有待登记时，空闲时在后台先把邮件信头缓存读进内存（双击「✉ 待登记」发订单时窗口马上出来）"""
+        if self.st is None or not any(o.get("draft") for o in self.st.orders.values()):
+            return
+        import threading
+        from erp_widgets import when_idle
+
+        def go():
+            import commands as CMD
+            threading.Thread(target=lambda: _quiet(CMD._cached_mails), daemon=True).start()
+        when_idle(go, 2000)
 
     def _poll(self):
         if not self.page.isVisible():
@@ -970,15 +982,6 @@ class TrackingPage:
             return
         self.render()
 
-    def _clicked(self, k, c):
-        """点状态格里的「✉ 待登记」→ 发订单邮件"""
-        if COLS[c][0] != 5:
-            return
-        i = self.ctl.row_at(k)
-        if i is None or self.rows[i]["status"] != "draft":
-            return
-        self.send_order(self.rows[i])
-
     def send_order(self, r):
         from send_order_dialog import open_send
 
@@ -996,6 +999,9 @@ class TrackingPage:
             return
         if COLS[c][0] == 13 and self.rows[i]["status"] in REC.OPEN_STATES:
             self.show_lines(self.rows[i])
+            return
+        if COLS[c][0] == 5 and self.rows[i]["status"] == "draft":     # 双击「✉ 待登记」→ 发订单邮件
+            self.send_order(self.rows[i])
             return
         self.edit_row(i)
 
@@ -1072,7 +1078,7 @@ class TrackingPage:
                 tips.append(tr("邮件：") + "\n" + "\n".join(mail_lines(r["mails"])))
             if r["status"] == "draft":                  # 2026-11-07：点「待登记」发订单邮件
                 st_it.setText("✉ " + st_it.text())
-                tips.insert(0, tr("点一下：发订单邮件给供应商，发完自动变「已下单」"))
+                tips.insert(0, tr("双击：发订单邮件给供应商，发完自动变「已下单」"))
             elif (self.st.orders.get(r["id"]) or {}).get("sent"):
                 sent = self.st.orders[r["id"]]["sent"]
                 tips.insert(0, tr("{0} 用邮件发给 {1}", str(sent.get("at", ""))[:16].replace("T", " "),
@@ -1814,6 +1820,13 @@ class _OptDate(QWidget):
         if not self.cb.isChecked():
             return None
         return self.de.date().toString("yyyy-MM-dd")
+
+
+def _quiet(fn):
+    try:
+        fn()
+    except Exception:
+        pass
 
 
 class OrderDialog(QDialog):

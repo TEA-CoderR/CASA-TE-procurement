@@ -3301,4 +3301,8 @@ TRANSLATIONS = {
     '下载到本机再打开（只读，不影响邮箱）': ('Download and open (read-only, the mailbox is not changed)', 'Scarica e apri (sola lettura, la casella non cambia)'),
     '（没有正文）': ('(no text)', '(nessun testo)'),
     '邮件（{0}）': ('E-mails ({0})', 'E-mail ({0})'),
+    '正在读上次发给这家的信…（先用默认模板，读到了自动换上）': ('Reading the last e-mail to this supplier… (default template for now, replaced automatically)', "Lettura dell'ultima e-mail a questo fornitore… (per ora modello predefinito, sostituito automaticamente)"),
+    '上次那封信读到了，正文你已经改过，没有替换': ('The last e-mail was read, but you already edited the text, so it was not replaced', "L'ultima e-mail è stata letta, ma il testo è già stato modificato: non sostituito"),
+    '双击「✉ 待登记」发订单邮件 · 双击别的格改订单': ('Double-click "✉ To register" to e-mail the order · double-click other cells to edit', "Doppio clic su «✉ Da registrare» per inviare l'ordine · doppio clic sulle altre celle per modificare"),
+    '双击：发订单邮件给供应商，发完自动变「已下单」': ('Double-click: e-mail the order to the supplier; it becomes "Ordered" after sending', "Doppio clic: invia l'ordine al fornitore; dopo l'invio diventa «Ordinato»"),
 }
