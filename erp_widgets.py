@@ -39,6 +39,41 @@ def task_ended(key):
     RUNNING.pop(key, None)
 
 
+# ---- 等界面空下来再做（2026-11-07 用户：后台任务完成、跳回结果页时会卡一下）----
+LAST_INPUT = [0.0]      # 最后一次点鼠标 / 按键的时间（main._ClickRecorder 更新）
+
+
+def when_idle(fn, quiet_ms=1500, max_ms=60000):
+    """
+    不急的活（提前建订货明细窗口、刷新工作台…）：等没有弹窗、用户 quiet_ms 内没点没按键时再做，
+    免得刚点完「查看结果」就和跳页面抢时间。最多等 max_ms。只用一个 300 毫秒的定时器，做完就停
+    """
+    from PySide6.QtWidgets import QApplication
+    t0 = time.time()
+    tm = QTimer()
+    tm.setInterval(300)
+
+    def check():
+        now = time.time()
+        busy = QApplication.activeModalWidget() is not None or (now - LAST_INPUT[0]) * 1000 < quiet_ms
+        if busy and (now - t0) * 1000 < max_ms:
+            return
+        tm.stop()
+        _IDLE.discard(tm)
+        try:
+            fn()
+        except Exception:
+            import traceback
+            traceback.print_exc()
+    tm.timeout.connect(check)
+    _IDLE.add(tm)                    # 留个引用，不然定时器会被回收
+    tm.start()
+    return tm
+
+
+_IDLE = set()
+
+
 class BusyDialog(QDialog):
     """
     一句话 + 来回走的进度条，后台线程跑 func，跑完自动关掉，再在界面线程调用 on_done(结果, 错误)。
@@ -388,22 +423,40 @@ class TaskDialog(QDialog):
         if state == "running":
             for k in range(i):
                 if self.rows[k]["state"] == "running":
-                    self._on_step(k, "done", self.rows[k]["cnt"].text(), "")
+                    self._on_step(k, "done", self.rows[k].get("count", ""), "")
         r = self.rows[i]
         if state == "running" and r["t0"] is None:
             r["t0"] = time.time()
         if state in ("done", "error") and r["t0"] is not None:
             r["tm"].setText(self._fmt(time.time() - r["t0"]))
         r["state"] = state
-        r["cnt"].setText(count)
-        r["detail"].setText(detail)
-        r["detail"].setVisible(bool(detail) and state == "running")
+        r["count"], r["text"] = count, detail
+        if self.in_background:            # 藏着的时候只记下来，不重画（换样式表很费时，后台运行时界面要省着用）
+            r["dirty"] = True
+            return
+        self._show_row(i)
+
+    def _show_row(self, i):
+        r = self.rows[i]
+        r["cnt"].setText(r.get("count", ""))
+        r["detail"].setText(r.get("text", ""))
+        r["detail"].setVisible(bool(r.get("text")) and r["state"] == "running")
         self._paint_row(i)
+        r["dirty"] = False
 
     def _on_progress(self, pct):
         self.pct = max(0.0, min(100.0, pct))
+        if self.in_background:
+            return
         self.bar.setValue(int(self.pct * 10))
         self.pct_lbl.setText(f"{self.pct:.0f}%")
+
+    def current_step(self):
+        """现在在做哪一步（后台任务条显示用）"""
+        for r in self.rows:
+            if r["state"] == "running":
+                return r["name"].text()
+        return ""
 
     @staticmethod
     def _fmt(sec):
@@ -411,6 +464,8 @@ class TaskDialog(QDialog):
         return f"{sec // 60:02d}:{sec % 60:02d}"
 
     def _tick(self):
+        if self.in_background and not self.is_done:
+            return
         el = time.time() - self.t0
         self.elapsed_lbl.setText(tr("已用 {0}", self._fmt(el)))
         if self.is_done:
@@ -431,12 +486,13 @@ class TaskDialog(QDialog):
         if ok:
             for i, r in enumerate(self.rows):
                 if r["state"] in ("running", "todo"):
-                    self._on_step(i, "done", r["cnt"].text(), "")
+                    self._on_step(i, "done", r.get("count", ""), "")
             self._on_progress(100)
         else:
             for i, r in enumerate(self.rows):
                 if r["state"] == "running":
-                    self._on_step(i, "error", r["cnt"].text(), "")
+                    self._on_step(i, "error", r.get("count", ""), "")
+        _bg_drop(self)
         if message:
             self.msg.setText(message)
             self.msg.setStyleSheet(f"color:{T('ok') if ok else T('err')};")
@@ -457,7 +513,26 @@ class TaskDialog(QDialog):
         # → 别的窗口全部点不了，任务完成也不解除（2026-11-06 用户：点后台运行后整个程序点不动）
         self.hide()
         self.setModal(False)
+        if self not in BG_TASKS:
+            BG_TASKS.append(self)
+        BgTaskPill.kick()
         self.went_background.emit()
+
+    def to_foreground(self):
+        """后台任务条点一下：把进度窗口拿回来（不独占，照样能点别的；再点「后台运行」又藏起来）"""
+        if self.is_done:
+            return
+        self.in_background = False
+        _bg_drop(self)
+        RUNNING[id(self)] = RUNNING.get(id(self), "").replace("（后台运行）", "")
+        for i, r in enumerate(self.rows):
+            if r.get("dirty"):
+                self._show_row(i)
+        self._on_progress(self.pct)
+        self._tick()
+        self.show()
+        self.raise_()
+        self.activateWindow()
 
     def request_cancel(self):
         self.cancel_event.set()
@@ -475,6 +550,117 @@ class TaskDialog(QDialog):
 # =====================================================================
 # 小折线图
 # =====================================================================
+# ---- 后台运行中的任务 + 顶栏的进度条（2026-11-07 用户：后台运行看不到完成进度）----
+BG_TASKS = []           # 点了「后台运行」、还没做完的 TaskDialog
+
+
+def _bg_drop(dlg):
+    if dlg in BG_TASKS:
+        BG_TASKS.remove(dlg)
+    BgTaskPill.kick()
+
+
+class BgTaskPill(QPushButton):
+    """
+    顶栏上的小进度条：「⏳ 正在计算订货量 · 45%」，底色按进度填满；点一下把进度窗口拿回来
+    （几个任务时弹菜单选）。没有后台任务时藏起来、定时器也停，不占界面时间；有任务时每 0.7 秒看一眼进度，
+    只重画这个小控件
+    """
+    _all = []
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("BgPill")
+        self.setCursor(Qt.PointingHandCursor)
+        self.setFixedHeight(30)
+        self.setMinimumWidth(150)
+        self.setMaximumWidth(280)
+        self.clicked.connect(self._open)
+        self._pct, self._text = 0.0, ""
+        self.timer = QTimer(self, interval=700, timeout=self._refresh)
+        self.hide()
+        BgTaskPill._all.append(self)
+        self.destroyed.connect(lambda *_: BgTaskPill._all.remove(self) if self in BgTaskPill._all else None)
+
+    @classmethod
+    def kick(cls):
+        for p in list(cls._all):
+            try:
+                p._refresh()
+            except RuntimeError:              # 窗口已经关了
+                cls._all.remove(p)
+
+    def _refresh(self):
+        tasks = [d for d in BG_TASKS if not d.is_done]
+        if not tasks:
+            self.timer.stop()
+            self.hide()
+            return
+        if not self.timer.isActive():
+            self.timer.start()
+        pct = min(d.pct for d in tasks)
+        if len(tasks) == 1:
+            d = tasks[0]
+            step = d.current_step()
+            text = f"{d.windowTitle()} · {pct:.0f}%"
+            tip = d.windowTitle() + (f"\n{step}" if step else "") + "\n" + tr("已用 {0}", d._fmt(time.time() - d.t0)) \
+                + "\n" + tr("点一下看进度")
+        else:
+            text = tr("{0} 个后台任务 · {1:.0f}%", len(tasks), pct)
+            tip = "\n".join(f"{d.windowTitle()} · {d.pct:.0f}%" for d in tasks) + "\n" + tr("点一下选一个看进度")
+        if text != self._text or abs(pct - self._pct) >= 0.5:
+            self._text, self._pct = text, pct
+            fm = self.fontMetrics()
+            self.setFixedWidth(max(150, min(280, fm.horizontalAdvance(text) + 46)))
+        self.setToolTip(tip)
+        self.update()                    # 小控件，重画很便宜（转动的小圆点也靠它动）
+        if not self.isVisible():
+            self.show()
+
+    def _open(self):
+        tasks = [d for d in BG_TASKS if not d.is_done]
+        if len(tasks) == 1:
+            tasks[0].to_foreground()
+        elif tasks:
+            from PySide6.QtWidgets import QMenu
+            m = QMenu(self)
+            for d in tasks:
+                m.addAction(f"{d.windowTitle()} · {d.pct:.0f}%", d.to_foreground)
+            m.exec(self.mapToGlobal(self.rect().bottomLeft()))
+        self.kick()
+
+    def paintEvent(self, _e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        r = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+        rad = r.height() / 2
+        p.setPen(QPen(QColor(T("accent")), 1))
+        p.setBrush(QColor(T("surface")))
+        p.drawRoundedRect(r, rad, rad)
+        if self._pct > 0:                         # 进度：底色从左往右填
+            p.save()
+            from PySide6.QtGui import QPainterPath
+            clip = QPainterPath()
+            clip.addRoundedRect(r, rad, rad)
+            p.setClipPath(clip)
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor(T("accent_soft")))
+            p.drawRect(QRectF(r.left(), r.top(), r.width() * self._pct / 100.0, r.height()))
+            p.restore()
+        # 左边一个转动的小圆点表示还在跑（跟着 0.7 秒的刷新换位置，不另开动画）
+        cx, cy = r.left() + 15, r.center().y()
+        p.setPen(QPen(QColor(T("line")), 2))
+        p.setBrush(Qt.NoBrush)
+        p.drawEllipse(QPointF(cx, cy), 6, 6)
+        p.setPen(QPen(QColor(T("accent")), 2))
+        start = int((time.time() * 2 % 4) * 90 * 16)
+        p.drawArc(QRectF(cx - 6, cy - 6, 12, 12), start, 120 * 16)
+        p.setPen(QColor(T("text")))
+        p.drawText(QRectF(r.left() + 28, r.top(), r.width() - 36, r.height()), Qt.AlignVCenter | Qt.AlignLeft,
+                   self.fontMetrics().elidedText(self._text, Qt.ElideRight, int(r.width() - 36)))
+        p.end()
+
+
 class Sparkline(QWidget):
     """周销量柱状图：左边纵轴刻度、下面日期、悬停显示那一周的日期和销量。
     values 从旧到新；end_date 是最后一周的最后一天（计算当天）。"""
@@ -758,6 +944,231 @@ class MonthGrid(QWidget):
 # 一排小色块（表格单元格里）
 # =====================================================================
 DOTS_ROLE = Qt.UserRole + 20
+
+
+class StepperDelegate(QStyledItemDelegate):
+    """
+    「订货箱数」这种能改的数字格：左边「−」右边「＋」两个小按钮，点一下减 / 加 1（不用双击再打字）；双击照旧可以直接输入。
+    2026-11-07 用户：所有列表的订货箱数都要加减器。
+    只在能改的格子（ItemIsEditable）上画按钮。点了以后（等这次鼠标事件处理完）调用 on_step(格子, 新值)；
+    没给 on_step 就把新值写进格子文字 → 表格原来的 itemChanged 处理（和手动输入一样，校验 / 重算 / 撤销都照旧）。
+    value(格子) 取现在的值（默认读格子文字开头的数字）；最小 0。
+    base：原来这一列用的委托（QtyDelegate 之类）——双击输入时的编辑框照用它的。
+    """
+    BTN = 24          # 两头按钮的宽度（= 胶囊高度）
+    PILL_W = 96       # 整个加减器最宽多少（列再宽也不拉长）
+
+    def __init__(self, view, on_step=None, value=None, base=None, minimum=0):
+        super().__init__(view)
+        self.view, self.on_step, self.value_of, self.base, self.minimum = view, on_step, value, base, minimum
+        self.last_step = 0.0          # 刚点过加减（别的「点一下就进编辑」的逻辑可以据此跳过）
+        self._hover = None            # (行, 列, "-" / "+" / None)：鼠标在哪个格子、哪个按钮上
+        view.setMouseTracking(True)
+        view.viewport().setMouseTracking(True)
+        view.viewport().installEventFilter(self)
+
+    def eventFilter(self, obj, ev):
+        from PySide6.QtCore import QEvent
+        if ev.type() == QEvent.Leave and self._hover is not None:     # 鼠标离开表格：去掉悬停效果
+            self._hover = None
+            obj.setCursor(Qt.ArrowCursor)
+            obj.update()
+        return False
+
+    # ---- 编辑框：交给原来的委托 ----
+    def createEditor(self, parent, opt, idx):
+        return self.base.createEditor(parent, opt, idx) if self.base else super().createEditor(parent, opt, idx)
+
+    def setEditorData(self, ed, idx):
+        return self.base.setEditorData(ed, idx) if self.base else super().setEditorData(ed, idx)
+
+    def setModelData(self, ed, model, idx):
+        return self.base.setModelData(ed, model, idx) if self.base else super().setModelData(ed, model, idx)
+
+    def updateEditorGeometry(self, ed, opt, idx):
+        if self.base:
+            return self.base.updateEditorGeometry(ed, opt, idx)
+        return super().updateEditorGeometry(ed, opt, idx)
+
+    # ---- 值 ----
+    def current(self, idx):
+        if self.value_of:
+            try:
+                return float(self.value_of(idx) or 0)
+            except (TypeError, ValueError):
+                return 0.0
+        import re
+        m = re.match(r"\s*(-?\d+(?:\.\d+)?)", str(idx.data() or "").replace(",", ""))     # 1,234 → 1234
+        return float(m.group(1)) if m else 0.0
+
+    @staticmethod
+    def _editable(idx):
+        return bool(idx.flags() & Qt.ItemIsEditable)
+
+    def _pill(self, r):
+        """格子正中一个胶囊：[ − | 数字 | ＋ ]，返回 (胶囊, 减, 加)"""
+        from PySide6.QtCore import QRect
+        h = min(self.BTN, max(16, r.height() - 8))
+        w = min(self.PILL_W, r.width() - 10)
+        x = r.left() + (r.width() - w) // 2
+        y = r.top() + (r.height() - h) // 2
+        pill = QRect(x, y, w, h)
+        return pill, QRect(x, y, h, h), QRect(x + w - h, y, h, h)
+
+    def _rects(self, r):
+        _, minus, plus = self._pill(r)
+        return minus, plus
+
+    def _fits(self, r):
+        return r.width() >= 2 * self.BTN + 34
+
+    # ---- 画 ----
+    def paint(self, p, opt, idx):
+        from PySide6.QtWidgets import QStyleOptionViewItem, QApplication, QStyle
+        from PySide6.QtGui import QPainterPath
+        bg = idx.data(Qt.BackgroundRole)
+        if not self._editable(idx) or not self._fits(opt.rect):
+            if bg is not None:
+                p.fillRect(opt.rect, bg)
+            return super().paint(p, opt, idx)
+        o = QStyleOptionViewItem(opt)
+        self.initStyleOption(o, idx)
+        o.state &= ~QStyle.State_HasFocus
+        text = o.text
+        o.text = ""
+        if bg is not None:
+            p.fillRect(opt.rect, bg)
+        w = opt.widget
+        (w.style() if w else QApplication.style()).drawPrimitive(QStyle.PE_PanelItemViewItem, o, p, w)
+
+        pill, minus, plus = self._pill(opt.rect)
+        hov = self._hover
+        here = hov is not None and hov[0] == idx.row() and hov[1] == idx.column()
+        on = hov[2] if here else None
+        can_minus = self.current(idx) > self.minimum
+        selected = bool(opt.state & QStyle.State_Selected)
+
+        p.save()
+        p.setRenderHint(QPainter.Antialiasing)
+        rf = QRectF(pill).adjusted(0.5, 0.5, -0.5, -0.5)
+        rad = rf.height() / 2
+        path = QPainterPath()
+        path.addRoundedRect(rf, rad, rad)
+        # 底：没有底色的格子填白；有底色（例如改过标黄）的不填，底色照样看得见
+        if bg is None:
+            p.fillPath(path, QColor(T("surface")))
+        # 悬停的那个按钮：浅蓝底（裁在胶囊里）
+        if on and (on == "+" or can_minus):
+            p.save()
+            p.setClipPath(path)
+            p.fillRect(minus if on == "-" else plus, QColor(T("accent_soft")))
+            p.restore()
+        # 框：鼠标在这格 / 选中的行 → 蓝框，平时浅灰
+        border = QColor(T("accent")) if (here or selected) else QColor(T("far") if bg is not None else T("line"))
+        p.setPen(QPen(border, 1))
+        p.setBrush(Qt.NoBrush)
+        p.drawPath(path)
+        # 两条分隔线
+        sep = QColor(T("line"))
+        p.setPen(QPen(sep, 1))
+        for x in (minus.right() + 1, plus.left()):
+            p.drawLine(QPointF(x + 0.5, rf.top() + 4), QPointF(x + 0.5, rf.bottom() - 4))
+        # − / ＋：用线画（不靠字体，两边一样粗、正中）
+        arm = max(3.0, minus.height() * 0.17)
+        for rect, which, ok in ((minus, "-", can_minus), (plus, "+", True)):
+            c = QColor(T("accent") if (ok and (on == which or here or selected)) else T("muted"))
+            if not ok:
+                c = QColor(T("faint"))
+                c.setAlpha(110)
+            p.setPen(QPen(c, 1.6, Qt.SolidLine, Qt.RoundCap))
+            cx, cy = QRectF(rect).center().x(), QRectF(rect).center().y()
+            p.drawLine(QPointF(cx - arm, cy), QPointF(cx + arm, cy))
+            if which == "+":
+                p.drawLine(QPointF(cx, cy - arm), QPointF(cx, cy + arm))
+        # 数字：正中，颜色 / 粗细照格子原来的（标红、加粗都保留）
+        fg = idx.data(Qt.ForegroundRole)
+        col = fg.color() if hasattr(fg, "color") else (QColor(fg) if fg is not None else QColor(T("text")))
+        f = QFont(o.font)
+        p.setFont(f)
+        p.setPen(col)
+        mid = QRectF(minus.right() + 2, pill.top(), plus.left() - minus.right() - 3, pill.height())
+        p.drawText(mid, Qt.AlignCenter, p.fontMetrics().elidedText(text, Qt.ElideRight, int(mid.width())))
+        p.restore()
+
+    def sizeHint(self, opt, idx):
+        s = super().sizeHint(opt, idx)
+        return QSize(max(s.width() + 2 * self.BTN + 20, self.MIN_WIDTH), s.height())
+
+    # ---- 点 ----
+    def _which(self, opt, idx, pos):
+        if not self._editable(idx) or not self._fits(opt.rect):
+            return None
+        minus, plus = self._rects(opt.rect)
+        if minus.adjusted(-2, -4, 2, 4).contains(pos):
+            return "-"
+        if plus.adjusted(-2, -4, 2, 4).contains(pos):
+            return "+"
+        return None
+
+    def editorEvent(self, ev, model, opt, idx):
+        from PySide6.QtCore import QEvent, QPersistentModelIndex
+        t = ev.type()
+        if t == QEvent.MouseMove:
+            which = self._which(opt, idx, ev.position().toPoint() if hasattr(ev, "position") else ev.pos())
+            hov = (idx.row(), idx.column(), which) if self._editable(idx) and self._fits(opt.rect) else None
+            if hov != self._hover:
+                self._hover = hov
+                self.view.viewport().update()
+                self.view.viewport().setCursor(Qt.PointingHandCursor if which else Qt.ArrowCursor)
+            return False
+        if t in (QEvent.MouseButtonPress, QEvent.MouseButtonDblClick, QEvent.MouseButtonRelease):
+            pos = ev.position().toPoint() if hasattr(ev, "position") else ev.pos()
+            which = self._which(opt, idx, pos)
+            if not which or ev.button() != Qt.LeftButton:
+                return super().editorEvent(ev, model, opt, idx)
+            if t == QEvent.MouseButtonRelease:
+                cur = self.current(idx)
+                new = cur + (1 if which == "+" else -1)
+                if new < self.minimum:
+                    return True
+                new = int(new) if float(new).is_integer() else round(new, 2)
+                self.last_step = time.time()
+                pidx = QPersistentModelIndex(idx)
+
+                def go():
+                    if not pidx.isValid():
+                        return
+                    i2 = model.index(pidx.row(), pidx.column())
+                    if self.on_step:
+                        self.on_step(i2, new)
+                    else:
+                        model.setData(i2, str(new))
+                # 这次鼠标事件处理完再改（改的时候表格可能整行重画，鼠标事件中途换掉格子会卡住）
+                QTimer.singleShot(0, go)
+            self.last_step = time.time()
+            return True                    # 加减按钮上的点击不选中、不进编辑
+        return super().editorEvent(ev, model, opt, idx)
+
+    def just_stepped(self, within=0.4):
+        return time.time() - self.last_step < within
+
+    MIN_WIDTH = 104
+
+    @classmethod
+    def install(cls, view, col, **kw):
+        """放到 view 的第 col 列；列太窄（放不下两个按钮 + 数字）时放宽一次（之后用户自己拖窄就照用户的）"""
+        d = cls(view, **kw)
+        view.setItemDelegateForColumn(col, d)
+
+        def widen():
+            try:
+                if not view.isColumnHidden(col) and view.columnWidth(col) < cls.MIN_WIDTH:
+                    view.setColumnWidth(col, cls.MIN_WIDTH)
+            except RuntimeError:
+                pass
+        QTimer.singleShot(0, widen)
+        QTimer.singleShot(800, widen)          # 列宽设置 / 第一次填数据自动量宽之后再看一次
+        return d
 
 
 class DotsDelegate(QStyledItemDelegate):
@@ -1324,6 +1735,7 @@ class DropZone(QFrame):
         self.btn_open.clicked.connect(lambda: self.open_folder.emit())
         top.addWidget(self.btn_pick)
         top.addWidget(self.btn_open)
+        self._top = top
         v.addLayout(top)
         self.list_box = QVBoxLayout()
         self.list_box.setSpacing(2)
@@ -1333,6 +1745,12 @@ class DropZone(QFrame):
         self.hint.setWordWrap(True)
         v.addWidget(self.hint)
         v.addStretch()
+
+    def add_link(self, btn):
+        """标题行右边（「选择文件…」前面）再放一个链接按钮，例如供应商报价的「✉ 邮件」"""
+        btn.setObjectName(btn.objectName() or "Link")
+        btn.setCursor(Qt.PointingHandCursor)
+        self._top.insertWidget(self._top.indexOf(self.btn_pick), btn)
 
     def set_files(self, files, note=""):
         """files: [(文件名, 鼠标提示)]；note：文件列表下面的一行说明（空 = 显示拖入提示）"""
@@ -2370,6 +2788,7 @@ class TableSortFilter(QObject):
         except Exception as e:
             QMessageBox.critical(parent, tr("导出"), tr("导出失败：{0}", e))
             return None
+        open_file(parent, path, title or tr("导出 Excel"))      # 导出完直接打开（2026-11-07 用户）
         return path
 
 

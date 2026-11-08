@@ -19,7 +19,7 @@ import hashlib
 from utils import clean_ean
 
 GRID_DIR = "0 Griglia"
-CACHE_VER = 2
+CACHE_VER = 4
 STORES = ("FOIANO", "MARLIA", "S.FILIPPO", "S.MARCO", "S.CONCORDIO")
 EXCEL = (".xlsx", ".xlsm")
 
@@ -67,6 +67,42 @@ DEPT_SHARE = 0.05           # 报价的部门里 Griglia 商品占 ≥ 5% 才算
 FRESH_DAYS = 30             # 「新上架」：这家报价里第一次出现的条码，30 天内都算
 
 
+def _shifted(g):
+    """列错位：本来写文字的供应商 / 品牌 / 大类格子里是数字"""
+    return any(isinstance(g(f), (int, float)) and not isinstance(g(f), bool) for f in ("supplier", "brand", "cat1"))
+
+
+def bad_rows_text(rows):
+    """[2759, 2760, …, 2775] → 「2759–2775」（连着的合成一段）"""
+    out, start, prev = [], None, None
+    for n in sorted(rows):
+        if start is None:
+            start = prev = n
+        elif n == prev + 1:
+            prev = n
+        else:
+            out.append(f"{start}–{prev}" if prev > start else str(start))
+            start = prev = n
+    if start is not None:
+        out.append(f"{start}–{prev}" if prev > start else str(start))
+    return "、".join(out)
+
+
+def _cats(r, col, right):
+    """
+    大类 / 中类 / 小类：右边那套有大类就用右边的；右边空着的中类 / 小类，左边大类一样才拿左边的补（不混两个大类）；
+    右边整行都空 → 用左边的
+    """
+    def v(i):
+        return str(r[i] if i is not None and i < len(r) and r[i] is not None else "").strip()
+    left = [v(col.get(f)) for f in ("cat1", "cat2", "cat3")]
+    rt = [v(right.get(f)) for f in ("cat1", "cat2", "cat3")]
+    if not rt[0]:
+        return left if not any(rt) else [left[0]] + [rt[k] or (left[k] if left[0] else "") for k in (1, 2)]
+    same = left[0].upper() == rt[0].upper()
+    return [rt[0]] + [rt[k] or (left[k] if same else "") for k in (1, 2)]
+
+
 def parse_rows(rows):
     """
     Griglia 的所有行（值）→ {"items": {条码: {...}}, "suppliers": [价格列的批发商], "by_code": {商品编号: 条码}}。
@@ -82,29 +118,53 @@ def parse_rows(rows):
         f = _FIELDS.get(h) or ("direct" if h.startswith("FORNITOR") and "DIRETT" in h else None)
         if f and f not in col:
             col[f] = i
+    # 第二套分类（2026-11-07 用户定：SCHEDA_DETERSIVI 最右边 CAT.1 / CAT.2 / CAT.3 比左边 CAT.1 / CAT 2 / CAT 3 全、准，优先用它）
+    right = {}
+    for f, h in (("cat1", "CAT.1"), ("cat2", "CAT.2"), ("cat3", "CAT.3")):
+        idx = [i for i, x in enumerate(heads) if x == h and i != col.get(f)]
+        if idx:
+            right[f] = idx[-1]
     sup_cols = {h: i for i, h in enumerate(heads) if h in _SUP_COLS}
     store_cols = {h: i for i, h in enumerate(heads) if h in STORES}
-    items, by_code = {}, {}
-    for r in rows[hr + 1:]:
+    items, by_code, bad = {}, {}, []
+    for n, r in enumerate(rows[hr + 1:], hr + 2):
         def g(f):
             i = col.get(f)
             return r[i] if i is not None and i < len(r) else None
         e = clean_ean(g("ean"))
         if not e:
             continue
+        if _shifted(g):
+            # 这一行在 Excel 里列错位了（2026-11-07：SCHEDA_DETERSIVI 最下面 17 行从 Marca 开始往左挪了 9 格，
+            # 「大类」里是 IVA 22、「Fornitore」里是小数）：只留错位前面那几列（编号 / 名称 / 箱规 / 价格），其余当空
+            bad.append(n)
+            r = list(r[:col.get("brand", len(r))]) if col.get("brand") is not None else list(r)
         code = str(g("code") or "").strip()
         if code.endswith(".0"):
             code = code[:-2]
         it = {"ean": e, "code": code, "name": str(g("name") or "").strip(), "brand": str(g("brand") or "").strip(),
               "supplier": str(g("supplier") or "").strip(), "price": _num(g("price")), "best": _num(g("best")),
-              "pack": _num(g("pack")), "cats": [str(g(c) or "").strip() for c in ("cat1", "cat2", "cat3")],
+              "pack": _num(g("pack")), "cats": _cats(r, col, right),
               "direct": str(g("direct") or "").strip(),
               "prices": {h: _num(r[i]) for h, i in sup_cols.items() if i < len(r) and _num(r[i])},
               "stores": [h for h, i in store_cols.items() if i < len(r) and _num(r[i])]}
         items[e] = it
         if code:
             by_code[code] = e
-    return {"items": items, "suppliers": list(sup_cols), "by_code": by_code}
+    return {"items": items, "suppliers": list(sup_cols), "by_code": by_code, "bad_rows": bad}
+
+
+def parse_rows_any(wb):
+    """
+    找 Griglia 在哪个工作表（2026-11-07：用户换成 SCHEDA_DETERSIVI，第一页是供应商资料，GRIGLIA 在第三页 →
+    以前只读第一页，提示找不到 Codice EAN）：先找名字是 GRIGLIA 的页，再按顺序找表头里有 Codice EAN 的页
+    """
+    sheets = sorted(wb.worksheets, key=lambda ws: 0 if _norm(ws.title) == "GRIGLIA" else 1)
+    for ws in sheets:
+        head = list(ws.iter_rows(max_row=10, values_only=True))      # 先只看前 10 行，不是这页就不整页读
+        if any(_norm(v) == "CODICE EAN" for r in head for v in r):
+            return parse_rows(ws.iter_rows(values_only=True))
+    raise ValueError("Griglia 里找不到「Codice EAN」表头（所有工作表都看过了；表头要在前 10 行）")
 
 
 def load(path, cache_dir=None):
@@ -123,7 +183,7 @@ def load(path, cache_dir=None):
     from openpyxl import load_workbook
     wb = load_workbook(path, read_only=True, data_only=True)
     try:
-        out = parse_rows(wb.worksheets[0].iter_rows(values_only=True))
+        out = parse_rows_any(wb)
     finally:
         wb.close()
     out.update(path=path, name=os.path.basename(path), mtime=st.st_mtime)
@@ -383,38 +443,106 @@ def overview(st, n_grid):
     return {"grid": n_grid, "covered": covered, "share": covered / n_grid if n_grid else None, "sups": sups}
 
 
-def export(st, path, labels=None):
-    """统计导出 Excel：三个工作表（都不做了 / 新品 / 价格）"""
-    from openpyxl import Workbook
-    from openpyxl.styles import Font
-    labels = labels or st["labels"]
-    wb = Workbook()
-    cat_h = ["CAT.1", "CAT 2", "CAT 3", "FORNITORI DIRETTO"]
+# 导出的四张表（2026-11-07 用户：可以只导出其中几张；带照片、要美观专业，参考门店报告）
+EXPORT_TABLES = (("gone", "都不做了"), ("new", "新品"), ("prices", "价格"), ("odd", "价格可疑"))
 
-    def cd(x):
-        return list(x.get("cats") or ["", "", ""]) + [x.get("direct") or ""]
-    sheets = [("都不做了", ["EAN", "Cod.Art.", "Descrizione", "Marca"] + cat_h + ["Fornitore", "Prezzo Griglia"],
-               [[x["ean"], x.get("code"), x.get("name"), x.get("brand")] + cd(x) +
-                [x.get("supplier"), x.get("best") or x.get("price")] for x in st["gone"]]),
-              ("新品", ["EAN", "Descrizione"] + cat_h + ["Reparto", "N. fornitori", "Miglior prezzo", "Fornitore", "Nuovo"] + labels,
-               [[x["ean"], x["name"]] + cd(x) + [x["dept"], x["n"], x["best"], x["best_sup"], "SI" if x.get("fresh") else ""] +
-                [x["prices"].get(l) for l in labels]
-                for x in st["new"]]),
-              ("价格", ["EAN", "Cod.Art.", "Descrizione"] + cat_h + ["Fornitore Griglia", "Prezzo Griglia", "Miglior prezzo",
-                                                                   "Fornitore", "Variazione %"] + labels,
-               [[x["ean"], x["code"], x["name"]] + cd(x) + [x["supplier"], x["ref"], x["best"], x["best_sup"],
-                 round(x["change"] * 100, 1) if x["change"] is not None else None] + [x["prices"].get(l) for l in labels]
-                for x in st["prices"]])]
-    first = True
-    for title, heads, rows in sheets:
-        ws = wb.active if first else wb.create_sheet()
-        first = False
-        ws.title = title
-        ws.append(heads)
-        for c in ws[1]:
-            c.font = Font(bold=True)
-        for r in rows:
-            ws.append(r)
-        ws.freeze_panes = "A2"
+
+def export(st, path, labels=None, which=None, rows=None, url=None, grid_name=None, when=None):
+    """
+    统计导出 Excel（xlsx_report 统一样式）。which = 要哪几张表（EXPORT_TABLES 的键，默认全部）；
+    rows = {键: [要导出的行]}（页面传「筛选后看得到的、按现在的排序」，不给 = st 里的全部）；
+    每张表第一列是商品照片（=IMAGE，Excel 365 显示）。最便宜的批发商价格绿底、价格涨红跌绿、换了供应商的橙色
+    """
+    from datetime import datetime
+    import xlsx_report as X
+    from xlsx_report import Col
+    labels = list(labels or st["labels"])
+    which = [k for k, _ in EXPORT_TABLES if k in (which or [k for k, _ in EXPORT_TABLES])]
+    rows = rows or {}
+    when = when or datetime.now()
+    src = " · ".join(labels)
+    wb = X.new_book()
+
+    def sub(n):
+        return " · ".join(x for x in ("CASA&TE", f"{when:%d/%m/%Y}", f"{n:,} articoli",
+                                      f"Griglia: {grid_name}" if grid_name else "", f"Listini: {src}" if src else "") if x)
+
+    def cats(x):
+        c = list(x.get("cats") or ["", "", ""]) + ["", "", ""]
+        return [c[0] or None, c[1] or None, c[2] or None, x.get("direct") or None]
+    CATS = [Col("CAT.1", 16, group="cat"), Col("CAT 2", 16, group="cat"), Col("CAT 3", 16, group="cat"),
+            Col("Fornitore diretto", 22, group="cat")]
+    SUPS = [Col(l, 12, "price", group="sup") for l in labels]
+
+    def sup_vals(x, marks, k, start):
+        """几家批发商的价格；最便宜那家绿底"""
+        out = []
+        for j, l in enumerate(labels):
+            out.append((x.get("prices") or {}).get(l))
+            if x.get("best_sup") == l and out[-1] is not None:
+                marks[(k, start + j)] = "GREEN"
+        return out
+
+    for key in which:
+        xs = rows.get(key)
+        xs = list(st.get(key) or []) if xs is None else list(xs)
+        marks = {}
+        if key == "gone":
+            cols = [Col("EAN", 16, "ean"), Col("Cod. Art.", 10, "ean"), Col("Descrizione", 40, bold=True),
+                    Col("Marca", 16)] + CATS + [Col("Fornitore Griglia", 22, group="sup"),
+                                                Col("Prezzo Griglia", 12, "price", group="price")]
+            data = [[x["ean"], x.get("code") or None, x.get("name"), x.get("brand") or None] + cats(x) +
+                    [x.get("supplier") or None, x.get("best") or x.get("price")] for x in xs]
+            X.add_sheet(wb, "都不做了", "Griglia · Articoli non più trattati dai grossisti", sub(len(xs)), cols, data,
+                        photo_eans=[x["ean"] for x in xs], url=url, tone="RED",
+                        note=f"都不做了：Griglia 里有，这周所有批发商的报价里都没有（{src}）。"
+                             f" In Griglia ma assenti da tutti i listini di questa settimana.")
+        elif key == "new":
+            cols = [Col("EAN", 16, "ean"), Col("Descrizione", 40, bold=True)] + CATS + \
+                [Col("Reparto", 18), Col("N. grossisti", 10, "num"), Col("Miglior prezzo", 12, "price", group="price"),
+                 Col("Più economico", 16, group="price"), Col("Nuovo", 8, left=False)] + SUPS
+            data = []
+            for k, x in enumerate(xs):
+                data.append([x["ean"], x.get("name")] + cats(x) +
+                            [x.get("dept") or None, x.get("n"), x.get("best"), x.get("best_sup"),
+                             "Sì" if x.get("fresh") else None] + sup_vals(x, marks, k, 11))
+                if x.get("fresh"):
+                    marks[(k, 10)] = "BLUE"
+                marks[(k, 8)] = "GREEN" if x.get("best") is not None else None
+            marks = {kk: v for kk, v in marks.items() if v}
+            X.add_sheet(wb, "新品", "Griglia · Nuovi articoli dai grossisti", sub(len(xs)), cols, data,
+                        marks=marks, photo_eans=[x["ean"] for x in xs], url=url, tone="BLUE",
+                        note="新品：批发商在做、Griglia 里没有的商品（只算我们这几类）。Nuovo = 这几家都是最近才上架。"
+                             " Articoli nei listini ma non in Griglia; verde = prezzo più basso.")
+        elif key == "prices":
+            cols = [Col("EAN", 16, "ean"), Col("Cod. Art.", 10, "ean"), Col("Descrizione", 40, bold=True)] + CATS + \
+                [Col("Fornitore Griglia", 20, group="sup"), Col("Prezzo Griglia", 12, "price", group="price"),
+                 Col("Miglior prezzo", 12, "price", group="price"), Col("Più economico", 16, group="price"),
+                 Col("Variazione", 11, "pct", group="warn")] + SUPS
+            data = []
+            for k, x in enumerate(xs):
+                ch = x.get("change")
+                data.append([x["ean"], x.get("code") or None, x.get("name")] + cats(x) +
+                            [x.get("supplier") or None, x.get("ref"), x.get("best"), x.get("best_sup"),
+                             round(ch * 100, 1) if ch is not None else None] + sup_vals(x, marks, k, 12))
+                if x.get("moved"):
+                    marks[(k, 10)] = "AMBER"                   # 最便宜的不是 Griglia 登记的供应商
+                if ch is not None and abs(ch) >= 0.05:
+                    marks[(k, 11)] = "RED" if ch > 0 else "GREEN"
+            X.add_sheet(wb, "价格", "Griglia · Confronto prezzi", sub(len(xs)), cols, data, marks=marks,
+                        photo_eans=[x["ean"] for x in xs], url=url, tone="GREY",
+                        note="价格：现在最低价和 Griglia 登记的价（PA MIGLIORE）比。变化红 = 贵了 ≥ 5%，绿 = 便宜了 ≥ 5%；"
+                             "橙色 = 最便宜的换了供应商；批发商价格里绿底 = 最便宜。")
+        elif key == "odd":
+            cols = [Col("EAN", 16, "ean"), Col("Descrizione", 40, bold=True), Col("Grossista", 18, group="sup"),
+                    Col("Prezzo listino", 12, "price", group="warn"), Col("Prezzo medio altri", 14, "price", group="price")]
+            data = [[x["ean"], x.get("name"), x.get("supplier"), x.get("price"), x.get("others")] for x in xs]
+            marks = {(k, 3): "RED" for k in range(len(xs))}
+            X.add_sheet(wb, "价格可疑", "Griglia · Prezzi sospetti nei listini", sub(len(xs)), cols, data, marks=marks,
+                        photo_eans=[x["ean"] for x in xs], url=url, tone="AMBER",
+                        note=f"价格可疑：报价低于 €{MIN_PRICE:.2f} 或不到别家中间价的 {ODD_RATIO:.0%}，多半是报价表写错了，"
+                             "不参与比最低价。 Prezzi probabilmente errati nel listino.")
+    if not wb.sheetnames:
+        raise ValueError("没有选要导出的表")
     wb.save(path)
     return path

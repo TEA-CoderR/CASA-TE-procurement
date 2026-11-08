@@ -11,13 +11,74 @@ import threading
 from PySide6.QtCore import Qt, QObject, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QLineEdit, QComboBox,
-                               QTabWidget, QFileDialog, QStackedWidget, QFrame)
+                               QTabWidget, QFileDialog, QStackedWidget, QFrame, QDialog, QCheckBox)
 
 from i18n import tr
 
 
 class _Sig(QObject):
     done = Signal(object)
+
+
+class _ExportDialog(QDialog):
+    """导出哪几张表：四个勾选框（带行数，默认勾现在打开的那张）+「按表里现在的筛选」"""
+
+    def __init__(self, win, page):
+        super().__init__(win)
+        import griglia as G
+        from erp_widgets import tip_label
+        self.page = page
+        self.setObjectName("Dialog")
+        self.setWindowTitle(tr("导出 Excel"))
+        self.setMinimumWidth(300)
+        v = QVBoxLayout(self)
+        v.setContentsMargins(20, 18, 20, 16)
+        v.setSpacing(10)
+        v.addWidget(tip_label(tr("导出哪几张表"), tr("每张表一个工作表：照片（Excel 365 打开才显示）、彩色表头、斑马纹、"
+                                                  "表头自带筛选，最便宜的价格绿底、涨价红 / 降价绿、换了供应商橙色")))
+        cur = page.tabs.currentIndex() if page.tabs is not None else 0
+        self.boxes = []
+        for i, (key, name) in enumerate(G.EXPORT_TABLES):
+            cb = QCheckBox()
+            cb.setChecked(i == cur)
+            cb.setProperty("key", key)
+            self.boxes.append(cb)
+            v.addWidget(cb)
+        v.addSpacing(4)
+        self.filtered = QCheckBox(tr("按表里现在的筛选和排序"))
+        self.filtered.setChecked(True)
+        self.filtered.setToolTip(tr("勾上：只导出表里现在看得到的行（搜索、右键表头筛选、新品的「几家在做」都算），顺序也一样；"
+                                    "不勾：导出整张表"))
+        self.filtered.toggled.connect(self._label)
+        v.addWidget(self.filtered)
+        self._label()
+        foot = QHBoxLayout()
+        foot.addStretch()
+        cancel = QPushButton(tr("取消"))
+        cancel.clicked.connect(self.reject)
+        self.ok = QPushButton(tr("导出…"))
+        self.ok.setObjectName("Primary")
+        self.ok.clicked.connect(self.accept)
+        foot.addWidget(cancel)
+        foot.addWidget(self.ok)
+        v.addLayout(foot)
+        for cb in self.boxes:
+            cb.toggled.connect(lambda _: self.ok.setEnabled(bool(self.which())))
+        self.ok.setEnabled(bool(self.which()))
+
+    def _label(self, *_):
+        import griglia as G
+        for cb, (key, name) in zip(self.boxes, G.EXPORT_TABLES):
+            total = len(self.page.st.get(key) or [])
+            if self.filtered.isChecked():
+                n = len(self.page._rows_of(key))
+                cb.setText(tr("{0}（{1:,} 行）", tr(name), n) if n == total else
+                           tr("{0}（{1:,} / {2:,} 行）", tr(name), n, total))
+            else:
+                cb.setText(tr("{0}（{1:,} 行）", tr(name), total))
+
+    def which(self):
+        return [cb.property("key") for cb in self.boxes if cb.isChecked()]
 
 
 class _Tab:
@@ -504,9 +565,9 @@ class GrigliaPage:
             for f in os.listdir(d):
                 fp = os.path.join(d, f)
                 if os.path.isfile(fp) and f.lower().endswith(G.EXCEL):
-                    os.makedirs(old, exist_ok=True)
+                    import file_inbox as FI
                     try:
-                        shutil.move(fp, os.path.join(old, f))
+                        FI.archive(fp, old)               # 重名加时间、一模一样的不多存一份
                     except OSError:
                         pass
             shutil.copy2(p, os.path.join(d, os.path.basename(p)))
@@ -551,6 +612,14 @@ class GrigliaPage:
             self.win.show_toast(tr("Griglia 统计失败：{0}", err))
             return
         self.grid, self.st = grid, st
+        bad = (grid or {}).get("bad_rows") or []
+        if bad:                                       # 源文件有列错位的行：提醒一次（这几行只用编号 / 名称 / 价格）
+            import griglia as G
+            msg = tr("Griglia 第 {0} 行列错位了（{1} 行）：这几行的品牌、供应商、分类、批发商价格没用，请在 Excel 里挪回对的列",
+                     G.bad_rows_text(bad), len(bad))
+            if hasattr(self.win, "log"):
+                self.win.log("⚠ " + msg)
+            self.win.show_toast(msg)
         labels = st["labels"]
         self._labels = labels
         self.tabs.setTabText(0, tr("都不做了（{0}）", len(st["gone"])))
@@ -730,16 +799,41 @@ class GrigliaPage:
                 tab.ctl.render()
 
     def export(self):
+        """导出 Excel：先选要哪几张表（默认现在打开的那张）、要不要按表里现在的筛选（2026-11-07 用户）"""
         if not self.st:
             return
         import griglia as G
         from datetime import datetime
+        from erp_widgets import BusyDialog
+        dlg = _ExportDialog(self.win, self)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        which, filtered = dlg.which(), dlg.filtered.isChecked()
+        names = dict(G.EXPORT_TABLES)
+        stem = names[which[0]] if len(which) == 1 else "统计"
         p, _ = QFileDialog.getSaveFileName(self.win, tr("导出 Excel"), os.path.join(
-            self._root() or "", f"Griglia_统计_{datetime.now():%Y%m%d}.xlsx"), tr("Excel 文件 (*.xlsx)"))
+            self._root() or "", f"Griglia_{stem}_{datetime.now():%Y%m%d}.xlsx"), tr("Excel 文件 (*.xlsx)"))
         if not p:
             return
-        try:
-            G.export(self.st, p)
-            self.win.show_toast(tr("已导出：{0}", os.path.basename(p)))
-        except Exception as e:
-            self.win.show_toast(tr("导出失败：{0}", e))
+        rows = {k: self._rows_of(k) for k in which} if filtered else None
+        import product_images as PI
+        url = self.settings.get("image_url") or PI.DEFAULT_URL
+        gname = (self.grid or {}).get("name")
+        _, err = BusyDialog.run(self.win, tr("导出 Excel"), tr("正在写 {0}…", os.path.basename(p)),
+                                lambda: G.export(self.st, p, which=which, rows=rows, url=url, grid_name=gname))
+        if err:
+            self.win.show_toast(tr("导出失败：{0}", err))
+            return
+        self.win.show_toast(tr("已导出：{0}", os.path.basename(p)))
+        from erp_widgets import open_file                      # 导出完直接打开（2026-11-07 用户）
+        open_file(self.win, p, tr("导出 Excel"))
+
+    def _tab_of(self, key):
+        return {"gone": self.t_gone, "new": self.t_new, "prices": self.t_price, "odd": self.t_odd}.get(key)
+
+    def _rows_of(self, key):
+        """这张表现在看得到的行（搜索 / 筛选 / 新品的几家在做之后），按表里现在的顺序"""
+        tab, data = self._tab_of(key), self.st.get(key) or []
+        if tab is None:
+            return list(data)
+        return [data[i] for i in tab.ctl.visible if 0 <= i < len(data)]

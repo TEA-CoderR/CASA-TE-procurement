@@ -104,7 +104,7 @@ def test_find_load_export(tmp_path=None):
     st = G.stats(g, {"X": {"9000000000001": _q(1.0)}})
     out = os.path.join(root, "stat.xlsx")
     G.export(st, out)
-    assert load_workbook(out).sheetnames == ["都不做了", "新品", "价格"]
+    assert load_workbook(out).sheetnames == ["都不做了", "新品", "价格", "价格可疑"]
 
 
 def test_workspace_has_grid_folder():
@@ -209,7 +209,7 @@ def test_problem_report(tmp_path=None):
     eans = [r[1] for r in vals if r[1] and str(r[1]).startswith("800")]
     # ① Griglia 没货的在最上面；② 批发商有的在前（品牌供应商有的更前），批发商都没有的最后
     assert eans == ["8000000000035", "8000000000028", "8000000000066", "8000000000011"], eans
-    assert '=_xlfn.IMAGE("https://img.casaete.top/prodotti/8000000000011/01.webp","",3,48,48)' in flat   # 照片 48 像素
+    assert '=IFERROR(_xlfn.IMAGE("https://img.casaete.top/prodotti/8000000000011/01.webp","",3,48,48),"")' in flat   # 照片 48 像素
     assert "EAN alternativo" in flat and "Disp. grossisti" in flat and "Disp. fornitore diretto" in flat and "Consiglio" in flat
     assert "Fornitore" in flat and "Ordinabile" not in flat
     row_a = next(r for r in vals if r[1] == "8000000000011")                     # 订不到（No）：清单 2 箱、确定 2 箱
@@ -289,3 +289,89 @@ def test_ean_and_cat3_columns_shown_once():
     old = {"gone_cols_hidden": [1, 7], "gone_ean_shown": True}   # 上一版已经放出过条码的：条码照用户的，只放出小类
     assert GP._show_once(old, "gone") == [7] and old["gone_cols_hidden"] == [1]
     assert 1 not in GP._HIDDEN and 7 not in GP._HIDDEN
+
+
+def test_griglia_found_on_any_sheet(tmp_path):
+    """2026-11-07 用户换成 SCHEDA_DETERSIVI：第一页是供应商资料，GRIGLIA 在第三页 → 以前提示找不到 Codice EAN"""
+    from openpyxl import Workbook
+    import griglia as G
+    wb = Workbook()
+    wb.active.title = "SCHEDA ANAGRAFICA FORNITORI"
+    wb.active.append(["SCHEDA ANAGRAFICA FORNITORI"])
+    wb.create_sheet("STORICO").append(["NEGOZIO", "VENDITE 2025"])
+    ws = wb.create_sheet("GRIGLIA ")
+    ws.append(["Fatturazione :"])
+    ws.append(["NO.", "Cod.Art.", "Codice EAN", "Descrizione Prodotto", "PZ*COLLI", "PREZZO\n NETTO"])
+    ws.append([1, "179132", 8004395125531, "ADORN SHAMPOO", 6, 1.8])
+    p = tmp_path / "SCHEDA_DETERSIVI_061026.xlsx"
+    wb.save(p)
+    g = G.load(str(p))
+    assert list(g["items"]) == ["8004395125531"] and g["items"]["8004395125531"]["price"] == 1.8
+
+
+def test_export_chosen_tables_styled_with_photos(tmp_path):
+    """2026-11-07 用户：可以只导出几张表；带 IMAGE 照片、颜色、表头筛选"""
+    from openpyxl import load_workbook
+    import griglia as G
+    st = {"labels": ["MELONI", "MEGA CASH"], "history": True,
+          "gone": [{"ean": "8000000000011", "code": "11", "name": "SAPONE", "cats": ["CASA", "", ""], "supplier": "MELONI",
+                    "best": 1.2}],
+          "new": [], "odd": [],
+          "prices": [{"ean": "8000000000028", "code": "28", "name": "ACE", "cats": ["", "", ""], "supplier": "MELONI SPA",
+                      "ref": 2.0, "best": 2.3, "best_sup": "MEGA CASH", "change": 0.15, "moved": True,
+                      "prices": {"MELONI": 2.5, "MEGA CASH": 2.3}}]}
+    out = str(tmp_path / "g.xlsx")
+    G.export(st, out, which=["gone"], grid_name="SCHEDA.xlsx")
+    wb = load_workbook(out)
+    assert wb.sheetnames == ["都不做了"]
+    ws = wb["都不做了"]
+    assert "Griglia" in ws["A1"].value and ws["A1"].fill.fgColor.rgb.endswith("1F3A5F")
+    assert ws["A1"].font.name == ws.cell(6, 4).font.name == "Microsoft YaHei"          # 清楚的字体（用户 11-07）
+    hr = next(r for r in range(1, 8) if ws.cell(r, 2).value == "EAN")
+    assert ws.cell(hr + 1, 1).value.startswith('=IFERROR(_xlfn.IMAGE("https://img.casaete.top/prodotti/8000000000011/')   # 没图不显示 #VALUE!
+    assert ws.cell(hr + 1, 2).value == "8000000000011" and list(ws.tables)          # 表头自带筛选
+    out2 = str(tmp_path / "p.xlsx")
+    G.export(st, out2, which=["prices", "gone"], rows={"prices": st["prices"], "gone": []})
+    wb = load_workbook(out2)
+    assert wb.sheetnames == ["都不做了", "价格"]                                    # 顺序照表的顺序
+    ws = wb["价格"]
+    hr = next(r for r in range(1, 8) if ws.cell(r, 2).value == "EAN")
+    heads = [c.value for c in ws[hr]]
+    var = ws.cell(hr + 1, heads.index("Variazione") + 1)
+    assert abs(var.value - 0.15) < 1e-9 and var.fill.fgColor.rgb.endswith("FDECEC")    # 涨 15% 红
+    cheap = ws.cell(hr + 1, heads.index("MEGA CASH") + 1)
+    assert cheap.fill.fgColor.rgb.endswith("E7F5EC")                                   # 最便宜绿
+    assert ws.cell(hr + 1, heads.index("Più economico") + 1).fill.fgColor.rgb.endswith("FFF4E0")   # 换了供应商橙
+
+
+def test_right_category_set_preferred():
+    """2026-11-07 用户定：SCHEDA_DETERSIVI 有两套分类，用右边 CAT.1 / CAT.2 / CAT.3；右边空的用左边补（同一大类才补）"""
+    import griglia as G
+    head = ["Codice EAN", "Descrizione Prodotto", "CAT 3", "CAT 2", "CAT.1", "CAT.1", "CAT.2", "CAT.3"]
+    rows = [head,
+            ["8000000000011", "CASACETO MULTIUSO", None, "BUCATO", "DETERSIVI E CURACASA", "DETERSIVI E CURACASA", "DETERSIVI SUPERFICI", " "],
+            ["8000000000028", "STREP", None, None, None, "CURA PERSONE", "RASATURA E DEPILAZIONE", None],
+            ["8000000000035", "SHAMPOO X", "SHAMPOO", "CAPELLI ", "CURA PERSONE", "CURA PERSONE", None, None],
+            ["8000000000042", "PAMPERS", "PANNOLINI", "BAMBINI", "DETERSIVI E CURACASA", "CURA PERSONE", None, None],
+            ["8000000000059", "VECCHIO", "X3", "X2", "X1", None, None, None]]
+    it = G.parse_rows(rows)["items"]
+    assert it["8000000000011"]["cats"] == ["DETERSIVI E CURACASA", "DETERSIVI SUPERFICI", ""]
+    assert it["8000000000028"]["cats"] == ["CURA PERSONE", "RASATURA E DEPILAZIONE", ""]
+    assert it["8000000000035"]["cats"] == ["CURA PERSONE", "CAPELLI", "SHAMPOO"]        # 右边空：同一大类用左边补
+    assert it["8000000000042"]["cats"] == ["CURA PERSONE", "", ""]                    # 大类不一样：不混
+    assert it["8000000000059"]["cats"] == ["X1", "X2", "X3"]                          # 右边整行空：用左边
+
+
+def test_shifted_rows_ignored_and_reported():
+    """2026-11-07：SCHEDA 最下面几行从 Marca 开始往左挪了 9 格 → 大类里是 IVA 22、供应商里是小数；这几行只用前面几列，并报出行号"""
+    import griglia as G
+    head = ["NO.", "Cod.Art.", "Codice EAN", "Descrizione Prodotto", "PREZZO\n NETTO", "Marca", "Fornitore", "CAT.1", "MELONI"]
+    rows = [["x"], head,
+            [1, "11", "8000000000011", "BUONO", 1.0, "ACE", "MELONI SPA", "CASA", 1.1],
+            [2, "28", "8000000000028", "SPOSTATO", 0.6, None, 0.975, 22, 1.19],
+            [3, "35", "8000000000035", "SPOSTATO 2", 0.7, None, 1.05, 22, None]]
+    g = G.parse_rows(rows)
+    bad = g["items"]["8000000000028"]
+    assert bad["supplier"] == "" and bad["cats"] == ["", "", ""] and bad["prices"] == {} and bad["price"] == 0.6
+    assert g["items"]["8000000000011"]["cats"][0] == "CASA" and g["bad_rows"] == [4, 5]
+    assert G.bad_rows_text([2759, 2760, 2761, 2770]) == "2759–2761、2770"

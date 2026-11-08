@@ -172,9 +172,13 @@ def test_apply_v2_supplier_cycles():
     df = pd.DataFrame({"CodArticolo": [1, 2], "store_inventory": [0, 0], "total_inventory": [0, 0],
                        "PrezzoVedi1": [1, 1]})
     weekly = {1: [7.0] * 60, 2: [7.0] * 60}
-    algo = dict(F.DEFAULT_PARAMS, review_days=7)
+    algo = dict(F.DEFAULT_PARAMS, review_days=7, check_days=0)
     out = R.apply_v2(None, 1, df, algo, weekly=weekly, revenue={1: 100, 2: 100}, cycles=[7, 60])
     assert list(out["reorder_cycle_used"]) == [7, 60]
+    # 检查间隔 14 天（默认）：60 天的供应商也只备 14 天，「周期」列写实际用的 14
+    chk = R.apply_v2(None, 1, df, dict(algo, check_days=14), weekly=weekly, revenue={1: 100, 2: 100}, cycles=[7, 60])
+    assert list(chk["reorder_cycle_used"]) == [7, 14]
+    assert chk.loc[1, "suggested_order_qty"] < out.loc[1, "suggested_order_qty"] - 40
     assert out.loc[1, "suggested_order_qty"] > out.loc[0, "suggested_order_qty"] + 40
     same = R.apply_v2(None, 1, df, algo, weekly=weekly, revenue={1: 100, 2: 100})
     assert list(same["reorder_cycle_used"]) == [7, 7]
@@ -324,32 +328,32 @@ def test_check_boxes_no_more_than_list_and_new_item_protection():
     algo = {"engine": "v1"}
     base = {"in_db": True, "pack": 12, "store": 1, "inv0": 0, "daily": None, "sales": [30, 60, 90, 180]}
     rows = [dict(base, file_qty=2, suggested=200),                       # 系统要 17 箱 → 按清单 2 箱
-            dict(base, file_qty=3, suggested=5),                         # 系统要 5 件（不到一箱）→ 1 箱，但少订最多一半 → 2 箱
+            dict(base, file_qty=3, suggested=5),                         # 系统要 5 件（不到一箱）→ 1 箱，但店里没库存 → 照清单 3 箱（2026-11-07）
             dict(base, file_qty=1, suggested=0, inv0=50),                # 库存够 → 不订
             dict(base, file_qty=2, suggested=0, sales=[3, 5, 5, 5]),      # 两个月前还没卖过 → 新品，按清单
             dict(base, file_qty=1, suggested=0, sales=[0, 0, 0, 0]),      # 从没卖过 → 新品，按清单
             dict(base, file_qty=4, in_db=False, pack=0)]                 # 数据库没有 → 清单
     OC.init_boxes(rows, None, algo)
-    assert [x["fbox"] for x in rows] == [2, 2, 0, 2, 1, 4]
+    assert [x["fbox"] for x in rows] == [2, 3, 0, 2, 1, 4]
     assert rows[0]["sys_box"] == 17 and rows[3].get("protect") == "new" and rows[2].get("protect") is None
-    empty = [dict(base, file_qty=3, suggested=0, inv0=-2, sales=[0, 1, 2, 4])]   # 没货了、门店要 → 至少 1 箱（少订最多一半 → 2 箱）
+    empty = [dict(base, file_qty=3, suggested=0, inv0=-2, sales=[0, 1, 2, 4])]   # 没货了、门店要 → 照清单 3 箱（2026-11-07）
     OC.init_boxes(empty, None, algo)
-    assert empty[0]["fbox"] == 2 and empty[0]["protect"] == "empty"
+    assert empty[0]["fbox"] == 3 and empty[0]["protect"] == "empty"
 
 
 def test_check_boxes_a_protection_and_cut_limit():
     """
     2026-10-25 用户定：A 类、库存不够卖一个周期、门店要了 → 至少 1 箱；
-    少订最多砍掉清单一半，除非库存已经够卖 2 个订货周期以上
+    少订最多砍掉清单一半，除非库存已经够卖很久（2026-11-07 按 ABC：A 180 / B 120 / C 90 天）
     """
     import order_check as OC
     algo = {"engine": "v1"}
     base = {"in_db": True, "pack": 12, "store": 1, "cycle": 30, "daily": None, "sales": [30, 60, 90, 180]}
     rows = [dict(base, file_qty=1, suggested=0, inv0=6, daily0=0.5, tier="A"),     # 够卖 12 天 < 30 → A 类保护 1 箱
             dict(base, file_qty=1, suggested=0, inv0=6, daily0=0.5, tier="C"),     # C 类：不保护，但少订上限 → 1 箱（清单 1 箱一半向上取整）
-            dict(base, file_qty=1, suggested=0, inv0=60, daily0=0.5, tier="A"),    # 够卖 120 天 ≥ 2 周期 → 可以不订
-            dict(base, file_qty=8, suggested=12, inv0=20, daily0=0.5, tier="B"),   # 系统 1 箱，清单 8 → 最少 4 箱
-            dict(base, file_qty=8, suggested=12, inv0=40, daily0=0.5, tier="B")]   # 够卖 80 天 ≥ 60 → 按系统 1 箱
+            dict(base, file_qty=1, suggested=0, inv0=100, daily0=0.5, tier="A"),   # 够卖 200 天 ≥ A 类 180 天 → 可以不订
+            dict(base, file_qty=8, suggested=12, inv0=40, daily0=0.5, tier="B"),   # 够卖 80 天（B 60–120）：系统 1 箱，清单 8 → 最少 4 箱
+            dict(base, file_qty=8, suggested=12, inv0=70, daily0=0.5, tier="B")]   # 够卖 140 天 ≥ B 类 120 → 按系统 1 箱
     OC.init_boxes(rows, None, algo)
     assert [x["fbox"] for x in rows] == [1, 1, 0, 4, 1]
     assert rows[0]["protect"] == "a_low" and rows[3].get("limited") and not rows[4].get("limited")
@@ -377,10 +381,10 @@ def test_phantom_stock():
     assert OC.phantom_info(dict(base, last_sale=ago(8), inv0=0), today) is None          # 本来就没货（缺货保护管）
     rows = [dict(base, last_sale=ago(10), tier="A"),           # A：按清单 3 箱
             dict(base, last_sale=ago(10), tier="B"),           # B：库存按 0：0.5 × 30 = 15 件 → 3 箱
-            dict(base, last_sale=ago(10), tier="C"),           # C：只提醒（库存够卖 40 天 < 60 → 少订上限 2 箱）
-            dict(base, last_sale=ago(2), tier="A")]            # 最近还在卖：正常（库存 40 天 → 上限 2 箱）
+            dict(base, last_sale=ago(10), tier="C"),           # C：只提醒（库存够卖 40 天 < C 类 45 天 → 照清单 3 箱）
+            dict(base, last_sale=ago(2), tier="A")]            # 最近还在卖：正常（库存 40 天 < A 类 90 天 → 照清单 3 箱）
     OC.init_boxes(rows, None, {"engine": "v1"})
-    assert [x["fbox"] for x in rows] == [3, 3, 2, 2]
+    assert [x["fbox"] for x in rows] == [3, 3, 3, 3]
     assert rows[0]["protect"] == "phantom" and rows[1]["protect"] == "phantom"
     assert rows[2]["phantom"] and rows[2].get("protect") != "phantom" and not rows[3]["phantom"]
 
@@ -449,3 +453,49 @@ def test_store_cycle_factor(monkeypatch):
     assert seen["rc"] == 60 and seen["sup"] == {501: 120, 502: 60}
     assert SO.store_cycle_factor({"store_cycle": {"3": 1.5}}, 3) == 1.5
     assert SO.store_cycle_factor({"store_cycle": {"3": 1.5}}, 2) == 1.0 and SO.store_cycle_factor(None, 1) == 1.0
+
+
+def test_check_keeps_store_list_unless_stock_really_high():
+    """2026-11-07 用户：尽可能少砍门店清单，只有库存真的多才砍；按 ABC 分开：
+    A 90 / 180、B 60 / 120、C 45 / 90 天（够卖不到前一个照清单；中间最多砍一半；超过后一个按系统）；没销量、库存不到一箱：照清单"""
+    import order_check as OC
+    algo = {"engine": "v1"}
+    base = {"in_db": True, "pack": 6, "store": 1, "cycle": 14, "daily": None, "sales": [30, 60, 90, 180],
+            "file_qty": 4, "suggested": 0, "tier": "B"}
+    rows = [dict(base, inv0=20, daily0=0.5),       # B 够卖 40 天 → 照清单 4 箱
+            dict(base, inv0=40, daily0=0.5),       # B 80 天 → 最多砍一半：2 箱
+            dict(base, inv0=70, daily0=0.5),       # B 140 天 → 按系统 0 箱
+            dict(base, inv0=3, daily0=0),          # 没销量、只有 3 件（不到一箱）→ 照清单
+            dict(base, inv0=12, daily0=0),         # 没销量、有两箱 → 库存多，可以不订
+            dict(base, inv0=70, daily0=0.5, tier="A"),    # A 140 天 → 还不算多：最多砍一半 2 箱
+            dict(base, inv0=25, daily0=0.5, tier="C"),    # C 50 天 → 最多砍一半 2 箱
+            dict(base, inv0=50, daily0=0.5, tier="C")]    # C 100 天 → 按系统 0 箱
+    OC.init_boxes(rows, None, algo)
+    assert [x["fbox"] for x in rows] == [4, 2, 0, 4, 0, 2, 2, 0]
+    assert rows[0]["kept"] and rows[1]["limited"] and not rows[2].get("kept") and rows[3]["kept"]
+    assert rows[5]["review_days"] == (90, 180) and rows[7]["review_days"] == (45, 90)
+    OC.init_boxes(rows[:1], None, algo, {"keep_b": 30})                          # 自己调小：40 天就算够一阵子
+    assert rows[0]["fbox"] == 2 and not rows[0].get("kept")
+
+
+def test_drawer_key_tags_short_and_ordered():
+    """2026-11-07 用户：详情栏只留精华 —— 为什么写成几个短标签，在途 / 保护在前"""
+    import order_check as OC
+    x = dict(in_db=True, lbox=1, sbox=0, sys_box=0, censored={"weeks": 6}, protect=None)
+    tags = [t for t, _ in OC.key_tags(x, transit_boxes=1)]
+    assert tags[:2] == ["在途 1 箱", "断货补算"] and "库存多" in tags
+    assert all(len(t) <= 12 for t in tags)
+    x2 = dict(in_db=True, lbox=3, sbox=3, sys_box=1, kept=True, protect="new")
+    assert [t for t, _ in OC.key_tags(x2, edited=True)] == ["新品保护", "库存少 · 照清单", "手动改过"]
+    assert OC.key_tags(dict(in_db=False)) == [("数据库没有", "err")]
+
+
+def test_detail_drawer_tags():
+    """订货明细详情栏也用短标签（和检查清单一样）"""
+    import store_detail_window as SW
+    x = dict(inv=1, daily=1, decision="🔴 快断货", slow_from=0.9)
+    tags = [t for t, _ in SW.detail_tags(x, {}, transit_boxes=2, moved_in=True, edited=True,
+                                         marks=[("slow", "慢销", "…")], pack_diff=True, many=True)]
+    assert tags[:3] == ["在途 2 箱", "调货", "快断货"] and tags[-1] == "手动改过" and "慢销" in tags
+    assert SW.detail_tags(None, {"dup_of": 3}) == [("重复编号", "muted")]
+    assert SW.detail_tags(None, {}) == [("数据库没有", "err")]

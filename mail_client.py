@@ -1,0 +1,754 @@
+"""
+邮件（第 1 阶段，2026-11-06）：用 IMAP 只读连接公司邮箱（阿里云企业邮箱），不依赖界面。
+
+只读保证：
+· 文件夹一律用 EXAMINE 打开（select(readonly=True)），服务器不会改任何「已读 / 未读」等标记；
+· 只取信头（BODY.PEEK[HEADER.FIELDS …]）和结构（BODYSTRUCTURE，用来看附件名），不下载正文和附件；
+· 不删、不移动、不发信。
+
+密码：登录密码或网页版生成的「第三方客户端安全密码」（用户 11-06 定：先用登录密码，以后换安全密码），存在本机保管处（credentials.py，名字 mail.<地址>），
+不写进 settings.json、不进共享文件夹。设置里只存地址 / 服务器 / 端口（settings["mail"]["accounts"]）。
+"""
+import email
+import email.policy
+import imaplib
+import re
+from collections import Counter, defaultdict
+from datetime import date, datetime, timedelta
+from email.header import decode_header, make_header
+from email.utils import getaddresses, parsedate_to_datetime
+
+DEFAULT_HOST = "imap.qiye.aliyun.com"       # 阿里云企业邮箱（老地址 imap.mxhichina.com 也行）
+DEFAULT_PORT = 993
+TIMEOUT = 30
+HEADER_FIELDS = "FROM TO CC SUBJECT DATE MESSAGE-ID IN-REPLY-TO"
+BATCH = 100
+
+imaplib.Commands.setdefault("ID", ("NONAUTH", "AUTH", "SELECTED"))     # 有的国内邮箱登录后要先报客户端名字
+
+
+class MailError(Exception):
+    """给人看的错误（已经写成业务话）"""
+
+
+class LoginFailed(MailError):
+    """IMAP 登录被拒（密码不对，或这个邮箱没开 IMAP）：diagnose_login 可以分清是哪种"""
+
+
+def cred_name(address):
+    return "mail." + (address or "").strip().lower()
+
+
+def accounts(settings):
+    """设置里的邮箱 [{"address", "host", "port", "store"}]；store = 没写门店的信算哪家店（没选过按地址猜，"" = 不设）"""
+    import mail_match as MM
+    out = []
+    for a in ((settings.get("mail") or {}).get("accounts") or []):
+        addr = (a.get("address") or "").strip()
+        if addr:
+            out.append({"address": addr, "host": (a.get("host") or DEFAULT_HOST).strip(),
+                        "port": int(a.get("port") or DEFAULT_PORT),
+                        "store": (a.get("store") or None) if "store" in a else MM.default_store(addr)})
+    return out
+
+
+# ===================================================================== 连接
+def connect(acc, password, factory=None):
+    """登录，返回连接。factory 测试用（假的 IMAP）"""
+    if not password:
+        raise MailError(f"{acc['address']}：还没填密码")
+    try:
+        conn = (factory or (lambda h, p: imaplib.IMAP4_SSL(h, p, timeout=TIMEOUT)))(acc["host"], acc["port"])
+    except OSError as e:
+        raise MailError(f"连不上邮件服务器 {acc['host']}:{acc['port']}（{e}）")
+    try:
+        conn.login(acc["address"], password)
+    except imaplib.IMAP4.error as e:
+        a = e.args[0] if e.args else ""
+        msg = a.decode("utf-8", "replace") if isinstance(a, bytes) else str(a)
+        raise LoginFailed(f"{acc['address']}：登录失败。请检查：① 密码对不对（登录密码，或网页版生成的「第三方客户端安全密码」）；"
+                        f"② 管理员已给这个账号开通 IMAP、允许第三方客户端。（服务器回复：{msg}）")
+    try:
+        conn._simple_command("ID", '("name" "CASATE-procurement" "version" "1")')
+    except Exception:
+        pass
+    return conn
+
+
+def close(conn):
+    for f in (getattr(conn, "close", None), getattr(conn, "logout", None)):
+        try:
+            f()
+        except Exception:
+            pass
+
+
+# ===================================================================== 文件夹（IMAP 的改良 UTF-7 编码）
+def decode_utf7(s):
+    """IMAP 文件夹名：&XfJT0ZAB- → 已发送"""
+    out, i = [], 0
+    while i < len(s):
+        c = s[i]
+        if c == "&":
+            j = s.index("-", i)
+            if j == i + 1:
+                out.append("&")
+            else:
+                b64 = s[i + 1:j].replace(",", "/")
+                b64 += "=" * (-len(b64) % 4)
+                import base64
+                out.append(base64.b64decode(b64).decode("utf-16-be"))
+            i = j + 1
+        else:
+            out.append(c)
+            i += 1
+    return "".join(out)
+
+
+_LIST_RE = re.compile(rb'\((?P<flags>[^)]*)\) (?P<delim>"[^"]*"|NIL) (?P<name>.+)$')
+
+
+def folders(conn):
+    """[(原名, 显示名, 标记集合)]"""
+    typ, data = conn.list()
+    out = []
+    for line in data or []:
+        if isinstance(line, tuple):            # 名字是 literal
+            head, lit = line
+            line = head.rsplit(b" ", 1)[0] + b' "' + lit + b'"'
+        if not line:
+            continue
+        m = _LIST_RE.match(line)
+        if not m:
+            continue
+        name = m.group("name").decode("utf-8", "replace").strip()
+        if name.startswith('"') and name.endswith('"'):
+            name = name[1:-1].replace('\\"', '"')
+        flags = {f.lower() for f in m.group("flags").decode("ascii", "replace").split()}
+        out.append((name, decode_utf7(name), flags))
+    return out
+
+
+def pick_folders(fs):
+    """摸底要看的：收件箱 + 已发送（有 \\Sent 标记，或名字像已发送）"""
+    inbox = [f for f in fs if f[0].upper() == "INBOX"]
+    sent = [f for f in fs if "\\sent" in f[2]] or \
+           [f for f in fs if re.search(r"sent|已发送|inviat", f[1], re.I)]
+    return (inbox[:1] or fs[:1]) + sent[:1]
+
+
+def _quote(name):
+    return '"' + name.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+# ===================================================================== 取信头
+def _tokens(parts):
+    """把一封信的 FETCH 回复（字节片 + literal）拆成记号：( ) 字符串 数字 NIL 原子；literal 原样当字符串"""
+    toks = []
+    for kind, data in parts:
+        if kind == "lit":
+            toks.append(("s", data))
+            continue
+        i, n = 0, len(data)
+        while i < n:
+            c = data[i:i + 1]
+            if c in b" \r\n":
+                i += 1
+            elif c in b"()":
+                toks.append((c.decode(), None))
+                i += 1
+            elif c == b'"':
+                j, buf = i + 1, bytearray()
+                while j < n and data[j:j + 1] != b'"':
+                    if data[j:j + 1] == b"\\":
+                        j += 1
+                    buf += data[j:j + 1]
+                    j += 1
+                toks.append(("s", bytes(buf)))
+                i = j + 1
+            elif c == b"{":                      # literal 记号：内容在下一片
+                i = data.index(b"}", i) + 1
+            else:
+                j = i
+                depth = 0
+                while j < n:
+                    ch = data[j:j + 1]
+                    if ch == b"[":
+                        depth += 1
+                    elif ch == b"]":
+                        depth -= 1
+                    elif depth == 0 and ch in b" ()\r\n":
+                        break
+                    j += 1
+                toks.append(("a", data[i:j]))
+                i = j
+    return toks
+
+
+def _parse(toks, i=0):
+    """记号 → 嵌套 list；返回 (值, 下一个位置)"""
+    kind, val = toks[i]
+    if kind == "(":
+        out, i = [], i + 1
+        while i < len(toks) and toks[i][0] != ")":
+            v, i = _parse(toks, i)
+            out.append(v)
+        return out, i + 1
+    if kind == "a":
+        return (None if val.upper() == b"NIL" else val.decode("ascii", "replace")), i + 1
+    return val, i + 1
+
+
+def _text(v):
+    if isinstance(v, bytes):
+        v = v.decode("utf-8", "replace")
+    if not v:
+        return ""
+    try:
+        return str(make_header(decode_header(v)))
+    except Exception:
+        return v
+
+
+def _rfc2231(raw):
+    """utf-8''Listino%20Meloni.pdf → Listino Meloni.pdf"""
+    from urllib.parse import unquote
+    m = re.match(r"^([^']*)'[^']*'(.*)$", raw)
+    if not m:
+        return unquote(raw)
+    try:
+        return unquote(m.group(2), encoding=m.group(1) or "utf-8", errors="replace")
+    except LookupError:
+        return unquote(m.group(2))
+
+
+def attachment_names(bs):
+    """BODYSTRUCTURE 里所有附件名（NAME / FILENAME / FILENAME*，按 RFC 2047 / 2231 解码）"""
+    names = []
+
+    def walk(x):
+        if not isinstance(x, list):
+            return
+        if len(x) % 2 == 0 and x and all(isinstance(k, (bytes, str)) for k in x[::2]):
+            for k, v in zip(x[::2], x[1::2]):
+                key = (k.decode() if isinstance(k, bytes) else k).upper()
+                if key in ("NAME", "FILENAME") and v:
+                    names.append(_text(v))
+                elif key in ("NAME*", "FILENAME*") and v:
+                    raw = v.decode("utf-8", "replace") if isinstance(v, bytes) else v
+                    names.append(_rfc2231(raw))
+        for y in x:
+            walk(y)
+    walk(bs)
+    seen, out = set(), []
+    for n in names:
+        if n and n not in seen:
+            seen.add(n)
+            out.append(n)
+    return out
+
+
+def _leaf_name(leaf):
+    """一个 BODYSTRUCTURE 叶子（单个部分）的文件名：参数里的 NAME / FILENAME / FILENAME*（不往下钻 message/rfc822）"""
+    found = []
+
+    def walk(x, depth):
+        if not isinstance(x, list) or depth > 3:
+            return
+        if len(x) % 2 == 0 and x and all(isinstance(k, (bytes, str)) for k in x[::2]):
+            for k, v in zip(x[::2], x[1::2]):
+                key = (k.decode() if isinstance(k, bytes) else k).upper()
+                if key in ("FILENAME*", "NAME*") and v:
+                    found.append(_rfc2231(v.decode("utf-8", "replace") if isinstance(v, bytes) else v))
+                elif key in ("FILENAME", "NAME") and v:
+                    found.append(_text(v))
+        for y in x:
+            if isinstance(y, list):
+                walk(y, depth + 1)
+    walk([y for y in leaf if isinstance(y, list)], 0)
+    return found[0] if found else ""
+
+
+def attachment_parts(bs):
+    """BODYSTRUCTURE → 有名字的部分 [[段号, 文件名, 编码, 大小]]（段号给 BODY.PEEK[段号] 取这个附件用）"""
+    out = []
+
+    def walk(x, sec):
+        if not isinstance(x, list) or not x:
+            return
+        if isinstance(x[0], list):                  # multipart：前面几个子部分（都是 list），后面是 MIXED 之类
+            i = 1
+            for y in x:
+                if not isinstance(y, list):
+                    break
+                walk(y, f"{sec}.{i}" if sec else str(i))
+                i += 1
+            return
+
+        def s(v):
+            return (v.decode("ascii", "replace") if isinstance(v, bytes) else (v or "")).upper()
+        name = _leaf_name(x)
+        if name and s(x[0]) != "MESSAGE":
+            try:
+                size = int(x[6]) if len(x) > 6 and x[6] is not None else 0
+            except (TypeError, ValueError):
+                size = 0
+            out.append([sec or "1", name, s(x[5]) if len(x) > 5 else "", size])
+    walk(bs, "")
+    return out
+
+
+def _split_messages(data):
+    """imaplib 的 FETCH 回复 → 每封信一组 [(kind, bytes)]：以「序号 (」开头的片段开始一封新信，其余接在后面"""
+    msgs = []
+    for item in data or []:
+        if item is None:
+            continue
+        head, lit = item if isinstance(item, tuple) else (item, None)
+        if re.match(rb"^\d+ \(", head) or not msgs:
+            msgs.append([])
+        msgs[-1].append(("txt", head))
+        if lit is not None:
+            msgs[-1].append(("lit", lit))
+    return msgs
+
+
+def _parse_message(parts):
+    toks = _tokens(parts)
+    # 第一个是序号，后面是 ( KEY 值 KEY 值 … )
+    lst, _ = _parse(toks, 1)
+    d = {}
+    for k, v in zip(lst[::2], lst[1::2]):
+        key = (k or "").upper()
+        if key.startswith("BODY["):
+            d["HEADER"] = v if isinstance(v, bytes) else (v or "").encode()
+        else:
+            d[key] = v
+    return d
+
+
+def fetch_headers(conn, folder, since, log=None, cancel=None, known=None, info=None):
+    """一个文件夹里 since 以后的信：[{uid, date, from, from_name, to, subject, attachments, size, message_id, in_reply_to}]
+    只读（EXAMINE + BODY.PEEK）。known = {uid: 以前读过的这封信}（同一个 UIDVALIDITY 才能用）：这些不再向服务器要；
+    info：放 uidvalidity（给调用的人存缓存）"""
+    typ, _ = conn.select(_quote(folder), readonly=True)
+    if typ != "OK":
+        raise MailError(f"打不开文件夹 {decode_utf7(folder)}")
+    validity = None
+    try:
+        _t, v = conn.response("UIDVALIDITY")
+        validity = (v[0].decode() if isinstance(v[0], bytes) else str(v[0])) if v and v[0] else None
+    except Exception:
+        pass
+    if info is not None:
+        info["uidvalidity"] = validity
+    if known and (validity is None or (info or {}).get("cached_validity") != validity):
+        known = None
+    typ, data = conn.uid("SEARCH", None, "SINCE", since.strftime("%d-%b-%Y"))
+    uids = (data[0] or b"").split() if data else []
+    out = []
+    if known:
+        known = {u: r for u, r in known.items() if "parts" in r}       # 老缓存没记附件段号：重读
+        out = [known[u.decode()] for u in uids if u.decode() in known]
+        uids = [u for u in uids if u.decode() not in known]
+    for k in range(0, len(uids), BATCH):
+        if cancel is not None and cancel():
+            break
+        chunk = b",".join(uids[k:k + BATCH]).decode()
+        typ, data = conn.uid("FETCH", chunk, f"(UID RFC822.SIZE BODYSTRUCTURE BODY.PEEK[HEADER.FIELDS ({HEADER_FIELDS})])")
+        for parts in _split_messages(data):
+            try:
+                d = _parse_message(parts)
+            except Exception:
+                continue
+            h = email.message_from_bytes(d.get("HEADER") or b"", policy=email.policy.default)
+            frm = getaddresses([str(h.get("From") or "")])
+            when = None
+            try:
+                when = parsedate_to_datetime(str(h.get("Date"))) if h.get("Date") else None
+            except Exception:
+                pass
+            out.append({
+                "uid": str(d.get("UID") or ""),
+                "date": when.replace(tzinfo=None) if when else None,
+                "from": (frm[0][1] if frm else "").lower(),
+                "from_name": frm[0][0] if frm else "",
+                "to": ", ".join(a for _, a in getaddresses([str(h.get("To") or ""), str(h.get("Cc") or "")]) if a),
+                "subject": str(h.get("Subject") or "").strip(),
+                "attachments": attachment_names(d.get("BODYSTRUCTURE")),
+                "parts": attachment_parts(d.get("BODYSTRUCTURE")),
+                "size": int(d.get("RFC822.SIZE") or 0),
+                "message_id": str(h.get("Message-ID") or "").strip(),
+                "in_reply_to": str(h.get("In-Reply-To") or "").strip(),
+            })
+        if log:
+            log(f"    {decode_utf7(folder)}：{min(k + BATCH, len(uids))} / {len(uids)}")
+    return out
+
+
+# ===================================================================== 摸底汇总
+def subject_pattern(s):
+    """主题的规律：去掉 Re/Fwd、数字换成 #，方便看出同一类信"""
+    s = re.sub(r"^\s*((re|r|fw|fwd|i|inoltra|回复|转发)\s*[:：]\s*)+", "", s or "", flags=re.I)
+    s = re.sub(r"\d+", "#", s)
+    return re.sub(r"\s+", " ", s).strip()[:80]
+
+
+def _ext(name):
+    m = re.search(r"\.([A-Za-z0-9]{1,5})$", name or "")
+    return m.group(1).lower() if m else "?"
+
+
+def summarize(rows):
+    """按 (邮箱, 文件夹, 发件人) 汇总"""
+    g = defaultdict(list)
+    for r in rows:
+        g[(r["mailbox"], r["folder"], r["from"])].append(r)
+    out = []
+    for (mb, folder, frm), rs in g.items():
+        pats = Counter(subject_pattern(r["subject"]) for r in rs)
+        exts = Counter(_ext(a) for r in rs for a in r["attachments"])
+        atts = []
+        for r in rs:
+            for a in r["attachments"]:
+                if a not in atts:
+                    atts.append(a)
+        dates = [r["date"] for r in rs if r["date"]]
+        out.append({"mailbox": mb, "folder": folder, "from": frm,
+                    "from_name": next((r["from_name"] for r in rs if r["from_name"]), ""),
+                    "count": len(rs), "with_att": sum(1 for r in rs if r["attachments"]),
+                    "patterns": " | ".join(f"{p}（{n}）" if n > 1 else p for p, n in pats.most_common(3)),
+                    "exts": " ".join(f"{e}×{n}" for e, n in exts.most_common()),
+                    "examples": " | ".join(atts[:3]),
+                    "first": min(dates) if dates else None, "last": max(dates) if dates else None})
+    out.sort(key=lambda x: (x["mailbox"], x["folder"] != "INBOX", -x["count"]))
+    return out
+
+
+LABELS = ["门店订货清单", "批发商报价", "我们发出的订单", "供应商确认 / 回复", "发票 / DDT", "广告 / 通知", "内部", "其他"]
+
+
+def write_survey(path, rows, summary, days):
+    """摸底结果：汇总（按发件人，最后一列「这是什么」下拉选）+ 全部邮件"""
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment
+    from openpyxl.worksheet.datavalidation import DataValidation
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "汇总"
+    head = ["邮箱", "文件夹", "发件人", "名字", "封数", "带附件", "主题规律（最常见 3 种）", "附件类型", "附件例子",
+            "最早", "最近", "这是什么（请选）"]
+    ws.append(head)
+    for s in summary:
+        ws.append([s["mailbox"], s["folder"], s["from"], s["from_name"], s["count"], s["with_att"], s["patterns"],
+                   s["exts"], s["examples"], s["first"], s["last"], ""])
+    dv = DataValidation(type="list", formula1='"' + ",".join(LABELS) + '"', allow_blank=True)
+    ws.add_data_validation(dv)
+    if summary:
+        dv.add(f"L2:L{len(summary) + 1}")
+    ws2 = wb.create_sheet("全部邮件")
+    ws2.append(["邮箱", "文件夹", "日期", "发件人", "名字", "收件人", "主题", "附件", "大小 KB", "Message-ID", "回复的是"])
+    for r in sorted(rows, key=lambda r: (r["mailbox"], r["folder"], r["date"] or datetime.min), reverse=False):
+        ws2.append([r["mailbox"], r["folder"], r["date"], r["from"], r["from_name"], r["to"], r["subject"],
+                    " | ".join(r["attachments"]), round(r["size"] / 1024), r["message_id"], r["in_reply_to"]])
+    hf = PatternFill("solid", fgColor="1F3864")
+    for sh, widths in ((ws, [26, 10, 30, 22, 7, 8, 60, 18, 50, 16, 16, 20]),
+                       (ws2, [26, 10, 16, 30, 22, 30, 60, 50, 9, 30, 30])):
+        for c, w in zip(sh[1], widths):
+            c.font = Font(bold=True, color="FFFFFF")
+            c.fill = hf
+            c.alignment = Alignment(vertical="center")
+            sh.column_dimensions[c.column_letter].width = w
+        sh.freeze_panes = "A2"
+        sh.auto_filter.ref = sh.dimensions
+        for row in sh.iter_rows(min_row=2):
+            for c in row:
+                if isinstance(c.value, datetime):
+                    c.number_format = "dd/mm/yyyy hh:mm"
+    ws["L1"].fill = PatternFill("solid", fgColor="C55A11")
+    note = wb.create_sheet("说明")
+    for line in (f"最近 {days} 天的邮件，只读了发件人、收件人、主题、日期、附件名，没读正文、没下载附件、没改已读状态。",
+                 "「汇总」每行一个发件人：请在最后一列选「这是什么」，程序按这个写自动分类规则。",
+                 "发给别人之前请先看一遍，确认没有不方便给别人看的内容。"):
+        note.append([line])
+    note.column_dimensions["A"].width = 110
+    wb.save(path)
+    return path
+
+
+def survey(accs, get_password, days=28, log=print, progress=None, cancel=None, factory=None, today=None):
+    """每个邮箱：收件箱 + 已发送，最近 days 天的信头 → (rows, summary, errors)"""
+    since = (today or date.today()) - timedelta(days=days)
+    rows, errors = [], []
+    for i, acc in enumerate(accs):
+        if progress:
+            progress.post_step(i, "running", "", acc["address"])
+            progress.post_progress(100 * i / max(1, len(accs)))
+        if cancel is not None and cancel():
+            break
+        conn = None
+        try:
+            conn = connect(acc, get_password(acc["address"]), factory=factory)
+            n0 = len(rows)
+            for raw, shown, _flags in pick_folders(folders(conn)):
+                label = "INBOX" if raw.upper() == "INBOX" else shown
+                for r in fetch_headers(conn, raw, since, log=log, cancel=cancel):
+                    r["mailbox"], r["folder"] = acc["address"], label
+                    rows.append(r)
+            log(f"  ✔ {acc['address']}：{len(rows) - n0} 封")
+            if progress:
+                progress.post_step(i, "done", str(len(rows) - n0), "")
+        except MailError as e:
+            errors.append(str(e))
+            log(f"  ✘ {e}")
+            if progress:
+                progress.post_step(i, "error", "", str(e))
+        except Exception as e:
+            errors.append(f"{acc['address']}：{e}")
+            log(f"  ✘ {acc['address']}：{e}")
+            if progress:
+                progress.post_step(i, "error", "", str(e))
+        finally:
+            if conn is not None:
+                close(conn)
+    return rows, summarize(rows), errors
+
+
+def _cache_load(path):
+    import json
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    for fo in data.values():
+        for r in (fo.get("rows") or {}).values():
+            if r.get("date"):
+                try:
+                    r["date"] = datetime.fromisoformat(r["date"])
+                except ValueError:
+                    r["date"] = None
+    return data
+
+
+def _cache_save(path, data):
+    import json
+    import os
+    out = {}
+    for name, fo in data.items():
+        out[name] = {"validity": fo.get("validity"),
+                     "rows": {u: dict(r, date=r["date"].isoformat() if isinstance(r.get("date"), datetime) else r.get("date"))
+                              for u, r in (fo.get("rows") or {}).items()}}
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8", newline="") as f:
+        json.dump(out, f, ensure_ascii=False)
+    os.replace(tmp, path)
+
+
+def collect(accs, get_password, days=21, cache_dir=None, log=print, progress=None, cancel=None, factory=None, today=None):
+    """
+    订单跟踪用：每个邮箱 收件箱 + 已发送 最近 days 天的信头（和摸底一样只读）。读过的信记在 cache_dir/<邮箱>.json，
+    下次只向服务器要新来的（按 UID，服务器的 UIDVALIDITY 变了就全部重读）。返回 (rows, errors)
+    """
+    import os
+    since = (today or date.today()) - timedelta(days=days)
+    rows, errors = [], []
+    for i, acc in enumerate(accs):
+        if cancel is not None and cancel():
+            break
+        if progress:
+            progress.post_step(i, "running", "", acc["address"])
+            progress.post_progress(100 * i / max(1, len(accs)))
+        path = os.path.join(cache_dir, re.sub(r"[^\w.@-]+", "_", acc["address"].lower()) + ".json") if cache_dir else None
+        cache = _cache_load(path) if path else {}
+        new_cache, conn, n0 = {}, None, len(rows)
+        try:
+            conn = connect(acc, get_password(acc["address"]), factory=factory)
+            for raw, shown, _flags in pick_folders(folders(conn)):
+                label = "INBOX" if raw.upper() == "INBOX" else shown
+                old = cache.get(label) or {}
+                info = {"cached_validity": old.get("validity")}
+                got = fetch_headers(conn, raw, since, cancel=cancel, known=old.get("rows"), info=info)
+                for r in got:
+                    r["mailbox"], r["folder"], r["folder_raw"] = acc["address"], label, raw
+                rows.extend(got)
+                new_cache[label] = {"validity": info.get("uidvalidity"), "rows": {str(r["uid"]): r for r in got if r.get("uid")}}
+            if path:
+                _cache_save(path, new_cache)
+            log(f"  ✔ {acc['address']}：{len(rows) - n0} 封")
+            if progress:
+                progress.post_step(i, "done", str(len(rows) - n0), "")
+        except MailError as e:
+            errors.append(str(e))
+            log(f"  ✘ {e}")
+            if progress:
+                progress.post_step(i, "error", "", str(e))
+        except Exception as e:
+            errors.append(f"{acc['address']}：{e}")
+            log(f"  ✘ {acc['address']}：{e}")
+            if progress:
+                progress.post_step(i, "error", "", str(e))
+        finally:
+            if conn is not None:
+                close(conn)
+    return rows, errors
+
+
+def _decode_part(raw, encoding):
+    import base64
+    import quopri
+    enc = (encoding or "").upper()
+    if enc == "BASE64":
+        return base64.b64decode(re.sub(rb"\s+", b"", raw) + b"===")
+    if enc == "QUOTED-PRINTABLE":
+        return quopri.decodestring(raw)
+    return raw
+
+
+def fetch_part(conn, folder_raw, uid, section, encoding):
+    """取一封信里的一个附件（BODY.PEEK：服务器不会把信标成已读），返回解码后的字节"""
+    typ, _ = conn.select(_quote(folder_raw), readonly=True)
+    if typ != "OK":
+        raise MailError(f"打不开文件夹 {decode_utf7(folder_raw)}")
+    typ, data = conn.uid("FETCH", str(uid), f"(BODY.PEEK[{section}])")
+    raw = None
+    for item in data or []:
+        if isinstance(item, tuple) and len(item) == 2 and isinstance(item[1], (bytes, bytearray)):
+            raw = bytes(item[1])
+            break
+    if raw is None:
+        raise MailError("服务器没有返回这个附件（信可能已经被删了或挪走了）")
+    return _decode_part(raw, encoding)
+
+
+def body_text(raw, limit=4000):
+    """一封信的原文（字节）→ 正文的纯文字（先 text/plain，没有就把 html 去掉标签），最多 limit 个字"""
+    import email
+    import html as _html
+    from email import policy
+    try:
+        msg = email.message_from_bytes(raw, policy=policy.default)
+    except Exception:
+        return ""
+    plain, htm = None, None
+    for part in msg.walk():
+        if part.is_multipart() or part.get_content_disposition() == "attachment":
+            continue
+        ct = part.get_content_type()
+        try:
+            txt = part.get_content()
+        except Exception:
+            continue
+        if not isinstance(txt, str):
+            continue
+        if ct == "text/plain" and plain is None:
+            plain = txt
+        elif ct == "text/html" and htm is None:
+            htm = txt
+    if plain is None and htm:
+        plain = _html.unescape(re.sub(r"<[^>]+>", " ", re.sub(r"(?is)<(script|style).*?</\1>", " ", htm)))
+    return re.sub(r"[ \t\r\f\v]+", " ", plain or "").strip()[:limit]
+
+
+def fetch_bodies(acc, password, rows, factory=None, max_bytes=200000):
+    """
+    读几封信的正文文字（2026-11-07：发货信没写门店，门店写在正文「Ragione sociale: CASA & TE SAN MARCO」）。
+    只读：EXAMINE + BODY.PEEK（不改已读）；每封最多读 max_bytes 字节（附件太大的只读前面，正文一般在最前面）。
+    rows = 同一个邮箱的信头（要有 folder_raw / uid），返回 {(folder, uid): 正文}
+    """
+    out = {}
+    conn = connect(acc, password, factory=factory)
+    try:
+        by_folder = {}
+        for r in rows:
+            by_folder.setdefault(r.get("folder_raw") or "INBOX", []).append(r)
+        for folder, rs in by_folder.items():
+            typ, _ = conn.select(_quote(folder), readonly=True)
+            if typ != "OK":
+                continue
+            for r in rs:
+                typ, data = conn.uid("FETCH", str(r["uid"]), f"(BODY.PEEK[]<0.{int(max_bytes)}>)")
+                raw = next((bytes(it[1]) for it in data or [] if isinstance(it, tuple) and len(it) == 2
+                            and isinstance(it[1], (bytes, bytearray))), None)
+                if raw:
+                    out[(r.get("folder"), str(r["uid"]))] = body_text(raw)
+    finally:
+        close(conn)
+    return out
+
+
+def download(acc, password, items, dest_dir, factory=None):
+    """
+    items = [{"folder_raw", "uid", "section", "encoding", "name"}]（同一个邮箱）→ 存进 dest_dir，返回 [路径]。只读：EXAMINE + BODY.PEEK
+    """
+    import os
+    os.makedirs(dest_dir, exist_ok=True)
+    conn = connect(acc, password, factory=factory)
+    out = []
+    try:
+        for it in items:
+            data = fetch_part(conn, it["folder_raw"], it["uid"], it["section"], it.get("encoding"))
+            name = re.sub(r'[\\/:*?"<>|\r\n]+', "_", it.get("name") or "allegato").strip() or "allegato"
+            p = os.path.join(dest_dir, name)
+            with open(p, "wb") as f:
+                f.write(data)
+            out.append(p)
+    finally:
+        close(conn)
+    return out
+
+
+ALT_IMAP = {"imap.qiye.aliyun.com": "imap.mxhichina.com", "imap.mxhichina.com": "imap.qiye.aliyun.com"}
+POP_HOSTS = ("pop3.mxhichina.com", "pop.qiye.aliyun.com")
+
+
+def pop_login_ok(address, password, host, factory=None):
+    """用 POP3 只登录一下就退出（和大家邮件软件现在收信的方式一样）：不收信、不删信。True = 密码对"""
+    import poplib
+    try:
+        p = (factory or (lambda h: poplib.POP3_SSL(h, 995, timeout=TIMEOUT)))(host)
+    except OSError:
+        return None                                   # 连不上这个服务器：说明不了密码
+    try:
+        p.user(address)
+        p.pass_(password)
+        return True
+    except poplib.error_proto:
+        return False
+    finally:
+        try:
+            p.quit()
+        except Exception:
+            pass
+
+
+def diagnose_login(acc, password, factory=None, pop_factory=None):
+    """IMAP 登录被拒以后分清原因：("other_host", 地址) 换个服务器地址就能登录 /
+    ("no_imap", None) 密码对（POP3 能登录）但没开 IMAP / ("bad_password", None) POP3 也登录不了"""
+    alt = ALT_IMAP.get(acc["host"].lower())
+    if alt:
+        try:
+            close(connect(dict(acc, host=alt), password, factory=factory))
+            return "other_host", alt
+        except MailError:
+            pass
+    for h in POP_HOSTS:
+        ok = pop_login_ok(acc["address"], password, h, factory=pop_factory)
+        if ok:
+            return "no_imap", None
+        if ok is False:
+            return "bad_password", None
+    return "unknown", None
+
+
+def test_account(acc, password, factory=None):
+    """测试连接：(文件夹数, 收件箱信数)；失败抛 MailError"""
+    conn = connect(acc, password, factory=factory)
+    try:
+        fs = folders(conn)
+        typ, data = conn.select("INBOX", readonly=True)
+        n = int((data or [b"0"])[0] or 0) if typ == "OK" else 0
+        return len(fs), n
+    finally:
+        close(conn)

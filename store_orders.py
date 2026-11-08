@@ -797,7 +797,7 @@ def demand_by_store(db, schede, stores, days_list, reorder_cycle, use_supplier_c
                                    use_supplier_cycles=use_supplier_cycles, round_to_db_pack=not v2, algo=algo,
                                    groups=groups, want_raw=True, cycle_factor=store_cycle_factor(algo, sid))
         d = {}
-        for _, r in df.iterrows():
+        for r in R.records(df):
             code = str(int(r["CodArticolo"]))
             s1 = float(r.get("sales_1", 0) or 0)
             s3 = float(r.get("sales_3", 0) or 0)
@@ -819,6 +819,7 @@ def demand_by_store(db, schede, stores, days_list, reorder_cycle, use_supplier_c
                        "safety": R._val(r, "safety_stock"), "target": R._val(r, "target_stock"),
                        "season": R._val(r, "season_factor"), "weekly": R._val(r, "weekly_26"),
                        "service": R._val(r, "service_level"),
+                       "slow_from": R._val(r, "slow_from"),      # 规则 A：最近卖慢了，原来的加权日均
                        "db_pack": R._val(r, "qtasmallbox"),          # 数据库箱规（和 SCHEDA 每箱件数对照用）
                        "gia_all": [R._val(r, f"Negozio{i}_Giacenza", 0) or 0 for i in range(6)]}   # GIA.0（BMS）~ GIA.5
         return d
@@ -1681,16 +1682,25 @@ def _set_row_cells(xml, values, styles=None):
     return xml
 
 
-FILE_SKIP_HEADS = ("月均", "采购量", "箱数", "需求")     # 程序内部用，不写进给供应商的订单文件
+# 程序内部用，不写进订单文件
+FILE_SKIP_HEADS = ("采购量", "箱数", "需求")
+# 2026-11-07 用户：月均要写进订单文件，表头用意大利文，放在 GIA 后面、ROT.30d 前面
+FILE_RENAME = {"月均": "MEDIA MESE"}
+FILE_AFTER = {"月均": "GIA"}
 
 
 def file_extra(extra, heads):
-    """写进订单文件的附加列：去掉中文名的内部列（月均 / 采购量 / 箱数 / 需求）。返回 (extra, heads)"""
+    """写进订单文件的附加列：去掉内部列（采购量 / 箱数 / 需求），月均改名 MEDIA MESE 挪到 GIA 后面。返回 (extra, heads)"""
     if not extra or not heads:
         return extra, heads
     keep = [i for i, h in enumerate(heads) if h not in FILE_SKIP_HEADS]
+    for h, after in FILE_AFTER.items():
+        if h in heads and after in heads and heads.index(h) in keep:
+            i = heads.index(h)
+            keep.remove(i)
+            keep.insert(keep.index(heads.index(after)) + 1, i)
     out = {sid: {r: ([v[i] for i in keep] if v else v) for r, v in rows.items()} for sid, rows in extra.items()}
-    return out, [heads[i] for i in keep]
+    return out, [FILE_RENAME.get(heads[i], heads[i]) for i in keep]
 
 
 def _write_extra(xml, scheda, rows_vals, headers, row_map):

@@ -13,7 +13,6 @@
 import os
 import re
 import math
-import shutil
 from datetime import datetime, timedelta
 
 # 门店编号 → 名字（和原程序「分货」页一致；0 = 仓库）
@@ -235,7 +234,7 @@ def codes_from_eans(db, eans):
                 if k == 0:
                     raise RuntimeError(f"用条码查商品编号失败（数据库）：{e}") from e
                 continue              # codbarre（多条码表）没有也不要紧
-            for _, x in df.iterrows():
+            for x in records(df):
                 e = _clean_code(x["CodBarre"])
                 if e and e not in out and x["CodArticolo"]:
                     out[e] = str(int(x["CodArticolo"]))
@@ -260,7 +259,7 @@ def supplier_info(db, codes):
                              f"WHERE p.CodArticolo IN ({ph})", db.engine, params=tuple(chunk))
         except Exception:
             return out
-        for _, x in df.iterrows():
+        for x in records(df):
             out.setdefault(str(int(x["CodArticolo"])), (str(x["ArticoloForn"] or "").strip(), str(x["Nome"] or "").strip()))
     return out
 
@@ -516,6 +515,8 @@ def compute_suggestions(db, store_id, product_codes, days_list=None, reorder_cyc
                 return f.result()
             except Exception:
                 return None
+        if factor != 1.0 and float(algo.get("check_days") or 0) > 0:   # 门店周期系数：检查间隔也一起乘
+            algo = dict(algo, check_days=float(algo["check_days"]) * factor)
         result_df = apply_v2(db, store_id, result_df, algo, weekly=got(f_week), revenue=got(f_rev), cycles=cycles)
     if pre is not None:
         pre.shutdown(wait=False)
@@ -540,7 +541,7 @@ def query_weekly_sales(db, store_id, codes, weeks=None):
                f"FROM vendite_list_{int(store_id)} WHERE CodArticolo IN ({ph}) AND Data >= %s "
                f"GROUP BY CodArticolo, wk")
         df = pd.read_sql(sql, db.engine, params=tuple(chunk) + (since,))
-        for _, r in df.iterrows():
+        for r in records(df):
             try:
                 c, wk = int(r["CodArticolo"]), int(r["wk"])
             except (TypeError, ValueError):
@@ -584,7 +585,7 @@ def query_monthly_sales(db, store_id, codes, months=24, today=None):
                f"FROM vendite_list_{int(store_id)} WHERE CodArticolo IN ({ph}) AND Data >= %s "
                f"GROUP BY CodArticolo, YEAR(Data), MONTH(Data)")
         df = pd.read_sql(sql, db.engine, params=tuple(chunk) + (since,))
-        for _, r in df.iterrows():
+        for r in records(df):
             try:
                 c, y, m = str(int(r["CodArticolo"])), int(r["y"]), int(r["m"])
             except (TypeError, ValueError):
@@ -1042,7 +1043,7 @@ def _query_store_revenue(db, store_id, days=91):
                          f"WHERE Data >= %s GROUP BY CodArticolo", db.engine, params=(since,))
     except Exception:
         return None
-    return {int(r["CodArticolo"]): float(r["rev"] or 0) for _, r in df.iterrows() if r["CodArticolo"] is not None}
+    return {int(r["CodArticolo"]): float(r["rev"] or 0) for r in records(df) if r["CodArticolo"] is not None}
 
 
 def apply_v2(db, store_id, result_df, algo, weekly=None, revenue=None, on_order=None, cycles=None):
@@ -1062,9 +1063,9 @@ def apply_v2(db, store_id, result_df, algo, weekly=None, revenue=None, on_order=
     on_order = on_order or {}
     cols = {k: [] for k in ("suggested_order_qty", "decision_text", "priority", "sales_tier", "inventory_days",
                             "daily_rate", "safety_stock", "target_stock", "service_level", "season_factor",
-                            "age_weeks", "weekly_26", "long_daily", "zero_weeks")}
+                            "age_weeks", "weekly_26", "long_daily", "zero_weeks", "slow_from")}
     used = []
-    for i, (_, r) in enumerate(result_df.iterrows()):
+    for i, r in enumerate(records(result_df)):
         c = int(r["CodArticolo"])
         inv = float(r.get("store_inventory", 0) or 0)           # 已经把负数当 0
         tier, _why = F.adjust_tier(tiers.get(c, "C"), weekly.get(c, []), algo)      # 金额定等级，动销兜底
@@ -1072,7 +1073,7 @@ def apply_v2(db, store_id, result_df, algo, weekly=None, revenue=None, on_order=
         if cycles is not None and i < len(cycles) and cycles[i] is not None \
                 and float(cycles[i]) != float(algo.get("review_days", 7)):
             p = dict(algo, review_days=float(cycles[i]))
-        used.append(int(round(float(p.get("review_days", 7)))))
+        used.append(int(round(F.review_used(p))))     # 实际周期：和检查间隔取小的（订货明细「周期」列、调货留货、检查清单都用它）
         a = F.analyze(weekly.get(c, [0.0] * F.WEEKS), inv, tier, p,
                       total_inv=float(r.get("total_inventory", 0) or 0), on_order=float(on_order.get(c, 0) or 0))
         cols["suggested_order_qty"].append(a["qty"])
@@ -1081,6 +1082,7 @@ def apply_v2(db, store_id, result_df, algo, weekly=None, revenue=None, on_order=
         cols["sales_tier"].append(tier)
         cols["inventory_days"].append(a["cover_days"])
         cols["daily_rate"].append(a["daily"])
+        cols["slow_from"].append(a["slow_from"])          # 规则 A：明显卖慢了，原来的加权日均（没用就是 None）
         cols["safety_stock"].append(a["safety"])
         cols["target_stock"].append(a["target"])
         cols["service_level"].append(a["service"])
@@ -1092,9 +1094,17 @@ def apply_v2(db, store_id, result_df, algo, weekly=None, revenue=None, on_order=
         cols["zero_weeks"].append(zw)          # 最近连续几周一件没卖
     for k, v in cols.items():
         result_df[k] = v
-    result_df["reorder_cycle_used"] = used if used else int(algo.get("review_days", 7))
+    result_df["reorder_cycle_used"] = used if used else int(round(F.review_used(algo)))
     result_df["algo"] = "v2"
     return result_df
+
+
+def records(df):
+    """表格每一行变成普通字典（比 df.iterrows() 快十几倍：iterrows 每行要新建一个 Series，
+    几家门店同时算时一直占着 Python，界面会卡）。r["列"] / r.get("列") 照旧能用"""
+    if df is None or not len(df):
+        return []
+    return df.to_dict("records")
 
 
 def _val(row, key, default=None):
@@ -1135,7 +1145,7 @@ def to_rows(result_df, file_rows=None, days_list=None):
         if x.get("code"):
             by_code.setdefault(str(x["code"]), x)
     out = []
-    for _, r in result_df.iterrows():
+    for r in records(result_df):
         code = str(int(r["CodArticolo"])) if _val(r, "CodArticolo") is not None else ""
         fx = by_code.get(code, {})
         pack = _val(r, "qtasmallbox", 0) or 0
@@ -1167,6 +1177,7 @@ def to_rows(result_df, file_rows=None, days_list=None):
             "weekly": _val(r, "weekly_26"),
             "long_daily": _val(r, "long_daily"),
             "zero_weeks": _val(r, "zero_weeks"),
+            "slow_from": _val(r, "slow_from"),
             "season": _val(r, "season_factor"),
             "service": _val(r, "service_level"),
             "safety": _val(r, "safety_stock"),
@@ -1237,12 +1248,8 @@ def write_main_order(rows, root_folder, store_id, from_file=None, prefix="订货
     for f in os.listdir(ordine):
         p = os.path.join(ordine, f)
         if os.path.isfile(p) and f.lower().endswith((".xlsx", ".xls")) and not f.startswith("~$"):
-            os.makedirs(old_dir, exist_ok=True)
-            dst = os.path.join(old_dir, f)
-            if os.path.exists(dst):
-                base, ext = os.path.splitext(f)
-                dst = os.path.join(old_dir, f"{base}_{datetime.now():%Y%m%d_%H%M%S}{ext}")
-            shutil.move(p, dst)
+            import file_inbox as FI
+            FI.archive(p, old_dir)                    # 一模一样的旧订单不多存一份
     name = f"{prefix}_{STORES.get(store_id, store_id)}_{datetime.now():%Y%m%d_%H%M}.xlsx"
     path = os.path.join(ordine, name)
     wb = Workbook()
@@ -1355,7 +1362,7 @@ def stock_of(df, days_list):
     out = {}
     if df is None or not len(df):
         return out
-    for _, r in df.iterrows():
+    for r in records(df):
         if _val(r, "CodArticolo") is None:
             continue
         code = str(int(r["CodArticolo"]))
@@ -1453,7 +1460,7 @@ def stock_for_eans(db, store_id, eans, days_list=None, reorder_cycle=30, algo=No
     st = stock_of(df, days_list)
     names = {}
     if df is not None and len(df):
-        for _, r in df.iterrows():
+        for r in records(df):
             if _val(r, "CodArticolo") is not None:
                 names[str(int(r["CodArticolo"]))] = str(_val(r, "Descrizione", "") or "").strip()
     out = {}
@@ -1556,6 +1563,19 @@ def reason_text(inv, daily, cycle, sugg, target=None, in_db=True):
     if cycle > 0:
         return tr("库存够卖 {0:.0f} 天{1}，周期 {2:g} 天约卖 {3:.0f} 件 → 订 {4:g} 件", days, neg, cycle, daily * cycle, sugg)
     return tr("库存够卖 {0:.0f} 天{1} → 订 {2:g} 件", days, neg, sugg)
+
+def slow_line(x):
+    """规则 A 的说明（最近 4 周明显卖慢了，按最近 4 周算）；没用到 → None"""
+    from i18n import tr
+    sf = x.get("slow_from") if x else None
+    try:
+        if sf and float(sf) > 0:
+            return tr("最近 4 周卖得明显慢了：原来每天约 {0:.1f} 件，最近只有 {1:.1f} 件，按最近 4 周的速度算",
+                      float(sf), float(x.get("daily") or 0))
+    except (TypeError, ValueError):
+        pass
+    return None
+
 
 def plain_reason(inv, daily, cycle, sugg, boxes=None, target=None, in_db=True, transfer=None, pack=None):
     """

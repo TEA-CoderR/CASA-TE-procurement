@@ -4,11 +4,11 @@ import os
 import file_inbox as FI
 
 
-def _mk(folder, name, text="x"):
+def _mk(folder, name, text=None):
     os.makedirs(folder, exist_ok=True)
     p = os.path.join(folder, name)
     with open(p, "w") as f:
-        f.write(text)
+        f.write(name if text is None else text)       # 默认内容 = 文件名（不同文件内容不同；一样的旧文件只留一份）
     return p
 
 
@@ -97,3 +97,54 @@ def test_sync_shared_prices(tmp_path):
     assert open(os.path.join(store, "MEGA.xlsx")).read() == "v2 nuovo"
     assert sorted(FI.excel_files(store)) == ["MEGA.xlsx", "缺失报告.xlsx"]
     assert FI.sync_shared_prices(str(tmp_path / "nope"), store, rec) == ([], [])
+
+
+def test_old_folder_keeps_one_copy_of_identical_files(tmp_path):
+    """2026-11-07 用户：_旧文件 里很多一模一样的文件 → 一样的内容只留一份"""
+    import time
+    folder = tmp_path / "2 供应商报价"
+    old = folder / "_旧文件"
+    old.mkdir(parents=True)
+
+    def put(p, text):
+        p.write_text(text)
+    # 以前留下的重复：同名 + 加了时间后缀的，内容一样
+    put(old / "formattato.xlsx", "A")
+    put(old / "formattato_20261107_154855.xlsx", "A")
+    put(old / "Listino.xlsx", "B")
+    put(old / "Listino_20261107_154704.xlsx", "B2")          # 内容不一样：两份都留
+    gone = FI.dedupe(str(old))
+    assert gone == ["formattato_20261107_154855.xlsx"]
+    assert sorted(os.listdir(old)) == ["Listino.xlsx", "Listino_20261107_154704.xlsx", "formattato.xlsx"]
+    # 再挪一份一模一样的进去：不多存
+    p = folder / "formattato.xlsx"
+    put(p, "A")
+    assert FI.archive(str(p), str(old)) == str(old / "formattato.xlsx")
+    assert not p.exists() and len(os.listdir(old)) == 3
+    # 内容不一样的照样加时间留着
+    put(p, "A-new")
+    time.sleep(0.01)
+    FI.archive(str(p), str(old))
+    assert len(os.listdir(old)) == 4
+    # 拖进来一个和现在那份一模一样的文件：不复制、不往旧文件夹放
+    put(folder / "Meloni.xlsx", "M")
+    src = tmp_path / "Meloni.xlsx"
+    put(src, "M")
+    dst, moved = FI._copy_in(str(src), str(folder))
+    assert moved is None and len(os.listdir(old)) == 4
+
+
+def test_supplier_chosen_on_drop_replaces_same_supplier(tmp_path):
+    """拖入报价时选好供应商：同一家的旧文件被替换，名称记下来，起订规则的名称在下拉里"""
+    import supplier_names as SN
+    st = {"rules": [{"name": "CASH & CARRY X", "keyword": "ccx"}], "supplier_names": {"formattato_1.xlsx": "MEGA CASH"}}
+    existing = ["formattato_1.xlsx", "Listino_01.xlsx"]
+    assert SN.recognized("formattato_1.xlsx", st) and not SN.recognized("Listino_01.xlsx", st)
+    opts = SN.choices(st, existing)
+    assert "MEGA CASH" in opts and "CASH & CARRY X" in opts and "Listino_01" not in opts
+    labels = SN.labels(existing, st)
+    assert SN.file_for("mega cash", labels) == "formattato_1.xlsx"
+    assert SN.file_for("MELONI", labels) is None
+    assert SN.apply_names(st, [("formattato_2.xlsx", "formattato_1.xlsx"), ("Listino_02.xlsx", None)],
+                          {"formattato_2.xlsx": "MEGA CASH", "Listino_02.xlsx": "MELONI"})
+    assert st["supplier_names"] == {"formattato_2.xlsx": "MEGA CASH", "Listino_02.xlsx": "MELONI"}

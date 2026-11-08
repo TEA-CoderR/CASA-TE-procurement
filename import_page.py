@@ -428,11 +428,5 @@ class ImportPage:
             return
         self.steps.set_state(3, "done", os.path.basename(p))
         self.win.show_toast(tr("已导出：{0}", os.path.basename(p)))
-        box = QMessageBox(self.win)
-        box.setWindowTitle(tr("导出报告"))
-        box.setText(tr("已导出：\n{0}", p))
-        ob = box.addButton(tr("打开文件"), QMessageBox.AcceptRole)
-        box.addButton(tr("关闭"), QMessageBox.RejectRole)
-        box.exec()
-        if box.clickedButton() is ob:
-            open_path(p, self.win)
+        from erp_widgets import open_file                      # 导出完直接打开（2026-11-07 用户）
+        open_file(self.win, p, tr("导出报告"))

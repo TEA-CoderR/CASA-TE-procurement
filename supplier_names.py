@@ -75,3 +75,54 @@ def carry_over(settings, done, old_labels):
                 names.pop(old, None)
                 changed = True
     return changed
+
+
+# ---------------------------------------------------------------------
+# 拖入报价时先选好供应商（2026-11-07 用户：程序常常认不出是哪家，起订规则也对不上文件 → 放进去的时候就选好）
+# ---------------------------------------------------------------------
+def recognized(header, settings):
+    """程序认得出这个文件是哪家（用户起过名字 / 起订规则关键词 / 常见批发商名字），不是只拿文件名凑数"""
+    return label_of(header, settings) != stem(header)
+
+
+def choices(settings, existing=()):
+    """下拉框里的供应商名称：现在报价文件的名称 + 起订规则的供应商名称 + 常见批发商，去重、按字母排"""
+    seen, out = set(), []
+    names = [label_of(h, settings) for h in existing if recognized(h, settings)]
+    names += [str(r.get("name") or "").strip() for r in (settings or {}).get("rules") or []]
+    names += [nm for _, nm in KNOWN]
+    for nm in names:
+        k = nm.casefold()
+        if nm and k not in seen:
+            seen.add(k)
+            out.append(nm)
+    return sorted(out, key=str.casefold)
+
+
+def file_for(name, labels, skip=()):
+    """现在的报价里名称是 name 的文件（替换它）；没有返回 None"""
+    k = str(name or "").strip().casefold()
+    if not k:
+        return None
+    for h, lb in (labels or {}).items():
+        if h not in skip and str(lb or "").strip().casefold() == k:
+            return h
+    return None
+
+
+def apply_names(settings, done, picked):
+    """
+    放好以后记名称：done = [(新文件名, 被替换的旧文件名或 None)]，picked = {新文件名: 选的供应商名称}。
+    名称和文件名（去掉扩展名）一样的不用记。返回 settings 有没有改动
+    """
+    names = settings.setdefault("supplier_names", {})
+    changed = False
+    for new, old in done:
+        if old and old != new and old in names:
+            names.pop(old, None)
+            changed = True
+        nm = str(picked.get(new) or "").strip()
+        if nm and nm != stem(new) and names.get(new) != nm:
+            names[new] = nm
+            changed = True
+    return changed

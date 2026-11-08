@@ -33,17 +33,19 @@ class _Sig(QObject):
 
 
 def STATUS_LABELS():
-    return {"ordered": tr("已下单"), "confirmed": tr("已确认"), "partial": tr("部分到货"), "arrived": tr("已到货"),
+    return {"ordered": tr("已下单"), "confirmed": tr("已确认"), "shipped": tr("已发货"), "partial": tr("部分到货"),
+            "arrived": tr("已到货"),
             "stuck": tr("卡住了"), "cancel": tr("已取消"), "deter": "DETER", "draft": tr("待登记")}
 
 
-STATUS_TOKEN = {"ordered": "text", "confirmed": "accent", "partial": "warn", "arrived": "ok", "stuck": "err",
+STATUS_TOKEN = {"ordered": "text", "confirmed": "accent", "shipped": "accent", "partial": "warn", "arrived": "ok", "stuck": "err",
                 "cancel": "faint", "deter": "faint", "draft": "warn"}
 
 
 def VIEWS():
     return [("all", tr("全部")), ("draft", tr("待登记")), ("open", tr("未完成")), ("pending", tr("待确认")), ("overdue", tr("已超期")),
-            ("stuck", tr("卡住了")), ("partial", tr("部分到货")), ("arrived", tr("已到货")), ("deter", "DETER"),
+            ("shipped", tr("已发货")), ("stuck", tr("卡住了")), ("partial", tr("部分到货")), ("arrived", tr("已到货")),
+            ("deter", "DETER"),
             ("cancel", tr("已取消"))]
 
 
@@ -63,12 +65,12 @@ def FIELD_LABELS():
     return {"date": tr("下单日期"), "store": tr("门店"), "supplier": tr("供应商"), "buyer": tr("谁下的"),
             "amount": tr("金额"), "confirmed": tr("确认"), "arrived": tr("到货"), "expected": tr("预计到货"),
             "state": tr("情况"), "kind": tr("类型"), "note": tr("备注"), "ref": tr("Excel 位置"), "origin": tr("来源"),
-            "draft": tr("待登记"), "colli": tr("箱数"), "file": tr("订单文件")}
+            "draft": tr("待登记"), "colli": tr("箱数"), "file": tr("订单文件"), "shipped": tr("发货"), "mails": tr("邮件")}
 
 
 def ORIGINS():
     return {"store_orders": tr("总仓采购"), "store_pdv": tr("门店采购"), "wholesale": tr("DETERSIVO采购"),
-            "app": tr("程序"), "excel": "Excel"}
+            "app": tr("程序"), "excel": "Excel", "mail": tr("邮件")}
 
 
 def _d(v):
@@ -107,7 +109,16 @@ def _fmt_val(k, v):
         return tr("是") if v else tr("已确认下单")
     if k == "file":
         return os.path.basename(str(v))
+    if k == "mails":
+        return tr("{0} 封", len(v)) if isinstance(v, list) else str(v)
     return str(v)
+
+
+def mail_lines(mails):
+    """订单上记的邮件进展 → 一行一封「日期 · 下单 / 确认 / 发货 · 主题」"""
+    kinds = {"order": tr("下单"), "confirm": tr("确认"), "ship": tr("发货"), "invoice": tr("发票")}
+    return [f"{str(m.get('d') or '')[:10]} · {kinds.get(m.get('k'), m.get('k') or '')} · {m.get('s') or ''}"
+            for m in (mails or [])]
 
 
 def history_lines(evs):
@@ -115,7 +126,8 @@ def history_lines(evs):
     lab = FIELD_LABELS()
     out = []
     for e in reversed(evs or []):
-        who = f"{_when(e.get('t'))} · {e.get('by') or '?'}" + (" · Excel" if e.get("src") == "excel" else "")
+        who = f"{_when(e.get('t'))} · {e.get('by') or '?'}" + (" · Excel" if e.get("src") == "excel" else
+                                                              " · " + tr("邮件") if e.get("src") == "mail" else "")
         if e.get("op") == "del":
             out.append(f"{who} · {tr('删除')}")
             continue
@@ -418,6 +430,11 @@ class TrackingPage:
         self.btn_sync.setToolTip(tr("Excel 存过就会自动同步（打开这页时、开着时每 20 秒看一次），一般不用点；想马上同步再点"))
         self.btn_sync.clicked.connect(lambda: self.sync_excel(manual=True))
         head.addWidget(self.btn_sync)
+        self.btn_mail = QPushButton(tr("✉ 邮件核对"))
+        self.btn_mail.setToolTip(tr("读所有邮箱最近 21 天的信头（只读，不读正文、不改已读），看哪些单发了订单 / 供应商确认了 / 发货了，"
+                                    "还有重复的待登记、发了订单信但跟踪里没有的。列出来让你勾，确认后才改"))
+        self.btn_mail.clicked.connect(self.check_mail)
+        head.addWidget(self.btn_mail)
         self.btn_new = QPushButton(tr("+ 新订单"))
         self.btn_new.setObjectName("Primary")
         self.btn_new.clicked.connect(self.new_order)
@@ -503,7 +520,9 @@ class TrackingPage:
         self.badge_timer.setInterval(60000)
         self.badge_timer.timeout.connect(self.check_badge)
         self.badge_timer.start()
-        QTimer.singleShot(1500, self.check_badge)
+        # 第一次数待登记 / 同步 Excel 放到打开程序 30 秒后：它要读共享文件夹的记录和整张 PIANO 表，
+        # 和启动抢时间会让界面卡几秒（11-06 hang.log）。点进订单跟踪页时照样马上读
+        QTimer.singleShot(30000, self.check_badge)
         return w
 
     def _build_orders(self):
@@ -572,6 +591,7 @@ class TrackingPage:
                           default_hidden=HIDDEN)
         self.ctl.sort_col, self.ctl.sort_desc = 0, True              # 默认：新的单在上
         t.cellDoubleClicked.connect(self._double)
+        t.cellClicked.connect(self._clicked)
         t.setContextMenuPolicy(Qt.CustomContextMenu)
         t.customContextMenuRequested.connect(self._row_menu)
         v.addWidget(t, 1)
@@ -580,7 +600,7 @@ class TrackingPage:
         self.total.setObjectName("Faint")
         foot.addWidget(self.total)
         foot.addStretch()
-        hint = QLabel(tr("双击改 · 右键快速确认 / 到货"))
+        hint = QLabel(tr("点「✉ 待登记」发订单邮件 · 双击改"))
         hint.setObjectName("Faint")
         foot.addWidget(hint)
         v.addLayout(foot)
@@ -950,6 +970,26 @@ class TrackingPage:
             return
         self.render()
 
+    def _clicked(self, k, c):
+        """点状态格里的「✉ 待登记」→ 发订单邮件"""
+        if COLS[c][0] != 5:
+            return
+        i = self.ctl.row_at(k)
+        if i is None or self.rows[i]["status"] != "draft":
+            return
+        self.send_order(self.rows[i])
+
+    def send_order(self, r):
+        from send_order_dialog import open_send
+
+        def done(info):
+            self.refresh()
+            msg = tr("✓ 已发送给 {0} · {1} 张单已下单", ", ".join(info["to"]), info["n"])
+            if not info.get("saved"):
+                msg += tr("（邮箱「已发送」里没放进去，信是发出去了的）")
+            self.win.show_toast(msg, 5000)
+        open_send(self.win, self.st, self.settings, r["id"], on_sent=done)
+
     def _double(self, k, c):
         i = self.ctl.row_at(k)
         if i is None:
@@ -1023,8 +1063,22 @@ class TrackingPage:
             f = st_it.font()
             f.setBold(r["status"] in ("stuck", "partial", "draft") or r["pending"])
             st_it.setFont(f)
+            tips = []
             if r["pending"]:
-                st_it.setToolTip(tr("下单 {0} 天了还没确认", r["days"]))
+                tips.append(tr("下单 {0} 天了还没确认", r["days"]))
+            if r.get("shipped"):
+                tips.append(tr("发货日期 {0}", _d(r["shipped"])))
+            if r.get("mails"):
+                tips.append(tr("邮件：") + "\n" + "\n".join(mail_lines(r["mails"])))
+            if r["status"] == "draft":                  # 2026-11-07：点「待登记」发订单邮件
+                st_it.setText("✉ " + st_it.text())
+                tips.insert(0, tr("点一下：发订单邮件给供应商，发完自动变「已下单」"))
+            elif (self.st.orders.get(r["id"]) or {}).get("sent"):
+                sent = self.st.orders[r["id"]]["sent"]
+                tips.insert(0, tr("{0} 用邮件发给 {1}", str(sent.get("at", ""))[:16].replace("T", " "),
+                                  ", ".join(sent.get("to") or [])))
+            if tips:
+                st_it.setToolTip("\n".join(tips))
         if r["overdue"]:
             for fid in (7, 9):
                 it = self.t.item(k, fids.index(fid))
@@ -1108,8 +1162,11 @@ class TrackingPage:
         suffix = tr("（{0} 张）", n) if n > 1 else ""
         drafts = [r for r in sel if r["status"] == "draft"]
         a_place = a_file = None
-        if drafts:                                   # 待登记的：发给供应商以后确认
-            a_place = m.addAction(tr("确认已下单（今天）") + (tr("（{0} 张）", len(drafts)) if len(drafts) > 1 else ""))
+        if drafts:                                   # 待登记的：发订单邮件（和点状态格一样）
+            a_place = m.addAction(tr("✉ 发送订单…"))
+            a_place.setEnabled(len(drafts) == 1)
+            if len(drafts) > 1:
+                a_place.setToolTip(tr("一次选一张待登记"))
             f = a_place.font()
             f.setBold(True)
             a_place.setFont(f)
@@ -1130,14 +1187,10 @@ class TrackingPage:
                 a_nofile = m.addAction(tr("没有订单文件"))
                 a_nofile.setToolTip(tr("这张单不算在途（例如电话订的、没有明细）"))
             m.addSeparator()
-        a_conf = m.addAction(tr("已确认（今天）") + suffix)
-        a_arr = m.addAction(tr("已到货（今天）") + suffix)
-        a_part = m.addAction(tr("部分到货…") + suffix)
-        a_stuck = m.addAction(tr("卡住了…") + suffix)
-        a_ok = m.addAction(tr("恢复正常") + suffix)
-        a_ok.setToolTip(tr("去掉「卡住了 / 部分到货 / 已取消」"))
-        m.addSeparator()
-        a_edit = m.addAction(tr("编辑…"))
+        # 2026-11-07 用户：下单 / 确认 / 到货改成全自动（发订单邮件 + 邮件核对），手动的不放在主界面，
+        # 特殊情况双击订单在订单窗口里改
+        a_conf = a_arr = a_part = a_stuck = a_ok = None
+        a_edit = m.addAction(tr("编辑…（手动改确认 / 到货）"))
         a_edit.setEnabled(n == 1)
         a_cancel = m.addAction(tr("取消订单") + suffix)
         a_del = m.addAction(tr("删除") + suffix)
@@ -1146,8 +1199,7 @@ class TrackingPage:
             return
         ids = [r["id"] for r in sel]
         if a_place is not None and got == a_place:
-            OT.confirm_drafts(self.st, [r["id"] for r in drafts])
-            self.refresh()
+            self.send_order(drafts[0])
             return
         if a_file is not None and got == a_file:
             from erp_widgets import open_file
@@ -1637,6 +1689,10 @@ class TrackingPage:
             self.win.show_toast(msg)
         self.load()
 
+    def check_mail(self):
+        import mail_track_dialog
+        mail_track_dialog.run(self.win, self.settings, self.ui, self)
+
     def export(self):
         if not self.rows:
             return
@@ -1649,6 +1705,9 @@ class TrackingPage:
             self.win.show_toast(tr("已导出：{0}", os.path.basename(p)))
         except Exception as e:
             QMessageBox.warning(self.win, tr("导出 Excel"), tr("导出失败：{0}", e))
+            return
+        from erp_widgets import open_file
+        open_file(self.win, p, tr("导出 Excel"))
 
     def badge(self, n):
         """侧边栏「采购订单跟踪」旁边的小红点数字 = 待登记的单数"""
@@ -1719,11 +1778,8 @@ class TrackingPage:
             return
         self.win.log(tr("✔ 导出 PIANO 表：{0}（{1}）", out, "、".join(f"{n} {k}" for n, k in done)))
         self.win.show_toast(tr("已导出：{0}", os.path.basename(out)))
-        try:
-            from main import open_path
-            open_path(os.path.dirname(out))
-        except Exception:
-            pass
+        from erp_widgets import open_file                      # 打开文件本身（以前打开文件夹）
+        open_file(self.win, out, tr("导出成 PIANO 表"))
 
     def restyle(self):
         if hasattr(self, "panel"):
@@ -1826,11 +1882,14 @@ class OrderDialog(QDialog):
         lab(tr("金额（不含税）"), 2, 3)
         g.addWidget(self.e_amt, 2, 4)
         self.e_conf = _OptDate(o.get("confirmed"), tr("已确认"))
+        self.e_ship = _OptDate(o.get("shipped"), tr("已发货"))
         self.e_arr = _OptDate(o.get("arrived"), tr("已到货"))
         lab(tr("确认"), 3, 0)
         g.addWidget(self.e_conf, 3, 1)
-        lab(tr("到货"), 3, 3)
-        g.addWidget(self.e_arr, 3, 4)
+        lab(tr("发货"), 3, 3)
+        g.addWidget(self.e_ship, 3, 4)
+        lab(tr("到货"), 4, 0)
+        g.addWidget(self.e_arr, 4, 1)
         self.e_exp = _OptDate(o.get("expected"), tr("手动"))
         auto = row["expected"] if row and not row.get("expected_manual") else None
         self.e_exp.setToolTip(tr("不勾 = 自动（{0}）", _d(auto)) if auto else tr("不勾 = 按这家供应商以往到货的天数推算"))
@@ -1838,22 +1897,22 @@ class OrderDialog(QDialog):
         for k, n in ((None, tr("正常")), ("partial", tr("部分到货")), ("stuck", tr("卡住了")), ("cancel", tr("已取消"))):
             self.e_state.addItem(n, k)
         self.e_state.setCurrentIndex(max(0, self.e_state.findData(o.get("state"))))
-        lab(tr("预计到货"), 4, 0)
-        g.addWidget(self.e_exp, 4, 1)
-        lab(tr("情况"), 4, 3)
-        g.addWidget(self.e_state, 4, 4)
+        lab(tr("预计到货"), 4, 3)
+        g.addWidget(self.e_exp, 4, 4)
+        lab(tr("情况"), 5, 0)
+        g.addWidget(self.e_state, 5, 1)
         self.e_draft = None
         if o.get("draft"):
             self.e_draft = QCheckBox(tr("待登记（还没发给供应商）"))
             self.e_draft.setChecked(True)
             self.e_draft.setToolTip(tr("发给供应商以后去掉勾，就算正式下单（下单日期按上面的日期）"))
-            g.addWidget(self.e_draft, 7, 1, 1, 4)
+            g.addWidget(self.e_draft, 8, 1, 1, 4)
         self.e_kind = QCheckBox(tr("DETER（洗涤批发商单，不跟踪确认 / 到货）"))
         self.e_kind.setChecked(o.get("kind") == "deter")
-        g.addWidget(self.e_kind, 5, 1, 1, 4)
+        g.addWidget(self.e_kind, 6, 1, 1, 4)
         self.e_note = QLineEdit(str(o.get("note") or ""))
-        lab(tr("备注"), 6, 0)
-        g.addWidget(self.e_note, 6, 1, 1, 4)
+        lab(tr("备注"), 7, 0)
+        g.addWidget(self.e_note, 7, 1, 1, 4)
         v.addLayout(g)
         if hist:
             hl = QLabel(tr("修改记录"))
@@ -1901,7 +1960,8 @@ class OrderDialog(QDialog):
         vals = {"date": self.e_date.date().toString("yyyy-MM-dd"), "store": self.e_store.currentData(),
                 "supplier": sup, "buyer": self.e_buy.currentText().strip() or None,
                 "amount": None if (amt == 0 and old_amt in (None, "")) else amt,
-                "confirmed": self.e_conf.value(), "arrived": self.e_arr.value(), "expected": self.e_exp.value(),
+                "confirmed": self.e_conf.value(), "shipped": self.e_ship.value(), "arrived": self.e_arr.value(),
+                "expected": self.e_exp.value(),
                 "state": self.e_state.currentData(), "kind": "deter" if self.e_kind.isChecked() else None,
                 "note": self.e_note.text().strip() or None}
         if self.e_draft is not None:

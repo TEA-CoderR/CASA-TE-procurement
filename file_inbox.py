@@ -32,9 +32,94 @@ def excel_files(folder):
     return sorted(f for f in os.listdir(folder) if os.path.isfile(os.path.join(folder, f)) and is_excel(f))
 
 
+# ---------------------------------------------------------------------
+# 旧文件夹防重复（2026-11-07 用户：_旧文件 里很多一模一样的文件）
+# 同样的内容只留一份：先比大小，大小一样再比内容（sha1）。只在 _旧文件 / _旧订单 这类旧文件夹里用。
+# ---------------------------------------------------------------------
+_STAMP = re.compile(r"_\d{8}_\d{6}$")
+
+
+def _digest(path):
+    import hashlib
+    h = hashlib.sha1()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def same_content(a, b):
+    """两个文件内容一模一样（大小不同直接算不一样，不读文件）"""
+    try:
+        if os.path.getsize(a) != os.path.getsize(b):
+            return False
+        return _digest(a) == _digest(b)
+    except OSError:
+        return False
+
+
+def find_same(path, folder):
+    """folder 里和 path 内容一样的文件（没有返回 None）"""
+    if not os.path.isdir(folder):
+        return None
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        return None
+    for f in sorted(os.listdir(folder)):
+        q = os.path.join(folder, f)
+        if os.path.isfile(q) and os.path.abspath(q) != os.path.abspath(path) and os.path.getsize(q) == size \
+                and same_content(path, q):
+            return q
+    return None
+
+
+def dedupe(folder):
+    """
+    folder 里内容一模一样的文件只留一份（留没有「_日期_时间」后缀的那个，都有就留最早的），
+    其余删掉。返回删掉的文件名列表。只看这一层，不进子文件夹。
+    """
+    if not os.path.isdir(folder):
+        return []
+    by_size = {}
+    for f in os.listdir(folder):
+        q = os.path.join(folder, f)
+        if os.path.isfile(q) and not f.startswith("~$"):
+            by_size.setdefault(os.path.getsize(q), []).append(q)
+    removed = []
+    for group in by_size.values():
+        if len(group) < 2:
+            continue
+        by_hash = {}
+        for q in group:
+            try:
+                by_hash.setdefault(_digest(q), []).append(q)
+            except OSError:
+                pass
+        for same in by_hash.values():
+            if len(same) < 2:
+                continue
+            same.sort(key=lambda q: (bool(_STAMP.search(os.path.splitext(os.path.basename(q))[0])),
+                                     os.path.getmtime(q), os.path.basename(q)))
+            for q in same[1:]:
+                try:
+                    os.remove(q)
+                    removed.append(os.path.basename(q))
+                except OSError:
+                    pass
+    return removed
+
+
 def archive(path, old_dir):
-    """把文件挪进 old_dir（重名时文件名后加时间），返回新路径"""
+    """
+    把文件挪进 old_dir（重名时文件名后加时间），返回新路径。
+    旧文件夹里已经有一模一样的文件 → 不再多存一份（这个文件直接拿走），返回已有的那份。
+    """
     os.makedirs(old_dir, exist_ok=True)
+    dup = find_same(path, old_dir)
+    if dup:
+        os.remove(path)
+        return dup
     name = os.path.basename(path)
     dst = os.path.join(old_dir, name)
     if os.path.exists(dst):
@@ -51,6 +136,8 @@ def _copy_in(src, folder):
     dst = os.path.join(folder, os.path.basename(src))
     if os.path.abspath(src) == os.path.abspath(dst):
         return dst, None                       # 本来就在这里
+    if os.path.exists(dst) and same_content(src, dst):
+        return dst, None                       # 一模一样的文件已经在了：不复制、不往旧文件夹里多放一份
     moved = archive(dst, old_dir) if os.path.exists(dst) else None
     shutil.copy2(src, dst)
     return dst, moved

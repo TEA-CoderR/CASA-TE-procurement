@@ -143,15 +143,26 @@ def load_settings():
         base.update(r)
         rules.append(base)
     data["rules"] = rules
-    if new_defaults:
+    moved = False
+    try:                                  # 密码不放 settings.json：旧版本留在文件里的搬进本机保管处（credentials.py）
+        import credentials
+        moved = credentials.load_into(data)
+    except Exception:
+        pass
+    if new_defaults or moved:
         save_settings(data)
     return data
 
 
 def save_settings(data):
     try:
+        import credentials                # 密码存进本机保管处，文件里不写
+        out = credentials.strip_for_file(data)
+    except Exception:
+        out = data
+    try:
         with open(SETTINGS_PATH, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+            json.dump(out, f, ensure_ascii=False, indent=2)
         return True
     except OSError:
         return False
