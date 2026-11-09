@@ -101,6 +101,45 @@ def change(old, new):
     return (f"{a} → {b} {ub}" if ua == ub else f"{a} {ua} → {b} {ub}"), True
 
 
+# 大写一串后面跟小写（DELICATOeSOFF、MLx2、SAPOREdiALOE）在大小写交界拆开；Trig 这种首字母大写的不拆
+_TOK = re.compile(r"[A-Z]{2,}(?=[a-z])|[A-Z]?[a-z]+|[A-Z]+|\d+(?:[.,]\d+)?|[^A-Za-z\d]+")
+_SAME_UNIT = {"ML": "~V", "L": "~V", "LT": "~V", "CL": "~V", "LITRI": "~V", "GR": "~W", "G": "~W", "KG": "~W"}
+
+
+def _tok_key(t):
+    if t[0].isdigit():
+        try:
+            return float(t.replace(",", "."))
+        except ValueError:
+            return t
+    u = t.upper()
+    return _SAME_UNIT.get(u, u)
+
+
+def diff_tokens(name, other):
+    """
+    名字拆成一段段，标出另一个名字里有没有（用户 11-09：相同的一个颜色、不同的另一个颜色，一眼看出差别）。
+    返回 [(文字, 0 = 一样 / 1 = 不一样 / None = 标点空格)]。
+    「一样」：同一个词或数；缩写也算（DELIC = DELICATO、AMMORB. = AMMORBIDENTE，前 3 个字母以上是开头）；
+    粘在一起的（DELICATOeSOFF）按大小写拆开再比；ML / L / LT 算同一种写法（数不一样才算不一样）
+    """
+    toks = _TOK.findall(str(name or ""))
+    ot = [_tok_key(t) for t in _TOK.findall(str(other or "")) if t[0].isalnum()]
+    nums = {k for k in ot if isinstance(k, float)}
+    wset = {k for k in ot if isinstance(k, str)}
+
+    def same(t):
+        k = _tok_key(t)
+        if isinstance(k, float):
+            return k in nums
+        if len(k) == 1 or k in wset:
+            return True
+        if len(k) >= 3 and any(len(w) >= 3 and (w.startswith(k) or k.startswith(w)) for w in wset):
+            return True
+        return False
+    return [(t, (0 if same(t) else 1) if t[0].isalnum() else None) for t in toks]
+
+
 class _Idf:
     def __init__(self, names):
         self.n = len(names) + 1

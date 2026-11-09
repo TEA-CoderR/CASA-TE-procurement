@@ -3350,4 +3350,6 @@ TRANSLATIONS = {
     '蓝字 = 换了规格（40 → 50 lav）': ('Blue = size changed (40 → 50 washes)', 'Blu = formato cambiato (40 → 50 lavaggi)'),
     '搜到 {0} 个': ('{0} found', '{0} trovati'),
     '候选（{0}）': ('Candidates ({0})', 'Candidati ({0})'),
+    '红字 = 新商品名字里没有的（多半就是差别：规格、款式、香型）': ("Red = not in the new item's name (usually the difference: size, variant, scent)", 'Rosso = non presente nel nome del nuovo articolo (di solito la differenza: formato, variante, profumo)'),
+    '蓝字 = 旧商品名字里没有的；黑字 = 两个名字一样的部分': ("Blue = not in the old item's name; black = the same in both names", 'Blu = non presente nel nome del vecchio articolo; nero = uguale nei due nomi'),
 }

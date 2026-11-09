@@ -260,3 +260,12 @@ def test_size_change_text_and_lav_written_as_L():
     assert GR.change("X 750 ML", "Y 750ML") == ("750 ml", False)
     assert GR.sizes("LYSOFORM LAV.2,43L 54L. COLOR") == [(2430.0, "ml"), (54.0, "lav")]
     assert GR.sizes("LYSOFORM CASA 1100 MLx2 PZ") == [(1100.0, "ml")]
+
+
+def test_name_diff_marks_only_what_changed():
+    def marked(a, b):
+        return [t for t, k in GR.diff_tokens(a, b) if k == 1]
+    assert marked("COCCOLINO DILUITO 40 LAV.DELICATOeSOFF.", "COCCOLINO DILUITO 50 LAV.DELICATO&SOFF.") == ["40"]
+    assert marked("SVELTO PIATTI 980 ML ZENZERO&LIMONE", "SVELTO PIATTI 1,03L ZENZERO & LIMONE") == ["980"]
+    assert marked("LYSOFORM DETER.IGIENIZ.40 LAV.CLASSICO", "LYSOFORM DETER.IGIENIZ.36 LAV.COLORI BR.") == ["40", "CLASSICO"]
+    assert "".join(t for t, _k in GR.diff_tokens("A 40 LAV.X", "B")) == "A 40 LAV.X"

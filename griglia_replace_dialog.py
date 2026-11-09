@@ -61,6 +61,66 @@ def _pill(p, rect, text, tok, bold=True):
     p.restore()
 
 
+SEGS = Qt.UserRole + 2           # 名字分段 [(文字, 0 一样 / 1 不一样 / None 标点)]
+
+
+def diff_colors(side):
+    """一样的字：正常颜色；不一样的：旧名字红、新名字蓝（加粗）"""
+    return T("text"), T("err" if side == "old" else "accent")
+
+
+def draw_segs(p, rect, segs, font, side, align=Qt.AlignVCenter):
+    """按段画名字（一样 / 不一样两种颜色），画不下的地方写 …"""
+    same_c, diff_c = diff_colors(side)
+    fb = QFont(font)
+    fb.setWeight(QFont.Bold)
+    x, right = rect.left(), rect.right()
+    ell = p.fontMetrics().horizontalAdvance("…")
+    for n, (t, k) in enumerate(segs):
+        f = fb if k == 1 else font
+        p.setFont(f)
+        w = p.fontMetrics().horizontalAdvance(t)
+        if x + w > right - (ell if n < len(segs) - 1 else 0):
+            p.setFont(font)
+            p.setPen(QColor(T("muted")))
+            p.drawText(QRect(x, rect.top(), right - x + 1, rect.height()), Qt.AlignLeft | align, "…")
+            break
+        p.setPen(QColor(diff_c if k == 1 else same_c))
+        p.drawText(QRect(x, rect.top(), w + 1, rect.height()), Qt.AlignLeft | align, t)
+        x += w
+    p.setFont(font)
+
+
+def segs_html(segs, side):
+    import html
+    same_c, diff_c = diff_colors(side)
+    return "".join(f"<span style='color:{diff_c}; font-weight:800'>{html.escape(t)}</span>" if k == 1
+                   else f"<span style='color:{same_c}'>{html.escape(t)}</span>" for t, k in segs)
+
+
+def _name_delegate(view, ean_col, settings, side):
+    """商品名那一格：左边小图（ThumbDelegate）+ 名字按段上色"""
+    import product_images as PI
+
+    class D(PI.ThumbDelegate):
+        def initStyleOption(self, o, idx):
+            super().initStyleOption(o, idx)
+            if idx.data(SEGS):
+                o.text = ""
+
+        def paint(self, p, opt, idx):
+            super().paint(p, opt, idx)
+            segs = idx.data(SEGS)
+            if not segs:
+                return
+            on = self.store.enabled and idx.sibling(idx.row(), self.ean_col).data()
+            r = opt.rect.adjusted((self.size + 10 if on else 0) + 6, 0, -6, 0)
+            p.save()
+            draw_segs(p, r, segs, QFont(opt.font), side)
+            p.restore()
+    return D(view, ean_col, THUMB, settings)
+
+
 class _ScoreDelegate(QStyledItemDelegate):
     """「像不像」那一格画成彩色小标签（数字在 UserRole+1）"""
 
@@ -143,9 +203,14 @@ class _CandDelegate(QStyledItemDelegate):
         f1.setPointSizeF(max(8.0, f0.pointSizeF() * 1.02))
         f1.setWeight(QFont.DemiBold)
         p.setFont(f1)
-        p.setPen(QColor(T("text")))
-        name = p.fontMetrics().elidedText(d["name"], Qt.ElideRight, tw)
-        p.drawText(QRect(x, r.top() + 9, tw, 22), Qt.AlignLeft | Qt.AlignVCenter, name)
+        segs = idx.data(SEGS)
+        if segs:
+            f1.setWeight(QFont.Normal)
+            draw_segs(p, QRect(x, r.top() + 9, tw, 22), segs, f1, "new")
+        else:
+            p.setPen(QColor(T("text")))
+            name = p.fontMetrics().elidedText(d["name"], Qt.ElideRight, tw)
+            p.drawText(QRect(x, r.top() + 9, tw, 22), Qt.AlignLeft | Qt.AlignVCenter, name)
         f2 = QFont(f0)
         f2.setPointSizeF(max(7.5, f0.pointSizeF() * 0.92))
         p.setFont(f2)
@@ -195,6 +260,7 @@ class _Card(QFrame):
         self.name.setStyleSheet("font-weight:600;")
         self.name.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.name.setMinimumHeight(38)
+        self.name.setTextFormat(Qt.RichText)
         v.addWidget(self.name)
         self.meta = QLabel("")
         self.meta.setObjectName("Faint")
@@ -203,6 +269,12 @@ class _Card(QFrame):
         self.meta.setTextInteractionFlags(Qt.TextSelectableByMouse)
         v.addWidget(self.meta)
         v.addStretch()
+
+    def set_name(self, html_or_text, faint=False):
+        import html
+        t = html_or_text if html_or_text.startswith("<") else html.escape(html_or_text)
+        self.name.setText(t)
+        self.name.setStyleSheet(f"font-weight:600; color:{T('faint') if faint else T('text')};")
 
     def set(self, ean, name, meta, faint=False):
         import product_images as PI
@@ -218,8 +290,7 @@ class _Card(QFrame):
             self.img.clear()
             self.img.setText("—")
             self.img.setStyleSheet(f"color:{T('faint')}; border:1px dashed {T('line')}; border-radius:8px;")
-        self.name.setText(name)
-        self.name.setStyleSheet(f"font-weight:600; color:{T('faint') if faint else T('text')};")
+        self.set_name(name, faint)
         self.meta.setText(meta)
 
 
@@ -286,10 +357,11 @@ class ReplaceDialog(QDialog):
         self.t.horizontalHeaderItem(F["pick"]).setToolTip(tr("勾上的加进 Griglia"))
         self.t.horizontalHeaderItem(F["score"]).setToolTip(
             tr("名字、品牌、条码前缀（同一个厂家）、规格合起来算的，100% = 很像。只是参考，要人看"))
+        self.t.horizontalHeaderItem(F["old"]).setToolTip(tr("红字 = 新商品名字里没有的（多半就是差别：规格、款式、香型）"))
+        self.t.horizontalHeaderItem(F["new"]).setToolTip(tr("蓝字 = 旧商品名字里没有的；黑字 = 两个名字一样的部分"))
         self.t.horizontalHeaderItem(F["size"]).setToolTip(tr("蓝字 = 换了规格（40 → 50 lav）"))
-        import product_images as PI
-        self.t.setItemDelegateForColumn(F["old"], PI.ThumbDelegate(self.t, F["old_ean"], THUMB, settings))
-        self.t.setItemDelegateForColumn(F["new"], PI.ThumbDelegate(self.t, F["new_ean"], THUMB, settings))
+        self.t.setItemDelegateForColumn(F["old"], _name_delegate(self.t, F["old_ean"], settings, "old"))
+        self.t.setItemDelegateForColumn(F["new"], _name_delegate(self.t, F["new_ean"], settings, "new"))
         self.t.setItemDelegateForColumn(F["score"], _ScoreDelegate(self.t))
         from erp_widgets import TableSortFilter
         import settings as ST
@@ -340,6 +412,7 @@ class ReplaceDialog(QDialog):
         self.cands.setSpacing(2)
         self.cands.setMouseTracking(True)
         self.cands.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
+        self.cands.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.cands.setStyleSheet("QListWidget{background:transparent;} QListWidget::item{border:none; background:transparent;}")
         self.cands.setItemDelegate(_CandDelegate(self.cands, settings))
         self.cands.itemClicked.connect(self._picked)
@@ -474,9 +547,12 @@ class ReplaceDialog(QDialog):
                     it.setData(Qt.UserRole + 1, pct(ch) if ch else None)
                 if f == "old":
                     it.setToolTip(f"{old.get('name') or ''}\n{old['ean']}")
+                    if ch:
+                        it.setData(SEGS, self.GR.diff_tokens(old.get("name") or "", ch["name"]))
                 elif f == "new":
                     if ch:
                         it.setToolTip(f"{ch['name']}\n{ch['ean']}")
+                        it.setData(SEGS, self.GR.diff_tokens(ch["name"], old.get("name") or ""))
                     else:
                         it.setForeground(QColor(T("faint")))
                 elif f == "size":
@@ -558,6 +634,7 @@ class ReplaceDialog(QDialog):
     def _show_new(self, i):
         ch = self.choice.get(i)
         if not ch:
+            self.c_old.set_name(self.rows[i]["old"].get("name") or "")
             self.c_new.set(None, tr("— 不替代") if self.rows[i]["cands"] else tr("— 没找到像的"), "", faint=True)
             self.sum.setText("")
             return
@@ -566,7 +643,9 @@ class ReplaceDialog(QDialog):
             bits.append(tr("{0} 件/箱", _pack(ch["pack"])))
         prices = sorted((ch.get("prices") or {}).items(), key=lambda kv: kv[1])
         meta = " · ".join(bits) + "\n" + " · ".join(f"{k} {_money(v)}" for k, v in prices)
-        self.c_new.set(ch["ean"], ch["name"], meta)
+        oname = self.rows[i]["old"].get("name") or ""
+        self.c_new.set(ch["ean"], segs_html(self.GR.diff_tokens(ch["name"], oname), "new"), meta)
+        self.c_old.set_name(segs_html(self.GR.diff_tokens(oname, ch["name"]), "old"))
         txt, changed = self._chg(i)
         v = pct(ch)
         parts = []
@@ -607,6 +686,7 @@ class ReplaceDialog(QDialog):
         for c in cands:
             it = QListWidgetItem(c["name"])
             it.setData(Qt.UserRole, c)
+            it.setData(SEGS, self.GR.diff_tokens(c["name"], old.get("name") or ""))
             it.setToolTip("\n".join(c.get("names") or [c["name"]]))
             self.cands.addItem(it)
             if cur and cur["ean"] == c["ean"]:
