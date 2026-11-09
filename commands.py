@@ -406,20 +406,60 @@ def mail_remove_account(settings, address):
     credentials.delete(MC.cred_name(address))
 
 
-def mail_test(settings, address):
-    """测试连接：返回给人看的一句话；失败抛 mail_client.MailError"""
+def mail_test(settings, address, smtp_factory=None):
+    """测试连接：收信（IMAP）+ 发信（SMTP 只登录、不发信）。返回给人看的两行；有一样不行抛 mail_client.MailError"""
+    import mail_client as MC
+    recv = _imap_test(settings, address)
+    acc = next(a for a in MC.accounts(settings) if a["address"].lower() == address.lower())
+    try:
+        send = _smtp_test(settings, acc, mail_password(address), smtp_factory)
+    except MC.MailError as e:
+        raise MC.MailError(recv + "\n" + str(e))
+    return recv + "\n" + send
+
+
+def _smtp_test(settings, acc, pw, smtp_factory=None):
+    """发信服务器登录一下：密码被拒先换另一个阿里地址试，能登录就记进设置（以后发信用它）"""
+    import smtplib
+    import mail_client as MC
+    import mail_send as MS
+    host, port = MS.smtp_of(acc)
+    try:
+        MS.smtp_check(acc, pw, smtp_factory)
+        return tr("✔ 发信：能登录 {0}（只测登录，没发信）", host)
+    except smtplib.SMTPAuthenticationError:
+        alt = MS.SMTP_ALT.get(host.lower())
+        if alt:
+            try:
+                MS.smtp_check(acc, pw, smtp_factory, host=alt)
+            except (smtplib.SMTPException, OSError):
+                pass
+            else:
+                box = (settings.get("mail") or {}).get("accounts") or []
+                for a in box:
+                    if (a.get("address") or "").lower() == acc["address"].lower():
+                        a["smtp"] = alt
+                return tr("✔ 发信：能登录 {0}（发信服务器已改成它，只测登录，没发信）", alt)
+        raise MC.MailError(tr("✘ 发信：{0} 拒绝了密码。收信能登录说明密码是对的，可能是这个邮箱没开 SMTP："
+                              "请在阿里邮箱网页版「设置 → 客户端设置」里打开 SMTP，或者用网页版生成的安全密码再试", host))
+    except (smtplib.SMTPException, OSError) as e:
+        raise MC.MailError(tr("✘ 发信：连不上 {0}:{1}（{2}）。可能是网络 / 防火墙挡了 {1} 端口", host, port, e))
+
+
+def _imap_test(settings, address):
+    """收信测试：返回给人看的一句话；失败抛 mail_client.MailError"""
     import mail_client as MC
     acc = next(a for a in MC.accounts(settings) if a["address"].lower() == address.lower())
     pw = mail_password(address)
     try:
         nf, n = MC.test_account(acc, pw)
-        return tr("✔ 连上了：{0} 个文件夹，收件箱 {1} 封", nf, n)
+        return tr("✔ 收信：{0} 个文件夹，收件箱 {1} 封", nf, n)
     except MC.LoginFailed:
         why, host = MC.diagnose_login(acc, pw)               # 登录被拒：分清是密码不对还是没开 IMAP
     if why == "other_host":                                  # 换个服务器地址就行：直接改好
         mail_save_account(settings, address, None, host, acc["port"])
         nf, n = MC.test_account(dict(acc, host=host), pw)
-        return tr("✔ 连上了：{0} 个文件夹，收件箱 {1} 封（服务器已改成 {2}）", nf, n, host)
+        return tr("✔ 收信：{0} 个文件夹，收件箱 {1} 封（服务器已改成 {2}）", nf, n, host)
     if why == "no_imap":
         raise MC.MailError(tr("{0}：密码是对的（用 POP3 能登录，就是大家邮件软件现在收信的方式），但这个邮箱还没开 IMAP。"
                               "请在阿里邮箱网页版「设置」里打开 IMAP（客户端设置 / POP3·IMAP 那一项）；找不到的话请管理员在后台"
@@ -562,14 +602,86 @@ def _bodies_save(d):
         json.dump(d, f, ensure_ascii=False)
 
 
+# ===================================================================== 订单窗口「邮件」页（2026-11-08）
+VIEW_TEXT = 30000                                         # 看信时正文最多读这么多字
+
+
+def order_mails(st, oid):
+    """这张单的邮件（不连网，用本机缓存的信头）：[{"kind", "date", "subject", "from", "mail"}]，见 mail_match.related"""
+    import mail_match as MM
+    o = st.orders.get(oid) or {}
+    return MM.related(o, _cached_mails())
+
+
+def _acc_of(settings, mailbox):
+    import mail_client as MC
+    acc = next((a for a in MC.accounts(settings) if a["address"].lower() == (mailbox or "").lower()), None)
+    if acc is None:
+        raise RuntimeError(tr("这封信在 {0} 里，这个邮箱没在设置里", mailbox))
+    pw = mail_password(acc["address"])
+    if not pw:
+        raise RuntimeError(tr("{0} 还没填密码（系统设置 → 邮箱）", acc["address"]))
+    return acc, pw
+
+
+def mail_view_body(settings, m, factory=None):
+    """一封信的正文（只读：EXAMINE + BODY.PEEK，不会在 Foxmail 里变成已读）。读过的存在 cache/mail_bodies.json"""
+    import mail_client as MC
+    key = "view|" + _body_key(m)
+    cache = _bodies_load()
+    if key in cache:
+        return cache[key]
+    acc, pw = _acc_of(settings, m.get("mailbox"))
+    got = MC.fetch_bodies(acc, pw, [m], factory=factory, max_bytes=400000, text_limit=VIEW_TEXT)
+    text = got.get((m.get("folder"), str(m.get("uid"))))
+    if text is None:
+        raise RuntimeError(tr("服务器上找不到这封信了（可能被删了或挪了文件夹）"))
+    cache[key] = text
+    _bodies_save(cache)
+    return text
+
+
+def mail_attachment(settings, m, part, factory=None):
+    """下载一封信的一个附件到 cache/mail_att/（只读），已经下过的直接用。part = [段号, 文件名, 编码, 大小]。返回路径"""
+    import hashlib
+    import mail_client as MC
+    from settings import app_dir
+    d = os.path.join(app_dir(), "cache", "mail_att", hashlib.sha1(_body_key(m).encode("utf-8")).hexdigest()[:12])
+    import re as _re
+    name = _re.sub(r'[\\/:*?"<>|\r\n]+', "_", part[1] or "allegato").strip() or "allegato"
+    p = os.path.join(d, name)
+    if os.path.exists(p) and os.path.getsize(p) > 0:
+        return p
+    acc, pw = _acc_of(settings, m.get("mailbox"))
+    out = MC.download(acc, pw, [{"folder_raw": m.get("folder_raw") or "INBOX", "uid": m["uid"], "section": part[0],
+                                 "encoding": part[2], "name": name}], d, factory=factory)
+    return out[0]
+
+
 # ===================================================================== 发订单邮件（2026-11-07，第 3 阶段）
+_MAIL_CACHE = {"sig": None, "rows": []}
+_HIST_CACHE = {"key": None, "hist": None}
+
+
 def _cached_mails():
-    """各邮箱读过的信头缓存（cache/mail/*.json，邮件核对 / 报价检查时存的），不连网"""
+    """各邮箱读过的信头缓存（cache/mail/*.json，邮件核对 / 报价检查时存的），不连网。
+    文件没变（路径 + 大小 + 修改时间）就用内存里读好的（几 MB 的 JSON，2026-11-08 发订单窗口要快）"""
     import glob
     import json
     from settings import app_dir
+    paths = sorted(glob.glob(os.path.join(app_dir(), "cache", "mail", "*.json")))
+    sig = []
+    for p in paths:
+        try:
+            stt = os.stat(p)
+            sig.append((p, stt.st_size, stt.st_mtime_ns))
+        except OSError:
+            pass
+    sig = tuple(sig)
+    if sig == _MAIL_CACHE["sig"]:
+        return _MAIL_CACHE["rows"]
     rows = []
-    for p in glob.glob(os.path.join(app_dir(), "cache", "mail", "*.json")):
+    for p, _sz, _mt in sig:
         try:
             with open(p, encoding="utf-8") as f:
                 d = json.load(f)
@@ -577,13 +689,34 @@ def _cached_mails():
             continue
         for _label, fo in (d or {}).items():
             rows.extend((fo or {}).get("rows", {}).values())
+    _MAIL_CACHE.update(sig=sig, rows=rows)
     return rows
+
+
+def _sent_history(st, own):
+    """以前发过的订单信（mail_send.sent_history），信头缓存和订单跟踪都没变就不重算"""
+    import mail_send as MS
+    mails = _cached_mails()
+    key = (_MAIL_CACHE["sig"], id(st), len(st.orders), sum(len(h) for h in st.hist.values()), len(st.aliases), frozenset(own))
+    if _HIST_CACHE["key"] != key:
+        _HIST_CACHE.update(key=key, hist=MS.sent_history(mails, st, own))
+    return _HIST_CACHE["hist"]
+
+
+def _cached_body(m):
+    """读过的正文（看信 / 发订单时存的），没有返回 None"""
+    if not m or not m.get("uid"):
+        return None
+    t = _bodies_load().get("view|" + _body_key(m))
+    return t if t and t.strip() else None
 
 
 def order_mail_draft(settings, st, oid, fetch_body=True, factory=None, today=None):
     """
-    点「待登记」要发的那封信：一起发的单（同一个订单文件）、发件邮箱、收件人、抄送、主题、正文、附件。
-    正文：以前发给这家的最近一封订单信的正文（fetch_body=True 时连邮箱读一下，只读），没有就用默认模板
+    要发的那封订单信：一起发的单（同一个订单文件）、发件邮箱、收件人、抄送、主题、正文、附件。
+    正文：以前发给这家的最近一封订单信的正文，没有就用默认模板。读过的正文直接用（不连网）；
+    还没读过的：fetch_body=True 时现在连邮箱读（只读），False 时先用模板、d["need_last"] = True，
+    窗口打开后再在后台读（order_mail_last_body），窗口不用等
     """
     import mail_client as MC
     import mail_send as MS
@@ -596,31 +729,46 @@ def order_mail_draft(settings, st, oid, fetch_body=True, factory=None, today=Non
     if not accs:
         raise RuntimeError(tr("还没设置邮箱（系统设置 → 邮箱）"))
     own = {a["address"].lower() for a in accs}
-    hist = MS.sent_history(_cached_mails(), st, own)
+    hist = _sent_history(st, own)
     acc = MS.sender_for(stores, accs)
     supplier = str(o.get("supplier") or "")
     to, to_src = MS.recipients(st, supplier, hist)
     subject = MS.subject_for(supplier, stores, today)
     body, body_src = MS.default_body(supplier, stores), "template"
     last = MS.last_sent(hist, st, supplier, acc["address"])
-    if fetch_body and last and last.get("uid"):
-        acc_l = next((a for a in accs if a["address"].lower() == (last["mailbox"] or "").lower()), None)
-        if acc_l:
+    need_last = False
+    if last and last.get("uid"):
+        t = _cached_body(last)
+        if t is None and fetch_body:
             try:
-                got = MC.fetch_bodies(acc_l, mail_password(acc_l["address"]), [last], factory=factory)
-                t = got.get((last.get("folder"), str(last.get("uid"))))
-                if t and t.strip():
-                    body, body_src = MS.body_from_last(t, last["subject"], subject, supplier), "last"
+                t = mail_view_body(settings, last, factory=factory)
             except Exception:
-                pass
+                t = None
+        if t and t.strip():
+            body, body_src = MS.body_from_last(t, last["subject"], subject, supplier), "last"
+        elif not fetch_body:
+            need_last = True
     files = []
     f = str(o.get("file") or "").strip()
     if f:
         files.append((f, MS.attachment_name(subject, f), os.path.exists(f)))
     return {"ids": ids, "stores": stores, "supplier": supplier, "from": acc["address"], "accounts": accs,
             "to": to, "to_src": to_src, "cc": MS.usual_cc(hist), "subject": subject, "body": body, "body_src": body_src,
-            "files": files, "last": last, "amount": sum(float((st.orders.get(k) or {}).get("amount") or 0) for k in ids),
+            "files": files, "last": last, "need_last": need_last,
+            "amount": sum(float((st.orders.get(k) or {}).get("amount") or 0) for k in ids),
             "sent_before": [k for k in ids if (st.orders.get(k) or {}).get("sent")]}
+
+
+def order_mail_last_body(settings, d, subject=None, factory=None):
+    """窗口打开后在后台读上次那封订单信的正文（只读），换成这次的主题 / 日期。读不到返回 None"""
+    import mail_send as MS
+    last = d.get("last")
+    if not last:
+        return None
+    t = mail_view_body(settings, last, factory=factory)
+    if not t or not t.strip():
+        return None
+    return MS.body_from_last(t, last["subject"], subject or d["subject"], d["supplier"])
 
 
 def send_order(settings, st, ids, frm, to, cc, subject, body, files, via="desktop", force=False,

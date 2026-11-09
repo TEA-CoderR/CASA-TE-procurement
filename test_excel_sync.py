@@ -234,3 +234,50 @@ def test_stale_wait_is_limited_and_skipped_when_conflict_copy():
     cp = x.replace(".xlsx", "_PC1_Conflict.xlsx")
     shutil.copy2(x, cp)
     assert not OT.is_stale(st, x) and not OT.import_file(st, x).get("stale")
+
+
+def test_deleted_program_row_not_restored_again_and_identical_row_adopted():
+    """
+    2026-11-09 用户：S.Concordio 的 SAIS / CUKI 表里已经有了，程序又加一行；删掉以后程序又加回来。
+    ① 冲突副本只补回「写进去不久就被同步盘换掉」的程序新增单，删过一次的 / 很久以后才删的不补
+    ② 要新加的单 Excel 里已经有一样的一行 → 认这一行，不再加
+    """
+    import shutil
+    from datetime import timezone, timedelta
+    from openpyxl import load_workbook
+    d, x, st = _setup()
+    new = st.add({"date": "2026-11-04", "store": "1", "supplier": "NEW SUP", "amount": 10.0, "buyer": "Monica"})
+    assert XS.writeback(st, x, "pc1")["status"] == "ok"
+    with_row = os.path.join(d, "with_row.xlsx")
+    shutil.copy2(x, with_row)
+    # 两天以后有人在 Excel 里把这一行删了（存盘）→ 程序读到删了
+    wb = load_workbook(x)
+    ref = st.orders[new]["ref"].split("!")[1]
+    r = int("".join(ch for ch in ref if ch.isdigit()))
+    for c in range(1, 9):
+        wb["NOV"].cell(r, c).value = None
+    wb.save(x)
+    _set_mtime(x, time.time() + 120)
+    OT.import_file(st, x)
+    assert new not in st.orders
+    # 冲突副本里还有这一行，但删得离写进去很久 → 不补回
+    late = datetime.now(timezone.utc) + timedelta(days=2)
+    st.hist[new][-1]["t"] = late.strftime("%Y-%m-%dT%H:%M:%S")
+    cp = os.path.join(d, "PIANO ACQUISTO MESILE  NUOVO_LAPTOP-PC1_11月-09-104657-2026_Conflict.xlsx")
+    shutil.copy2(with_row, cp)
+    res = XS.merge_conflicts(st, x)
+    assert res["added"] == 0 and new not in st.orders
+    assert not any(o.get("supplier") == "NEW SUP" for o in st.orders.values())
+    # ② 程序里又登记了一张一样的单（同事手填过 Excel 的那种）→ 认 Excel 里已有的那一行
+    shutil.copy2(with_row, x)
+    _set_mtime(x, time.time() + 240)
+    st2 = OT.Store(d, me="pc2", host="h2").reload()
+    OT.import_file(st2, x)
+    for oid in [k for k, o in st2.orders.items() if o.get("supplier") == "NEW SUP"]:
+        st2.delete([oid], src="excel")
+    again = st2.add({"date": "2026-11-04", "store": "1", "supplier": "New Sup", "amount": 10.0, "buyer": "Monica"})
+    n0 = len(OT.read_excel(x)[0])
+    XS.writeback(st2, x, "pc2")
+    assert len(OT.read_excel(x)[0]) == n0                         # 没多一行
+    assert st2.orders[again]["ref"] and st2.orders[again]["xid"]
+    assert XS.pending(st2, "pc2", everyone=True) == []

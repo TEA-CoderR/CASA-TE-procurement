@@ -340,3 +340,50 @@ def test_body_text_from_raw_mail():
            b"--XX\r\nContent-Type: application/pdf\r\nContent-Disposition: attachment; filename=a.pdf\r\n\r\nAAAA\r\n--XX--\r\n")
     t = MC.body_text(raw)
     assert "CASA & TE SAN MARCO" in t and "AAAA" not in t
+
+
+def test_order_mail_tab_finds_events_sent_mail_and_replies():
+    """订单窗口「邮件」页：单上记的事件 + 程序发的那封 + 回信，同一封信两份只留一份，缓存里没有的也列出来"""
+    import mail_match as MM
+    sent = {"mailbox": "info@casa-te.com", "folder": "已发送", "uid": 1, "message_id": "<a@x>", "subject": "Ordine SAIS Foiano 0311",
+            "from": "info@casa-te.com", "date": "2026-11-03T09:00:00", "parts": [["2", "Ordine.xlsx", "BASE64", 9000]]}
+    copy = dict(sent, mailbox="INFO@BMSPSRL.COM", folder="INBOX", uid=7, parts=None)       # 抄送收件箱里的同一封
+    conf = {"mailbox": "info@casa-te.com", "folder": "INBOX", "uid": 2, "message_id": "<b@sais>", "in_reply_to": "<a@x>",
+            "subject": "R: Ordine SAIS Foiano 0311", "from": "ordini@sais.it", "date": "2026-11-04T10:30:00"}
+    ddt = {"mailbox": "info@casa-te.com", "folder": "INBOX", "uid": 3, "message_id": "<c@sais>",
+           "subject": "DDT 0028677", "from": "ddt@sais.it", "date": "2026-11-06 08:15:00"}
+    other = {"mailbox": "info@casa-te.com", "folder": "INBOX", "uid": 4, "message_id": "<d@x>", "subject": "Fattura",
+             "from": "x@y.it", "date": "2026-11-05T08:00:00"}
+    o = {"sent": {"mid": "<a@x>", "subject": "Ordine SAIS Foiano 0311", "at": "2026-11-03T09:00:00", "from": "info@casa-te.com"},
+         "mails": [{"k": "order", "d": "2026-11-03 09:00", "s": "Ordine SAIS Foiano 0311", "f": "info@casa-te.com", "id": "<a@x>"},
+                   {"k": "ship", "d": "2026-11-06 08:15", "s": "DDT 0028677", "f": "ddt@sais.it"},            # 老事件没有 id
+                   {"k": "confirm", "d": "2026-09-01 10:00", "s": "Conferma vecchia", "f": "a@b.it"}]}       # 不在缓存里
+    rows = MM.related(o, [copy, sent, conf, ddt, other])
+    assert [(r["kind"], r["subject"]) for r in rows] == [
+        ("confirm", "Conferma vecchia"), ("order", "Ordine SAIS Foiano 0311"), ("reply", "R: Ordine SAIS Foiano 0311"),
+        ("ship", "DDT 0028677")]
+    assert rows[0]["mail"] is None and rows[1]["mail"]["parts"]              # 有附件段号的那份
+    assert rows[3]["mail"]["uid"] == 3
+
+
+def test_excel_sync_absorbs_drafts_already_written_by_hand(tmp_path):
+    """2026-11-09：Excel 里已经手填了的单，程序的「待登记」同步时自动合并；DETERSIVO 的对 DETER 那几行，别的不混"""
+    st = _st(tmp_path)
+    day = date.today()
+    OT.register_drafts(st, "store_orders", [{"store": "1", "supplier": "FACCO GIUSEPPE & C. SPA", "amount": 874.9,
+                                             "file": r"D:\x\Ordine_FACCO.xlsx"},
+                                            {"store": "1", "supplier": "MELONI", "amount": 50.0}])   # 不是 DETERSIVO 的单
+    OT.register_drafts(st, "wholesale", [{"store": "1", "supplier": "MELONI", "amount": 1738.9}])
+    st.set("xF", {"date": day.isoformat(), "store": "1", "supplier": "FACCO", "amount": 879.7, "origin": "excel"})
+    st.set("xM", {"date": day.isoformat(), "store": "1", "supplier": "Meloni", "amount": 2258.75, "origin": "excel",
+                  "kind": "deter"})
+    n, _undo, pairs = MM.absorb_drafts(st)
+    assert n == 2 and sorted(b for _a, b in pairs) == ["xF", "xM"]
+    st.reload()
+    assert st.orders["xF"]["amount"] == 879.7 and st.orders["xF"]["file"].endswith("Ordine_FACCO.xlsx")
+    left = [o for o in st.orders.values() if o.get("draft")]
+    assert len(left) == 1 and left[0]["amount"] == 50.0
+    # 重新配货不再生成合并掉的待登记
+    r = OT.register_drafts(st, "store_orders", [{"store": "1", "supplier": "FACCO GIUSEPPE & C. SPA", "amount": 900.0},
+                                                 {"store": "1", "supplier": "MELONI", "amount": 50.0}])
+    assert r["new"] == 0

@@ -873,6 +873,9 @@ def import_file(st, path):
     st.reload()
     res = sync_excel(st, rows_, budgets, sheets, info.get("blocks"), mtime=mtime)
     res["mtime"] = mtime
+    # Excel 里手填了的单，程序还挂着同一张「待登记」→ 合并掉（2026-11-09），以 Excel 为准
+    import mail_match as MM
+    res["absorbed"], res["absorb_undo"], res["absorb_pairs"] = MM.absorb_drafts(st)
     res["rows"], res["sheets"], res["unknown"] = len(rows_), sheets, info.get("unknown") or []
     return res
 
@@ -979,7 +982,7 @@ def register_drafts(st, source, items, in_scope=None, today=None):
              "amount": round(float(it["amount"]), 2) if it.get("amount") is not None else None,
              "colli": it.get("colli"), "file": it.get("file") or None, "origin": source}
         cur = st.orders.get(oid)
-        if cur is None and st.deleted.get(oid) == "mail":
+        if cur is None and st.deleted.get(oid) in ("mail", "merged"):
             continue                    # 已经和 Excel 手填的那张合并了（mail_match.merge_duplicates），重新配货不再生成
         if cur is None:
             f["draft"] = True

@@ -5,7 +5,7 @@
   中：发件 · 收件 · 抄送 · 主题（短标签 + 输入框，说明在 ⓘ）· 正文 · 附件
   下：状态 · 取消 · 发送（先确认，发出去撤不回）
 """
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QObject, Signal
 from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QPushButton, QLineEdit, QComboBox,
                                QPlainTextEdit, QCheckBox, QMessageBox, QWidget)
 
@@ -13,12 +13,16 @@ from i18n import tr
 from theme import T
 
 
+class _BodySig(QObject):
+    done = Signal(object)
+
+
 def open_send(parent, st, settings, oid, on_sent=None):
-    """读好草稿（读上次的正文要连邮箱，显示「正在准备」）再开窗口"""
+    """草稿不连网（信头 / 读过的正文都在本机），窗口马上打开；上次那封信的正文还没读过的，窗口打开后在后台读"""
     import commands as CMD
     from erp_widgets import BusyDialog
     d, err = BusyDialog.run(parent, tr("发送订单"), tr("正在准备邮件…"),
-                            lambda: CMD.order_mail_draft(settings, st, oid))
+                            lambda: CMD.order_mail_draft(settings, st, oid, fetch_body=False))
     if err:
         QMessageBox.warning(parent, tr("发送订单"), str(err))
         return None
@@ -79,12 +83,14 @@ class SendOrderDialog(QDialog):
         lay.addLayout(g)
         src = {"last": tr("正文照上次发给这家的那封信（看一下日期、门店对不对）"),
                "template": tr("正文用的是默认模板（以前没给这家发过，或者读不到上次的信）")}[d["body_src"]]
-        hint = QLabel(src)
+        self.hint = hint = QLabel(src)
         hint.setObjectName("Faint")
         lay.addWidget(hint)
         self.e_body = QPlainTextEdit(d["body"])
         self.e_body.setMinimumHeight(180)
         lay.addWidget(self.e_body, 1)
+        if d.get("need_last"):
+            self._load_last()
         # 附件
         self.att = []
         att_box = QWidget()
@@ -136,6 +142,38 @@ class SendOrderDialog(QDialog):
         self.resize(760, 640)
         from erp_widgets import fit_to_screen
         fit_to_screen(self)
+
+    def _load_last(self):
+        """后台读上次发给这家的订单信正文（只读），读到了、正文还没人改过就换上"""
+        import threading
+        import commands as CMD
+        self.hint.setText(tr("正在读上次发给这家的信…（先用默认模板，读到了自动换上）"))
+        self._tpl = self.e_body.toPlainText()
+        self._sig = _BodySig()
+        self._sig.done.connect(self._last_arrived)
+        sig, settings, d, subj = self._sig, self.settings, self.d, self.e_subj.text().strip()
+
+        def work():
+            try:
+                res = (CMD.order_mail_last_body(settings, d, subject=subj), None)
+            except Exception as e:
+                res = (None, e)
+            try:
+                sig.done.emit(res)
+            except RuntimeError:
+                pass
+        threading.Thread(target=work, daemon=True).start()
+
+    def _last_arrived(self, res):
+        text, err = res
+        if not text:
+            self.hint.setText(tr("正文用的是默认模板（以前没给这家发过，或者读不到上次的信）"))
+            return
+        if self.e_body.toPlainText() != self._tpl:          # 已经开始改了：不覆盖
+            self.hint.setText(tr("上次那封信读到了，正文你已经改过，没有替换"))
+            return
+        self.e_body.setPlainText(text)
+        self.hint.setText(tr("正文照上次发给这家的那封信（看一下日期、门店对不对）"))
 
     def _open(self, p):
         from erp_widgets import open_file

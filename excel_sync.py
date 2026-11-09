@@ -396,6 +396,56 @@ def apply_ops(src, dst, st, ops):
     return where, failed
 
 
+def _adopt_existing(st, src, ops, log):
+    """
+    要新加进 Excel 的单，Excel 里已经有一样的一行（门店 · 日期 · 供应商 · 金额都一样）：不再加一行，直接认这一行
+    （2026-11-09：同一张单程序里登记了、Excel 里也手填了 / 两台电脑同步慢各写了一次 → Excel 里出现两行）。
+    那一行已经是程序里另一张单的：也不加（程序里有两张，留给人合并），日志写一句。返回剩下要写的 ops
+    """
+    apps = [x for x in ops if x[0] == "append"]
+    if not apps:
+        return ops
+    rows, _b, _s = OT.read_excel(src)
+    owner = {o["xid"]: oid for oid, o in st.orders.items() if o.get("xid")}
+    owner.update({oid: oid for oid, o in st.orders.items() if o.get("origin") == "excel"})
+    free, taken = {}, {}
+    for r in rows:
+        k = dup_key(st, r)
+        if r["id"] in owner:
+            taken.setdefault(k, owner[r["id"]])
+        else:
+            free.setdefault(k, []).append(r)
+    keep, sets, bases = [], [], []
+    for op in ops:
+        kind, oid, _v = op
+        if kind != "append":
+            keep.append(op)
+            continue
+        k = dup_key(st, st.orders.get(oid) or {})
+        if free.get(k):
+            r = free[k].pop(0)
+            f = {"ref": r["ref"], "xid": r["id"]}
+            o = st.orders.get(oid) or {}
+            if r.get("supplier") and r["supplier"] != o.get("supplier"):
+                f["supplier"] = r["supplier"]           # 同一家（写法不同）：照 Excel 里的写法，不去改表
+            sets.append((oid, f))
+            nb = {f: r.get(f) for f in OT.EXCEL_FIELDS if f != "origin"}
+            nb["_gone"] = False
+            bases.append((oid, nb))
+            log(f"Excel 里已经有这张单（{r['ref']}），不再加一行")
+        elif k in taken and taken[k] != oid:
+            log(f"⚠ 没写进 Excel：{k[2]} {k[1]} 和程序里另一张单一样（Excel 已经有了），请在订单跟踪里合并")
+            fails = dict(st.xstate.get("failed") or {})
+            fails[f"append|{oid}"] = repr(_v)                # 同样的值不再每次重试
+            st.set_xstate("failed", fails)
+        else:
+            keep.append(op)
+    if sets:
+        st.set_many(sets, src="excel")
+        st.set_xbase(bases)
+    return keep
+
+
 # ===================================================================== 一次写回（后台线程里调用）
 def locked(path):
     """Excel / WPS 正开着这个文件：有 ~$ 锁文件，或者文件打不开写"""
@@ -454,6 +504,10 @@ def writeback(st, path, me=None, log=None, imported=None):
         src = os.path.join(tmpd, "src.xlsx")
         dst = os.path.join(tmpd, "dst.xlsx")
         shutil.copy2(path, src)
+        ops = _adopt_existing(st, src, ops, log)
+        if not ops:
+            out["status"] = "ok"
+            return out
         where, failed = apply_ops(src, dst, st, ops)
         rows, _b, _s = OT.read_excel(dst)                # 读回来核对
         by_ref = {r["ref"]: r for r in rows}
@@ -572,6 +626,46 @@ def _last_known(st, oid):
     return o
 
 
+RESTORE_MIN = 60        # 冲突副本里补回「被同步盘换掉」的程序新增单：只认写进去之后这么多分钟内就不见了的
+
+
+def dup_key(st, o):
+    """判断两张单是不是同一张：门店 · 下单日期 · 供应商 · 金额"""
+    try:
+        amt = round(float(o.get("amount")), 2)
+    except (TypeError, ValueError):
+        amt = None
+    d = OT.to_date(o.get("date"))
+    return (str(o.get("store") or ""), d.isoformat() if d else str(o.get("date") or "")[:10],
+            st.canon(OT.sup_key(o.get("supplier") or "")), amt)
+
+
+def _t(s):
+    try:
+        return datetime.strptime(str(s)[:19], "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc)
+    except (TypeError, ValueError):
+        return None
+
+
+def _swapped_away(st, oid):
+    """
+    程序写进 Excel 的单后来从 Excel 里不见了：是同步盘换掉的（可以从冲突副本补回），还是有人故意删的？
+    2026-11-09 用户：S.Concordio 的 SAIS / CUKI 删了又被程序加回来 → 只在「这张单第一次不见、而且是写进去以后
+    RESTORE_MIN 分钟内就不见了」时才算同步盘换掉的；删过一次又补回、再删的 = 人删的，不再补
+    """
+    h = st.hist.get(oid, [])
+    dels = [e for e in h if e.get("op") == "del"]
+    if len(dels) != 1:
+        return False
+    wrote = [_t(e.get("t")) for e in h if e.get("op") == "set" and e.get("src") == "excel"
+             and "ref" in (e.get("f") or {}) and (e.get("f") or {}).get("origin") != "excel"]
+    wrote = [w for w in wrote if w]
+    gone = _t(dels[0].get("t"))
+    if not wrote or gone is None:
+        return False
+    return timedelta(0) <= gone - max(wrote) <= timedelta(minutes=RESTORE_MIN)
+
+
 def merge_conflicts(st, path, log=None):
     """
     合并原表旁边的冲突副本，合并完挪到 Backup Excel\冲突副本。返回 {"files", "restored", "added"}。
@@ -591,6 +685,9 @@ def merge_conflicts(st, path, log=None):
     for oid, src in st.deleted.items():
         k = _last_known(st, oid)
         dead[k.get("xid") or oid] = (oid, k, src)
+    ever_xid = {(e.get("f") or {}).get("xid") for h in st.hist.values() for e in h
+                if e.get("op") == "set" and (e.get("f") or {}).get("xid")}
+    live = {dup_key(st, o) for o in st.orders.values()}
     for cp in cps:
         tmpd = tempfile.mkdtemp(prefix="piano_c_")
         try:
@@ -626,11 +723,16 @@ def merge_conflicts(st, path, log=None):
                     n_rest += len(ch)
             elif rid in dead:
                 doid, k, src = dead[rid]
-                if src == "excel" and k.get("origin") != "excel" and doid not in st.orders:
+                if src == "excel" and k.get("origin") != "excel" and doid not in st.orders \
+                        and _swapped_away(st, doid) and dup_key(st, k) not in live:
+                    live.add(dup_key(st, k))
                     sets.append((doid, k))
                     xb.append((doid, {"_gone": True}))
                     n_add += 1
             else:
+                if rid in ever_xid or dup_key(st, r) in live:
+                    continue                            # 程序以前写进去的行 / 程序里已经有一样的单：不是有人新加的
+                live.add(dup_key(st, r))
                 nid = "c" + hashlib.md5((os.path.basename(cp) + "|" + str(r.get("ref"))).encode("utf-8")).hexdigest()[:12]
                 if nid in st.orders or nid in st.deleted:
                     continue

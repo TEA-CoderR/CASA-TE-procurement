@@ -591,7 +591,6 @@ class TrackingPage:
                           default_hidden=HIDDEN)
         self.ctl.sort_col, self.ctl.sort_desc = 0, True              # 默认：新的单在上
         t.cellDoubleClicked.connect(self._double)
-        t.cellClicked.connect(self._clicked)
         t.setContextMenuPolicy(Qt.CustomContextMenu)
         t.customContextMenuRequested.connect(self._row_menu)
         v.addWidget(t, 1)
@@ -600,7 +599,7 @@ class TrackingPage:
         self.total.setObjectName("Faint")
         foot.addWidget(self.total)
         foot.addStretch()
-        hint = QLabel(tr("点「✉ 待登记」发订单邮件 · 双击改"))
+        hint = QLabel(tr("双击「✉ 待登记」发订单邮件 · 双击别的格改订单"))
         hint.setObjectName("Faint")
         foot.addWidget(hint)
         v.addLayout(foot)
@@ -715,6 +714,19 @@ class TrackingPage:
         self.timer.start()
         self._shown = True
         self._auto_sync()                 # 每次打开页面：Excel 存过（修改时间变了）就自动同步
+        self._warm_mail()
+
+    def _warm_mail(self):
+        """有待登记时，空闲时在后台先把邮件信头缓存读进内存（双击「✉ 待登记」发订单时窗口马上出来）"""
+        if self.st is None or not any(o.get("draft") for o in self.st.orders.values()):
+            return
+        import threading
+        from erp_widgets import when_idle
+
+        def go():
+            import commands as CMD
+            threading.Thread(target=lambda: _quiet(CMD._cached_mails), daemon=True).start()
+        when_idle(go, 2000)
 
     def _poll(self):
         if not self.page.isVisible():
@@ -970,15 +982,6 @@ class TrackingPage:
             return
         self.render()
 
-    def _clicked(self, k, c):
-        """点状态格里的「✉ 待登记」→ 发订单邮件"""
-        if COLS[c][0] != 5:
-            return
-        i = self.ctl.row_at(k)
-        if i is None or self.rows[i]["status"] != "draft":
-            return
-        self.send_order(self.rows[i])
-
     def send_order(self, r):
         from send_order_dialog import open_send
 
@@ -996,6 +999,9 @@ class TrackingPage:
             return
         if COLS[c][0] == 13 and self.rows[i]["status"] in REC.OPEN_STATES:
             self.show_lines(self.rows[i])
+            return
+        if COLS[c][0] == 5 and self.rows[i]["status"] == "draft":     # 双击「✉ 待登记」→ 发订单邮件
+            self.send_order(self.rows[i])
             return
         self.edit_row(i)
 
@@ -1072,7 +1078,7 @@ class TrackingPage:
                 tips.append(tr("邮件：") + "\n" + "\n".join(mail_lines(r["mails"])))
             if r["status"] == "draft":                  # 2026-11-07：点「待登记」发订单邮件
                 st_it.setText("✉ " + st_it.text())
-                tips.insert(0, tr("点一下：发订单邮件给供应商，发完自动变「已下单」"))
+                tips.insert(0, tr("双击：发订单邮件给供应商，发完自动变「已下单」"))
             elif (self.st.orders.get(r["id"]) or {}).get("sent"):
                 sent = self.st.orders[r["id"]]["sent"]
                 tips.insert(0, tr("{0} 用邮件发给 {1}", str(sent.get("at", ""))[:16].replace("T", " "),
@@ -1676,6 +1682,12 @@ class TrackingPage:
         if w.get("failed"):
             self.win.show_toast(tr("⚠ {0} 处修改没写进 Excel（看日志）", len(w["failed"])))
         self._write_state = None
+        if res.get("absorbed"):                   # 待登记在 Excel 里已经手填了 → 合并掉（以 Excel 为准）
+            for kind, oid, f in res.get("absorb_undo") or []:
+                if kind == "restore":
+                    self.win.log(tr("订单跟踪：待登记 {0} {1} · {2} 在 Excel 里已经手填了，合并成 Excel 那张", _d(OT.to_date(f.get("date"))),
+                                    f.get("supplier") or "", OT.STORE_NAMES.get(str(f.get("store")), "")))
+            self.win.show_toast(tr("✔ {0} 张待登记 Excel 里已经手填了，已合并（看日志）", res["absorbed"]))
         msg = tr("Excel 同步：新的 {0} 张，更新 {1} 张，Excel 里删掉的 {2} 张", res["new"], res["updated"], res["removed"])
         if res.get("kept"):
             msg += tr("（另有 {0} 张 Excel 里没有了，但程序里改过，留着）", res["kept"])
@@ -1685,7 +1697,7 @@ class TrackingPage:
             self.win.log(tr("⚠ Excel「{0}」表 {1} 列那一块认不出是哪家门店，没读：「{2}」", sh, col, title or "—"))
         if unk:
             self.win.show_toast(tr("⚠ Excel 里有 {0} 块认不出是哪家门店，没读（看日志）", len(unk)))
-        elif manual or res["new"] or res["updated"]:
+        elif (manual or res["new"] or res["updated"]) and not res.get("absorbed"):
             self.win.show_toast(msg)
         self.load()
 
@@ -1816,6 +1828,13 @@ class _OptDate(QWidget):
         return self.de.date().toString("yyyy-MM-dd")
 
 
+def _quiet(fn):
+    try:
+        fn()
+    except Exception:
+        pass
+
+
 class OrderDialog(QDialog):
     """新订单 / 改一张单。确定后 self.changes = 改了的字段，self.values = 全部字段，self.deleted = 点了删除"""
 
@@ -1913,19 +1932,39 @@ class OrderDialog(QDialog):
         self.e_note = QLineEdit(str(o.get("note") or ""))
         lab(tr("备注"), 7, 0)
         g.addWidget(self.e_note, 7, 1, 1, 4)
-        v.addLayout(g)
+        body = QVBoxLayout()
+        body.setSpacing(12)
+        body.addLayout(g)
         if hist:
             hl = QLabel(tr("修改记录"))
             hl.setObjectName("Muted")
-            v.addWidget(hl)
+            body.addWidget(hl)
             lst = QListWidget()
             lst.setMaximumHeight(130)
             lst.addItems(history_lines(hist))
-            v.addWidget(lst)
+            body.addWidget(lst)
         if row and row.get("ref"):
             ref = QLabel(tr("Excel：{0}", row["ref"]))
             ref.setObjectName("Faint")
-            v.addWidget(ref)
+            body.addWidget(ref)
+        self.mail_tab = None
+        if row and row.get("id") and getattr(page, "st", None) is not None:
+            # 2026-11-08：这张单的邮件（发出的订单信、确认、DDT、回信），只读，不会在 Foxmail 里变成已读
+            from order_mail_tab import OrderMailTab
+            tabs = QTabWidget()
+            w = QWidget()
+            w.setLayout(body)
+            body.setContentsMargins(0, 10, 0, 0)
+            body.addStretch()
+            tabs.addTab(w, tr("订单"))
+            self.mail_tab = OrderMailTab(self, page.settings, page.st, row["id"],
+                                         on_count=lambda n: tabs.setTabText(1, tr("邮件（{0}）", n) if n else tr("邮件")))
+            n = len(o.get("mails") or []) + (1 if (o.get("sent") or {}).get("mid") and not o.get("mails") else 0)
+            tabs.addTab(self.mail_tab, tr("邮件（{0}）", n) if n else tr("邮件"))
+            tabs.currentChanged.connect(lambda i: i == 1 and self.mail_tab.activate())
+            v.addWidget(tabs, 1)
+        else:
+            v.addLayout(body)
         row_b = QHBoxLayout()
         if row:
             b_del = QPushButton(tr("删除"))

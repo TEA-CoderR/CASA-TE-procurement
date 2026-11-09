@@ -136,3 +136,119 @@ def test_draft_uses_cached_sent_mail_without_network(tmp_path, monkeypatch):
     assert d["ids"] == ["L2"] and d["from"] == "infolucca@casa-te.com"
     assert d["to"] == ["ordini@lampa.it"] and d["cc"] == ["matteohe@casa-te.com"]
     assert d["subject"] == "Ordine Lampa Capannori 0711" and d["body_src"] == "template" and d["files"] == []
+
+
+def test_smtp_test_logs_in_only_and_switches_to_other_aliyun_host():
+    import smtplib
+    import commands as CMD
+    import mail_client as MC
+    calls = []
+
+    class OnlyOld:
+        def __init__(self, host, port):
+            self.host = host
+            calls.append((host, port))
+
+        def login(self, u, p):
+            if self.host != "smtp.mxhichina.com":
+                raise smtplib.SMTPAuthenticationError(535, b"auth failed")
+
+        def send_message(self, msg):                 # 测试连接不许发信
+            raise AssertionError("sent a mail")
+
+        def quit(self):
+            pass
+    settings = {"mail": {"accounts": [dict(ACCS[0])]}}
+    acc = MC.accounts(settings)[0]
+    r = CMD._smtp_test(settings, acc, "pw", smtp_factory=OnlyOld)
+    assert "smtp.mxhichina.com" in r and calls == [("smtp.qiye.aliyun.com", 465), ("smtp.mxhichina.com", 465)]
+    acc = MC.accounts(settings)[0]
+    assert acc["smtp"] == "smtp.mxhichina.com" and MS.smtp_of(acc) == ("smtp.mxhichina.com", 465)
+
+    class Never(OnlyOld):
+        def login(self, u, p):
+            raise smtplib.SMTPAuthenticationError(535, b"auth failed")
+    with pytest.raises(MC.MailError, match="SMTP"):
+        CMD._smtp_test({"mail": {"accounts": [dict(ACCS[0])]}}, MC.accounts({"mail": {"accounts": [ACCS[0]]}})[0],
+                       "pw", smtp_factory=Never)
+
+    def blocked(h, p):
+        raise OSError("timed out")
+    with pytest.raises(MC.MailError, match="465"):
+        CMD._smtp_test(settings, acc, "pw", smtp_factory=blocked)
+
+
+def test_mail_body_and_attachment_cached_locally(tmp_path, monkeypatch):
+    import commands as CMD
+    import settings as SET
+    import credentials
+    monkeypatch.setattr(SET, "app_dir", lambda: str(tmp_path))
+    credentials.set("mail.info@casa-te.com", "pw")
+    m = {"mailbox": "info@casa-te.com", "folder": "INBOX", "folder_raw": "INBOX", "uid": 5}
+    raw = (b"From: a@b.it\r\nSubject: x\r\nContent-Type: multipart/mixed; boundary=XX\r\n\r\n--XX\r\n"
+           b"Content-Type: text/plain; charset=utf-8\r\n\r\nBuongiorno, confermiamo.\r\n--XX\r\n"
+           b"Content-Type: application/pdf; name=ddt.pdf\r\nContent-Transfer-Encoding: base64\r\n\r\nJVBERg==\r\n--XX--\r\n")
+    seen = []
+
+    class IM:
+        def __init__(self, h, p):
+            pass
+
+        def login(self, u, p):
+            return "OK", [b""]
+
+        def _simple_command(self, *a):
+            return "OK", [b""]
+
+        def select(self, f, readonly=False):
+            assert readonly                                   # 只读
+            return "OK", [b"1"]
+
+        def uid(self, cmd, u, what):
+            seen.append(what)
+            assert "PEEK" in what                             # 不改已读
+            if what == "(BODY.PEEK[2])":
+                return "OK", [(b"5 (UID 5 BODY[2] {8}", b"JVBERg=="), b")"]
+            return "OK", [(b"5 (UID 5 BODY[] {%d}" % len(raw), raw), b")"]
+
+        def logout(self):
+            pass
+
+        def close(self):
+            pass
+    settings = {"mail": {"accounts": [dict(ACCS[0])]}}
+    import mail_client as MC
+    monkeypatch.setattr(MC, "_send_id", lambda *a, **k: None, raising=False)
+    assert "confermiamo" in CMD.mail_view_body(settings, m, factory=IM)
+    n = len(seen)
+    assert "confermiamo" in CMD.mail_view_body(settings, m, factory=IM) and len(seen) == n     # 第二次不连网
+    p = CMD.mail_attachment(settings, m, ["2", "ddt.pdf", "BASE64", 6], factory=IM)
+    assert open(p, "rb").read() == b"%PDF" and os.path.basename(p) == "ddt.pdf"
+    CMD.mail_attachment(settings, m, ["2", "ddt.pdf", "BASE64", 6], factory=IM)
+    assert seen.count("(BODY.PEEK[2])") == 1
+
+
+def test_draft_opens_without_network_and_reads_last_body_later(tmp_path, monkeypatch):
+    """发订单窗口不用等邮箱：草稿只用本机缓存；上次那封信的正文读过的直接用，没读过的标 need_last 窗口打开后再读"""
+    import json
+    import commands as CMD
+    import settings as SET
+    monkeypatch.setattr(SET, "app_dir", lambda: str(tmp_path))
+    (tmp_path / "cache" / "mail").mkdir(parents=True)
+    rows = {"5": {"from": "infolucca@casa-te.com", "mailbox": "infolucca@casa-te.com", "folder": "已发送", "uid": 5,
+                  "subject": "Ordine LAMPA Capannori 2010", "attachments": ["Ordine LAMPA Capannori 2010.xlsx"],
+                  "date": "2026-10-20 10:00:00", "to": "ordini@lampa.it"}}
+    (tmp_path / "cache" / "mail" / "lucca.json").write_text(json.dumps({"Sent": {"validity": 1, "rows": rows}}),
+                                                             encoding="utf-8")
+    st = _st(tmp_path / "tr")
+    st.set("L2", {"date": "2026-11-07", "store": "2", "supplier": "LAMPA", "draft": True})
+    calls = []
+    monkeypatch.setattr(CMD, "mail_view_body", lambda s, m, factory=None: calls.append(m["uid"]) or
+                        "Buongiorno,\nordine Ordine LAMPA Capannori 2010\nSaluti")
+    st_ = {"mail": {"accounts": ACCS}}
+    d = CMD.order_mail_draft(st_, st, "L2", fetch_body=False, today=date(2026, 11, 7))
+    assert d["need_last"] and d["body_src"] == "template" and calls == []          # 没连网
+    assert "Capannori 0711" in CMD.order_mail_last_body(st_, d) and calls == [5]
+    CMD._bodies_save({"view|" + CMD._body_key(d["last"]): "Ciao\nOrdine LAMPA Capannori 2010"})
+    d2 = CMD.order_mail_draft(st_, st, "L2", fetch_body=False, today=date(2026, 11, 7))
+    assert d2["body_src"] == "last" and not d2["need_last"] and "0711" in d2["body"] and calls == [5]

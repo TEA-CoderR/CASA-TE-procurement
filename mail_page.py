@@ -182,6 +182,7 @@ class MailAccountsDialog(QDialog):
         addr = self._current()
         r, e = BusyDialog.run(self, tr("测试连接"), tr("正在连接 {0}…", addr), lambda: CMD.mail_test(self.settings, addr))
         self.msg.setText(str(e) if e else r)
+        save_settings(self.settings)                 # 测试时可能换了收信 / 发信服务器地址
         from theme import T
         self.msg.setStyleSheet("" if not e else f"color:{T('err')};")
 
