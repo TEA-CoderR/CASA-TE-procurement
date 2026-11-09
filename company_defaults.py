@@ -4,7 +4,7 @@
 """
 import json
 
-COMPANY_DEFAULTS_VER = 13          # v3.3.17 发布时同步
+COMPANY_DEFAULTS_VER = 14          # v3.3.18 发布时同步
 
 COMPANY_DEFAULTS = json.loads(r'''
 {
@@ -661,6 +661,9 @@ COMPANY_DEFAULTS = json.loads(r'''
   "lines_cols_hidden": [],
   "lines_cols_hidden_ver": 1,
   "lines_columns_ver": 1,
+  "order_mails_cols_hidden": [],
+  "order_mails_cols_hidden_ver": 1,
+  "order_mails_columns_ver": 1,
   "orders_cols_hidden": [
    11,
    12
@@ -726,7 +729,7 @@ COMPANY_DEFAULTS = json.loads(r'''
   "transit_dlg_cols_hidden": [],
   "transit_dlg_cols_hidden_ver": 1,
   "transit_dlg_columns_ver": 1,
-  "written_at": "11-06 21:16"
+  "written_at": "11-09 11:30"
  },
  "wholesale_transfer": {
   "enabled": false,
