@@ -32,7 +32,8 @@ STOP = {"X", "DA", "DI", "CON", "E", "PER", "IL", "LA", "DEL", "NEW", "NUOVO", "
 
 
 def _norm(s):
-    s = str(s or "").upper().replace("&", " ").replace("''", "'")
+    s = re.sub(r"([A-Z]{3,})(e|di|da|x)(?=[A-Z]{3,})", r"\1 \2 ", str(s or ""))   # DELICATOeSOFF → DELICATO e SOFF
+    s = s.upper().replace("&", " ").replace("''", "'")
     return re.sub(r"(\d),(\d)", r"\1.\2", s)
 
 
@@ -124,9 +125,9 @@ def score(old, new, e_old, e_new, idf):
     return max(0.0, s), size_text(za), size_text(zb)          # 可以超过 1（排先后用），界面上按 100% 封顶
 
 
-def _cand(e, n, o, sc=0.0, za="", zb="", fresh=None):
+def _cand(e, n, o, sc=0.0, za="", zb="", fresh=None, names=None):
     lab = min(o, key=lambda k: o[k]["price"])
-    return {"ean": e, "name": n, "score": round(sc, 3), "size_from": za, "size_to": zb,
+    return {"ean": e, "name": n, "names": names or [n], "score": round(sc, 3), "size_from": za, "size_to": zb,
             "n": len(o), "best": o[lab]["price"], "best_sup": lab, "pack": o[lab].get("pack"),
             "prices": {k: v["price"] for k, v in o.items()},
             "fresh": bool(fresh) and all(e in fresh.get(k, ()) for k in o)}
@@ -144,24 +145,36 @@ def pool(grid, quotes):
     for e, o in offer.items():
         if e in items:
             continue
-        n = _desc(o)
-        if n:
-            out.append(_cand(e, n, o))
+        ns = _descs(o)
+        if ns:
+            out.append(_cand(e, ns[0], o, names=ns))
     return out
+
+
+def _best(old, e_old, names, e_new, idf):
+    """几家批发商对同一个条码写法不一样（MELONI「COCCOLINO DILUITO 50 LAV.DELICATO&SOFF.」、
+    NEW GRIECO「COCCOLINO AMM. 3L 50L. DELIC. & SOFFICE」）：每种写法都算，取最像的那个（名字也用它）"""
+    best = None
+    for n in names:
+        sc, za, zb = score(old, n, e_old, e_new, idf)
+        if best is None or sc > best[0]:
+            best = (sc, za, zb, n)
+    return best
 
 
 def rescore(old, c):
     """手动挑的候选：按旧商品算一遍像不像 / 规格变化"""
-    sc, za, zb = score(old.get("name") or "", c["name"], old["ean"], c["ean"], lambda w: 1.0)
-    return dict(c, score=round(sc, 3), size_from=za, size_to=zb)
+    sc, za, zb, n = _best(old.get("name") or "", old["ean"], c.get("names") or [c["name"]], c["ean"], lambda w: 1.0)
+    return dict(c, name=n, score=round(sc, 3), size_from=za, size_to=zb)
 
 
-def _desc(o):
+def _descs(o):
+    out = []
     for q in o.values():
-        d = q.get("desc")
-        if d and not str(d).startswith("="):
-            return str(d)
-    return ""
+        d = str(q.get("desc") or "").strip()
+        if d and not d.startswith("=") and d not in out:
+            out.append(d)
+    return out
 
 
 def suggest(grid, quotes, fresh=None, skip=()):
@@ -173,13 +186,13 @@ def suggest(grid, quotes, fresh=None, skip=()):
             if q.get("price"):
                 offer.setdefault(e, {})[label] = q
     gone = [it for e, it in items.items() if e not in offer and e not in skip]
-    pool = [(e, _desc(o), o) for e, o in offer.items() if e not in items]
-    pool = [(e, n, o) for e, n, o in pool if n]
-    idf = _Idf([n for _e, n, _o in pool] + [it.get("name") or "" for it in items.values()])
-    # 先按词粗筛（品牌那个词要有），再细算
+    pool = [(e, _descs(o), o) for e, o in offer.items() if e not in items]
+    pool = [(e, ns, o) for e, ns, o in pool if ns]
+    idf = _Idf([n for _e, ns, _o in pool for n in ns] + [it.get("name") or "" for it in items.values()])
+    # 先按词粗筛（品牌那个词要有，几家的写法都算），再细算
     by_word, by_pre = {}, {}
-    for i, (e, n, _o) in enumerate(pool):
-        for w in set(words(n)):
+    for i, (e, ns, _o) in enumerate(pool):
+        for w in {w for n in ns for w in words(n)}:
             by_word.setdefault(w, []).append(i)
         by_pre.setdefault(e[:7], []).append(i)
     out = []
@@ -192,13 +205,13 @@ def suggest(grid, quotes, fresh=None, skip=()):
         cand_ix.update(by_pre.get(it["ean"][:7], ()))      # 同一个厂家的（MASTROLINDO ↔ MASTRO LINDO 这种连写）
         res = []
         for i in cand_ix:
-            e, n, o = pool[i]
-            sc, za, zb = score(name, n, it["ean"], e, idf)
+            e, ns, o = pool[i]
+            sc, za, zb, n = _best(name, it["ean"], ns, e, idf)
             if fresh and all(e in fresh.get(k, ()) for k in o):
                 sc += 0.05                          # 这周新上架的：更像是换下来的那个
             if sc < MIN_SCORE:
                 continue
-            res.append(_cand(e, n, o, sc, za, zb, fresh))
+            res.append(_cand(e, n, o, sc, za, zb, fresh, names=ns))
         res.sort(key=lambda c: (-c["score"], -c["n"]))
         out.append({"old": it, "cands": res[:TOP]})
     out.sort(key=lambda r: (-(r["cands"][0]["score"] if r["cands"] else 0), r["old"].get("name") or ""))

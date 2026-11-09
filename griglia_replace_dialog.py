@@ -316,7 +316,7 @@ class ReplaceDialog(QDialog):
         if old.get("code"):
             bits.append(tr("编号 {0}", old["code"]))
         if old.get("pack"):
-            bits.append(tr("{0} 件/箱", old["pack"]))
+            bits.append(tr("{0} 件/箱", f"{float(old['pack']):g}"))
         if old.get("supplier"):
             bits.append(old["supplier"])
         p = old.get("best") or old.get("price")
@@ -342,7 +342,7 @@ class ReplaceDialog(QDialog):
         if ch.get("size_from") or ch.get("size_to"):
             bits.append(f"{ch.get('size_from') or '?'} → {ch.get('size_to') or '?'}")
         if ch.get("pack"):
-            bits.append(tr("{0} 件/箱", ch["pack"]))
+            bits.append(tr("{0} 件/箱", f"{float(ch['pack']):g}"))
         prices = sorted((ch.get("prices") or {}).items(), key=lambda kv: kv[1])
         line2 = " · ".join(f"{k} {_money(v)}" for k, v in prices)
         self.new_meta.setText(" · ".join(str(b) for b in bits) + ("\n" + line2 if line2 else ""))
@@ -357,7 +357,8 @@ class ReplaceDialog(QDialog):
         q = self.q.text().strip()
         if len(q) >= 2:
             ws = [w for w in GR.words(q)] or [q.upper()]
-            hits = [c for c in self.pool if c["ean"].startswith(q) or all(w in c["name"].upper() for w in ws)]
+            hits = [c for c in self.pool if c["ean"].startswith(q)
+                    or all(w in " ".join(c.get("names") or [c["name"]]).upper() for w in ws)]
             cands = sorted((GR.rescore(old, c) for c in hits[:400]), key=lambda c: -c["score"])[:40]
             if not cands:
                 it = QListWidgetItem(tr("这周报价里没有"))

@@ -235,3 +235,20 @@ def test_add_replacements_backs_up_and_records_done(monkeypatch=None):
         assert False
     except RuntimeError:
         pass
+
+
+def test_each_wholesaler_spelling_scored_and_glued_words_split():
+    """用户 11-09：COCCOLINO DILUITO 40 LAV.DELICATOeSOFF. 应该找到 MELONI 的 50 LAV.DELICATO&SOFF.
+    （别家写成 COCCOLINO AMM. 3L 50L. DELIC. & SOFFICE，以前只拿第一家的写法算，就找不到了）"""
+    assert GR.words("COCCOLINO DILUITO 40 LAV.DELICATOeSOFF.") == ["COCCOLINO", "DILUITO", "DELICATO", "SOFF"]
+    rows = [["Cod.Art.", "Codice EAN", "Descrizione prodotto", "Fornitore", "PA MIGLIORE", "MELONI"],
+            ["1", "8720181095191", "COCCOLINO DILUITO 40 LAV.DELICATOeSOFF.", "MELONI WALTER SPA", 2.49, 2.49]]
+    g = G.parse_rows(rows)
+    q = {"NEW GRIECO": {"8721497047263": {"price": 3.3, "desc": "COCCOLINO AMM. 3L 50L. DELIC. & SOFFICE"}},
+         "MELONI": {"8721497047263": {"price": 3.09, "desc": "COCCOLINO DILUITO 50 LAV.DELICATO&SOFF."},
+                    "8720181593536": {"price": 4.2, "desc": "COCCOLINO WOND.WASH DET.37 LAV.ODOR PRO."}}}
+    c = GR.suggest(g, q)[0]["cands"][0]
+    assert c["ean"] == "8721497047263" and c["name"] == "COCCOLINO DILUITO 50 LAV.DELICATO&SOFF."
+    assert c["score"] >= GR.SURE and c["size_from"] == "40 lav" and c["size_to"] == "50 lav"
+    p = next(x for x in GR.pool(g, q) if x["ean"] == "8721497047263")
+    assert GR.rescore(g["items"]["8720181095191"], p)["name"] == "COCCOLINO DILUITO 50 LAV.DELICATO&SOFF."
