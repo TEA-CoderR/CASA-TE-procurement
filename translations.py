@@ -3347,4 +3347,7 @@ TRANSLATIONS = {
     '像不像': ('Match', 'Somiglianza'),
     '这周新上架的': ('New this week', 'Nuovo questa settimana'),
     '先在右边选一个替代品': ('Pick a replacement on the right first', 'Scegli prima un sostituto a destra'),
+    '蓝字 = 换了规格（40 → 50 lav）': ('Blue = size changed (40 → 50 washes)', 'Blu = formato cambiato (40 → 50 lavaggi)'),
+    '搜到 {0} 个': ('{0} found', '{0} trovati'),
+    '候选（{0}）': ('Candidates ({0})', 'Candidati ({0})'),
 }

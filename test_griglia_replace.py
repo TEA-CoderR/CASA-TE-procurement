@@ -252,3 +252,11 @@ def test_each_wholesaler_spelling_scored_and_glued_words_split():
     assert c["score"] >= GR.SURE and c["size_from"] == "40 lav" and c["size_to"] == "50 lav"
     p = next(x for x in GR.pool(g, q) if x["ean"] == "8721497047263")
     assert GR.rescore(g["items"]["8720181095191"], p)["name"] == "COCCOLINO DILUITO 50 LAV.DELICATO&SOFF."
+
+
+def test_size_change_text_and_lav_written_as_L():
+    assert GR.change("COCCOLINO 40 LAV", "COCCOLINO 50 LAV") == ("40 → 50 lav", True)
+    assert GR.change("SVELTO 980 ML", "SVELTO 1,03L") == ("980 ml → 1.03 l", True)
+    assert GR.change("X 750 ML", "Y 750ML") == ("750 ml", False)
+    assert GR.sizes("LYSOFORM LAV.2,43L 54L. COLOR") == [(2430.0, "ml"), (54.0, "lav")]
+    assert GR.sizes("LYSOFORM CASA 1100 MLx2 PZ") == [(1100.0, "ml")]

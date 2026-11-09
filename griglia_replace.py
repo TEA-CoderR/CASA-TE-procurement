@@ -25,7 +25,7 @@ UNITS = {"ML": "ml", "LT": "l", "LITRI": "l", "L": "l", "CL": "cl", "GR": "g", "
          "FOGXXL": "fogli", "FOG": "fogli", "PANNI": "panni", "TABS": "tab", "TAB": "tab", "CAPS": "caps",
          "BUSTE": "bus", "BUS": "bus", "MT": "m", "MTR": "m", "ROTOLI": "rot", "ROT": "rot", "SALV": "pz"}
 _U = "|".join(sorted(UNITS, key=len, reverse=True))
-SIZE = re.compile(r"(?<![A-Z0-9])(\d+(?:\.\d+)?)\s*(" + _U + r")(?![A-Z])")
+SIZE = re.compile(r"(?<![A-Z0-9])(\d+(?:\.\d+)?)\s*(" + _U + r")(?!(?!X\d)[A-Z])")         # 1100 MLx2 也认
 SIZE2 = re.compile(r"(?<![A-Z0-9])(ML|LT|GR|KG|PZ)\.?\s*(\d+(?:\.\d+)?)(?![0-9])")
 TO_BASE = {"l": ("ml", 1000), "cl": ("ml", 10), "kg": ("g", 1000)}
 STOP = {"X", "DA", "DI", "CON", "E", "PER", "IL", "LA", "DEL", "NEW", "NUOVO", "CF", "CONF", "IN", "AL", "ALLA"}
@@ -41,7 +41,10 @@ def sizes(name):
     """名字里的规格：[(数, 单位)]，L / CL / KG 换成 ml / g（1,7 LT → 1700 ml）"""
     s, out = _norm(name), []
     for m in SIZE.finditer(s):
-        out.append((float(m.group(1)), UNITS[m.group(2)]))
+        v, u = float(m.group(1)), UNITS[m.group(2)]
+        if m.group(2) == "L" and v > 10:
+            u = "lav"                       # 「54L.」「50L.」是 54 / 50 洗（没有 54 升的洗衣液）
+        out.append((v, u))
     for m in SIZE2.finditer(s):
         out.append((float(m.group(2)), UNITS[m.group(1)]))
     res = []
@@ -72,6 +75,30 @@ def _cos(a, b):
 
 def size_text(sz):
     return " ".join((f"{v / 1000:g} l" if u == "ml" and v >= 1000 else f"{v:g} {u}") for v, u in sz)
+
+
+def _one(v, u):
+    return (f"{v / 1000:g}", "l") if u == "ml" and v >= 1000 else (f"{v:g}", u)
+
+
+_MAIN = ("lav", "ml", "g", "fogli", "panni", "tab", "caps", "bus", "rot", "m", "pz")
+
+
+def change(old, new):
+    """规格怎么变：(文字, 变没变)。「40 → 50 lav」「980 ml → 1.03 l」「750 ml」（没变）；名字里都没写规格 → ("", False)"""
+    za, zb = sizes(old), sizes(new)
+    if not za and not zb:
+        return "", False
+    common = {u for _v, u in za} & {u for _v, u in zb}
+    u = next((x for x in _MAIN if x in common), None)
+    if u is None:
+        return f"{size_text(za) or '?'} → {size_text(zb) or '?'}", True
+    va = max(v for v, x in za if x == u)
+    vb = max(v for v, x in zb if x == u)
+    (a, ua), (b, ub) = _one(va, u), _one(vb, u)
+    if va == vb:
+        return f"{a} {ua}", False
+    return (f"{a} → {b} {ub}" if ua == ub else f"{a} {ua} → {b} {ub}"), True
 
 
 class _Idf:
