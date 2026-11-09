@@ -3305,4 +3305,6 @@ TRANSLATIONS = {
     '上次那封信读到了，正文你已经改过，没有替换': ('The last e-mail was read, but you already edited the text, so it was not replaced', "L'ultima e-mail è stata letta, ma il testo è già stato modificato: non sostituito"),
     '双击「✉ 待登记」发订单邮件 · 双击别的格改订单': ('Double-click "✉ To register" to e-mail the order · double-click other cells to edit', "Doppio clic su «✉ Da registrare» per inviare l'ordine · doppio clic sulle altre celle per modificare"),
     '双击：发订单邮件给供应商，发完自动变「已下单」': ('Double-click: e-mail the order to the supplier; it becomes "Ordered" after sending', "Doppio clic: invia l'ordine al fornitore; dopo l'invio diventa «Ordinato»"),
+    '✔ {0} 张待登记 Excel 里已经手填了，已合并（看日志）': ('✔ {0} orders to register were already entered by hand in Excel; merged (see log)', '✔ {0} ordini da registrare erano già inseriti a mano in Excel; uniti (vedi log)'),
+    '订单跟踪：待登记 {0} {1} · {2} 在 Excel 里已经手填了，合并成 Excel 那张': ('Order tracking: to-register order {0} {1} · {2} was already entered in Excel; merged into the Excel one', 'Tracking ordini: ordine da registrare {0} {1} · {2} già inserito in Excel; unito a quello di Excel'),
 }

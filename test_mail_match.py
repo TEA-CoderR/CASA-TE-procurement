@@ -364,3 +364,26 @@ def test_order_mail_tab_finds_events_sent_mail_and_replies():
         ("ship", "DDT 0028677")]
     assert rows[0]["mail"] is None and rows[1]["mail"]["parts"]              # 有附件段号的那份
     assert rows[3]["mail"]["uid"] == 3
+
+
+def test_excel_sync_absorbs_drafts_already_written_by_hand(tmp_path):
+    """2026-11-09：Excel 里已经手填了的单，程序的「待登记」同步时自动合并；DETERSIVO 的对 DETER 那几行，别的不混"""
+    st = _st(tmp_path)
+    day = date.today()
+    OT.register_drafts(st, "store_orders", [{"store": "1", "supplier": "FACCO GIUSEPPE & C. SPA", "amount": 874.9,
+                                             "file": r"D:\x\Ordine_FACCO.xlsx"},
+                                            {"store": "1", "supplier": "MELONI", "amount": 50.0}])   # 不是 DETERSIVO 的单
+    OT.register_drafts(st, "wholesale", [{"store": "1", "supplier": "MELONI", "amount": 1738.9}])
+    st.set("xF", {"date": day.isoformat(), "store": "1", "supplier": "FACCO", "amount": 879.7, "origin": "excel"})
+    st.set("xM", {"date": day.isoformat(), "store": "1", "supplier": "Meloni", "amount": 2258.75, "origin": "excel",
+                  "kind": "deter"})
+    n, _undo, pairs = MM.absorb_drafts(st)
+    assert n == 2 and sorted(b for _a, b in pairs) == ["xF", "xM"]
+    st.reload()
+    assert st.orders["xF"]["amount"] == 879.7 and st.orders["xF"]["file"].endswith("Ordine_FACCO.xlsx")
+    left = [o for o in st.orders.values() if o.get("draft")]
+    assert len(left) == 1 and left[0]["amount"] == 50.0
+    # 重新配货不再生成合并掉的待登记
+    r = OT.register_drafts(st, "store_orders", [{"store": "1", "supplier": "FACCO GIUSEPPE & C. SPA", "amount": 900.0},
+                                                 {"store": "1", "supplier": "MELONI", "amount": 50.0}])
+    assert r["new"] == 0

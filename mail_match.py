@@ -447,11 +447,12 @@ def duplicates(st, days=3):
     下单日期前后 days 天内）→ [(待登记单号, 手填单号)]。2026-11-07 真实数据：73 张待登记里 17 张是这样重复的。
     """
     man = [(oid, o) for oid, o in st.orders.items()
-           if not o.get("draft") and o.get("state") != "cancel" and o.get("kind") != "deter"]
+           if not o.get("draft") and o.get("state") != "cancel"]
     out = []
     for oid, o in st.orders.items():
         if not o.get("draft") or o.get("state") == "cancel":
             continue
+        deter = o.get("origin") == "wholesale"                # DETERSIVO 比价的待登记 ↔ Excel 里写 DETER 的那几行
         a, d = st.canon(OT.sup_key(o.get("supplier"))), OT.to_date(o.get("date"))
         if not d:
             continue
@@ -459,6 +460,8 @@ def duplicates(st, days=3):
         for m_id, m in man:
             d2 = OT.to_date(m.get("date"))
             if not d2 or str(m.get("store")) != str(o.get("store")) or abs((d2 - d).days) > days:
+                continue
+            if (m.get("kind") == "deter") != deter:
                 continue
             if not _like(a, st.canon(OT.sup_key(m.get("supplier")))):
                 continue
@@ -486,7 +489,22 @@ def dup_suggestions(st, ignored=None):
     return out
 
 
-def merge_duplicates(st, sugs):
+def absorb_drafts(st):
+    """
+    同步 Excel 时自动做（2026-11-09 用户：表里明明已经有 9 号的单，程序还挂着「待登记」= 没同步进来）：
+    程序生成的待登记，Excel 里已经手填了同一张（duplicates：同一家门店、供应商名字对得上、前后 3 天）→
+    合并（订单文件 / 金额挂到手填那张，待登记删掉）。手填的就是已经下了的单，以 Excel 为准。
+    返回 (几张, 撤销用, [(待登记, 手填)])
+    """
+    pairs = duplicates(st)
+    if not pairs:
+        return 0, [], []
+    sugs = [{"id": a, "twin": b} for a, b in pairs]
+    n, undo = merge_duplicates(st, sugs, src="merged")
+    return n, undo, pairs
+
+
+def merge_duplicates(st, sugs, src="mail"):
     """
     合并重复的待登记：订单文件 / 箱数 / 金额（手填的没写才补）挂到手填的那张单上，待登记删掉。
     返回 (几张, 撤销用 [("set", 单号, 旧字段) / ("restore", 单号, 全部字段)])
@@ -502,8 +520,8 @@ def merge_duplicates(st, sugs):
             ch.append((s["twin"], f))
         undo.append(("restore", s["id"], dict(o)))
         gone.append(s["id"])
-    st.set_many(ch, src="mail")
-    st.delete(gone, src="mail")
+    st.set_many(ch, src=src)
+    st.delete(gone, src=src)
     return len(gone), undo
 
 

@@ -1682,6 +1682,12 @@ class TrackingPage:
         if w.get("failed"):
             self.win.show_toast(tr("⚠ {0} 处修改没写进 Excel（看日志）", len(w["failed"])))
         self._write_state = None
+        if res.get("absorbed"):                   # 待登记在 Excel 里已经手填了 → 合并掉（以 Excel 为准）
+            for kind, oid, f in res.get("absorb_undo") or []:
+                if kind == "restore":
+                    self.win.log(tr("订单跟踪：待登记 {0} {1} · {2} 在 Excel 里已经手填了，合并成 Excel 那张", _d(OT.to_date(f.get("date"))),
+                                    f.get("supplier") or "", OT.STORE_NAMES.get(str(f.get("store")), "")))
+            self.win.show_toast(tr("✔ {0} 张待登记 Excel 里已经手填了，已合并（看日志）", res["absorbed"]))
         msg = tr("Excel 同步：新的 {0} 张，更新 {1} 张，Excel 里删掉的 {2} 张", res["new"], res["updated"], res["removed"])
         if res.get("kept"):
             msg += tr("（另有 {0} 张 Excel 里没有了，但程序里改过，留着）", res["kept"])
@@ -1691,7 +1697,7 @@ class TrackingPage:
             self.win.log(tr("⚠ Excel「{0}」表 {1} 列那一块认不出是哪家门店，没读：「{2}」", sh, col, title or "—"))
         if unk:
             self.win.show_toast(tr("⚠ Excel 里有 {0} 块认不出是哪家门店，没读（看日志）", len(unk)))
-        elif manual or res["new"] or res["updated"]:
+        elif (manual or res["new"] or res["updated"]) and not res.get("absorbed"):
             self.win.show_toast(msg)
         self.load()
 
