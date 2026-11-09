@@ -12,16 +12,22 @@ DETERSIVO采购 → Griglia →「都不做了」那张表 →「🔄 找替代�
 - 「加进 Griglia（n）」→ 确认 → 写好以后 Griglia 页自动刷新。
 
 ## 写进 Griglia 的时候做了什么（`commands.griglia_add_replacements`）
-1. Griglia 被 Excel 打开着（有 `~$` 锁文件）→ 不改，提示先关掉。
-2. 先备份到「0 Griglia\_备份」（文件几百 MB，只留最近 2 份，`GRID_BACKUPS`）。
-3. 用 Excel 本身改（`griglia_replace.write_rows`，win32com）：图片、格式、公式都保留。不用 openpyxl 存（会丢图片）。
+1. **改哪份**（用户 11-09）：「换 Griglia…」从同步文件夹选的，程序记下原件（settings griglia.source），**直接改原件**；
+   没记下原件的才改工作文件夹「0 Griglia」那份。程序读的是「0 Griglia」里的副本：原件比副本新就自动重新复制（`griglia.sync_from_source`，刷新 Griglia 页时），
+   改完原件也马上复制回副本。Griglia 页标题右边写「· 同步文件夹」，鼠标提示写原件路径。
+2. 要改的文件被 Excel 打开着（有 `~$` 锁文件）→ 不改，提示先关掉。
+3. 先在**程序文件夹 backup\griglia** 存一份备份，留最近 5 份。备份不带嵌进去的图片：图片那一列（表头 Immagine / Foto）写成
+   `=IFERROR(_xlfn.IMAGE(网址),"")`（`griglia_replace.light_copy`，openpyxl 读的时候跳过图片），几百 MB → 几 MB。
+4. 用 Excel 本身改（`griglia_replace.write_rows`，win32com）：图片、格式、公式都保留。不用 openpyxl 存原件（会丢图片）。
    每个旧商品下面插一行：格式照上面那行，内容按 R1C1 照抄（分类 / 品牌 / 门店勾选 / 公式），
    再换掉 条码（文字格式）/ 名称 / 箱规 / PREZZO NETTO、PA MIGLIORE（最低价）/ Fornitore（最便宜那家，用 Griglia 里那家的写法）/
-   各批发商价格（这周没报价的那家清空）；编号（COD.ART.）空着。新行浅蓝底（DDEBF7），旧行字变灰，旧条码格加批注
-   「Non più disponibile dai grossisti → sostituito da …」。不抄商品图（Rows.Copy 会把这一行上的图片也抄一份）。
-4. 行号对不上（有人插过行）→ 按条码整格再找一次；还找不到就跳过、写日志。
-5. 记进「0 Griglia\_替代记录.json」（旧条码 → 新条码、谁、什么时候）：这些旧条码以后不再算「都不做了」。
-6. 审计 logs/audit.jsonl。
+   各批发商价格（这周没报价的那家清空）；编号（COD.ART.）空着；**去掉照抄来的删除线**（旧行的划线表示不做了）；图片那一格写新条码的 =IMAGE(网址)。
+   新行浅蓝底（DDEBF7），旧行字变灰，旧条码格加批注「Non più disponibile dai grossisti → sostituito da …」。
+5. 行号对不上（有人插过行）→ 按条码整格再找一次；还找不到就跳过、写日志。
+6. 记进「0 Griglia\_替代记录.json」：旧条码 → 新条码、旧 / 新名称、规格变化、谁、什么时候、改的文件、第几行、最低价。
+   Griglia 页「都不做了」表上「替换记录（n）」按钮看全部记录（可以搜、可以打开那个文件）。
+   **新条码在现在这份 Griglia 里**才算替代过（换了一份没加过的 Griglia，旧商品又会出现在「都不做了」）。
+7. 审计 logs/audit.jsonl。
 
 ## 怎么算像不像（`griglia_replace.score`）
 - 名字：词重合（少见的词分量重，idf）0.65 + 三个字母一组的相似度 0.35；

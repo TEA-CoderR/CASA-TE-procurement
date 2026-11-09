@@ -214,27 +214,95 @@ def test_write_rows_inserts_below_and_keeps_old():
     assert done2 == [("8001111000014", 6)] and ws2.v[(6, 2)] == "8001111000021"
 
 
-def test_add_replacements_backs_up_and_records_done(monkeypatch=None):
+def _xlsx(path, img=True):
+    from openpyxl import Workbook
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "GRIGLIA"
+    ws.append(["ELENCO DETERSIVI"])
+    ws.append([])
+    ws.append((["Immagine"] if img else []) + ["Cod.Art.", "Codice EAN", "Descrizione prodotto"])
+    ws.append(([None] if img else []) + ["101", "8001111000014", "COCCOLINO 40 LAV"])
+    ws.append(([None] if img else []) + ["102", "8002222000017", "SVELTO 980 ML"])
+    wb.save(path)
+
+
+def test_add_replacements_edits_source_backs_up_light_and_records(monkeypatch=None):
+    """用户 11-09：改同步文件夹里的原件，程序文件夹留一份不带图片的备份；程序里有替换记录"""
     import commands as CMD
-    d = tempfile.mkdtemp()
-    p = os.path.join(d, "SCHEDA.xlsx")
-    with open(p, "wb") as f:
-        f.write(b"x")
+    work, sync, bdir = tempfile.mkdtemp(), tempfile.mkdtemp(), tempfile.mkdtemp()
+    p, src = os.path.join(work, "SCHEDA.xlsx"), os.path.join(sync, "SCHEDA.xlsx")
+    _xlsx(p)
+    _xlsx(src)
     g = _grid(p)
+    old = g["items"]["8001111000014"]
     cand = next(r for r in GR.suggest(g, QUOTES) if r["old"]["ean"] == "8001111000014")["cands"][0]
+    opened = []
     ex = _Excel(_sheet())
-    res = CMD.griglia_add_replacements(g, [(g["items"]["8001111000014"], cand)], by="t", excel=ex)
-    assert res["written"] == [("8001111000014", 5)] and os.path.exists(res["backup"])
-    done = GR.load_done(d)
-    assert done["8001111000014"]["new"] == "8001111000021"
-    assert "8001111000014" not in {r["old"]["ean"] for r in CMD.griglia_replacements(g, QUOTES)}
+    orig_open = ex.Workbooks.Open
+    ex.Workbooks.Open = lambda path: (opened.append(path), orig_open(path))[1]
+    res = CMD.griglia_add_replacements(g, [(old, cand)], by="t", excel=ex, source=src, backup_dir=bdir)
+    assert res["written"] == [("8001111000014", 5)] and res["file"] == src
+    assert opened == [os.path.abspath(src)]                       # 改的是原件
+    from openpyxl import load_workbook
+    ws = load_workbook(res["backup"]).active                     # 备份在程序文件夹、图片换成 IMAGE 公式
+    assert os.path.dirname(res["backup"]) == bdir
+    assert "IMAGE" in ws.cell(4, 1).value and "8001111000014" in ws.cell(4, 1).value
+    done = GR.load_done(work)                                     # 记录：旧 → 新、谁、哪个文件第几行
+    r = done["8001111000014"]
+    assert r["new"] == "8001111000021" and r["old_name"] == old["name"] and r["file"] == src and r["row"] == 5
+    assert r["by"] == "t" and r["size"] == "40 → 50 lav"
+    # 新条码进了 Griglia 才算替代过（换了一份没加过的 Griglia，旧的又算都不做了）
+    assert "8001111000014" in {x["old"]["ean"] for x in CMD.griglia_replacements(g, QUOTES)}
+    g["items"]["8001111000021"] = {"ean": "8001111000021", "name": cand["name"]}
+    assert "8001111000014" not in {x["old"]["ean"] for x in CMD.griglia_replacements(g, QUOTES)}
     # Excel 开着 → 不改
-    open(os.path.join(d, "~$SCHEDA.xlsx"), "w").close()
+    open(os.path.join(sync, "~$SCHEDA.xlsx"), "w").close()
     try:
-        CMD.griglia_add_replacements(g, [(g["items"]["8002222000017"], cand)], excel=ex)
+        CMD.griglia_add_replacements(g, [(g["items"]["8002222000017"], cand)], excel=ex, source=src, backup_dir=bdir)
         assert False
     except RuntimeError:
         pass
+
+
+def test_new_row_not_struck_through_and_gets_own_image():
+    g = _grid("x.xlsx")
+    g["header_row"] = 3
+    sug = {r["old"]["ean"]: r["cands"] for r in GR.suggest(g, QUOTES)}
+    ws = _sheet()
+    for c in range(10, 0, -1):                                    # 第一列前面插一列「Immagine」
+        for r in range(1, 7):
+            if (r, c) in ws.v:
+                ws.v[(r, c + 1)] = ws.v.pop((r, c))
+    ws.v[(3, 1)] = "Immagine"
+    g2 = dict(g, cols={k: v + 1 for k, v in g["cols"].items()}, sup_cols={k: v + 1 for k, v in g["sup_cols"].items()})
+    formulas = {}
+
+    class C(_Cell):
+        def __setattr__(self, k, v):
+            if k == "Formula2":
+                formulas[(self.r, self.c)] = v
+            object.__setattr__(self, k, v)
+    ws.Cells = lambda r, c: C(ws, r, c)
+    GR.write_rows("x.xlsx", g2, GR.plan_rows(g2, [(g2["items"]["8001111000014"], sug["8001111000014"][0])]),
+                  excel=_Excel(ws))
+    assert "8001111000021" in formulas[(5, 1)] and "IMAGE" in formulas[(5, 1)]
+    new_row = [st for st in ws.styles if st.r == 5][-1]
+    assert new_row.Font.Strikethrough is False
+
+
+def test_sync_from_source_copies_newer_original():
+    root, sync = tempfile.mkdtemp(), tempfile.mkdtemp()
+    src = os.path.join(sync, "SCHEDA.xlsx")
+    _xlsx(src, img=False)
+    assert G.sync_from_source(root, src)
+    assert os.path.basename(G.find_file(root)) == "SCHEDA.xlsx"
+    assert G.sync_from_source(root, src) is None                  # 没变不再复制
+    import time
+    _xlsx(src, img=False)
+    t = time.time() + 30
+    os.utime(src, (t, t))
+    assert G.sync_from_source(root, src)
 
 
 def test_each_wholesaler_spelling_scored_and_glued_words_split():

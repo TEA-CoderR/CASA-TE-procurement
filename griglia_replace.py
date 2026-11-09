@@ -298,6 +298,12 @@ def load_done(grid_dir):
         return {}
 
 
+def done_eans(done, grid):
+    """替代过、而且新商品已经在这份 Griglia 里的旧条码（换了一份没加过的 Griglia，旧的又会算「都不做了」）"""
+    items = (grid or {}).get("items") or {}
+    return {old for old, r in (done or {}).items() if (r or {}).get("new") in items}
+
+
 def save_done(grid_dir, done):
     p = os.path.join(grid_dir, FILE)
     tmp = p + ".tmp"
@@ -385,9 +391,25 @@ def plan_rows(grid, picks, today=None):
     return out
 
 
-def write_rows(path, grid, plan, excel=None, log=None):
+IMG_HEADS = ("IMMAGINE", "IMMAGINI", "FOTO", "IMAGE", "IMG", "图片")
+
+
+def image_formula(ean, url=None):
+    """=IMAGE(网址)：图片不放进文件，Excel 365 打开时自己读（和导出的报表一样）"""
+    import product_images as PI
+    u = (url or PI.DEFAULT_URL).format(ean=ean)
+    return f'=IFERROR(_xlfn.IMAGE("{u}","",3,48,48),"")'
+
+
+def _is_img_head(v):
+    t = re.sub(r"\s+", " ", str(v or "")).strip().upper()
+    return bool(t) and any(t == h or t.startswith(h) for h in IMG_HEADS)
+
+
+def write_rows(path, grid, plan, excel=None, log=None, url=None):
     """
     用 Excel 打开 Griglia，每个不做了的商品下面插一行替代品（照抄旧行再改格子），旧行字变灰、旧条码格加批注。
+    新行：去掉照抄来的删除线（用户 11-09：旧行有划线是表示不做了，新行不要）；图片那一格换成新条码的 =IMAGE(网址)。
     excel = 测试用的假 Excel。返回 [(旧条码, 新行号)]。找不到旧行（条码对不上）的跳过，记在日志里
     """
     log = log or (lambda *_a: None)
@@ -409,6 +431,8 @@ def write_rows(path, grid, plan, excel=None, log=None):
         ec = cols.get("ean", 0) + 1
         last = max([c for c in cols.values()] + [i for i in (grid.get("sup_cols") or {}).values()] + [0]) + 1
         last = max(last, ws.UsedRange.Columns.Count + ws.UsedRange.Column - 1)
+        hr = grid.get("header_row")
+        img_col = next((c for c in range(1, min(last, 40) + 1) if hr and _is_img_head(ws.Cells(hr, c).Value)), None)
         from utils import clean_ean
         for old_ean, row, vals in plan:
             if not row or clean_ean(ws.Cells(row, ec).Value) != old_ean:
@@ -435,7 +459,20 @@ def write_rows(path, grid, plan, excel=None, log=None):
                     cell.Value = str(v)
                 else:
                     cell.Value = v
-            ws.Range(ws.Cells(row + 1, 1), ws.Cells(row + 1, last)).Interior.Color = NEW_FILL
+            new_ean = vals.get(cols.get("ean"))
+            if img_col and new_ean:
+                cell = ws.Cells(row + 1, img_col)
+                f = image_formula(new_ean, url)
+                try:
+                    cell.Formula2 = f                                 # Excel 365（动态数组公式）
+                except Exception:
+                    cell.Formula = f
+            newr = ws.Range(ws.Cells(row + 1, 1), ws.Cells(row + 1, last))
+            newr.Interior.Color = NEW_FILL
+            try:
+                newr.Font.Strikethrough = False
+            except Exception:
+                pass
             ws.Range(ws.Cells(row, 1), ws.Cells(row, last)).Font.Color = GREY_FONT
             try:
                 c = ws.Cells(row, ec)
@@ -458,3 +495,53 @@ def write_rows(path, grid, plan, excel=None, log=None):
                 excel.Quit()
             except Exception:
                 pass
+
+
+# ===================================================================== 不带图片的备份（用户 11-09：文件几百 MB，备份换成 IMAGE 函数）
+def light_copy(src, dst, url=None, log=None):
+    """
+    把 Griglia 另存一份不带图片的：嵌进去的商品图片（几百 MB）不读，图片那一列写成 =IMAGE(网址)。
+    用 openpyxl（不开 Excel），公式 / 格式 / 筛选照旧。返回 dst
+    """
+    import openpyxl
+    import openpyxl.reader.excel as RX
+    from utils import clean_ean
+    orig = RX.find_images
+    RX.find_images = lambda *a, **k: ([], [])                  # 不读图片（不然几百 MB 全读进内存）
+    try:
+        wb = openpyxl.load_workbook(src)
+    finally:
+        RX.find_images = orig
+    n = 0
+    for ws in wb.worksheets:
+        head = None
+        for r, row in enumerate(ws.iter_rows(min_row=1, max_row=10, values_only=True), 1):
+            heads = [re.sub(r"\s+", " ", str(v or "")).strip().upper() for v in row]
+            if "CODICE EAN" in heads:
+                ec = heads.index("CODICE EAN") + 1
+                ic = next((i + 1 for i, v in enumerate(row) if _is_img_head(v)), None)
+                head = (r, ec, ic)
+                break
+        if not head or not head[2]:
+            continue
+        r0, ec, ic = head
+        for r in range(r0 + 1, ws.max_row + 1):
+            e = clean_ean(ws.cell(r, ec).value)
+            cell = ws.cell(r, ic)
+            if e:
+                cell.value = image_formula(e, url)
+                n += 1
+            elif isinstance(cell.value, str) and cell.value.startswith("="):
+                cell.value = None                                  # 原来的嵌入图片公式（WPS DISPIMG）没用了
+    os.makedirs(os.path.dirname(os.path.abspath(dst)), exist_ok=True)
+    tmp = dst + ".tmp.xlsx"
+    wb.save(tmp)
+    os.replace(tmp, dst)
+    if log:
+        log(f"Griglia 备份（图片换成 IMAGE 公式 {n} 个）：{dst}")
+    return dst
+
+
+def backup_dir():
+    from settings import app_dir
+    return os.path.join(app_dir(), "backup", "griglia")

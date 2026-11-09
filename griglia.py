@@ -202,6 +202,38 @@ def load(path, cache_dir=None):
     return out
 
 
+def sync_from_source(root, source):
+    """
+    Griglia 的原件在同步文件夹（「换 Griglia…」时记下的 source）：原件比「0 Griglia」那份新（同事改过）就重新复制进来，
+    旧的挪进 _旧文件。返回复制进来的路径；原件不在 / 没变返回 None
+    """
+    import shutil
+    if not source or not os.path.isfile(source):
+        return None
+    d = grid_dir(root)
+    os.makedirs(d, exist_ok=True)
+    if os.path.normcase(os.path.dirname(os.path.abspath(source))) == os.path.normcase(os.path.abspath(d)):
+        return None
+    cur = find_file(root)
+    dst = os.path.join(d, os.path.basename(source))
+    if cur and os.path.normcase(cur) == os.path.normcase(dst) and \
+            os.path.getsize(cur) == os.path.getsize(source) and os.path.getmtime(source) <= os.path.getmtime(cur) + 2:
+        return None
+    import file_inbox as FI
+    for f in os.listdir(d):
+        fp = os.path.join(d, f)
+        if os.path.isfile(fp) and f.lower().endswith(EXCEL) and not f.startswith(("~", "$")) and \
+                os.path.normcase(fp) != os.path.normcase(dst):
+            try:
+                FI.archive(fp, os.path.join(d, "_旧文件"))
+            except OSError:
+                pass
+    tmp = dst + ".tmp"
+    shutil.copy2(source, tmp)
+    os.replace(tmp, dst)
+    return dst
+
+
 def load_for(root):
     """工作文件夹里的 Griglia（没有返回 None）"""
     p = find_file(root)

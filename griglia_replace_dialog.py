@@ -717,17 +717,23 @@ class ReplaceDialog(QDialog):
         if not picks:
             return
         picks = [(o, {k: v for k, v in c.items() if not k.startswith("_")}) for o, c in picks]
-        name = os.path.basename(self.grid["path"])
+        src = getattr(self, "source", "") or ""
+        target = src if src and os.path.isfile(src) else self.grid["path"]
+        name = os.path.basename(target)
+        where = tr("同步文件夹里的原件") if target == src else tr("工作文件夹「0 Griglia」里的这份")
         lines = "\n".join(f"· {o.get('name') or o['ean']}  →  {c['name']}" for o, c in picks[:12])
         if len(picks) > 12:
             lines += "\n" + tr("…还有 {0} 个", len(picks) - 12)
-        msg = tr("在 Griglia（{0}）里加 {1} 行：\n{2}\n\n每个旧商品下面插一行新的（浅蓝底），旧的留着、字变灰；编号空着。\n"
-                 "改之前先备份到「0 Griglia\\_备份」。Excel 要关着，文件大，可能要几分钟。\n"
-                 "Griglia 在共用的工作文件夹里，同事都会看到。确定加？", name, len(picks), lines)
+        msg = tr("在 Griglia 里加 {0} 行：\n{1}\n\n改的文件：{2}（{3}）\n{4}\n\n"
+                 "每个旧商品下面插一行新的（浅蓝底），旧的留着、字变灰；编号空着。\n"
+                 "改之前在程序文件夹存一份备份（图片换成 IMAGE 公式，文件小）。Excel 要关着，文件大，可能要几分钟。\n"
+                 "同步文件夹里的文件同事都会看到。确定加？", len(picks), lines, name, where, os.path.dirname(target))
         if QMessageBox.question(self, tr("加进 Griglia"), msg) != QMessageBox.Yes:
             return
-        res, err = BusyDialog.run(self, tr("加进 Griglia"), tr("正在用 Excel 改 {0}…（文件大，请等一下）", name),
-                                  lambda: CMD.griglia_add_replacements(self.grid, picks))
+        import product_images as PI
+        url = self.settings.get("image_url") or PI.DEFAULT_URL
+        res, err = BusyDialog.run(self, tr("加进 Griglia"), tr("正在备份并用 Excel 改 {0}…（文件大，请等一下）", name),
+                                  lambda: CMD.griglia_add_replacements(self.grid, picks, source=src, url=url))
         if err:
             QMessageBox.warning(self, tr("加进 Griglia"), tr("没加进去：{0}", err))
             return
@@ -758,10 +764,123 @@ def open_replace(page):
         page.win.show_toast(tr("没有要找替代的商品"))
         return
     dlg = ReplaceDialog(page.win, page.settings, grid, sugg, pool)
+    dlg.source = page.source() if hasattr(page, "source") else ""
     dlg.exec()
     if dlg.result_info:
         n = len(dlg.result_info["written"])
         if hasattr(page.win, "log"):
-            page.win.log(tr("Griglia 加了 {0} 个替代商品（备份：{1}）", n, dlg.result_info["backup"]))
+            page.win.log(tr("Griglia 加了 {0} 个替代商品：{1}（备份：{2}）", n, dlg.result_info.get("file", ""),
+                            dlg.result_info["backup"]))
         page.win.show_toast(tr("已加进 Griglia：{0} 行（旧的字变灰）", n))
         page.refresh()
+
+
+class ReplaceLogDialog(QDialog):
+    """替换记录（用户 11-09：程序里要有替换记录，不然不知道改了哪个）：0 Griglia/_替代记录.json，新的在上面"""
+    COLS = [("at", "时间", 128), ("by", "谁", 70), ("old_name", "不做了的商品", 280), ("old", "旧条码", 116),
+            ("name", "替代成", 280), ("new", "新条码", 116), ("size", "规格", 110), ("in", "在 Griglia 里", 92),
+            ("file", "文件 · 行", 220)]
+
+    def __init__(self, parent, settings, done, grid):
+        super().__init__(parent)
+        import os
+        self.setWindowTitle(tr("替换记录"))
+        self.setWindowFlags(Qt.Window | Qt.WindowTitleHint | Qt.WindowMinMaxButtonsHint | Qt.WindowCloseButtonHint)
+        items = (grid or {}).get("items") or {}
+        self.rows = []
+        for old, r in sorted(done.items(), key=lambda kv: kv[1].get("at") or "", reverse=True):
+            f = r.get("file") or ""
+            self.rows.append({"at": r.get("at") or "", "by": r.get("by") or "", "old": old,
+                              "old_name": r.get("old_name") or (items.get(old) or {}).get("name") or "",
+                              "new": r.get("new") or "", "name": r.get("name") or "", "size": r.get("size") or "",
+                              "in": tr("在") if r.get("new") in items else tr("不在"),
+                              "file": (os.path.basename(f) + (f" · {r['row']}" if r.get("row") else "")) if f else "",
+                              "_path": f})
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(20, 16, 20, 14)
+        lay.setSpacing(10)
+        head = QHBoxLayout()
+        from erp_widgets import tip_label, TableSortFilter
+        title = tip_label(tr("替换记录"), tr("「找替代商品」加进 Griglia 的每一条：哪天、谁、旧商品 → 新商品、改的哪个文件第几行（行号是加的那天的）。"
+                                         "「在 Griglia 里」= 现在程序读的这份 Griglia 里有没有新条码（换了一份没加过的 Griglia，旧商品又会算「都不做了」）"))
+        title.setStyleSheet("font-size:15px; font-weight:700;")
+        head.addWidget(title)
+        head.addStretch()
+        self.search = QLineEdit()
+        self.search.setPlaceholderText(tr("条码或名称"))
+        self.search.setClearButtonEnabled(True)
+        self.search.setFixedWidth(220)
+        head.addWidget(self.search)
+        self.count = QLabel("")
+        self.count.setObjectName("Faint")
+        head.addWidget(self.count)
+        lay.addLayout(head)
+        self.t = QTableWidget(0, len(self.COLS))
+        self.t.setHorizontalHeaderLabels([tr(h) for _f, h, _w in self.COLS])
+        self.t.verticalHeader().setVisible(False)
+        self.t.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.t.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.t.setShowGrid(False)
+        self.t.verticalHeader().setDefaultSectionSize(34)
+        hh = self.t.horizontalHeader()
+        for c, (_f, _h, w) in enumerate(self.COLS):
+            hh.setSectionResizeMode(c, QHeaderView.Interactive)
+            self.t.setColumnWidth(c, w)
+        self.ctl = TableSortFilter(self.t, lambda: len(self.rows), self._text, self._fill, hide=self._hidden)
+        self.ctl.rendered.connect(lambda n, tot: self.count.setText(tr("{0:,} / {1:,}", n, tot)))
+        import settings as ST
+        self.ctl.remember(settings.setdefault("griglia_cols", {}), "replace_log", lambda: ST.save_settings(settings),
+                          [f for f, _h, _w in self.COLS])
+        self.search.textChanged.connect(lambda _: self.ctl.render())
+        lay.addWidget(self.t, 1)
+        foot = QHBoxLayout()
+        foot.addStretch()
+        self.b_open = QPushButton(tr("打开文件"))
+        self.b_open.setToolTip(tr("用 Excel 打开选中那一条改的 Griglia"))
+        self.b_open.clicked.connect(self._open)
+        foot.addWidget(self.b_open)
+        close = QPushButton(tr("关闭"))
+        close.clicked.connect(self.accept)
+        foot.addWidget(close)
+        lay.addLayout(foot)
+        self.resize(1300, 560)
+        from erp_widgets import fit_to_screen
+        fit_to_screen(self)
+        self.ctl.render()
+
+    def _text(self, i, c):
+        return str(self.rows[i].get(self.COLS[c][0]) or "")
+
+    def _hidden(self, i):
+        q = self.search.text().strip().lower()
+        r = self.rows[i]
+        return bool(q) and q not in " ".join((r["old"], r["old_name"], r["new"], r["name"])).lower()
+
+    def _fill(self, i, k):
+        r = self.rows[i]
+        for c, (f, _h, _w) in enumerate(self.COLS):
+            it = QTableWidgetItem(self._text(i, c))
+            it.setData(Qt.UserRole, i)
+            if f == "old_name":
+                it.setForeground(QColor(T("err")))
+            elif f == "name":
+                it.setForeground(QColor(T("accent")))
+            elif f == "in" and r["in"] != tr("在"):
+                it.setForeground(QColor(T("warn")))
+            elif f in ("old", "new", "at", "by", "file"):
+                it.setForeground(QColor(T("muted")))
+            if f == "file" and r["_path"]:
+                it.setToolTip(r["_path"])
+            self.t.setItem(k, c, it)
+
+    def _open(self):
+        sel = self.t.selectionModel().selectedRows()
+        it = self.t.item(sel[0].row(), 0) if sel else None
+        i = it.data(Qt.UserRole) if it else None
+        p = self.rows[i]["_path"] if i is not None else ""
+        import os
+        if p and os.path.isfile(p):
+            from erp_widgets import open_file
+            open_file(self, p)
+        else:
+            QMessageBox.information(self, tr("替换记录"), tr("找不到这个文件：{0}", p or "—"))
