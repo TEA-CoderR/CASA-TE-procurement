@@ -994,3 +994,53 @@ def mail_undo_prices(settings, undo, via="desktop"):
     with open(_prices_done_path(), "w", encoding="utf-8", newline="") as f:
         json.dump(ids, f)
     audit(settings.get("user_name") or "", via, "mail_undo_prices", {"files": undo["new"]}, None)
+
+
+# ===================================================================== Griglia：不做了的商品找替代品（2026-11-09）
+def griglia_replacements(grid, quotes, fresh=None):
+    """Griglia「都不做了」的 → 这周报价里像的商品（griglia_replace.suggest），已经替代过的不算"""
+    import griglia_replace as GR
+    done = GR.load_done(os.path.dirname(grid["path"])) if grid.get("path") else {}
+    return GR.suggest(grid, quotes, fresh=fresh, skip=set(done))
+
+
+GRID_BACKUPS = 2          # Griglia 很大（几百 MB）：备份只留最近 2 份
+
+
+def griglia_add_replacements(grid, picks, by=None, via="desktop", excel=None, log=None):
+    """
+    选好的替代品写进 Griglia：先备份（_备份 文件夹，留最近 GRID_BACKUPS 份），用 Excel 每个旧商品下面插一行新的、
+    旧的字变灰；记进「0 Griglia/_替代记录.json」（旧条码以后不算「都不做了」）。
+    picks = [(旧商品, 候选)]。返回 {"written": [(旧条码, 新行号)], "backup": 路径}
+    """
+    import shutil
+    import griglia_replace as GR
+    from datetime import datetime
+    path = grid["path"]
+    by = by or os.environ.get("USERNAME") or os.environ.get("USER") or ""
+    d, name = os.path.dirname(path), os.path.basename(path)
+    if os.path.exists(os.path.join(d, "~$" + name)):
+        raise RuntimeError(tr("Griglia 正被 Excel 打开着（{0}），请先关掉再加", name))
+    bdir = os.path.join(d, "_备份")
+    os.makedirs(bdir, exist_ok=True)
+    stem, ext = os.path.splitext(name)
+    bk = os.path.join(bdir, f"{stem}_{datetime.now():%Y%m%d_%H%M%S}{ext}")
+    shutil.copy2(path, bk)
+    olds = sorted(f for f in os.listdir(bdir) if f.startswith(stem + "_") and f.endswith(ext))
+    for f in olds[:-GRID_BACKUPS]:
+        try:
+            os.remove(os.path.join(bdir, f))
+        except OSError:
+            pass
+    plan = GR.plan_rows(grid, picks)
+    written = GR.write_rows(path, grid, plan, excel=excel, log=log)
+    done = GR.load_done(d)
+    by_old = {o["ean"]: c for o, c in picks}
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    for old_ean, _row in written:
+        c = by_old[old_ean]
+        done[old_ean] = {"new": c["ean"], "name": c["name"], "at": now, "by": by or ""}
+    GR.save_done(d, done)
+    audit(by or "", via, "griglia_add_replacements", {"file": name, "n": len(written),
+                                                       "pairs": [[o, by_old[o]["ean"]] for o, _r in written]}, None)
+    return {"written": written, "backup": bk}

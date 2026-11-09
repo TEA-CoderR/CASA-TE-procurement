@@ -509,6 +509,10 @@ class GrigliaPage:
         nb.setContentsMargins(0, 0, 0, 0)
         nb.addWidget(self.scope)
         nb.addWidget(self.min_n)
+        self.gone_bar = QPushButton(tr("🔄 找替代商品"))
+        self.gone_bar.setToolTip(tr("很多不做了的是换了规格（40 洗 → 50 洗、950 ml → 1000 ml）：在这周报价里找像的商品，核对后加进 Griglia"))
+        self.gone_bar.clicked.connect(self._find_repl)
+        self._quotes, self._fresh = None, None
         # 四张表的列跟着这周的批发商变（每家一列价格），统计完再建；列可以拖动换位置，记在设置里
         self.t_gone = self.t_new = self.t_price = self.t_odd = None
         self.boxes = []
@@ -599,7 +603,12 @@ class GrigliaPage:
                 hist = any(seen.get(k, {}).get("since", today) < today for k in quotes)
                 seen, fresh = G.track(seen, quotes, today)
                 G.save_seen(sp, seen)
-                self.sig.done.emit((grid, G.stats(grid, quotes, fresh if hist else None), None))
+                st = G.stats(grid, quotes, fresh if hist else None)
+                import griglia_replace as GR
+                done = GR.load_done(os.path.dirname(grid["path"]))          # 已经加过替代品的：不再算「都不做了」
+                st["gone"] = [x for x in st["gone"] if x["ean"] not in done]
+                self._quotes, self._fresh = quotes, (fresh if hist else None)
+                self.sig.done.emit((grid, st, None))
             except Exception as e:
                 self.sig.done.emit((None, None, str(e)))
         threading.Thread(target=work, daemon=True).start()
@@ -732,11 +741,14 @@ class GrigliaPage:
                      (lambda x, l=l: x["prices"].get(l)),
                      (lambda x, l=l: "accent" if x.get("best_sup") == l else None)) for l in labels]
         # 都不做了
+        if self.t_gone is not None:
+            self.gone_bar.setParent(None)                 # 按钮先拿出来，旧表格删掉时别跟着删
         self.t_gone = self._tab(0, "gone", base + [(3, tr("编号"), "txt", lambda x: x.get("code"), None),
                                                    (4, tr("品牌"), "txt", lambda x: x.get("brand"), None)] + cats +
                                 [(9, tr("Griglia 供应商"), "txt", lambda x: x.get("supplier"), None),
                                  (10, tr("Griglia 价"), "price", lambda x: x.get("best") or x.get("price"), None)],
-                                st["gone"])
+                                st["gone"], extra=self.gone_bar)
+        self.gone_bar.setEnabled(bool(st["gone"]))
         # 新品
         if self.t_new is not None:
             self.new_bar.setParent(None)
@@ -827,6 +839,10 @@ class GrigliaPage:
         self.win.show_toast(tr("已导出：{0}", os.path.basename(p)))
         from erp_widgets import open_file                      # 导出完直接打开（2026-11-07 用户）
         open_file(self.win, p, tr("导出 Excel"))
+
+    def _find_repl(self):
+        from griglia_replace_dialog import open_replace
+        open_replace(self)
 
     def _tab_of(self, key):
         return {"gone": self.t_gone, "new": self.t_new, "prices": self.t_price, "odd": self.t_odd}.get(key)

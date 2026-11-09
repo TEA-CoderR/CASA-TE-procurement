@@ -19,7 +19,7 @@ import hashlib
 from utils import clean_ean
 
 GRID_DIR = "0 Griglia"
-CACHE_VER = 4
+CACHE_VER = 5
 STORES = ("FOIANO", "MARLIA", "S.FILIPPO", "S.MARCO", "S.CONCORDIO")
 EXCEL = (".xlsx", ".xlsm")
 
@@ -147,11 +147,13 @@ def parse_rows(rows):
               "pack": _num(g("pack")), "cats": _cats(r, col, right),
               "direct": str(g("direct") or "").strip(),
               "prices": {h: _num(r[i]) for h, i in sup_cols.items() if i < len(r) and _num(r[i])},
-              "stores": [h for h, i in store_cols.items() if i < len(r) and _num(r[i])]}
+              "stores": [h for h, i in store_cols.items() if i < len(r) and _num(r[i])], "row": n}
         items[e] = it
         if code:
             by_code[code] = e
-    return {"items": items, "suppliers": list(sup_cols), "by_code": by_code, "bad_rows": bad}
+    # 列在哪（0 开始）、表头第几行（Excel 行号）：往 Griglia 里写替代商品时用（griglia_replace.write_rows）
+    return {"items": items, "suppliers": list(sup_cols), "by_code": by_code, "bad_rows": bad,
+            "cols": col, "sup_cols": sup_cols, "header_row": hr + 1}
 
 
 def parse_rows_any(wb):
@@ -163,7 +165,9 @@ def parse_rows_any(wb):
     for ws in sheets:
         head = list(ws.iter_rows(max_row=10, values_only=True))      # 先只看前 10 行，不是这页就不整页读
         if any(_norm(v) == "CODICE EAN" for r in head for v in r):
-            return parse_rows(ws.iter_rows(values_only=True))
+            out = parse_rows(ws.iter_rows(values_only=True))
+            out["sheet"] = ws.title
+            return out
     raise ValueError("Griglia 里找不到「Codice EAN」表头（所有工作表都看过了；表头要在前 10 行）")
 
 
