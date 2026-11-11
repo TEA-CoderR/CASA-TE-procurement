@@ -751,7 +751,7 @@ class ReplaceDialog(QDialog):
                  "原来那一行换成新商品（改过的格子浅蓝底，编号空着）；旧商品那一行抄到文件最下面、划线。\n"
                  "其中 {5} 个新商品 Griglia 里已经有，只把旧行移到最下面。\n"
                  "其中 {6} 个是 Griglia 已停用（划线）的商品：那一行直接改成新商品、去掉划线。\n"
-                 "改之前在程序文件夹存一份备份（图片换成 IMAGE 公式，文件小）。Excel 要关着，文件大，可能要几分钟。\n"
+                 "改之前在程序文件夹存一份备份；先在本机副本上改，逐格核对：除了这几行别的格子都没变才放回，核对不过原文件不动。Excel / WPS 要关着，文件大，可能要几分钟。\n"
                  "同步文件夹里的文件同事都会看到。确定替换？", len(picks), lines, name, where, os.path.dirname(target), n_in, n_st)
         if QMessageBox.question(self, tr("替换进 Griglia"), msg) != QMessageBox.Yes:
             return
@@ -807,7 +807,8 @@ def open_replace(page):
         if hasattr(page.win, "log"):
             page.win.log(tr("Griglia 加了 {0} 个替代商品：{1}（备份：{2}）", n, dlg.result_info.get("file", ""),
                             dlg.result_info["backup"]))
-        page.win.show_toast(tr("Griglia 替换了 {0} 个商品（旧的移到最下面、划线）", n))
+        page.win.show_toast(tr("Griglia 替换了 {0} 个商品；已逐格核对，其余 {1} 个格子都没变", n,
+                               dlg.result_info.get("checked", 0)))
         page.refresh()
 
 

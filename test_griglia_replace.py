@@ -290,7 +290,9 @@ def test_add_replacements_edits_source_backs_up_light_and_records(monkeypatch=No
     ex.Workbooks.Open = lambda path: (opened.append(path), orig_open(path))[1]
     res = CMD.griglia_add_replacements(g, [(old, cand)], by="t", excel=ex, source=src, backup_dir=bdir)
     assert res["written"] == [("8001111000014", 4, 8)] and res["file"] == src
-    assert opened == [os.path.abspath(src)]                       # 改的是原件
+    assert len(opened) == 1 and os.path.basename(opened[0]) == "SCHEDA.xlsx" \
+        and os.path.dirname(opened[0]) != sync                    # 先改本机临时副本，核对过才放回原件
+    assert res["checked"] > 0
     from openpyxl import load_workbook
     ws = load_workbook(res["backup"]).active                     # 备份在程序文件夹、图片换成 IMAGE 公式
     assert os.path.dirname(res["backup"]) == bdir
@@ -456,3 +458,75 @@ def test_bottom_row_found_without_find_and_header_never_touched():
     finally:
         GR._write_new = orig
     assert not ex2.saved
+
+
+def _book(path, rows, struck=()):
+    from openpyxl import Workbook
+    from openpyxl.styles import Font
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "GRIGLIA"
+    for r in rows:
+        ws.append(r)
+    for r in struck:
+        for c in ws[r]:
+            c.font = Font(strike=True)
+    wb.save(path)
+
+
+def test_diff_cells_only_allows_replaced_rows():
+    """用户 11-11：改完 Griglia 别的内容必须原封不动 → 逐格比，除了替换的那几行一个都不能变"""
+    d = tempfile.mkdtemp()
+    b, a = os.path.join(d, "b.xlsx"), os.path.join(d, "a.xlsx")
+    head = [["Fatturazione :", None, "=SUM(C4:C6)"], ["Note :"], ["NO.", "Codice EAN", "Colli"]]
+    rows = [[1, "8001", 1, "=C4*2"], [2, "8002", 2, "=C5*2"], [3, "8003", 3, "=C6*2"]]
+    _book(b, head + rows)
+    # 正常：第 5 行换成新商品、旧的抄到第 7 行划线 → 没有差别
+    _book(a, head + [rows[0], [2, "9002", 2, "=C5*2"], rows[2], [2, "8002", 2, "=C7*2"]], struck=[7])
+    diffs, n = GR.diff_cells(b, a, "GRIGLIA", [("append", 7), ("write", 5)])
+    assert diffs == [] and n > 0
+    # 新商品已在 Griglia：第 4 行抄到第 7 行，再删掉第 4 行 → 下面的行上移、公式行号 −1、表头合计范围跟着缩
+    _book(a, [["Fatturazione :", None, "=SUM(C4:C5)"], ["Note :"], ["NO.", "Codice EAN", "Colli"],
+              [2, "8002", 2, "=C4*2"], [3, "8003", 3, "=C5*2"], [1, "8001", 1, "=C6*2"]], struck=[6])
+    diffs, _n = GR.diff_cells(b, a, "GRIGLIA", [("append", 7), ("delete", 4)])
+    assert diffs == []
+    # 表头第 2 行被盖掉（11-11 WPS 那次）、别的行删除线变了 → 都报出来
+    _book(a, head[:1] + [["8001", "FELCE"]] + head[2:] + [rows[0], [2, "9002", 2, "=C5*2"], rows[2],
+                                                          [2, "8002", 2, "=C7*2"]], struck=[6, 7])
+    diffs, _n = GR.diff_cells(b, a, "GRIGLIA", [("append", 7), ("write", 5)])
+    cells = [x[0] for x in diffs]
+    assert "A2" in cells and "B2" in cells and "A6" in cells
+
+
+def test_add_replacements_keeps_original_when_check_fails():
+    """改完核对不过（别的格子变了）：原文件一个字节都不动"""
+    import hashlib
+    import commands as CMD
+    work, sync, bdir = tempfile.mkdtemp(), tempfile.mkdtemp(), tempfile.mkdtemp()
+    p, src = os.path.join(work, "SCHEDA.xlsx"), os.path.join(sync, "SCHEDA.xlsx")
+    _xlsx(p)
+    _xlsx(src)
+    md5 = hashlib.md5(open(src, "rb").read()).hexdigest()
+    g = _grid(p)
+    old = g["items"]["8001111000014"]
+    cand = next(r for r in GR.suggest(g, QUOTES) if r["old"]["ean"] == "8001111000014")["cands"][0]
+    orig = GR.write_rows
+
+    def bad(path, *a, **k):                         # 模拟 WPS 改坏了表头
+        from openpyxl import load_workbook
+        wb = load_workbook(path)
+        wb.active["A1"] = "FELCE"
+        wb.save(path)
+        k.get("ops", []).append(("write", 4))
+        return [("8001111000014", 4, None)]
+    GR.write_rows = bad
+    try:
+        try:
+            CMD.griglia_add_replacements(g, [(old, cand)], by="t", excel=_Excel(_sheet()), source=src, backup_dir=bdir)
+            raise AssertionError("应该报错")
+        except RuntimeError as e:
+            assert "核对没通过" in str(e) and "A1" in str(e)
+    finally:
+        GR.write_rows = orig
+    assert hashlib.md5(open(src, "rb").read()).hexdigest() == md5
+    assert "8001111000014" not in GR.load_done(work)

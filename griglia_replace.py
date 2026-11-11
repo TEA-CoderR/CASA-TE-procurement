@@ -499,7 +499,7 @@ def _is_img_head(v):
     return bool(t) and any(t == h or t.startswith(h) for h in IMG_HEADS)
 
 
-def write_rows(path, grid, plan, excel=None, log=None, url=None):
+def write_rows(path, grid, plan, excel=None, log=None, url=None, ops=None):
     """
     用 Excel 打开 Griglia（用户 11-09：替换原来的产品行，原来的行移到文件最底部、用线划掉，和 Griglia 里现在的做法一样）：
       1. 旧行照抄一份到最下面（EAN 列最后一个有内容的行下面）：格式 PasteSpecial 只贴格式（不抄商品图片），内容按 R1C1 照抄，
@@ -508,8 +508,10 @@ def write_rows(path, grid, plan, excel=None, log=None, url=None):
          分类 / 品牌 / 门店勾选 / 公式照旧；
       3. 新商品 Griglia 里已经有（vals 空）：原来那一行删掉（已经抄到最下面了）。
     excel = 测试用的假 Excel。返回 [(旧条码, 新商品所在行号 或 None, 旧行挪到的行号)]。
-    找不到旧行（条码对不上）的跳过，记在日志里
+    找不到旧行（条码对不上）的跳过，记在日志里。
+    ops（列表）：按顺序记下改了哪几行 ("write" / "append" / "delete", 行号)，`diff_cells` 用它核对别的格子都没动
     """
+    ops = ops if ops is not None else []
     log = log or (lambda *_a: None)
     own = excel is None
     if own:
@@ -528,8 +530,12 @@ def write_rows(path, grid, plan, excel=None, log=None, url=None):
         cols = grid.get("cols") or {}
         ec = cols.get("ean", 0) + 1
         last = max([c for c in cols.values()] + [i for i in (grid.get("sup_cols") or {}).values()] + [0]) + 1
-        last = max(last, ws.UsedRange.Columns.Count + ws.UsedRange.Column - 1)
         hr = grid.get("header_row")
+        if hr:                                       # 只管有表头的那些列（UsedRange 可能是整张表 16384 列）
+            head_vals = _values(ws, hr, 1, hr, min(ws.UsedRange.Columns.Count + ws.UsedRange.Column - 1, 1000))[0]
+            last = max([last] + [i for i, x in enumerate(head_vals, 1) if x not in (None, "")])
+        else:
+            last = max(last, ws.UsedRange.Columns.Count + ws.UsedRange.Column - 1)
         img_col = next((c for c in range(1, min(last, 40) + 1) if hr and _is_img_head(ws.Cells(hr, c).Value)), None)
         from utils import clean_ean
 
@@ -583,6 +589,7 @@ def write_rows(path, grid, plan, excel=None, log=None, url=None):
             new_ean = vals.get(cols.get("ean"))
             if mode == "inplace":
                 _write_new(ws, row, vals, cols, img_col, new_ean, url, row_range, ec, old_ean)
+                ops.append(("write", row))
                 try:
                     f = row_range(row).Font
                     if f.Color == GREY_FONT:
@@ -595,6 +602,7 @@ def write_rows(path, grid, plan, excel=None, log=None, url=None):
             dst = bottom()
             if dst <= max(hr or 0, row):
                 raise RuntimeError(f"找不到 Griglia 最下面一行（算出来第 {dst} 行），没有修改")
+            ops.append(("append", dst))
             row_range(row).Copy()
             row_range(dst).PasteSpecial(Paste=-4122)                    # 只贴格式（不抄商品图片）
             try:
@@ -619,10 +627,12 @@ def write_rows(path, grid, plan, excel=None, log=None, url=None):
             if not vals:
                 # 3. 新商品已经在 Griglia 里：原来那一行删掉
                 ws.Rows(row).Delete()
+                ops.append(("delete", row))
                 done.append((old_ean, None, dst - 1 if dst > row else dst))
                 continue
             # 2. 原来那一行原地换成新商品
             _write_new(ws, row, vals, cols, img_col, new_ean, url, row_range, ec, None)
+            ops.append(("write", row))
             done.append((old_ean, row, dst))
         if head() != head_before:           # 表头被改了：一个字都不存
             raise RuntimeError("改动碰到了 Griglia 的表头（前几行），已放弃，文件没有保存")
@@ -639,6 +649,100 @@ def write_rows(path, grid, plan, excel=None, log=None, url=None):
                 excel.Quit()
             except Exception:
                 pass
+
+
+# ===================================================================== 改完核对：别的格子一个都不能变（用户 11-11）
+_REF = re.compile(r"(?<![A-Za-z0-9_!'.\"/])(\$?)([A-Z]{1,3})(\$?)(\d+)(?![0-9A-Za-z_(])")
+
+
+def _shift_refs(f, deleted):
+    """删掉第 deleted 行以后，公式里同一张表的行号跟着变（和 Excel 一样：下面的行号 −1）"""
+    def sub(m):
+        r = int(m.group(4))
+        return f"{m.group(1)}{m.group(2)}{m.group(3)}{r - 1 if r > deleted else r}"
+    return _REF.sub(sub, f)
+
+
+def _sheet_cells(path, sheet, max_col):
+    """{(行, 列): (内容 / 公式, 有没有删除线)}，只读（不读图片）"""
+    import openpyxl
+    wb = openpyxl.load_workbook(path, read_only=True, data_only=False)
+    try:
+        ws = wb[sheet] if sheet and sheet in wb.sheetnames else wb.worksheets[0]
+        out = {}
+        for row in ws.iter_rows(max_col=max_col):
+            for c in row:
+                v = getattr(c, "value", None)
+                try:
+                    st = bool(c.font.strike) if v not in (None, "") else False
+                except Exception:
+                    st = False
+                if v not in (None, ""):
+                    out[(c.row, c.column)] = (v, st)
+        return out
+    finally:
+        wb.close()
+
+
+def _data_width(path, sheet, scan_rows=12, cap=1000):
+    """最右边一个有表头 / 内容的列（前几行里找），+ 5 列余量"""
+    import openpyxl
+    wb = openpyxl.load_workbook(path, read_only=True, data_only=False)
+    try:
+        ws = wb[sheet] if sheet and sheet in wb.sheetnames else wb.worksheets[0]
+        w = 1
+        for row in ws.iter_rows(max_row=scan_rows, max_col=cap):
+            for c in row:
+                if getattr(c, "value", None) not in (None, ""):
+                    w = max(w, c.column)
+        return min(w + 5, cap)
+    finally:
+        wb.close()
+
+
+def diff_cells(before, after, sheet, ops, max_col=None, limit=50):
+    """
+    改之前 / 改之后两份文件比每个格子（内容、公式、删除线）：除了 ops 里改过的行，别的必须一模一样
+    （删掉一行时下面的行往上挪、公式行号跟着 −1，照 Excel 的规矩算）。返回不一样的 [(格子, 改之前, 改之后)]，最多 limit 个
+    """
+    from openpyxl.utils import get_column_letter
+    max_col = max_col or _data_width(before, sheet)
+    b = _sheet_cells(before, sheet, max_col)
+    a = _sheet_cells(after, sheet, max_col)
+    dels, allowed = [], set()
+    for op, r in ops:
+        if op == "delete":
+            allowed = {x - 1 if x > r else x for x in allowed if x != r}
+            dels.append(r)
+        else:
+            allowed.add(r)
+
+    def final(r):
+        for d in dels:
+            if r == d:
+                return None
+            if r > d:
+                r -= 1
+        return r
+
+    out, seen = [], set()
+    for (r, c), (v, st) in b.items():
+        fr = final(r)
+        if fr is None or fr in allowed:
+            continue
+        if isinstance(v, str) and v.startswith("="):
+            for d in dels:
+                v = _shift_refs(v, d)
+        seen.add((fr, c))
+        got = a.get((fr, c))
+        if got != (v, st):
+            out.append((f"{get_column_letter(c)}{fr}", v,
+                        got[0] if got and got[0] != v else ("（删除线变了）" if got else None)))
+    for (r, c), (v, _st) in a.items():
+        if r not in allowed and (r, c) not in seen:
+            out.append((f"{get_column_letter(c)}{r}", None, v))
+    out.sort(key=lambda x: (int(re.sub(r"\D", "", x[0])), x[0]))
+    return out[:limit], len(b)
 
 
 def _values(ws, r1, c1, r2, c2, attr="Value"):

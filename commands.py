@@ -1040,7 +1040,32 @@ def griglia_add_replacements(grid, picks, by=None, via="desktop", excel=None, lo
         except OSError:
             pass
     plan = GR.plan_rows(grid, picks)
-    written = GR.write_rows(target, grid, plan, excel=excel, log=log, url=url)
+    # 用户 11-11：改完别的内容必须原封不动 → 先在本机临时副本上改，和原文件逐格比（内容 / 公式 / 删除线），
+    # 只有替换的那几行变了才把副本放回去；核对不过原文件一个字都不动
+    import tempfile
+    st0 = os.stat(target)
+    tmp_dir = tempfile.mkdtemp(prefix="casate_griglia_")
+    work = os.path.join(tmp_dir, name)
+    try:
+        shutil.copy2(target, work)
+        ops = []
+        written = GR.write_rows(work, grid, plan, excel=excel, log=log, url=url, ops=ops)
+        diffs, n_cells = GR.diff_cells(target, work, grid.get("sheet"), ops)
+        if diffs:
+            sample = "；".join(f"{c}：{b!r} → {a!r}" for c, b, a in diffs[:5])
+            if log:
+                for c, b_, a_ in diffs:
+                    log(f"⚠ Griglia 核对：{c} {b_!r} → {a_!r}")
+            raise RuntimeError(tr("核对没通过：除了替换的那几行，还有 {0} 个格子变了（{1}），原文件没有改", len(diffs), sample))
+        st1 = os.stat(target)
+        if (st1.st_mtime, st1.st_size) != (st0.st_mtime, st0.st_size) or \
+                os.path.exists(os.path.join(d, "~$" + name)):
+            raise RuntimeError(tr("改的时候 Griglia 被别人打开或保存过（{0}），没有放回，请再试一次", name))
+        tmp = target + ".casate_tmp"
+        shutil.copy2(work, tmp)
+        os.replace(tmp, target)
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
     if os.path.normcase(os.path.abspath(target)) != os.path.normcase(os.path.abspath(path)):
         shutil.copy2(target, path)                       # 工作文件夹那份跟着更新（程序读的是它）
     gdir = os.path.dirname(path)
@@ -1056,4 +1081,4 @@ def griglia_add_replacements(grid, picks, by=None, via="desktop", excel=None, lo
     GR.save_done(gdir, done)
     audit(by, via, "griglia_add_replacements", {"file": target, "n": len(written), "backup": bk,
                                                 "pairs": [[o, by_old[o][1]["ean"]] for o, _r, _m in written]}, None)
-    return {"written": written, "backup": bk, "file": target}
+    return {"written": written, "backup": bk, "file": target, "checked": n_cells}
