@@ -290,7 +290,9 @@ def _descs(o):
 def suggest(grid, quotes, fresh=None, skip=(), struck=False):
     """
     Griglia 里这周报价都没有的商品 → 每个最多 TOP 个替代候选（分高的在前）。skip = 已经替代过的旧条码。
-    struck=True（用户 11-11）：给 Griglia 里划了线的商品找（不管还有没有人卖），旧商品带 "struck": True
+    struck=True（用户 11-11）：给 Griglia 里划了线的商品找，旧商品带 "struck": True。
+    2026-11-11 第二次（用户：供应商有货的为什么也进来？分两种增加歧义）：划线的也只要**停售**的（几家批发商都不卖了）；
+    还有人卖的是你们自己决定不订，不用找替代
     """
     items = grid["items"]
     struck_items = grid.get("struck") or {}
@@ -303,7 +305,7 @@ def suggest(grid, quotes, fresh=None, skip=(), struck=False):
     if struck is not True:                  # False = 只要批发商都没货的；"both" = 两种一起（只建一次索引）
         gone += [it for e, it in items.items() if e not in offer and e not in skip]
     if struck:
-        gone += [dict(it, struck=True) for e, it in struck_items.items() if e not in skip]
+        gone += [dict(it, struck=True) for e, it in struck_items.items() if e not in skip and e not in offer]
     pool = [(e, _descs(o), o) for e, o in offer.items() if e not in items and e not in struck_items]
     pool = [(e, ns, o) for e, ns, o in pool if ns]
     idf = _Idf([n for _e, ns, _o in pool for n in ns] + [it.get("name") or "" for it in items.values()])
@@ -354,6 +356,49 @@ def done_eans(done, grid):
     """替代过、而且新商品已经在这份 Griglia 里的旧条码（换了一份没加过的 Griglia，旧的又会算「都不做了」）"""
     items = (grid or {}).get("items") or {}
     return {old for old, r in (done or {}).items() if (r or {}).get("new") in items}
+
+
+def substitutes(done, grid):
+    """
+    门店清单里的旧条码 → 换成哪个新商品（2026-11-11 用户：订 DETERSIVI 之前先找好替代商品，门店清单里还有停售的旧条码，
+    就自动换成替代商品去采购，门店报告里写明）。{旧条码: {"ean", "name", "code"}}；
+    A → B、B → C 换过两次的跟到最后一个；最后那个新商品要在现在这份 Griglia 里才算（没替换进这份 Griglia 的不换）
+    """
+    items = (grid or {}).get("items") or {}
+    out = {}
+    for old in done or {}:
+        cur, seen = old, {old}
+        while (done.get(cur) or {}).get("new") and done[cur]["new"] not in seen:
+            cur = done[cur]["new"]
+            seen.add(cur)
+        if cur != old and cur in items:
+            it = items[cur]
+            out[old] = {"ean": cur, "name": it.get("name") or (done.get(old) or {}).get("name") or "",
+                        "code": str(it.get("code") or "").strip()}
+    return out
+
+
+def apply_substitutes(rows, subs, clean=None):
+    """
+    检查清单的行：条码是停售的旧商品 → 换成新商品（条码 / 名称），原来的记在 x["repl"]（old_ean / old_name / old_code / new_code）。
+    销量、库存、建议箱数照旧用旧商品的（同一个商品换了规格，卖得一样）；箱规、件价后面按新条码的报价补（apply_quotes）。
+    返回换了几行
+    """
+    clean = clean or (lambda v: str(v or "").strip())
+    n = 0
+    for x in rows:
+        if x.get("repl"):
+            continue
+        e = clean(x.get("ean"))
+        s = subs.get(e) if e else None
+        if not s:
+            continue
+        x["repl"] = {"old_ean": e, "old_name": x.get("name") or "", "old_code": str(x.get("code") or ""),
+                     "new_code": s.get("code") or ""}
+        x["ean"], x["name"] = s["ean"], s.get("name") or x.get("name")
+        x["in_grid"] = True
+        n += 1
+    return n
 
 
 def save_done(grid_dir, done):

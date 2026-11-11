@@ -205,6 +205,17 @@ def run_check(settings, lists, *, price_dir, log=print, progress=None, days=None
                 x["in_grid"] = G.contains(grid, x.get("ean"), x.get("code"))
             log(tr("[检查清单] Griglia {0}：{1} 个商品不在里面", grid["name"],
                    sum(1 for x in rows if x.get("in_grid") is False)))
+            # 停售的旧商品找过替代品的（找替代商品 → 替换进 Griglia）：门店清单里还写着旧条码 → 换成新商品去采购
+            try:
+                import griglia_replace as GR
+                from utils import clean_ean
+                subs = GR.substitutes(GR.load_done(os.path.dirname(grid["path"])), grid)
+                n_s = GR.apply_substitutes(rows, subs, clean_ean)
+                if n_s:
+                    log(tr("[检查清单] {0} 个停售的商品换成了替代商品：{1}", n_s, "、".join(
+                        f"{x['repl']['old_ean']} → {x['ean']}" for x in rows if x.get("repl"))[:400]))
+            except Exception as e:
+                log(tr("⚠ 替代商品没换上：{0}", e))
         # 非 Griglia 商品能不能直接向品牌供应商订：到 LUCAS定制采购的 SCHEDA 里找（门店报告用；读不了不影响检查）
         try:
             import store_orders as SO
@@ -215,9 +226,15 @@ def run_check(settings, lists, *, price_dir, log=print, progress=None, days=None
                      if r and os.path.isdir(r)]
             if sroot and any(x.get("in_grid") is False for x in rows):
                 idx = SO.scheda_index(sroot, os.path.join(app_dir(), "cache", "schede_index.json"), log)
+                ovr = dict((settings.get("store_pdv") or {}).get("moq_override") or {})
+                ovr.update((settings.get("store_orders") or {}).get("moq_override") or {})
                 for x in rows:
                     if x.get("in_grid") is False:
-                        x["brand"] = SO.brand_supplier(idx, x.get("ean"), x.get("code"))
+                        bi = SO.brand_item(idx, x.get("ean"), x.get("code"))
+                        x["brand"] = bi[0] if bi else None
+                        if bi:            # 门店报告右边的统计：直厂这几个商品多少箱、多少钱、起订量
+                            x["brand_pack"], x["brand_price"] = bi[1], bi[2]
+                            x["brand_moq"] = SO.apply_override(idx["moq"].get(bi[0]) or {}, ovr.get(bi[0]))
                 log(tr("[检查清单] 品牌供应商配单文件 {0} 份：{1} 个非 Griglia 商品可以直接向品牌供应商订", idx["files"],
                        sum(1 for x in rows if x.get("brand"))))
         except Exception as e:

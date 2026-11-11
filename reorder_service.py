@@ -1706,6 +1706,8 @@ def write_checked_order(rows, root_folder, store_id, source_name=""):
         y = dict(x)
         y["suggested"] = final
         y["ord_colli"] = math.ceil(final / pack - 1e-9) if pack > 0 and final > 0 else final
+        if x.get("repl"):                            # 换成了替代商品：编号写新商品的（Griglia 里有就有，没有空着）
+            y["code"] = x["repl"].get("new_code") or ""
         if x.get("fbox") is not None:                # 检查窗口里定的箱数（调货以后的）
             y["ord_colli"] = int(x["fbox"])
             y["suggested"] = y["ord_colli"]

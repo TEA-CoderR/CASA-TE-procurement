@@ -609,3 +609,43 @@ def test_array_formulas_and_number_spelling_are_not_changes():
         ws["A2"] = ArrayFormula("A2", img)
         wb.save(path)
     assert GR.diff_cells(b, a, "GRIGLIA", [])[0] == []
+
+
+def test_struck_still_sold_not_listed_and_substitutes_follow_chain():
+    """用户 11-11：划线了但还有批发商在卖的不算停售（不列出来）；停售找过替代的，门店清单里的旧条码自动换成新商品"""
+    g = _grid("x.xlsx")
+    pav = g["items"].pop("8004444000013")                # 划线、MELONI / petrillo 还在卖
+    sv = g["items"].pop("8002222000017")                 # 划线、谁都不卖了
+    g["struck"] = {pav["ean"]: pav, sv["ean"]: sv}
+    olds = [r["old"]["ean"] for r in GR.suggest(g, QUOTES, struck="both")]
+    assert "8004444000013" not in olds and "8002222000017" in olds
+    # 替代记录：A → B → C（C 在 Griglia 里）；D → E（E 不在这份 Griglia）
+    g["items"]["8009999000011"] = {"ean": "8009999000011", "name": "DIXAN LAVATRICE 30 LAV", "code": "205"}
+    done = {"8001111000014": {"new": "8001111000021"}, "8001111000021": {"new": "8009999000011"},
+            "8003333000010": {"new": "8000000000000"}}
+    subs = GR.substitutes(done, g)
+    assert subs == {"8001111000014": {"ean": "8009999000011", "name": "DIXAN LAVATRICE 30 LAV", "code": "205"},
+                    "8001111000021": {"ean": "8009999000011", "name": "DIXAN LAVATRICE 30 LAV", "code": "205"}}
+    rows = [{"ean": "8001111000014", "name": "COCCOLINO 40", "code": "101", "in_grid": False},
+            {"ean": "8003333000010", "name": "SAPONE", "code": "103", "in_grid": True}]
+    assert GR.apply_substitutes(rows, subs) == 1
+    assert rows[0]["ean"] == "8009999000011" and rows[0]["in_grid"] is True and rows[0]["code"] == "101"
+    assert rows[0]["repl"] == {"old_ean": "8001111000014", "old_name": "COCCOLINO 40", "old_code": "101", "new_code": "205"}
+    assert "repl" not in rows[1]
+    assert GR.apply_substitutes(rows, subs) == 0                          # 换过的不再换
+
+
+
+def test_checked_order_writes_substitute_ean_and_its_code():
+    """换成替代商品的行：主订单写新条码、新商品的编号（Griglia 里有的），箱数照确定的"""
+    import tempfile
+    import reorder_service as R
+    from openpyxl import load_workbook
+    d = tempfile.mkdtemp()
+    rows = [{"ean": "8009999000011", "name": "DIXAN 30", "code": "101", "pack": 6, "final": 12, "fbox": 2,
+             "repl": {"old_ean": "8001111000014", "old_name": "COCCOLINO 40", "old_code": "101", "new_code": "205"}}]
+    path, n, _sk = R.write_checked_order(rows, d, 1)
+    ws = load_workbook(path).active
+    head = [c.value for c in ws[1]]
+    row = dict(zip(head, [c.value for c in ws[2]]))
+    assert n == 1 and row["CODICE EAN"] == "8009999000011" and row["COLLI"] == 2 and str(row["CodArticolo"]) == "205"

@@ -459,7 +459,7 @@ class GrigliaPage:
         lay.setSpacing(14)
         t = QLabel(tr("Griglia") + "  ⓘ")
         t.setObjectName("PageTitle")
-        t.setToolTip(tr("我们的 DETERSIVI 总表（工作文件夹「0 Griglia」里最新的一份）和这周批发商报价对比：哪些商品批发商都没货了、哪些新品不在 Griglia 里（几家在做、各家价格）、Griglia 里的商品现在哪家最便宜。新品只算报价里「我们这几类」的部门（Griglia 商品所在的部门）"))
+        t.setToolTip(tr("我们的 DETERSIVI 总表（工作文件夹「0 Griglia」里最新的一份）和这周批发商报价对比：哪些商品停售了（批发商都不卖了）、哪些新品不在 Griglia 里（几家在做、各家价格）、Griglia 里的商品现在哪家最便宜。新品只算报价里「我们这几类」的部门（Griglia 商品所在的部门）"))
         head = QHBoxLayout()
         head.addWidget(t)
         head.addSpacing(12)
@@ -513,7 +513,7 @@ class GrigliaPage:
         gb = QHBoxLayout(self.gone_bar)
         gb.setContentsMargins(0, 0, 0, 0)
         self.b_repl = QPushButton(tr("🔄 找替代商品"))
-        self.b_repl.setToolTip(tr("批发商都没货的商品很多是换了规格（40 洗 → 50 洗、950 ml → 1000 ml）：在这周报价里找像的商品，核对后替换进 Griglia"))
+        self.b_repl.setToolTip(tr("停售的商品很多是换了规格（40 洗 → 50 洗、950 ml → 1000 ml）：在这周报价里找像的商品，核对后替换进 Griglia"))
         self.b_repl.clicked.connect(self._find_repl)
         self.b_log = QPushButton(tr("替换记录"))
         self.b_log.setToolTip(tr("哪天谁把哪个原商品换成了哪个新商品、改的是哪个文件第几行"))
@@ -531,7 +531,7 @@ class GrigliaPage:
             bx = QWidget()
             QVBoxLayout(bx).setContentsMargins(0, 0, 0, 0)
             self.boxes.append(bx)
-        for bx, text in zip(self.boxes, (tr("批发商都没货"), tr("新品"), tr("价格"), tr("价格可疑"))):
+        for bx, text in zip(self.boxes, (tr("停售"), tr("新品"), tr("价格"), tr("价格可疑"))):
             self.tabs.addTab(bx, text)
         self.tabs.setTabToolTip(3, tr("报价表里明显写错的价格（低于 €0.05，或比别家中间价低 70% 以上，多半是箱价 / 件价搞混）：不拿来比最低价，请找供应商确认"))
         bv.addWidget(self.tabs, 1)
@@ -676,7 +676,7 @@ class GrigliaPage:
             self.win.show_toast(msg)
         labels = st["labels"]
         self._labels = labels
-        self.tabs.setTabText(0, tr("批发商都没货（{0}）", len(st["gone"])))
+        self.tabs.setTabText(0, tr("停售（{0}）", len(st["gone"])))
         self.tabs.setTabText(1, tr("新品"))
         self.tabs.setTabText(2, tr("价格（{0:,}）", len(st["prices"])))
         self.tabs.setTabText(3, tr("价格可疑（{0}）", len(st["odd"])))
@@ -690,7 +690,7 @@ class GrigliaPage:
         st, grid = self.st, self.grid
         nf = sum(1 for x in st["new"] if x["fresh"])
         moved = sum(1 for x in st["prices"] if x["moved"])
-        stats = [(tr("批发商都没货"), f"{len(st['gone']):,}", "err", 0, tr("Griglia 里有、这周所有批发商报价里都没有")),
+        stats = [(tr("停售"), f"{len(st['gone']):,}", "err", 0, tr("Griglia 里有、这周所有批发商报价里都没有")),
                  (tr("新上架"), f"{nf:,}" if st["history"] else "—", "accent", 1,
                   tr("批发商报价里第一次出现、Griglia 里没有的商品（和以前读过的报价比，30 天内）。第一次统计只是记下现在有哪些，下次换了新报价才有")),
                  (tr("最低价换了供应商"), f"{moved:,}", "warn", 2, tr("现在最便宜的批发商不是 Griglia 里登记的那家")),

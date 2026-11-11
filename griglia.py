@@ -511,7 +511,7 @@ def overview(st, n_grid):
 
 
 # 导出的四张表（2026-11-07 用户：可以只导出其中几张；带照片、要美观专业，参考门店报告）
-EXPORT_TABLES = (("gone", "批发商都没货"), ("new", "新品"), ("prices", "价格"), ("odd", "价格可疑"))
+EXPORT_TABLES = (("gone", "停售"), ("new", "新品"), ("prices", "价格"), ("odd", "价格可疑"))
 
 
 def export(st, path, labels=None, which=None, rows=None, url=None, grid_name=None, when=None):
@@ -560,9 +560,9 @@ def export(st, path, labels=None, which=None, rows=None, url=None, grid_name=Non
                                                 Col("Prezzo Griglia", 12, "price", group="price")]
             data = [[x["ean"], x.get("code") or None, x.get("name"), x.get("brand") or None] + cats(x) +
                     [x.get("supplier") or None, x.get("best") or x.get("price")] for x in xs]
-            X.add_sheet(wb, "批发商都没货", "Griglia · Articoli non più trattati dai grossisti", sub(len(xs)), cols, data,
+            X.add_sheet(wb, "停售", "Griglia · Articoli non più trattati dai grossisti", sub(len(xs)), cols, data,
                         photo_eans=[x["ean"] for x in xs], url=url, tone="RED",
-                        note=f"批发商都没货：Griglia 里有，这周所有批发商的报价里都没有（{src}）。"
+                        note=f"停售：Griglia 里有，这周所有批发商的报价里都没有（{src}）。"
                              f" In Griglia ma assenti da tutti i listini di questa settimana.")
         elif key == "new":
             cols = [Col("EAN", 16, "ean"), Col("Descrizione", 40, bold=True)] + CATS + \

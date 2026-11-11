@@ -1758,7 +1758,16 @@ class OrderCheck:
             t.item(k, LIST_AFTER_COL).setForeground(QColor(T("warn")))
             t.item(k, LIST_AFTER_COL).setToolTip(tr("订完要很久才卖得完（超过 {0} 天），可能压货", int(self._limit())))
         st = t.item(k, _col(SITU))
-        if st is not None and st.text():
+        if st is not None and x.get("repl"):
+            rp = x["repl"]
+            st.setForeground(QColor(T("accent")))
+            tip = tr("门店清单里写的是停售的旧商品，自动换成了替代商品去采购：\n原商品 {0}  {1}\n替代成 {2}  {3}",
+                     rp["old_ean"], rp["old_name"], x.get("ean"), x.get("name"))
+            st.setToolTip(tip)
+            for c_ in (_col(3), _col(2)):
+                if t.item(k, c_) is not None:
+                    t.item(k, c_).setToolTip(tip)
+        elif st is not None and st.text():
             st.setForeground(QColor(T("err") if _problem(x) in ("noquote", "nogrid_noq") else T("warn")))
             st.setToolTip(dict(PROB_KINDS_TIPS()).get(_problem(x), "") + ("\n" + _issue_text(x) if _issue(x) else ""))
         self._style_edit(i, k)

@@ -372,7 +372,7 @@ def scheda_index(root, cache_path=None, log=None):
     缓存（cache_path，JSON），没改过不再打开
     """
     import json
-    out = {"ean": {}, "code": {}, "files": 0}
+    out = {"ean": {}, "code": {}, "files": 0, "items": {}, "moq": {}}
     roots = [r for r in (root if isinstance(root, (list, tuple)) else [root]) if r and os.path.isdir(r)]
     if not roots:
         return out
@@ -391,11 +391,18 @@ def scheda_index(root, cache_path=None, log=None):
             continue
         key = f"{os.path.normcase(os.path.abspath(p))}|{st.st_size}|{st.st_mtime_ns}"
         ent = old.get(key)
-        if ent is None:
+        if ent is None or "items" not in ent:      # 2026-11-11 起还记每箱件数、件价、起订量（门店报告统计直厂能订多少）
             try:
                 info = parse_scheda(p)
+                its = {}
+                for i in info["items"]:
+                    v = [float(i.get("pack") or 1), float(i.get("price") or 0)]
+                    for k_ in (_ean_key(i["ean"]), "#" + str(i["code"]).strip()):
+                        if k_ not in ("", "#"):
+                            its.setdefault(k_, v)
                 ent = {"name": info["name"], "eans": sorted({_ean_key(i["ean"]) for i in info["items"]} - {""}),
-                       "codes": sorted({str(i["code"]).strip() for i in info["items"]} - {""})}
+                       "codes": sorted({str(i["code"]).strip() for i in info["items"]} - {""}),
+                       "items": its, "moq": info.get("moq_file") or {}}
             except Exception as e:
                 if log:
                     log(f"⚠ {os.path.basename(p)}：{e}")
@@ -406,6 +413,9 @@ def scheda_index(root, cache_path=None, log=None):
             out["ean"].setdefault(e, ent["name"])
         for c in ent["codes"]:
             out["code"].setdefault(c, ent["name"])
+        out["moq"].setdefault(ent["name"], ent.get("moq") or {})
+        for k_, v in (ent.get("items") or {}).items():
+            out["items"].setdefault((ent["name"], k_), v)
     if cache_path and new != old:
         try:
             os.makedirs(os.path.dirname(cache_path), exist_ok=True)
@@ -416,6 +426,19 @@ def scheda_index(root, cache_path=None, log=None):
         except OSError:
             pass
     return out
+
+
+def brand_item(index, ean, code):
+    """(供应商名, 每箱件数, 件价)：品牌供应商 SCHEDA 里这个商品；没有 None"""
+    name = brand_supplier(index, ean, code)
+    if not name:
+        return None
+    k = _ean_key(ean)
+    v = (index.get("items") or {}).get((name, k)) if k else None
+    if v is None:
+        v = (index.get("items") or {}).get((name, "#" + str(code or "").strip()))
+    pack, price = v if v else (0.0, 0.0)
+    return name, pack, price
 
 
 def brand_supplier(index, ean, code):
