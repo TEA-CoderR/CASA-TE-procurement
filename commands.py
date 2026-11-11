@@ -997,11 +997,14 @@ def mail_undo_prices(settings, undo, via="desktop"):
 
 
 # ===================================================================== Griglia：不做了的商品找替代品（2026-11-09）
-def griglia_replacements(grid, quotes, fresh=None):
-    """Griglia「都不做了」的 → 这周报价里像的商品（griglia_replace.suggest），已经替代过（新商品在 Griglia 里）的不算"""
+def griglia_replacements(grid, quotes, fresh=None, struck=False):
+    """
+    Griglia「都不做了」的 → 这周报价里像的商品（griglia_replace.suggest），已经替代过（新商品在 Griglia 里）的不算。
+    struck=True：Griglia 里划了线的商品（用户 11-11 要一起找）
+    """
     import griglia_replace as GR
     done = GR.load_done(os.path.dirname(grid["path"])) if grid.get("path") else {}
-    return GR.suggest(grid, quotes, fresh=fresh, skip=GR.done_eans(done, grid))
+    return GR.suggest(grid, quotes, fresh=fresh, skip=GR.done_eans(done, grid), struck=struck)
 
 
 GRID_BACKUPS = 5          # 本地备份（不带图片，几 MB）留最近 5 份
@@ -1047,7 +1050,8 @@ def griglia_add_replacements(grid, picks, by=None, via="desktop", excel=None, lo
     for old_ean, row, moved in written:
         o, c = by_old[old_ean]
         done[old_ean] = {"new": c["ean"], "name": c["name"], "old_name": o.get("name") or "", "at": now, "by": by,
-                         "file": target, "row": row, "moved_to": moved, "in_grid": bool(c.get("in_grid")), "size": GR.change(o.get("name") or "", c["name"])[0],
+                         "file": target, "row": row, "moved_to": moved, "in_grid": bool(c.get("in_grid")),
+                         "struck": bool(o.get("struck")), "size": GR.change(o.get("name") or "", c["name"])[0],
                          "best": c.get("best"), "best_sup": c.get("best_sup"), "score": c.get("score")}
     GR.save_done(gdir, done)
     audit(by, via, "griglia_add_replacements", {"file": target, "n": len(written), "backup": bk,

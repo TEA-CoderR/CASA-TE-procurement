@@ -18,7 +18,7 @@ from i18n import tr
 from theme import T
 
 # (字段, 表头, 宽)。old_ean / new_ean 默认藏着（小图从这两列取条码；右键表头「显示哪些列」能打开）
-COLS = [("pick", "", 34), ("old", "不做了的商品", 260), ("new", "替代成", 260), ("size", "规格", 126),
+COLS = [("pick", "", 34), ("kind", "情况", 78), ("old", "不做了的商品", 260), ("new", "替代成", 260), ("size", "规格", 126),
         ("score", "像不像", 76), ("n", "几家", 52), ("best", "最低价", 76),
         ("old_ean", "条码", 120), ("new_ean", "新条码", 120)]
 F = {f: c for c, (f, _h, _w) in enumerate(COLS)}
@@ -304,7 +304,9 @@ class ReplaceDialog(QDialog):
         self.settings, self.grid, self.rows, self.pool = settings, grid, sugg, pool
         self.result_info = None
         self.choice = {i: (r["cands"][0] if r["cands"] else None) for i, r in enumerate(sugg)}
-        self.checked = {i for i, r in enumerate(sugg) if r["cands"] and r["cands"][0]["score"] >= GR.SURE}
+        # 默认只勾「都不做了」里 ≥ 80% 的；划线的是以前人定的，一个个看了再勾
+        self.checked = {i for i, r in enumerate(sugg)
+                        if r["cands"] and r["cands"][0]["score"] >= GR.SURE and not r["old"].get("struck")}
         self._filling = False
         self.setWindowTitle(tr("找替代商品"))
         self.setWindowFlags(Qt.Window | Qt.WindowTitleHint | Qt.WindowMinMaxButtonsHint | Qt.WindowCloseButtonHint)
@@ -319,11 +321,13 @@ class ReplaceDialog(QDialog):
             "950 ml → 1000 ml）。像不像 ≥ 80% 的先勾上，都要看一眼再加。\n"
             "替换进 Griglia：原来那一行换成新商品（分类 / 品牌 / 门店勾选照旧，条码 / 名称 / 箱规 / 价格 / 供应商换成新的、"
             "编号空着，改过的格子浅蓝底），旧商品那一行抄到文件最下面、划线。新商品 Griglia 里已经有的，只把旧行移到最下面。"
-            "划了线的行以后不再算「都不做了」"))
+            "划了线的行以后不再算「都不做了」。\n"
+            "情况「已划线」= Griglia 里以前就划掉的商品（有的还有人卖）：替换时直接把划线的那一行改成新商品、去掉划线；默认不勾"))
         title.setStyleSheet("font-size:15px; font-weight:700;")
         head.addWidget(title)
         found = sum(1 for r in sugg if r["cands"])
-        sub = QLabel(tr("{0} 个都不做了 · {1} 个找到像的", len(sugg), found))
+        n_struck = sum(1 for r in sugg if r["old"].get("struck"))
+        sub = QLabel(tr("{0} 个都不做了 · {1} 个划线的 · {2} 个找到像的", len(sugg) - n_struck, n_struck, found))
         sub.setObjectName("Faint")
         head.addSpacing(10)
         head.addWidget(sub)
@@ -334,7 +338,8 @@ class ReplaceDialog(QDialog):
         self.search.setClearButtonEnabled(True)
         head.addWidget(self.search)
         self.show_cb = QComboBox()
-        for text, k in ((tr("全部"), "all"), (tr("找到像的"), "found"), (tr("没找到"), "none"), (tr("已勾选"), "on")):
+        for text, k in ((tr("全部"), "all"), (tr("都不做了"), "gone"), (tr("划线的"), "struck"),
+                        (tr("找到像的"), "found"), (tr("没找到"), "none"), (tr("已勾选"), "on")):
             self.show_cb.addItem(text, k)
         head.addWidget(self.show_cb)
         self.count = QLabel("")
@@ -372,7 +377,7 @@ class ReplaceDialog(QDialog):
                                    hide=self._hidden, numeric=NUM)
         self.ctl.rendered.connect(lambda n, tot: self.count.setText(tr("{0:,} / {1:,}", n, tot)))
         self.ctl.remember(settings.setdefault("griglia_cols", {}), "replace", lambda: ST.save_settings(settings),
-                          [f for f, _h, _w in COLS], default_hidden=["old_ean", "new_ean"], ver=2)
+                          [f for f, _h, _w in COLS], default_hidden=["old_ean", "new_ean"], ver=3)
         self.t.viewport().installEventFilter(self)
         self.t.itemChanged.connect(self._item_changed)
         self.t.itemSelectionChanged.connect(self._show)
@@ -488,6 +493,8 @@ class ReplaceDialog(QDialog):
         old = r["old"]
         if f == "pick":
             return "✓" if i in self.checked else ""
+        if f == "kind":
+            return tr("已划线") if old.get("struck") else tr("不做了")
         if f == "old":
             return old.get("name") or old["ean"]
         if f == "new":
@@ -528,7 +535,9 @@ class ReplaceDialog(QDialog):
             if q not in hay:
                 return True
         k = self.show_cb.currentData()
-        return ((k == "found" and not r["cands"]) or (k == "none" and r["cands"]) or (k == "on" and i not in self.checked))
+        st = bool(r["old"].get("struck"))
+        return ((k == "found" and not r["cands"]) or (k == "none" and r["cands"]) or (k == "on" and i not in self.checked)
+                or (k == "gone" and st) or (k == "struck" and not st))
 
     def _fill(self, i, k):
         self._filling = True
@@ -548,6 +557,13 @@ class ReplaceDialog(QDialog):
                     it.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
                 elif f == "score":
                     it.setData(Qt.UserRole + 1, pct(ch) if ch else None)
+                if f == "kind":
+                    if old.get("struck"):
+                        it.setForeground(QColor(T("muted")))
+                        it.setToolTip(tr("Griglia 里已经划掉的商品（第 {0} 行）：替换时这一行直接改成新商品、去掉划线", old.get("row") or "?"))
+                    else:
+                        it.setForeground(QColor(T("err")))
+                        it.setToolTip(tr("这周 4 家批发商都没有报价"))
                 if f == "old":
                     it.setToolTip(f"{old.get('name') or ''}\n{old['ean']}")
                     if ch:
@@ -729,11 +745,13 @@ class ReplaceDialog(QDialog):
         if len(picks) > 12:
             lines += "\n" + tr("…还有 {0} 个", len(picks) - 12)
         n_in = sum(1 for _o, c in picks if c.get("in_grid"))
+        n_st = sum(1 for o, _c in picks if o.get("struck"))
         msg = tr("替换 Griglia 里 {0} 个商品：\n{1}\n\n改的文件：{2}（{3}）\n{4}\n\n"
                  "原来那一行换成新商品（改过的格子浅蓝底，编号空着）；旧商品那一行抄到文件最下面、划线。\n"
                  "其中 {5} 个新商品 Griglia 里已经有，只把旧行移到最下面。\n"
+                 "其中 {6} 个是已经划线的商品：划线的那一行直接改成新商品、去掉划线。\n"
                  "改之前在程序文件夹存一份备份（图片换成 IMAGE 公式，文件小）。Excel 要关着，文件大，可能要几分钟。\n"
-                 "同步文件夹里的文件同事都会看到。确定替换？", len(picks), lines, name, where, os.path.dirname(target), n_in)
+                 "同步文件夹里的文件同事都会看到。确定替换？", len(picks), lines, name, where, os.path.dirname(target), n_in, n_st)
         if QMessageBox.question(self, tr("替换进 Griglia"), msg) != QMessageBox.Yes:
             return
         import product_images as PI
@@ -760,7 +778,8 @@ def open_replace(page):
     if not grid or quotes is None:
         return
     res, err = BusyDialog.run(page.win, tr("找替代商品"), tr("正在这周报价里找像的商品…"),
-                              lambda: (CMD.griglia_replacements(grid, quotes, getattr(page, "_fresh", None)),
+                              lambda: (CMD.griglia_replacements(grid, quotes, getattr(page, "_fresh", None))
+                                       + CMD.griglia_replacements(grid, quotes, getattr(page, "_fresh", None), struck=True),
                                        GR.pool(grid, quotes)))
     if err:
         page.win.show_toast(tr("找替代商品失败：{0}", err))

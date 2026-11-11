@@ -773,7 +773,7 @@ class GrigliaPage:
                                 [(9, tr("Griglia 供应商"), "txt", lambda x: x.get("supplier"), None),
                                  (10, tr("Griglia 价"), "price", lambda x: x.get("best") or x.get("price"), None)],
                                 st["gone"], extra=self.gone_bar)
-        self.b_repl.setEnabled(bool(st["gone"]))
+        self.b_repl.setEnabled(bool(st["gone"]) or bool((self.grid or {}).get("struck")))   # 划线的商品也能找（用户 11-11）
         self._update_log_btn()
         # 新品
         if self.t_new is not None:

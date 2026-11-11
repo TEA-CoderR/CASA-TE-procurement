@@ -64,7 +64,8 @@ def test_plan_rows_fills_new_row_and_supplier_full_name():
     old = g["items"]["8001111000014"]
     cand = next(r for r in GR.suggest(g, QUOTES) if r["old"]["ean"] == "8001111000014")["cands"][0]
     plan = GR.plan_rows(g, [(old, cand)])
-    (oe, row, vals), = plan
+    (oe, row, vals, mode), = plan
+    assert mode == "move"
     col = g["cols"]
     assert oe == old["ean"] and row == old["row"] == 4
     assert vals[col["ean"]] == "8001111000021" and vals[col["code"]] is None
@@ -372,3 +373,32 @@ def test_name_diff_marks_only_what_changed():
     assert marked("SVELTO PIATTI 980 ML ZENZERO&LIMONE", "SVELTO PIATTI 1,03L ZENZERO & LIMONE") == ["980"]
     assert marked("LYSOFORM DETER.IGIENIZ.40 LAV.CLASSICO", "LYSOFORM DETER.IGIENIZ.36 LAV.COLORI BR.") == ["40", "CLASSICO"]
     assert "".join(t for t, _k in GR.diff_tokens("A 40 LAV.X", "B")) == "A 40 LAV.X"
+
+
+def test_struck_items_get_replacements_and_are_replaced_in_place():
+    """用户 11-11：Griglia 里划线的商品也要找替代；替换时划线的那一行直接改成新商品、去掉划线，不再挪"""
+    g = _grid("x.xlsx")
+    sv = g["items"].pop("8002222000017")                  # SVELTO 980 当成划线的（第 5 行）
+    g["struck"] = {sv["ean"]: sv}
+    out = GR.suggest(g, QUOTES, struck=True)
+    assert [r["old"]["ean"] for r in out] == ["8002222000017"] and out[0]["old"]["struck"]
+    c = out[0]["cands"][0]
+    assert c["ean"] == "8002222000024"
+    assert all(r["old"]["ean"] != "8002222000017" for r in GR.suggest(g, QUOTES))   # 不算「都不做了」
+    plan = GR.plan_rows(g, [(out[0]["old"], c)])
+    assert plan[0][3] == "inplace"
+    ws = _sheet()
+    done = GR.write_rows("x.xlsx", g, plan, excel=_Excel(ws))
+    assert done == [("8002222000017", 5, None)]
+    assert ws.v[(5, 2)] == "8002222000024" and ws.v.get((7, 2)) is None       # 原地改、没往下抄
+    assert _font(ws, 5, "Strikethrough") is False
+    assert "8002222000017" in ws.comments[(5, 2)]
+    # 划线的商品、新商品 Griglia 里已有：Excel 不动，只记录
+    pool = GR.pool(g, QUOTES)
+    have = next(x for x in pool if x["ean"] == "8004444000013")
+    plan2 = GR.plan_rows(g, [(out[0]["old"], have)])
+    assert plan2[0][3] == "noop"
+    ws2 = _sheet()
+    before = dict(ws2.v)
+    assert GR.write_rows("x.xlsx", g, plan2, excel=_Excel(ws2)) == [("8002222000017", None, 5)]
+    assert ws2.v == before
