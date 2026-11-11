@@ -4,7 +4,7 @@
 """
 import json
 
-COMPANY_DEFAULTS_VER = 14          # v3.3.18 发布时同步
+COMPANY_DEFAULTS_VER = 15          # v3.3.19 发布时同步
 
 COMPANY_DEFAULTS = json.loads(r'''
 {
@@ -179,6 +179,59 @@ COMPANY_DEFAULTS = json.loads(r'''
    "7": 130,
    "8": 160,
    "9": 131
+  },
+  "replace_cols_hidden": [
+   "old_ean",
+   "new_ean"
+  ],
+  "replace_cols_hidden_ver": 5,
+  "replace_columns": [
+   "pick",
+   "old",
+   "new",
+   "size",
+   "score",
+   "n",
+   "best",
+   "old_ean",
+   "new_ean"
+  ],
+  "replace_columns_ver": 5,
+  "replace_log_cols_hidden": [],
+  "replace_log_cols_hidden_ver": 1,
+  "replace_log_columns": [
+   "at",
+   "by",
+   "old_name",
+   "old",
+   "name",
+   "new",
+   "size",
+   "in",
+   "file"
+  ],
+  "replace_log_columns_ver": 1,
+  "replace_log_widths": {
+   "at": 128,
+   "by": 70,
+   "file": 220,
+   "in": 92,
+   "name": 280,
+   "new": 150,
+   "old": 162,
+   "old_name": 280,
+   "size": 110
+  },
+  "replace_widths": {
+   "best": 76,
+   "n": 72,
+   "new": 260,
+   "new_ean": 0,
+   "old": 260,
+   "old_ean": 0,
+   "pick": 34,
+   "score": 76,
+   "size": 120
   }
  },
  "history_keep_days": 180,
@@ -643,14 +696,18 @@ COMPANY_DEFAULTS = json.loads(r'''
  },
  "supplier_names": {
   "(Prezzi)FlliPetrillo_Base_07_11.xls": "petrillo",
+  "(Prezzi)FlliPetrillo_Base_07_11.xlsx": "PETRILLO",
   "(Prezzi)FlliPetrillo_Base_17_10.xlsx": "PETRILLO",
   "Canvass 43 New Grieco(1).xlsx": "NEW GRIECO",
   "Canvass 46 New Grieco.xls": "NEW GRIECO",
+  "Canvass 46 New Grieco.xlsx": "NEW GRIECO",
+  "Listino_01 - Offerta.xlsx": "MELONI",
   "Listino_01 - Offerte(1).xlsx": "MELONI",
   "Ordine FlliPetrillo Foiano 1810.xlsx": "Petrillo",
   "Ordine Mega Cash Foiano 1810.xlsx": "MEGA CASH",
   "Ordine Meloni Foiano 1810.xlsx": "MELONI",
-  "formattato_059603(2).xlsx": "MEGA CASH"
+  "formattato_059603(2).xlsx": "MEGA CASH",
+  "formattato_059603.xlsx": "MEGA CASH"
  },
  "tracking": {
   "auto_register": true,
