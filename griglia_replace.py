@@ -663,11 +663,30 @@ def _shift_refs(f, deleted):
     return _REF.sub(sub, f)
 
 
+_EXT = re.compile(r"\[(\d+)\]")
+
+
+def _link_names(wb):
+    """外部链接编号 → 链接到的文件名（用户 11-11：WPS 保存时把用不到的外部链接删掉、其余重新编号，
+    公式里的 [2]Sheet1!… 变成 [1]Sheet1!…，指的还是同一个文件）"""
+    from urllib.parse import unquote
+    out = {}
+    for i, link in enumerate(getattr(wb, "_external_links", None) or [], 1):
+        t = getattr(getattr(link, "file_link", None), "Target", None) or ""
+        t = unquote(str(t)).replace("\\", "/")
+        out[str(i)] = t.rsplit("/", 1)[-1].lower() or str(i)
+    return out
+
+
 def _sheet_cells(path, sheet, max_col):
-    """{(行, 列): (内容 / 公式, 有没有删除线)}，只读（不读图片）"""
+    """{(行, 列): (内容 / 公式, 有没有删除线)}，只读（不读图片）；公式里的外部链接编号换成链接到的文件名"""
     import openpyxl
     wb = openpyxl.load_workbook(path, read_only=True, data_only=False)
     try:
+        names = _link_names(wb)
+
+        def ext(m):
+            return "[" + names.get(m.group(1), m.group(1)) + "]"
         ws = wb[sheet] if sheet and sheet in wb.sheetnames else wb.worksheets[0]
         out = {}
         for row in ws.iter_rows(max_col=max_col):
@@ -678,6 +697,8 @@ def _sheet_cells(path, sheet, max_col):
                 except Exception:
                     st = False
                 if v not in (None, ""):
+                    if isinstance(v, str) and v.startswith("=") and "[" in v:
+                        v = _EXT.sub(ext, v)
                     out[(c.row, c.column)] = (v, st)
         return out
     finally:

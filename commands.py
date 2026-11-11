@@ -1050,13 +1050,25 @@ def griglia_add_replacements(grid, picks, by=None, via="desktop", excel=None, lo
         shutil.copy2(target, work)
         ops = []
         written = GR.write_rows(work, grid, plan, excel=excel, log=log, url=url, ops=ops)
-        diffs, n_cells = GR.diff_cells(target, work, grid.get("sheet"), ops)
+        diffs, n_cells = GR.diff_cells(target, work, grid.get("sheet"), ops, limit=5000)
         if diffs:
-            sample = "；".join(f"{c}：{b!r} → {a!r}" for c, b, a in diffs[:5])
+            sample = "；".join(f"{c}：{b!r} → {a!r}" for c, b, a in diffs[:3])
+            try:                                          # 全部不一样的格子写进 logs，方便查原因
+                from settings import app_dir
+                ld = os.path.join(app_dir(), "logs")
+                os.makedirs(ld, exist_ok=True)
+                with open(os.path.join(ld, f"griglia_check_{datetime.now():%Y%m%d_%H%M%S}.txt"), "w",
+                          encoding="utf-8", newline="") as f:
+                    f.write(f"{target}\nops={ops}\n")
+                    for c, b_, a_ in diffs:
+                        f.write(f"{c}\t{b_!r}\t{a_!r}\n")
+            except Exception:
+                pass
             if log:
-                for c, b_, a_ in diffs:
+                for c, b_, a_ in diffs[:200]:
                     log(f"⚠ Griglia 核对：{c} {b_!r} → {a_!r}")
-            raise RuntimeError(tr("核对没通过：除了替换的那几行，还有 {0} 个格子变了（{1}），原文件没有改", len(diffs), sample))
+            more = f"{len(diffs)}+" if len(diffs) >= 5000 else str(len(diffs))
+            raise RuntimeError(tr("核对没通过：除了替换的那几行，还有 {0} 个格子变了（{1}），原文件没有改", more, sample))
         st1 = os.stat(target)
         if (st1.st_mtime, st1.st_size) != (st0.st_mtime, st0.st_size) or \
                 os.path.exists(os.path.join(d, "~$" + name)):

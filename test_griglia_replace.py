@@ -530,3 +530,32 @@ def test_add_replacements_keeps_original_when_check_fails():
         GR.write_rows = orig
     assert hashlib.md5(open(src, "rb").read()).hexdigest() == md5
     assert "8001111000014" not in GR.load_done(work)
+
+
+def test_external_link_renumbering_is_not_a_change():
+    """用户 11-11 截图：WPS 保存时删掉一个没用的外部链接、其余重新编号（[2]Sheet1!… → [1]Sheet1!…），指的是同一个文件，不算改动"""
+    d = tempfile.mkdtemp()
+    b, a = os.path.join(d, "b.xlsx"), os.path.join(d, "a.xlsx")
+    _book(b, [["NO.", "Codice EAN", "X"], [1, "8001", "=_xlfn.XLOOKUP(B2,[2]Sheet1!$E:$E,[2]Sheet1!$O:$O,0,0,1)"],
+              [2, "8002", "=XLOOKUP(B3,'[3]LISTINO x Famiglie'!$A:$A,'[3]LISTINO x Famiglie'!$H:$H)"]])
+    _book(a, [["NO.", "Codice EAN", "X"], [1, "8001", "=_xlfn.XLOOKUP(B2,[1]Sheet1!$E:$E,[1]Sheet1!$O:$O,0,0,1)"],
+              [2, "8002", "=XLOOKUP(B3,'[2]LISTINO x Famiglie'!$A:$A,'[2]LISTINO x Famiglie'!$H:$H)"]])
+    orig = GR._link_names
+    links = {b: {"1": "dettaglio.xlsx", "2": "offerta.xlsx", "3": "foiano.xlsx"},
+             a: {"1": "offerta.xlsx", "2": "foiano.xlsx"}}
+    GR._link_names = lambda wb: links[wb._casate_path]
+    import openpyxl
+    real = openpyxl.load_workbook
+
+    def load(path, **k):
+        wb = real(path, **k)
+        wb._casate_path = path
+        return wb
+    openpyxl.load_workbook = load
+    try:
+        assert GR.diff_cells(b, a, "GRIGLIA", [])[0] == []
+        links[a] = {"1": "altro.xlsx", "2": "foiano.xlsx"}            # 真的指向了别的文件 → 要报出来
+        assert [x[0] for x in GR.diff_cells(b, a, "GRIGLIA", [])[0]] == ["C2"]
+    finally:
+        GR._link_names = orig
+        openpyxl.load_workbook = real
