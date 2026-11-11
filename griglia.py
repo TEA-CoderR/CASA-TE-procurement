@@ -19,7 +19,7 @@ import hashlib
 from utils import clean_ean
 
 GRID_DIR = "0 Griglia"
-CACHE_VER = 5
+CACHE_VER = 6
 STORES = ("FOIANO", "MARLIA", "S.FILIPPO", "S.MARCO", "S.CONCORDIO")
 EXCEL = (".xlsx", ".xlsm")
 
@@ -103,8 +103,11 @@ def _cats(r, col, right):
     return [rt[0]] + [rt[k] or (left[k] if same else "") for k in (1, 2)]
 
 
-def parse_rows(rows):
+def parse_rows(rows, struck=()):
     """
+    struck = 划了线的 Excel 行号（用户 11-11：Griglia 里不做了的商品是挪到最下面、用线划掉的）：
+    这些行不算 Griglia 商品（不进 items，不会再出现在「都不做了」），放进 out["struck"]。
+
     Griglia 的所有行（值）→ {"items": {条码: {...}}, "suppliers": [价格列的批发商], "by_code": {商品编号: 条码}}。
     表头在前 10 行里找有「Codice EAN」的那一行
     """
@@ -126,7 +129,8 @@ def parse_rows(rows):
             right[f] = idx[-1]
     sup_cols = {h: i for i, h in enumerate(heads) if h in _SUP_COLS}
     store_cols = {h: i for i, h in enumerate(heads) if h in STORES}
-    items, by_code, bad = {}, {}, []
+    items, by_code, bad, struck_items = {}, {}, [], {}
+    struck = set(struck or ())
     for n, r in enumerate(rows[hr + 1:], hr + 2):
         def g(f):
             i = col.get(f)
@@ -148,12 +152,39 @@ def parse_rows(rows):
               "direct": str(g("direct") or "").strip(),
               "prices": {h: _num(r[i]) for h, i in sup_cols.items() if i < len(r) and _num(r[i])},
               "stores": [h for h, i in store_cols.items() if i < len(r) and _num(r[i])], "row": n}
+        if n in struck:
+            struck_items[e] = it
+            continue
         items[e] = it
         if code:
             by_code[code] = e
     # 列在哪（0 开始）、表头第几行（Excel 行号）：往 Griglia 里写替代商品时用（griglia_replace.write_rows）
     return {"items": items, "suppliers": list(sup_cols), "by_code": by_code, "bad_rows": bad,
-            "cols": col, "sup_cols": sup_cols, "header_row": hr + 1}
+            "cols": col, "sup_cols": sup_cols, "header_row": hr + 1,
+            "struck": {e: it for e, it in struck_items.items() if e not in items}}
+
+
+def struck_rows(ws, head):
+    """划了线的行（条码格或名称格是删除线）：Excel 行号集合。head = 前 10 行的值"""
+    hr = next((i for i, r in enumerate(head) if any(_norm(v) == "CODICE EAN" for v in r)), None)
+    if hr is None:
+        return set()
+    heads = [_norm(v) for v in head[hr]]
+    cols = sorted({i for i, h in enumerate(heads) if h == "CODICE EAN" or _FIELDS.get(h) == "name"})
+    if not cols:
+        return set()
+    out = set()
+    try:
+        for n, row in enumerate(ws.iter_rows(min_row=hr + 2, min_col=cols[0] + 1, max_col=cols[-1] + 1), hr + 2):
+            for c in cols:
+                cell = row[c - cols[0]] if c - cols[0] < len(row) else None
+                f = getattr(cell, "font", None) if cell is not None else None
+                if f is not None and f.strike and getattr(cell, "value", None) not in (None, ""):
+                    out.add(n)
+                    break
+    except Exception:
+        return set()                                     # 读不了格式（只读模式不支持等）：当没有划线
+    return out
 
 
 def parse_rows_any(wb):
@@ -165,7 +196,7 @@ def parse_rows_any(wb):
     for ws in sheets:
         head = list(ws.iter_rows(max_row=10, values_only=True))      # 先只看前 10 行，不是这页就不整页读
         if any(_norm(v) == "CODICE EAN" for r in head for v in r):
-            out = parse_rows(ws.iter_rows(values_only=True))
+            out = parse_rows(ws.iter_rows(values_only=True), struck=struck_rows(ws, head))
             out["sheet"] = ws.title
             return out
     raise ValueError("Griglia 里找不到「Codice EAN」表头（所有工作表都看过了；表头要在前 10 行）")

@@ -375,3 +375,23 @@ def test_shifted_rows_ignored_and_reported():
     assert bad["supplier"] == "" and bad["cats"] == ["", "", ""] and bad["prices"] == {} and bad["price"] == 0.6
     assert g["items"]["8000000000011"]["cats"][0] == "CASA" and g["bad_rows"] == [4, 5]
     assert G.bad_rows_text([2759, 2760, 2761, 2770]) == "2759–2761、2770"
+
+
+def test_struck_rows_are_not_griglia_items(tmp_path=None):
+    """用户 11-11：不做了的商品挪到最下面、用线划掉 → 不算 Griglia 商品，不再出现在「都不做了」"""
+    import tempfile
+    from openpyxl import Workbook
+    from openpyxl.styles import Font
+    d = tempfile.mkdtemp()
+    p = os.path.join(d, "G.xlsx")
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "GRIGLIA"
+    ws.append(["Codice EAN", "Descrizione prodotto"])
+    ws.append(["8001111000014", "COCCOLINO 50 LAV"])
+    ws.append(["8001111000021", "COCCOLINO 40 LAV"])
+    for c in ws[3]:
+        c.font = Font(strike=True)
+    wb.save(p)
+    g = G.load(p)
+    assert set(g["items"]) == {"8001111000014"} and set(g["struck"]) == {"8001111000021"}

@@ -200,7 +200,11 @@ def _cand(e, n, o, sc=0.0, za="", zb="", fresh=None, names=None):
 
 
 def pool(grid, quotes):
-    """这周报价里、Griglia 里没有的全部商品（手动搜替代品用）：[候选（score 0）]"""
+    """
+    这周报价里的全部商品（手动搜替代品用）：[候选（score 0）]。
+    Griglia 里已经有的也在（用户 11-09：搜 FINISH GEL 只出来 3 个，另外 4 个是 Griglia 里已经有的被藏了），标 in_grid：
+    选它 = 新商品已经在 Griglia 里了，只把旧的那行移到最下面、划线
+    """
     items = grid["items"]
     offer = {}
     for label, qs in quotes.items():
@@ -209,11 +213,37 @@ def pool(grid, quotes):
                 offer.setdefault(e, {})[label] = q
     out = []
     for e, o in offer.items():
-        if e in items:
-            continue
         ns = _descs(o)
         if ns:
-            out.append(_cand(e, ns[0], o, names=ns))
+            c = _cand(e, ns[0], o, names=ns)
+            if e in items:
+                c["in_grid"] = True
+            out.append(c)
+    return out
+
+
+def _flat(s):
+    return re.sub(r"[^A-Z0-9]", "", s)
+
+
+def search(pool_, q):
+    """
+    手动搜（用户 11-09：要模糊一点）：条码开头对上，或者输入的每个词都在某家的写法里出现
+    （不分大小写、标点；粘在一起的也算：「540ml」= 「540 ML」，「ULTIM」= ULTIMATE）
+    """
+    q = str(q or "").strip()
+    if not q:
+        return []
+    toks = [_flat(t) for t in re.split(r"[\s,;/]+", _norm(q)) if _flat(t)]
+    out = []
+    for c in pool_:
+        if q.isdigit() and c["ean"].startswith(q):
+            out.append(c)
+            continue
+        hay = " ".join(_norm(n) for n in (c.get("names") or [c["name"]]))
+        flat = _flat(hay)
+        if toks and all(t in flat for t in toks):
+            out.append(c)
     return out
 
 
@@ -356,8 +386,8 @@ def price_cols(grid, labels):
 
 def plan_rows(grid, picks, today=None):
     """
-    要写的：[(旧条码, 旧行号, {列(0 开始): 值})]，按行号从下往上（插行不影响上面的行号）。
-    picks = [(旧商品, 候选)]。新行照抄旧行（分类 / 品牌 / 门店勾选 / 公式），这里只给要换掉的格子：
+    要写的：[(旧条码, 旧行号, {列(0 开始): 值})]，按行号从下往上（删行不影响上面的行号）。
+    picks = [(旧商品, 候选)]。旧行原地换成新商品（分类 / 品牌 / 门店勾选 / 公式照旧），这里只给要换掉的格子：
     条码、名称、箱规、最低价（PREZZO NETTO、PA MIGLIORE）、Fornitore（最便宜那家，Griglia 里的写法）、各批发商价格；
     编号（COD.ART.）清空——新商品在我们系统里还没有编号
     """
@@ -366,6 +396,9 @@ def plan_rows(grid, picks, today=None):
     out = []
     for old, c in picks:
         vals = {}
+        if c.get("in_grid"):                        # 新商品 Griglia 里已经有：旧行只移到最下面划线
+            out.append((old["ean"], old.get("row"), vals))
+            continue
 
         def put(f, v):
             if f in col:
@@ -408,9 +441,14 @@ def _is_img_head(v):
 
 def write_rows(path, grid, plan, excel=None, log=None, url=None):
     """
-    用 Excel 打开 Griglia，每个不做了的商品下面插一行替代品（照抄旧行再改格子），旧行字变灰、旧条码格加批注。
-    新行：去掉照抄来的删除线（用户 11-09：旧行有划线是表示不做了，新行不要）；图片那一格换成新条码的 =IMAGE(网址)。
-    excel = 测试用的假 Excel。返回 [(旧条码, 新行号)]。找不到旧行（条码对不上）的跳过，记在日志里
+    用 Excel 打开 Griglia（用户 11-09：替换原来的产品行，原来的行移到文件最底部、用线划掉，和 Griglia 里现在的做法一样）：
+      1. 旧行照抄一份到最下面（EAN 列最后一个有内容的行下面）：格式 PasteSpecial 只贴格式（不抄商品图片），内容按 R1C1 照抄，
+         整行划线、字变灰，旧条码格加批注「Non più disponibile dai grossisti → sostituito da …」；
+      2. 原来那一行原地改成新商品：条码 / 名称 / 箱规 / 价格 / 供应商（改过的格子浅蓝底），编号清空，去掉划线，图片格写新条码的 =IMAGE；
+         分类 / 品牌 / 门店勾选 / 公式照旧；
+      3. 新商品 Griglia 里已经有（vals 空）：原来那一行删掉（已经抄到最下面了）。
+    excel = 测试用的假 Excel。返回 [(旧条码, 新商品所在行号 或 None, 旧行挪到的行号)]。
+    找不到旧行（条码对不上）的跳过，记在日志里
     """
     log = log or (lambda *_a: None)
     own = excel is None
@@ -434,6 +472,14 @@ def write_rows(path, grid, plan, excel=None, log=None, url=None):
         hr = grid.get("header_row")
         img_col = next((c for c in range(1, min(last, 40) + 1) if hr and _is_img_head(ws.Cells(hr, c).Value)), None)
         from utils import clean_ean
+
+        def row_range(r):
+            return ws.Range(ws.Cells(r, 1), ws.Cells(r, last))
+
+        def bottom():
+            hit = ws.Columns(ec).Find(What="*", LookIn=-4163, LookAt=2, SearchOrder=1, SearchDirection=2)
+            return (hit.Row if hit is not None else (hr or 1)) + 1
+
         for old_ean, row, vals in plan:
             if not row or clean_ean(ws.Cells(row, ec).Value) != old_ean:
                 hit = ws.Columns(ec).Find(What=old_ean, LookIn=-4163, LookAt=1)   # 行号变了（有人插过行）：按条码整格再找
@@ -441,47 +487,67 @@ def write_rows(path, grid, plan, excel=None, log=None, url=None):
                 if not row or clean_ean(ws.Cells(row, ec).Value) != old_ean:
                     log(f"Griglia 里找不到条码 {old_ean}，跳过")
                     continue
-            # 下面插一行（格式照上面那行），内容按 R1C1 照抄（公式里的相对引用跟着下移一行）。
-            # 不用 Rows.Copy：会把这一行上的商品图片也抄一份（Griglia 几千张图，再一张张删很慢）
-            ws.Rows(row + 1).Insert(Shift=-4121, CopyOrigin=0)
-            src, dst = ws.Range(ws.Cells(row, 1), ws.Cells(row, last)), ws.Range(ws.Cells(row + 1, 1), ws.Cells(row + 1, last))
-            dst.FormulaR1C1 = src.FormulaR1C1
+            new_ean = vals.get(cols.get("ean"))
+            # 1. 旧行抄到最下面、划线
+            dst = bottom()
+            row_range(row).Copy()
+            row_range(dst).PasteSpecial(Paste=-4122)                    # 只贴格式（不抄商品图片）
             try:
-                ws.Rows(row + 1).RowHeight = ws.Rows(row).RowHeight
+                excel.CutCopyMode = False
             except Exception:
                 pass
+            row_range(dst).FormulaR1C1 = row_range(row).FormulaR1C1
+            try:
+                ws.Rows(dst).RowHeight = ws.Rows(row).RowHeight
+            except Exception:
+                pass
+            moved = row_range(dst)
+            moved.Font.Strikethrough = True
+            moved.Font.Color = GREY_FONT
+            try:
+                c = ws.Cells(dst, ec)
+                if c.Comment is not None:
+                    c.Comment.Delete()
+                c.AddComment("Non più disponibile dai grossisti" + (f" → sostituito da {new_ean}" if new_ean else ""))
+            except Exception:
+                pass
+            if not vals:
+                # 3. 新商品已经在 Griglia 里：原来那一行删掉
+                ws.Rows(row).Delete()
+                done.append((old_ean, None, dst - 1 if dst > row else dst))
+                continue
+            # 2. 原来那一行原地换成新商品
             for c0, v in vals.items():
-                cell = ws.Cells(row + 1, c0 + 1)
+                cell = ws.Cells(row, c0 + 1)
                 if v is not None and cell.HasFormula and c0 != cols.get("ean"):
-                    continue                                          # 公式格（PREZZO NETTO = …）照抄的公式会自己算
+                    continue                                          # 公式格（PREZZO NETTO = …）会自己算
                 if c0 == cols.get("ean"):
                     cell.NumberFormat = "@"                           # 条码当文字（不然变成 8.72E+12）
                     cell.Value = str(v)
                 else:
                     cell.Value = v
-            new_ean = vals.get(cols.get("ean"))
+                try:
+                    cell.Interior.Color = NEW_FILL                    # 改过的格子浅蓝
+                except Exception:
+                    pass
             if img_col and new_ean:
-                cell = ws.Cells(row + 1, img_col)
+                cell = ws.Cells(row, img_col)
                 f = image_formula(new_ean, url)
                 try:
                     cell.Formula2 = f                                 # Excel 365（动态数组公式）
                 except Exception:
                     cell.Formula = f
-            newr = ws.Range(ws.Cells(row + 1, 1), ws.Cells(row + 1, last))
-            newr.Interior.Color = NEW_FILL
             try:
-                newr.Font.Strikethrough = False
+                row_range(row).Font.Strikethrough = False
             except Exception:
                 pass
-            ws.Range(ws.Cells(row, 1), ws.Cells(row, last)).Font.Color = GREY_FONT
             try:
                 c = ws.Cells(row, ec)
                 if c.Comment is not None:
                     c.Comment.Delete()
-                c.AddComment(f"Non più disponibile dai grossisti → sostituito da {vals.get(cols.get('ean'))}")
             except Exception:
                 pass
-            done.append((old_ean, row + 1))
+            done.append((old_ean, row, dst))
         wb.Save()
         return done
     finally:

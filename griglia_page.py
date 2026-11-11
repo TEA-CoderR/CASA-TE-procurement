@@ -513,7 +513,7 @@ class GrigliaPage:
         gb = QHBoxLayout(self.gone_bar)
         gb.setContentsMargins(0, 0, 0, 0)
         self.b_repl = QPushButton(tr("🔄 找替代商品"))
-        self.b_repl.setToolTip(tr("很多不做了的是换了规格（40 洗 → 50 洗、950 ml → 1000 ml）：在这周报价里找像的商品，核对后加进 Griglia"))
+        self.b_repl.setToolTip(tr("很多不做了的是换了规格（40 洗 → 50 洗、950 ml → 1000 ml）：在这周报价里找像的商品，核对后替换进 Griglia"))
         self.b_repl.clicked.connect(self._find_repl)
         self.b_log = QPushButton(tr("替换记录"))
         self.b_log.setToolTip(tr("哪天谁把哪个不做了的商品换成了哪个新商品、改的是哪个文件第几行"))

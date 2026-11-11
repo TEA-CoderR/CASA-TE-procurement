@@ -1015,7 +1015,7 @@ def griglia_add_replacements(grid, picks, by=None, via="desktop", excel=None, lo
       改之前：在程序文件夹 backup/griglia 存一份不带图片的备份（图片换成 =IMAGE 公式，几百 MB → 几 MB）；
       用 Excel 每个旧商品下面插一行新的、旧的字变灰；改完原件再复制回「0 Griglia」（程序读的那份跟着变）；
       记进「0 Griglia/_替代记录.json」（时间、谁、旧 → 新、哪个文件、第几行），界面「替换记录」看得到。
-    picks = [(旧商品, 候选)]。返回 {"written": [(旧条码, 新行号)], "backup": 备份路径, "file": 改的文件}
+    picks = [(旧商品, 候选)]。返回 {"written": [(旧条码, 新商品所在行 或 None, 旧行挪到的行)], "backup": 备份路径, "file": 改的文件}
     """
     import shutil
     import griglia_replace as GR
@@ -1044,12 +1044,12 @@ def griglia_add_replacements(grid, picks, by=None, via="desktop", excel=None, lo
     done = GR.load_done(gdir)
     by_old = {o["ean"]: (o, c) for o, c in picks}
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
-    for old_ean, row in written:
+    for old_ean, row, moved in written:
         o, c = by_old[old_ean]
         done[old_ean] = {"new": c["ean"], "name": c["name"], "old_name": o.get("name") or "", "at": now, "by": by,
-                         "file": target, "row": row, "size": GR.change(o.get("name") or "", c["name"])[0],
+                         "file": target, "row": row, "moved_to": moved, "in_grid": bool(c.get("in_grid")), "size": GR.change(o.get("name") or "", c["name"])[0],
                          "best": c.get("best"), "best_sup": c.get("best_sup"), "score": c.get("score")}
     GR.save_done(gdir, done)
     audit(by, via, "griglia_add_replacements", {"file": target, "n": len(written), "backup": bk,
-                                                "pairs": [[o, by_old[o][1]["ean"]] for o, _r in written]}, None)
+                                                "pairs": [[o, by_old[o][1]["ean"]] for o, _r, _m in written]}, None)
     return {"written": written, "backup": bk, "file": target}
