@@ -402,3 +402,15 @@ def test_struck_items_get_replacements_and_are_replaced_in_place():
     before = dict(ws2.v)
     assert GR.write_rows("x.xlsx", g, plan2, excel=_Excel(ws2)) == [("8002222000017", None, 5)]
     assert ws2.v == before
+
+
+def test_both_kinds_found_in_one_pass_same_as_separately():
+    """用户 11-11：点「找替代商品」卡一下 → 两种商品一次算完（索引只建一次），结果和分开算一样"""
+    g = _grid("x.xlsx")
+    sv = g["items"].pop("8002222000017")
+    g["struck"] = {sv["ean"]: sv}
+    both = GR.suggest(g, QUOTES, struck="both")
+    sep = GR.suggest(g, QUOTES) + GR.suggest(g, QUOTES, struck=True)
+    key = lambda r: (r["old"]["ean"], bool(r["old"].get("struck")), [c["ean"] for c in r["cands"]])
+    assert sorted(map(key, both)) == sorted(map(key, sep))
+    assert GR.words("SVELTO 1,5 LT LIMONE") == ["SVELTO", "LIMONE"]      # 记住结果后还是给列表

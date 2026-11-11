@@ -14,6 +14,7 @@ import json
 import math
 import os
 import re
+from functools import lru_cache
 from collections import Counter
 
 TOP = 5
@@ -39,6 +40,11 @@ def _norm(s):
 
 def sizes(name):
     """名字里的规格：[(数, 单位)]，L / CL / KG 换成 ml / g（1,7 LT → 1700 ml）"""
+    return list(_sizes(str(name or "")))
+
+
+@lru_cache(maxsize=200000)
+def _sizes(name):
     s, out = _norm(name), []
     for m in SIZE.finditer(s):
         v, u = float(m.group(1)), UNITS[m.group(2)]
@@ -53,16 +59,24 @@ def sizes(name):
             u, k = TO_BASE[u]
             v *= k
         res.append((v, u))
-    return res
+    return tuple(res)
 
 
 def words(name):
+    return list(_words(str(name or "")))
+
+
+# 同一个名字要算几千次（每个原商品 × 候选都算一遍）：记住结果（用户 11-11：点「找替代商品」卡一下才出进度条）
+@lru_cache(maxsize=200000)
+def _words(name):
     s = SIZE2.sub(" ", SIZE.sub(" ", _norm(name)))
-    return [w for w in re.findall(r"[A-Z]{2,}", s) if w not in STOP]
+    return tuple(w for w in re.findall(r"[A-Z]{2,}", s) if w not in STOP)
 
 
+@lru_cache(maxsize=200000)
 def _grams(name):
-    s = "".join(words(name))
+    """（只读，别改返回的 Counter）"""
+    s = "".join(_words(str(name or "")))
     return Counter(s[i:i + 3] for i in range(len(s) - 2))
 
 
@@ -145,7 +159,7 @@ class _Idf:
         self.n = len(names) + 1
         self.df = Counter()
         for n in names:
-            self.df.update(set(words(n)))
+            self.df.update(set(_words(str(n or ""))))
 
     def __call__(self, w):
         return math.log((self.n + 1) / (self.df.get(w, 0) + 1)) + 1
@@ -153,7 +167,7 @@ class _Idf:
 
 def score(old, new, e_old, e_new, idf):
     """(分, 规格前, 规格后)"""
-    wa, wb = words(old), words(new)
+    wa, wb = _words(str(old or "")), _words(str(new or ""))
     if not wa or not wb:
         return 0.0, "", ""
     sa, sb = set(wa), set(wb)
@@ -285,17 +299,18 @@ def suggest(grid, quotes, fresh=None, skip=(), struck=False):
         for e, q in qs.items():
             if q.get("price"):
                 offer.setdefault(e, {})[label] = q
+    gone = []
+    if struck is not True:                  # False = 只要批发商都没货的；"both" = 两种一起（只建一次索引）
+        gone += [it for e, it in items.items() if e not in offer and e not in skip]
     if struck:
-        gone = [dict(it, struck=True) for e, it in struck_items.items() if e not in skip]
-    else:
-        gone = [it for e, it in items.items() if e not in offer and e not in skip]
+        gone += [dict(it, struck=True) for e, it in struck_items.items() if e not in skip]
     pool = [(e, _descs(o), o) for e, o in offer.items() if e not in items and e not in struck_items]
     pool = [(e, ns, o) for e, ns, o in pool if ns]
     idf = _Idf([n for _e, ns, _o in pool for n in ns] + [it.get("name") or "" for it in items.values()])
     # 先按词粗筛（品牌那个词要有，几家的写法都算），再细算
     by_word, by_pre = {}, {}
     for i, (e, ns, _o) in enumerate(pool):
-        for w in {w for n in ns for w in words(n)}:
+        for w in {w for n in ns for w in _words(str(n or ""))}:
             by_word.setdefault(w, []).append(i)
         by_pre.setdefault(e[:7], []).append(i)
     out = []

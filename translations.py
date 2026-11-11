@@ -3416,4 +3416,5 @@ TRANSLATIONS = {
     'Griglia 里以前就划线停用的商品（第 {0} 行）：替换时这一行直接改成新商品、去掉划线': ('Item already struck through (discontinued) in the Griglia (row {0}): replacing turns this row into the new item and removes the strikethrough', 'Articolo già barrato (dismesso) nella Griglia (riga {0}): la sostituzione trasforma questa riga nel nuovo articolo e toglie la barratura'),
     'Griglia 里有，这周 4 家批发商的报价里都没有': ("In the Griglia, but missing from all 4 wholesalers' price lists this week", 'Nella Griglia, ma assente dai listini di tutti e 4 i grossisti questa settimana'),
     '几家有货': ('Wholesalers', 'Grossisti'),
+    '正在这周报价里找相似的商品…': ('Searching this week\'s price lists for similar items…', 'Ricerca di articoli simili nei listini della settimana…'),
 }

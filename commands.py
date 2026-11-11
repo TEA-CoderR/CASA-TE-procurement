@@ -1000,7 +1000,7 @@ def mail_undo_prices(settings, undo, via="desktop"):
 def griglia_replacements(grid, quotes, fresh=None, struck=False):
     """
     Griglia「都不做了」的 → 这周报价里像的商品（griglia_replace.suggest），已经替代过（新商品在 Griglia 里）的不算。
-    struck=True：Griglia 里划了线的商品（用户 11-11 要一起找）
+    struck=True：只要 Griglia 里划了线的商品；"both"：批发商都没货的 + 划线的一起（窗口用这个，索引只建一次）
     """
     import griglia_replace as GR
     done = GR.load_done(os.path.dirname(grid["path"])) if grid.get("path") else {}

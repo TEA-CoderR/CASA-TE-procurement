@@ -778,10 +778,20 @@ def open_replace(page):
     grid, quotes = page.grid, getattr(page, "_quotes", None)
     if not grid or quotes is None:
         return
-    res, err = BusyDialog.run(page.win, tr("找替代商品"), tr("正在这周报价里找像的商品…"),
-                              lambda: (CMD.griglia_replacements(grid, quotes, getattr(page, "_fresh", None))
-                                       + CMD.griglia_replacements(grid, quotes, getattr(page, "_fresh", None), struck=True),
-                                       GR.pool(grid, quotes)))
+    def find():
+        ready = getattr(page, "_repl_ready", None)
+        if ready is not None:
+            ready.wait(60)                        # 页面统计完在后台已经在算了：等它算完，不重复算
+        pre = getattr(page, "_repl", None)
+        if pre and pre[0] is grid and pre[1] is quotes:
+            return pre[2]
+        return (CMD.griglia_replacements(grid, quotes, getattr(page, "_fresh", None), struck="both"),
+                GR.pool(grid, quotes))
+    pre = getattr(page, "_repl", None)
+    if pre and pre[0] is grid and pre[1] is quotes:      # 已经算好：直接打开，不弹进度
+        res, err = pre[2], None
+    else:
+        res, err = BusyDialog.run(page.win, tr("找替代商品"), tr("正在这周报价里找相似的商品…"), find)
     if err:
         page.win.show_toast(tr("找替代商品失败：{0}", err))
         return

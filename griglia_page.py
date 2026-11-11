@@ -521,6 +521,9 @@ class GrigliaPage:
         gb.addWidget(self.b_repl)
         gb.addWidget(self.b_log)
         self._quotes, self._fresh = None, None
+        self._repl = None             # 找替代商品提前算好的 (grid, (候选, 搜索池))，点按钮直接打开（用户 11-11：点了卡一下）
+        self._repl_ready = threading.Event()
+        self._repl_ready.set()
         # 四张表的列跟着这周的批发商变（每家一列价格），统计完再建；列可以拖动换位置，记在设置里
         self.t_gone = self.t_new = self.t_price = self.t_odd = None
         self.boxes = []
@@ -611,6 +614,8 @@ class GrigliaPage:
             return
         self.running = True
         self.stack.setCurrentIndex(2)
+        self._repl = None
+        self._repl_ready.clear()
         def work():
             try:
                 import workspace as W
@@ -631,8 +636,23 @@ class GrigliaPage:
                 self._quotes, self._fresh = quotes, (fresh if hist else None)
                 self.sig.done.emit((grid, st, None))
             except Exception as e:
+                self._repl_ready.set()
                 self.sig.done.emit((None, None, str(e)))
+                return
+            self._warm_replacements(grid, quotes, self._fresh)
         threading.Thread(target=work, daemon=True).start()
+
+    def _warm_replacements(self, grid, quotes, fresh):
+        """统计完在后台接着把「找替代商品」算好（约 1 秒）：点按钮时不用再等"""
+        try:
+            import commands as CMD
+            import griglia_replace as GR
+            res = (CMD.griglia_replacements(grid, quotes, fresh, struck="both"), GR.pool(grid, quotes))
+            self._repl = (grid, quotes, res)
+        except Exception:
+            self._repl = None
+        finally:
+            self._repl_ready.set()
 
     def _done(self, payload):
         grid, st, err = payload
