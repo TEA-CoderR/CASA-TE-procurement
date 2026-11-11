@@ -18,8 +18,8 @@ from i18n import tr
 from theme import T
 
 # (字段, 表头, 宽)。old_ean / new_ean 默认藏着（小图从这两列取条码；右键表头「显示哪些列」能打开）
-COLS = [("pick", "", 34), ("kind", "情况", 78), ("old", "不做了的商品", 260), ("new", "替代成", 260), ("size", "规格", 126),
-        ("score", "像不像", 76), ("n", "几家", 52), ("best", "最低价", 76),
+COLS = [("pick", "", 34), ("kind", "原因", 114), ("old", "原商品", 238), ("new", "替代成", 238), ("size", "规格", 120),
+        ("score", "相似度", 76), ("n", "几家有货", 72), ("best", "最低价", 76),
         ("old_ean", "条码", 120), ("new_ean", "新条码", 120)]
 F = {f: c for c, (f, _h, _w) in enumerate(COLS)}
 NUM = (F["n"], F["best"])
@@ -317,17 +317,18 @@ class ReplaceDialog(QDialog):
         head = QHBoxLayout()
         from erp_widgets import tip_label
         title = tip_label(tr("找替代商品"), tr(
-            "Griglia 里这周所有批发商都不做了的商品，在这周报价里找名字、品牌、规格最像的（多半是换了规格：40 洗 → 50 洗、"
-            "950 ml → 1000 ml）。像不像 ≥ 80% 的先勾上，都要看一眼再加。\n"
+            "两种商品要换：「批发商都没货」= Griglia 里有、这周 4 家批发商的报价里都没有；"
+            "「Griglia 已停用」= Griglia 里以前就划掉的商品（有的还有批发商在卖）。\n"
+            "程序在这周报价里找名字、品牌、规格最相似的（多半是换了规格：40 洗 → 50 洗、950 ml → 1000 ml）。"
+            "相似度 ≥ 80% 的先勾上（Griglia 已停用的默认不勾），都要看一眼再替换。\n"
             "替换进 Griglia：原来那一行换成新商品（分类 / 品牌 / 门店勾选照旧，条码 / 名称 / 箱规 / 价格 / 供应商换成新的、"
-            "编号空着，改过的格子浅蓝底），旧商品那一行抄到文件最下面、划线。新商品 Griglia 里已经有的，只把旧行移到最下面。"
-            "划了线的行以后不再算「都不做了」。\n"
-            "情况「已划线」= Griglia 里以前就划掉的商品（有的还有人卖）：替换时直接把划线的那一行改成新商品、去掉划线；默认不勾"))
+            "编号空着，改过的格子浅蓝底），原商品那一行抄到文件最下面、划线停用。新商品 Griglia 里已经有的，只把原商品那一行移到最下面。"
+            "Griglia 已停用的商品：直接把划线的那一行改成新商品、去掉划线。"))
         title.setStyleSheet("font-size:15px; font-weight:700;")
         head.addWidget(title)
         found = sum(1 for r in sugg if r["cands"])
         n_struck = sum(1 for r in sugg if r["old"].get("struck"))
-        sub = QLabel(tr("{0} 个都不做了 · {1} 个划线的 · {2} 个找到像的", len(sugg) - n_struck, n_struck, found))
+        sub = QLabel(tr("{0} 个批发商都没货 · {1} 个 Griglia 已停用 · {2} 个有相似商品", len(sugg) - n_struck, n_struck, found))
         sub.setObjectName("Faint")
         head.addSpacing(10)
         head.addWidget(sub)
@@ -338,8 +339,8 @@ class ReplaceDialog(QDialog):
         self.search.setClearButtonEnabled(True)
         head.addWidget(self.search)
         self.show_cb = QComboBox()
-        for text, k in ((tr("全部"), "all"), (tr("都不做了"), "gone"), (tr("划线的"), "struck"),
-                        (tr("找到像的"), "found"), (tr("没找到"), "none"), (tr("已勾选"), "on")):
+        for text, k in ((tr("全部"), "all"), (tr("批发商都没货"), "gone"), (tr("Griglia 已停用"), "struck"),
+                        (tr("有相似商品"), "found"), (tr("没有相似商品"), "none"), (tr("已勾选"), "on")):
             self.show_cb.addItem(text, k)
         head.addWidget(self.show_cb)
         self.count = QLabel("")
@@ -377,7 +378,7 @@ class ReplaceDialog(QDialog):
                                    hide=self._hidden, numeric=NUM)
         self.ctl.rendered.connect(lambda n, tot: self.count.setText(tr("{0:,} / {1:,}", n, tot)))
         self.ctl.remember(settings.setdefault("griglia_cols", {}), "replace", lambda: ST.save_settings(settings),
-                          [f for f, _h, _w in COLS], default_hidden=["old_ean", "new_ean"], ver=3)
+                          [f for f, _h, _w in COLS], default_hidden=["old_ean", "new_ean"], ver=4)
         self.t.viewport().installEventFilter(self)
         self.t.itemChanged.connect(self._item_changed)
         self.t.itemSelectionChanged.connect(self._show)
@@ -390,7 +391,7 @@ class ReplaceDialog(QDialog):
         sv.setSpacing(10)
         pair = QHBoxLayout()
         pair.setSpacing(8)
-        self.c_old = _Card(tr("不做了的"), settings)
+        self.c_old = _Card(tr("原商品"), settings)
         self.c_new = _Card(tr("替代成"), settings)
         arrow = QLabel("→")
         arrow.setStyleSheet(f"font-size:22px; color:{T('faint')};")
@@ -441,7 +442,7 @@ class ReplaceDialog(QDialog):
         self.status.setObjectName("Faint")
         foot.addWidget(self.status, 1)
         for text, fn, tip in ((tr("全部不勾"), lambda: self._check_all(False), ""),
-                              (tr("勾上 ≥ 80%"), lambda: self._check_all(True), tr("像不像 ≥ 80% 的都勾上"))):
+                              (tr("勾上 ≥ 80%"), lambda: self._check_all(True), tr("相似度 ≥ 80% 的都勾上"))):
             b = QPushButton(text)
             if tip:
                 b.setToolTip(tip)
@@ -494,7 +495,7 @@ class ReplaceDialog(QDialog):
         if f == "pick":
             return "✓" if i in self.checked else ""
         if f == "kind":
-            return tr("已划线") if old.get("struck") else tr("不做了")
+            return tr("Griglia 已停用") if old.get("struck") else tr("批发商都没货")
         if f == "old":
             return old.get("name") or old["ean"]
         if f == "new":
@@ -560,10 +561,10 @@ class ReplaceDialog(QDialog):
                 if f == "kind":
                     if old.get("struck"):
                         it.setForeground(QColor(T("muted")))
-                        it.setToolTip(tr("Griglia 里已经划掉的商品（第 {0} 行）：替换时这一行直接改成新商品、去掉划线", old.get("row") or "?"))
+                        it.setToolTip(tr("Griglia 里以前就划线停用的商品（第 {0} 行）：替换时这一行直接改成新商品、去掉划线", old.get("row") or "?"))
                     else:
                         it.setForeground(QColor(T("err")))
-                        it.setToolTip(tr("这周 4 家批发商都没有报价"))
+                        it.setToolTip(tr("Griglia 里有，这周 4 家批发商的报价里都没有"))
                 if f == "old":
                     it.setToolTip(f"{old.get('name') or ''}\n{old['ean']}")
                     if ch:
@@ -670,7 +671,7 @@ class ReplaceDialog(QDialog):
         parts = []
         if txt:
             parts.append(f"<span style='color:{T('accent') if changed else T('muted')}; font-weight:600'>{txt}</span>")
-        parts.append(f"<span style='color:{T(tone(v))}; font-weight:700'>{tr('像不像')} {v}%</span>")
+        parts.append(f"<span style='color:{T(tone(v))}; font-weight:700'>{tr('相似度')} {v}%</span>")
         if ch.get("fresh"):
             parts.append(f"<span style='color:{T('info')}'>{tr('这周新上架的')}</span>")
         if ch.get("in_grid"):
@@ -749,7 +750,7 @@ class ReplaceDialog(QDialog):
         msg = tr("替换 Griglia 里 {0} 个商品：\n{1}\n\n改的文件：{2}（{3}）\n{4}\n\n"
                  "原来那一行换成新商品（改过的格子浅蓝底，编号空着）；旧商品那一行抄到文件最下面、划线。\n"
                  "其中 {5} 个新商品 Griglia 里已经有，只把旧行移到最下面。\n"
-                 "其中 {6} 个是已经划线的商品：划线的那一行直接改成新商品、去掉划线。\n"
+                 "其中 {6} 个是 Griglia 已停用（划线）的商品：那一行直接改成新商品、去掉划线。\n"
                  "改之前在程序文件夹存一份备份（图片换成 IMAGE 公式，文件小）。Excel 要关着，文件大，可能要几分钟。\n"
                  "同步文件夹里的文件同事都会看到。确定替换？", len(picks), lines, name, where, os.path.dirname(target), n_in, n_st)
         if QMessageBox.question(self, tr("替换进 Griglia"), msg) != QMessageBox.Yes:
@@ -802,7 +803,7 @@ def open_replace(page):
 
 class ReplaceLogDialog(QDialog):
     """替换记录（用户 11-09：程序里要有替换记录，不然不知道改了哪个）：0 Griglia/_替代记录.json，新的在上面"""
-    COLS = [("at", "时间", 128), ("by", "谁", 70), ("old_name", "不做了的商品", 280), ("old", "旧条码", 116),
+    COLS = [("at", "时间", 128), ("by", "谁", 70), ("old_name", "原商品", 280), ("old", "旧条码", 116),
             ("name", "替代成", 280), ("new", "新条码", 116), ("size", "规格", 110), ("in", "在 Griglia 里", 92),
             ("file", "文件 · 行", 220)]
 
@@ -828,7 +829,7 @@ class ReplaceLogDialog(QDialog):
         head = QHBoxLayout()
         from erp_widgets import tip_label, TableSortFilter
         title = tip_label(tr("替换记录"), tr("「找替代商品」替换进 Griglia 的每一条：哪天、谁、旧商品 → 新商品、改的哪个文件第几行 ← 旧行挪到第几行（行号是改的那天的）。"
-                                         "「在 Griglia 里」= 现在程序读的这份 Griglia 里有没有新条码（换了一份没加过的 Griglia，旧商品又会算「都不做了」）"))
+                                         "「在 Griglia 里」= 现在程序读的这份 Griglia 里有没有新条码（换了一份没加过的 Griglia，旧商品又会算「批发商都没货」）"))
         title.setStyleSheet("font-size:15px; font-weight:700;")
         head.addWidget(title)
         head.addStretch()

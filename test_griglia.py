@@ -104,7 +104,7 @@ def test_find_load_export(tmp_path=None):
     st = G.stats(g, {"X": {"9000000000001": _q(1.0)}})
     out = os.path.join(root, "stat.xlsx")
     G.export(st, out)
-    assert load_workbook(out).sheetnames == ["都不做了", "新品", "价格", "价格可疑"]
+    assert load_workbook(out).sheetnames == ["批发商都没货", "新品", "价格", "价格可疑"]
 
 
 def test_workspace_has_grid_folder():
@@ -323,8 +323,8 @@ def test_export_chosen_tables_styled_with_photos(tmp_path):
     out = str(tmp_path / "g.xlsx")
     G.export(st, out, which=["gone"], grid_name="SCHEDA.xlsx")
     wb = load_workbook(out)
-    assert wb.sheetnames == ["都不做了"]
-    ws = wb["都不做了"]
+    assert wb.sheetnames == ["批发商都没货"]
+    ws = wb["批发商都没货"]
     assert "Griglia" in ws["A1"].value and ws["A1"].fill.fgColor.rgb.endswith("1F3A5F")
     assert ws["A1"].font.name == ws.cell(6, 4).font.name == "Microsoft YaHei"          # 清楚的字体（用户 11-07）
     hr = next(r for r in range(1, 8) if ws.cell(r, 2).value == "EAN")
@@ -333,7 +333,7 @@ def test_export_chosen_tables_styled_with_photos(tmp_path):
     out2 = str(tmp_path / "p.xlsx")
     G.export(st, out2, which=["prices", "gone"], rows={"prices": st["prices"], "gone": []})
     wb = load_workbook(out2)
-    assert wb.sheetnames == ["都不做了", "价格"]                                    # 顺序照表的顺序
+    assert wb.sheetnames == ["批发商都没货", "价格"]                                    # 顺序照表的顺序
     ws = wb["价格"]
     hr = next(r for r in range(1, 8) if ws.cell(r, 2).value == "EAN")
     heads = [c.value for c in ws[hr]]
