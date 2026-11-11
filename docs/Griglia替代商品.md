@@ -60,11 +60,11 @@ DETERSIVO采购 → Griglia →「停售」那张表 →「🔄 找替代商品�
   销量、库存、建议箱数照旧用旧商品的，箱规 / 件价按新条码的报价；主订单写新条码和新商品的编号（`write_checked_order`）。
   检查窗口「情况」列写「停售 · 已换成替代商品」（蓝字，鼠标提示写原商品 → 替代成）。
 - 门店报告（`check_rules.write_problem_report`）：
-  - ① Articoli Griglia non disponibili：换了的写原商品，右边 EAN alternativo · Colli ordinati · Grossista · Articolo alternativo；
-    没找到替代商品的右边四格红底，排在后面。
+  - ① Articoli Griglia non disponibili：换了的写原商品，右边替代商品和左边一一对应：Foto · EAN · Cod. Art. · Descrizione alternativo · Grossista · Colli ordinati；
+    没找到替代商品的右边六格红底，排在后面。
   - ② 标题「Articoli non in Griglia – si consiglia di non ordinarli, salvo urgenze; altrimenti ordinarli il più possibile dai
     fornitori diretti」，最后加一列 NOTA（空着，浅黄，人工写）。
-  - ② 右边（M–R 列）「Ordinabili dai fornitori diretti」：品牌供应商（直厂）SCHEDA 里有的商品按供应商汇总 SKU · Colli（清单要的箱数）·
+  - ② 右边（N–S 列）「Ordinabili dai fornitori diretti」：品牌供应商（直厂）SCHEDA 里有的商品按供应商汇总 SKU · Colli（清单要的箱数）·
     Importo（箱数 × SCHEDA 每箱件数 × SCHEDA 件价）· Minimo d'ordine（SCHEDA 起订量，手动改过的用改过的）· Minimo raggiunto
     （Sì 绿 / No – mancano … 红 / 按板没填每板箱数 Da verificare 黄）+ 合计（`direct_summary`）。
   - `store_orders.scheda_index` 缓存多记每箱件数 / 件价 / 起订量（老缓存自动重读一次），`brand_item`。

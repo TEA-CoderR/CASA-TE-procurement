@@ -173,8 +173,8 @@ def write_problem_report(rows, path, store=None, url=None, when=None, sources=No
     一家店一个工作表（store = None：每家有待核对商品的店各一页），每页：
       标题（门店 · 日期）
       ① Articoli Griglia non disponibili dai grossisti questa settimana：Foto EAN Cod.Art. Descrizione Fornitore Colli richiesti
-         + EAN alternativo · Colli ordinati · Grossista · Articolo alternativo（2026-11-11：找过替代商品、自动换成替代商品采购的
-         写在右边；没找到的右边四格红底）
+         + 右边替代商品，和左边一一对应：Foto · EAN · Cod. Art. · Descrizione alternativo · Grossista · Colli ordinati（2026-11-11：找过替代商品、自动换成替代商品采购的
+         写在右边；没找到的右边六格红底）
       ② Articoli non in Griglia – si consiglia di non ordinarli, salvo urgenze; altrimenti ordinarli dai fornitori diretti：
          … Colli ordinati、Disp. grossisti、Disp. fornitore diretto、Consiglio、NOTA（空着，人工写）
          右边一张小表（2026-11-11）：直厂能订的商品按供应商汇总 SKU / 箱数 / 金额 / 起订量 / 够不够（direct_summary）
@@ -203,9 +203,11 @@ def write_problem_report(rows, path, store=None, url=None, when=None, sources=No
     left = Alignment(horizontal="left", vertical="center", wrap_text=True, indent=1)
     right = Alignment(horizontal="right", vertical="center", indent=1)
     # A–K 两段商品；L 空一列；M–R 右边直厂统计
-    widths = (9, 16, 10, 36, 20, 10, 16, 12, 14, 32, 24, 3, 24, 7, 8, 12, 20, 18)
-    ncol = 11
-    S0 = 13                       # 直厂统计从 M 列开始
+    # A–F 原商品；① 段 G–L 替代商品（和左边一一对应：照片 · 条码 · 编号 · 名称 · 批发商 · 箱数）；
+    # ② 段到 K（NOTA）；M 空一列；N–S 右边直厂统计
+    widths = (9, 16, 10, 36, 20, 10, 12, 16, 14, 36, 24, 12, 3, 24, 7, 8, 12, 20, 18)
+    ncol = 12
+    S0 = 14                       # 直厂统计从 N 列开始
     IMG = 48                      # 照片显示 48 × 48 像素
     names = " · ".join(str(s) for s in (sources or []) if str(s).strip())
     who = names or "i nostri grossisti"
@@ -213,7 +215,8 @@ def write_problem_report(rows, path, store=None, url=None, when=None, sources=No
     sec_a = dict(title="Articoli Griglia non disponibili dai grossisti questa settimana", fill="FFF4E0", ink="A15C07",
                  note=f"Non presenti nei listini di questa settimana di {who}. Se c'è un articolo alternativo è stato ordinato "
                       f"quello (a destra); le righe in rosso non hanno ancora un'alternativa.",
-                 heads=base + ["EAN alternativo", "Colli ordinati", "Grossista", "Articolo alternativo"])
+                 heads=base + ["Foto alternativo", "EAN alternativo", "Cod. Art. alternativo", "Descrizione alternativo",
+                                "Grossista", "Colli ordinati"])
     sec_b = dict(title="Articoli non in Griglia – si consiglia di non ordinarli, salvo urgenze; "
                        "altrimenti ordinarli il più possibile dai fornitori diretti", fill="FDECE2", ink="B4471A",
                  note=f"Disp. grossisti = presente nei listini di questa settimana di {who}. "
@@ -262,14 +265,14 @@ def write_problem_report(rows, path, store=None, url=None, when=None, sources=No
             heads = sec["heads"]
             cols = len(heads)
             top = r
-            band(ws, r, 1, ncol, f"{sec['title']}  ({len(xs)})", 12, sec["ink"], sec["fill"], 24)
+            band(ws, r, 1, cols, f"{sec['title']}  ({len(xs)})", 12, sec["ink"], sec["fill"], 24)
             r += 1
-            band(ws, r, 1, ncol, sec["note"], 9, sec["ink"], h=28, bold=False)
+            band(ws, r, 1, cols, sec["note"], 9, sec["ink"], h=28, bold=False)
             r += 1
             hr = r
             for j, h in enumerate(heads, 1):
                 if sec is sec_a:
-                    fill = "DBEAFE" if j >= 7 else None            # 右边四列：程序找的替代商品，浅蓝
+                    fill = "DBEAFE" if j >= 7 else None            # 右边六列：替代商品，浅蓝
                 else:
                     fill = "DDF3F1" if j in (8, 9) else "E7F5EC" if j == 10 else "FEF9C3" if j == 11 else None
                 cell(ws, r, j, h, bold=True, bg=fill or "F3F4F6")
@@ -285,11 +288,13 @@ def write_problem_report(rows, path, store=None, url=None, when=None, sources=No
                 tags = {}
                 if sec is sec_a:
                     if rp:
-                        vals += [PI.norm_ean(x.get("ean")) or str(x.get("ean") or ""), int(x.get("fbox") or 0),
-                                 str(x.get("quote_sup") or ""), str(x.get("name") or "")]
+                        ne = PI.norm_ean(x.get("ean"))
+                        vals += [f'=IFERROR(_xlfn.IMAGE("{url.format(ean=ne)}","",3,{IMG},{IMG}),"")' if ne else "",
+                                 ne or str(x.get("ean") or ""), str(rp.get("new_code") or ""),
+                                 str(x.get("name") or ""), str(x.get("quote_sup") or ""), int(x.get("fbox") or 0)]
                     else:
-                        vals += [None, None, None, None]
-                        tags = {j: "RED" for j in (7, 8, 9, 10)}   # 没找到替代商品：右边四格红底
+                        vals += [None] * 6
+                        tags = {j: "RED" for j in range(7, 13)}   # 没找到替代商品：右边六格红底
                 else:
                     # 批发商都订不到的：比价时哪家都分不出去（进缺失报告），门店一件也收不到 → 订的箱数写 0
                     can = _problem(x) != "nogrid_noq"
@@ -303,13 +308,13 @@ def write_problem_report(rows, path, store=None, url=None, when=None, sources=No
                     if j in tags:
                         bg, ink = COLORS[tags[j]]
                         bold = True
-                    elif sec is sec_a and j == 7:
+                    elif sec is sec_a and j == 8:
                         ink, bold = BLUE, True                     # 替代商品的条码：蓝字
                     elif sec is sec_a and j == 10:
                         bold = True
                     elif sec is sec_b and j == 11:
                         bg = "FFFBEB"                              # NOTA：人工写，浅黄
-                    cell(ws, r, j, v, bold=bold, ink=ink, bg=bg, al=left if j in (4, 5, 9, 10, 11) else center)
+                    cell(ws, r, j, v, bold=bold, ink=ink, bg=bg, al=left if j in (4, 5, 10, 11) else center)
                 ws.row_dimensions[r].height = 42          # 放得下 48 像素的照片
                 r += 1
             # 每段一个 Excel 表格：自带筛选按钮（一页两段都能筛；工作表的「筛选」一页只能有一个），照片列不放进去
@@ -320,7 +325,7 @@ def write_problem_report(rows, path, store=None, url=None, when=None, sources=No
             if sec is sec_b and summ:
                 _direct_table(ws, summ, top, S0, cell, band, right)
             r += 1
-        band(ws, r, 1, ncol, "Foto: si caricano da internet in Excel 365.", 9, MUTED, h=16, bold=False)
+        band(ws, r, 1, 11, "Foto: si caricano da internet in Excel 365.", 9, MUTED, h=16, bold=False)
         ws.page_setup.orientation = "landscape"
         ws.page_setup.fitToWidth = 1
         ws.page_setup.fitToHeight = 0

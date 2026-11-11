@@ -297,17 +297,21 @@ def test_report_shows_substitutes_note_and_direct_supplier_totals():
     vals = [[c.value for c in r] for r in ws.iter_rows()]
     flat = [v for r in vals for v in r if v is not None]
     ra = next(r for r in vals if r[1] == "8000000000099")                  # 原商品的条码 / 名称，右边替代商品
-    assert ra[2] == "9" and ra[3] == "VECCHIO 40" and ra[6] == "8000000000011" and ra[7] == 3 and ra[8] == "MELONI"
-    rb_i = next(i for i, r in enumerate(vals, 1) if r[1] == "8000000000028")  # 没找到：右边四格红底
-    assert vals[rb_i - 1][6] is None
-    assert all(ws.cell(rb_i, j).fill.fgColor.rgb.endswith("FDECEC") for j in (7, 8, 9, 10))
+    # 右边替代商品和左边一一对应：照片 · 条码 · 编号 · 名称 · 批发商 · 箱数
+    assert ra[2] == "9" and ra[3] == "VECCHIO 40" and "8000000000011" in ra[6] and \
+        ra[7:12] == ["8000000000011", None, "VECCHIO 40", "MELONI", 3]
+    assert [c.value for c in ws[next(i for i, r in enumerate(vals, 1) if r[1] == "EAN")]][6:12] == \
+        ["Foto alternativo", "EAN alternativo", "Cod. Art. alternativo", "Descrizione alternativo", "Grossista", "Colli ordinati"]
+    rb_i = next(i for i, r in enumerate(vals, 1) if r[1] == "8000000000028")  # 没找到：右边六格红底
+    assert vals[rb_i - 1][7] is None
+    assert all(ws.cell(rb_i, j).fill.fgColor.rgb.endswith("FDECEC") for j in range(7, 13))
     assert not ws.cell(rb_i, 6).fill.fgColor.rgb.endswith("FDECEC")
     assert vals.index(ra) < rb_i - 1                                         # 找到替代的排前面
     assert any(str(v).startswith("Articoli non in Griglia – si consiglia di non ordinarli, salvo urgenze") for v in flat)
     assert "NOTA" in flat and "Fornitore diretto" in flat and "Minimo raggiunto" in flat
-    rf = next(r for r in vals if r[12] == "NEW FADOR")
-    assert rf[13:17] == [2, 5, 60.0, "€ 100"] and rf[17] == "No – mancano € 40"
-    assert next(r for r in vals if r[12] == "Totale")[13:16] == [3, 7, 72.0]
+    rf = next(r for r in vals if r[13] == "NEW FADOR")
+    assert rf[14:18] == [2, 5, 60.0, "€ 100"] and rf[18] == "No – mancano € 40"
+    assert next(r for r in vals if r[13] == "Totale")[14:17] == [3, 7, 72.0]
 
 
 def test_overview_counts_carried_and_cheapest():
