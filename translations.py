@@ -3417,4 +3417,5 @@ TRANSLATIONS = {
     'Griglia 里有，这周 4 家批发商的报价里都没有': ("In the Griglia, but missing from all 4 wholesalers' price lists this week", 'Nella Griglia, ma assente dai listini di tutti e 4 i grossisti questa settimana'),
     '几家有货': ('Wholesalers', 'Grossisti'),
     '正在这周报价里找相似的商品…': ('Searching this week\'s price lists for similar items…', 'Ricerca di articoli simili nei listini della settimana…'),
+    '换不了 Griglia：「0 Griglia」里那份文件正在 WPS / Excel 里打开，请先关掉再试（{0}）': ('Cannot change the Griglia: the file in «0 Griglia» is open in WPS / Excel, close it and try again ({0})', 'Impossibile cambiare la Griglia: il file in «0 Griglia» è aperto in WPS / Excel, chiudilo e riprova ({0})'),
 }

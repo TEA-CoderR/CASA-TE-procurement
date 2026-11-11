@@ -105,10 +105,17 @@ class _Style:
 
 
 class _Range:
-    def __init__(self, ws, r, c1, c2):
-        self.ws, self.r, self.c1, self.c2 = ws, r, c1, c2
+    def __init__(self, ws, r, c1, c2, r2=None):
+        self.ws, self.r, self.c1, self.c2, self.r2 = ws, r, c1, c2, (r2 or r)
         self.Interior, self.Font = _Style(), _Style()
         ws.styles.append(self)
+
+    @property
+    def Value(self):
+        return tuple(tuple(self.ws.v.get((r, c)) for c in range(self.c1, self.c2 + 1))
+                     for r in range(self.r, self.r2 + 1))
+
+    Formula = Value
 
     @property
     def FormulaR1C1(self):
@@ -146,27 +153,30 @@ class _Col:
         self.ws, self.c = ws, c
 
     def Find(self, What=None, LookIn=None, LookAt=None, SearchOrder=None, SearchDirection=None):
-        if What == "*":
-            rows = [r for (r, c), x in self.ws.v.items() if c == self.c and x not in (None, "")]
-            return type("H", (), {"Row": max(rows)})() if rows else None
+        # 照 WPS 的样子（用户 11-11）：不管 SearchDirection，从上往下找第一个 → 程序不能再用 Find
         for (r, c), x in sorted(self.ws.v.items()):
-            if c == self.c and str(x) == What:
+            if c == self.c and (What == "*" and x not in (None, "") or str(x) == What):
                 return type("H", (), {"Row": r})()
         return None
 
 
 class _Used:
-    Column = 1
+    Column = Row = 1
 
-    def __init__(self, n):
+    def __init__(self, n, ws=None):
         self.Columns = type("C", (), {"Count": n})()
+        self.ws = ws
+
+    @property
+    def Rows(self):
+        return type("R", (), {"Count": max([r for r, _c in self.ws.v] + [1]) if self.ws else 1})()
 
 
 class _Ws:
     def __init__(self, rows):
         self.v = {(r, c): x for r, row in enumerate(rows, 1) for c, x in enumerate(row, 1) if x is not None}
         self.comments, self.inserted, self.styles, self.pasted, self.deleted, self.clip = {}, [], [], [], [], None
-        self.UsedRange = _Used(10)
+        self.UsedRange = _Used(10, self)
 
     def Cells(self, r, c):
         return _Cell(self, r, c)
@@ -178,7 +188,7 @@ class _Ws:
         return _Col(self, c)
 
     def Range(self, a, b):
-        return _Range(self, a.r, a.c, b.c)
+        return _Range(self, a.r, a.c, b.c, b.r)
 
 
 class _Excel:
@@ -204,7 +214,8 @@ def _sheet():
                  "MELONI", "F.LLI PETRILLO", "FOIANO", "MARLIA"],
                 ["101", "8001111000014", "COCCOLINO AMMORBIDENTE 40 LAV", "COCCOLINO", "MELONI WALTER SPA", 2.0, 2.0, 2.2, 1, None],
                 ["102", "8002222000017", "SVELTO PIATTI LIMONE 980 ML", "SVELTO", "F.LLI PETRILLO SRL", 1.5, 1.6, 1.5, None, 1],
-                ["103", "8003333000010", "SAPONE MARSIGLIA 250 GR", "X", "MELONI WALTER SPA", 1.0, 1.0, None, None, None]])
+                ["103", "8003333000010", "SAPONE MARSIGLIA 250 GR", "X", "MELONI WALTER SPA", 1.0, 1.0, None, None, None],
+                ["104", "8004444000013", "DETERSIVO PAVIMENTI 1 LT", "Y", "MELONI WALTER SPA", 1.0, 1.0, 1.1, 1, 1]])
 
 
 def _font(ws, r, attr):
@@ -222,20 +233,20 @@ def test_write_rows_replaces_in_place_and_moves_old_to_bottom_struck():
     ex = _Excel(ws)
     done = GR.write_rows("x.xlsx", g, GR.plan_rows(g, picks), excel=ex)
     assert ex.saved
-    assert done == [("8002222000017", 5, 7), ("8001111000014", 4, 8)]        # 从下往上：原地换，旧的抄到最下面
-    col = [ws.v.get((r, 2)) for r in range(4, 9)]
-    assert col == ["8001111000021", "8002222000024", "8003333000010", "8002222000017", "8001111000014"]
+    assert done == [("8002222000017", 5, 8), ("8001111000014", 4, 9)]        # 从下往上：原地换，旧的抄到最下面
+    col = [ws.v.get((r, 2)) for r in range(4, 10)]
+    assert col == ["8001111000021", "8002222000024", "8003333000010", "8004444000013", "8002222000017", "8001111000014"]
     assert ws.v.get((4, 1)) is None and ws.v[(4, 4)] == "COCCOLINO"           # 编号空着、品牌照抄
     assert ws.v[(4, 9)] == 1 and ws.v[(4, 5)] == "F.LLI PETRILLO SRL"          # 门店勾选照旧、供应商换成最便宜那家
-    assert ws.v[(8, 1)] == "101" and ws.v[(8, 3)] == "COCCOLINO AMMORBIDENTE 40 LAV"   # 旧行原样在最下面
-    assert _font(ws, 8, "Strikethrough") is True and _font(ws, 4, "Strikethrough") is False
-    assert (4, 8, -4122) in ws.pasted                                         # 只贴格式，不抄图片
-    assert "8001111000021" in ws.comments[(8, 2)]
+    assert ws.v[(9, 1)] == "101" and ws.v[(9, 3)] == "COCCOLINO AMMORBIDENTE 40 LAV"   # 旧行原样在最下面
+    assert _font(ws, 9, "Strikethrough") is True and _font(ws, 4, "Strikethrough") is False
+    assert (4, 9, -4122) in ws.pasted                                         # 只贴格式，不抄图片
+    assert "8001111000021" in ws.comments[(9, 2)]
     # 旧条码行号对不上（有人插过行）→ 按条码找
     ws2 = _sheet()
     ws2.Rows(1).Insert()
     done2 = GR.write_rows("x.xlsx", g, GR.plan_rows(g, picks[:1]), excel=_Excel(ws2))
-    assert done2 == [("8001111000014", 5, 8)] and ws2.v[(5, 2)] == "8001111000021"
+    assert done2 == [("8001111000014", 5, 9)] and ws2.v[(5, 2)] == "8001111000021"
 
 
 def test_replacement_already_in_griglia_only_moves_old_row():
@@ -246,8 +257,8 @@ def test_replacement_already_in_griglia_only_moves_old_row():
     assert {c["ean"] for c in GR.search(pool, "COCCOLINO")} == {"8001111000021"}
     ws = _sheet()
     done = GR.write_rows("x.xlsx", g, GR.plan_rows(g, [(g["items"]["8001111000014"], hit[0])]), excel=_Excel(ws))
-    assert done == [("8001111000014", None, 6)] and ws.deleted == [4]
-    assert [ws.v.get((r, 2)) for r in range(4, 7)] == ["8002222000017", "8003333000010", "8001111000014"]
+    assert done == [("8001111000014", None, 7)] and ws.deleted == [4]
+    assert [ws.v.get((r, 2)) for r in range(4, 8)] == ["8002222000017", "8003333000010", "8004444000013", "8001111000014"]
 
 
 def _xlsx(path, img=True):
@@ -278,7 +289,7 @@ def test_add_replacements_edits_source_backs_up_light_and_records(monkeypatch=No
     orig_open = ex.Workbooks.Open
     ex.Workbooks.Open = lambda path: (opened.append(path), orig_open(path))[1]
     res = CMD.griglia_add_replacements(g, [(old, cand)], by="t", excel=ex, source=src, backup_dir=bdir)
-    assert res["written"] == [("8001111000014", 4, 7)] and res["file"] == src
+    assert res["written"] == [("8001111000014", 4, 8)] and res["file"] == src
     assert opened == [os.path.abspath(src)]                       # 改的是原件
     from openpyxl import load_workbook
     ws = load_workbook(res["backup"]).active                     # 备份在程序文件夹、图片换成 IMAGE 公式
@@ -287,7 +298,7 @@ def test_add_replacements_edits_source_backs_up_light_and_records(monkeypatch=No
     done = GR.load_done(work)                                     # 记录：旧 → 新、谁、哪个文件第几行
     r = done["8001111000014"]
     assert r["new"] == "8001111000021" and r["old_name"] == old["name"] and r["file"] == src and r["row"] == 4
-    assert r["moved_to"] == 7
+    assert r["moved_to"] == 8
     assert r["by"] == "t" and r["size"] == "40 → 50 lav"
     # 新条码进了 Griglia 才算替代过（换了一份没加过的 Griglia，旧的又算都不做了）
     assert "8001111000014" in {x["old"]["ean"] for x in CMD.griglia_replacements(g, QUOTES)}
@@ -390,7 +401,7 @@ def test_struck_items_get_replacements_and_are_replaced_in_place():
     ws = _sheet()
     done = GR.write_rows("x.xlsx", g, plan, excel=_Excel(ws))
     assert done == [("8002222000017", 5, None)]
-    assert ws.v[(5, 2)] == "8002222000024" and ws.v.get((7, 2)) is None       # 原地改、没往下抄
+    assert ws.v[(5, 2)] == "8002222000024" and ws.v.get((8, 2)) is None       # 原地改、没往下抄
     assert _font(ws, 5, "Strikethrough") is False
     assert "8002222000017" in ws.comments[(5, 2)]
     # 划线的商品、新商品 Griglia 里已有：Excel 不动，只记录
@@ -414,3 +425,34 @@ def test_both_kinds_found_in_one_pass_same_as_separately():
     key = lambda r: (r["old"]["ean"], bool(r["old"].get("struck")), [c["ean"] for c in r["cands"]])
     assert sorted(map(key, both)) == sorted(map(key, sep))
     assert GR.words("SVELTO 1,5 LT LIMONE") == ["SVELTO", "LIMONE"]      # 记住结果后还是给列表
+
+
+def test_bottom_row_found_without_find_and_header_never_touched():
+    """用户 11-11 截图：WPS 里 Find 往上找不管用，旧行被抄到了表头第 3 行。现在最下面在程序里算；表头一变就不存"""
+    g = _grid("x.xlsx")
+    g["header_row"] = 3
+    cand = GR.suggest(g, QUOTES)
+    pick = next(r for r in cand if r["old"]["ean"] == "8001111000014")
+    ws = _sheet()                                         # 假 Excel 的 Find 和 WPS 一样：永远从上往下找
+    ex = _Excel(ws)
+    done = GR.write_rows("x.xlsx", g, GR.plan_rows(g, [(pick["old"], pick["cands"][0])]), excel=ex)
+    assert done == [("8001111000014", 4, 8)] and ex.saved
+    assert ws.v[(1, 1)] == "ELENCO DETERSIVI" and ws.v[(3, 2)] == "Codice EAN"
+    # 不管什么原因写到了表头 → 不保存
+    ws2, ex2 = _sheet(), None
+    ex2 = _Excel(ws2)
+    orig = GR._write_new
+
+    def bad(ws_, row, *a, **k):
+        ws_.v[(2, 1)] = "被改了"
+        return orig(ws_, row, *a, **k)
+    GR._write_new = bad
+    try:
+        try:
+            GR.write_rows("x.xlsx", g, GR.plan_rows(g, [(pick["old"], pick["cands"][0])]), excel=ex2)
+            raise AssertionError("应该报错")
+        except RuntimeError as e:
+            assert "表头" in str(e)
+    finally:
+        GR._write_new = orig
+    assert not ex2.saved

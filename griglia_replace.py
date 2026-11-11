@@ -536,9 +536,38 @@ def write_rows(path, grid, plan, excel=None, log=None, url=None):
         def row_range(r):
             return ws.Range(ws.Cells(r, 1), ws.Cells(r, last))
 
+        # 用户 11-11：用 WPS 时 Find(SearchDirection=往上找) 不管方向，找到的是第 2 行 → 旧行被抄到了表头第 3 行。
+        # 现在不用 Find：整列一次读出来，在程序里找最后一行 / 找条码；最下面一定在 Griglia 已知的所有商品行下面
+        known = max([(it.get("row") or 0) for it in grid.get("items", {}).values()] +
+                    [(it.get("row") or 0) for it in (grid.get("struck") or {}).values()] + [hr or 0])
+
+        def used_end():
+            try:
+                u = ws.UsedRange
+                return int(u.Row) + int(u.Rows.Count) - 1
+            except Exception:
+                return 0
+
+        def ean_col():
+            n = max(used_end(), known) + 5
+            return n, [row[0] for row in _values(ws, 1, ec, n, ec)]
+
         def bottom():
-            hit = ws.Columns(ec).Find(What="*", LookIn=-4163, LookAt=2, SearchOrder=1, SearchDirection=2)
-            return (hit.Row if hit is not None else (hr or 1)) + 1
+            _n, col = ean_col()
+            filled = [i for i, x in enumerate(col, 1) if x not in (None, "")]
+            return max(filled[-1] if filled else 0, known) + 1
+
+        def find_row(ean):
+            _n, col = ean_col()
+            return next((i for i, x in enumerate(col, 1) if i > (hr or 0) and clean_ean(x) == ean), None)
+
+        head_n = max(hr or 0, 1)
+        head_w = min(last, 200)
+        def head():
+            # 表头（订单号 / 日期 / 合计…）：文字照比，公式只看还是不是公式（合计的范围会跟着删行变）
+            return [["=" if isinstance(x, str) and x.startswith("=") else x for x in r]
+                    for r in _values(ws, 1, 1, head_n, head_w, "Formula")]
+        head_before = head()
 
         for item in plan:
             old_ean, row, vals = item[:3]
@@ -546,9 +575,8 @@ def write_rows(path, grid, plan, excel=None, log=None, url=None):
             if mode == "noop":
                 done.append((old_ean, None, row))
                 continue
-            if not row or clean_ean(ws.Cells(row, ec).Value) != old_ean:
-                hit = ws.Columns(ec).Find(What=old_ean, LookIn=-4163, LookAt=1)   # 行号变了（有人插过行）：按条码整格再找
-                row = hit.Row if hit is not None else None
+            if not row or row <= (hr or 0) or clean_ean(ws.Cells(row, ec).Value) != old_ean:
+                row = find_row(old_ean)                              # 行号变了（有人插过行）：按条码再找
                 if not row or clean_ean(ws.Cells(row, ec).Value) != old_ean:
                     log(f"Griglia 里找不到条码 {old_ean}，跳过")
                     continue
@@ -565,6 +593,8 @@ def write_rows(path, grid, plan, excel=None, log=None, url=None):
                 continue
             # 1. 旧行抄到最下面、划线
             dst = bottom()
+            if dst <= max(hr or 0, row):
+                raise RuntimeError(f"找不到 Griglia 最下面一行（算出来第 {dst} 行），没有修改")
             row_range(row).Copy()
             row_range(dst).PasteSpecial(Paste=-4122)                    # 只贴格式（不抄商品图片）
             try:
@@ -594,6 +624,8 @@ def write_rows(path, grid, plan, excel=None, log=None, url=None):
             # 2. 原来那一行原地换成新商品
             _write_new(ws, row, vals, cols, img_col, new_ean, url, row_range, ec, None)
             done.append((old_ean, row, dst))
+        if head() != head_before:           # 表头被改了：一个字都不存
+            raise RuntimeError("改动碰到了 Griglia 的表头（前几行），已放弃，文件没有保存")
         wb.Save()
         return done
     finally:
@@ -607,6 +639,14 @@ def write_rows(path, grid, plan, excel=None, log=None, url=None):
                 excel.Quit()
             except Exception:
                 pass
+
+
+def _values(ws, r1, c1, r2, c2, attr="Value"):
+    """一块格子的值（attr="Formula" 读公式），二维列表（Excel / WPS 一次读完，比一格一格读快很多）"""
+    v = getattr(ws.Range(ws.Cells(r1, c1), ws.Cells(r2, c2)), attr)
+    if not isinstance(v, (tuple, list)):
+        v = ((v,),)
+    return [list(r) if isinstance(r, (tuple, list)) else [r] for r in v]
 
 
 # ===================================================================== 不带图片的备份（用户 11-09：文件几百 MB，备份换成 IMAGE 函数）

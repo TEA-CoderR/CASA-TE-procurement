@@ -585,8 +585,12 @@ class GrigliaPage:
                         FI.archive(fp, old)               # 重名加时间、一模一样的不多存一份
                     except OSError:
                         pass
-            shutil.copy2(p, os.path.join(d, os.path.basename(p)))
-            os.utime(os.path.join(d, os.path.basename(p)))      # 最新的一份
+            try:
+                shutil.copy2(p, os.path.join(d, os.path.basename(p)))
+                os.utime(os.path.join(d, os.path.basename(p)))      # 最新的一份
+            except OSError as e:                                     # 「0 Griglia」那份在 WPS / Excel 里开着
+                self.win.show_toast(tr("换不了 Griglia：「0 Griglia」里那份文件正在 WPS / Excel 里打开，请先关掉再试（{0}）", e))
+                return
             src = os.path.abspath(p)                             # 记下原件：加替代品时直接改它（用户 11-09）
         else:
             src = ""
