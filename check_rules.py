@@ -194,9 +194,14 @@ def write_problem_report(rows, path, store=None, url=None, when=None, sources=No
                key=lambda v: v or 0)
     wb = Workbook()
     wb.remove(wb.active)
-    INK, MUTED, LINE = "1F2A37", "6B7280", "E5E7EB"
-    BLUE = "1D4ED8"
-    COLORS = {"GREEN": ("E7F5EC", "1E7A3C"), "AMBER": ("FFF4E0", "A15C07"), "RED": ("FDECEC", "B42318")}
+    INK, MUTED, LINE = "1F2A37", "6B7280", "D9DEE5"
+    # 一种颜色只表示一件事（2026-11-11 用户：颜色还不明确，重新设计）：
+    #   蓝 = 替代商品（这次订的就是它）  红 = 没有替代 / 订不到  绿 = 可以订（直厂 / 够起订量）
+    #   黄 = 不建议 / 要人看  浅黄 = 留给人手写  灰 = 原商品、表头等普通信息
+    BLUE, BLUE_BG, BLUE_HEAD = "1D4ED8", "EFF6FF", "2563EB"
+    COLORS = {"GREEN": ("DCFCE7", "166534"), "AMBER": ("FEF3C7", "92400E"), "RED": ("FEE2E2", "B91C1C"),
+              "BLUE": (BLUE_BG, BLUE), "NOTE": ("FFFBEB", "854D0E")}
+    SEC_BG = "334E68"             # 两段的标题条：同一个深灰蓝（段落本身不带意思）
     thin = Side(style="thin", color=LINE)
     box = Border(left=thin, right=thin, top=thin, bottom=thin)
     center = Alignment(horizontal="center", vertical="center", wrap_text=True)
@@ -212,13 +217,13 @@ def write_problem_report(rows, path, store=None, url=None, when=None, sources=No
     names = " · ".join(str(s) for s in (sources or []) if str(s).strip())
     who = names or "i nostri grossisti"
     base = ["Foto", "EAN", "Cod. Art.", "Descrizione", "Fornitore", "Colli richiesti"]
-    sec_a = dict(title="Articoli Griglia non disponibili dai grossisti questa settimana", fill="FFF4E0", ink="A15C07",
+    sec_a = dict(title="Articoli Griglia non disponibili dai grossisti questa settimana",
                  note=f"Non presenti nei listini di questa settimana di {who}. Se c'è un articolo alternativo è stato ordinato "
                       f"quello (a destra); le righe in rosso non hanno ancora un'alternativa.",
                  heads=base + ["Foto alternativo", "EAN alternativo", "Cod. Art. alternativo", "Descrizione alternativo",
                                 "Grossista", "Colli ordinati"])
     sec_b = dict(title="Articoli non in Griglia – si consiglia di non ordinarli, salvo urgenze; "
-                       "altrimenti ordinarli il più possibile dai fornitori diretti", fill="FDECE2", ink="B4471A",
+                       "altrimenti ordinarli il più possibile dai fornitori diretti",
                  note=f"Disp. grossisti = presente nei listini di questa settimana di {who}. "
                       f"Disp. fornitore diretto = presente nelle schede d'ordine dei fornitori diretti.",
                  heads=base + ["Colli ordinati", "Disp. grossisti", "Disp. fornitore diretto", "Consiglio", "NOTA"])
@@ -257,25 +262,43 @@ def write_problem_report(rows, path, store=None, url=None, when=None, sources=No
         band(ws, 1, 1, last_c, f"Articoli da verificare – {R.STORES.get(sid, sid)}", 16, "FFFFFF", "1F3A5F", 32)
         band(ws, 2, 1, last_c, f"CASA&TE · {when:%d/%m/%Y} · {sum(len(p) for p in parts)} articoli", 10, MUTED,
              h=20, bold=False)
-        ws.freeze_panes = "A3"                       # 标题一直看得到；每段的表头往下翻时 Excel 显示在列号上
-        r = 4
+        # 第 3 行颜色说明（图例）
+        ws.cell(3, 1, "Legenda").font = Font(name=XL_FONT, size=9, bold=True, color=MUTED)
+        ws.cell(3, 1).alignment = center
+        for c_, txt, tone in ((2, "Alternativa ordinata", "BLUE"),
+                              (4, "Nessuna alternativa / non disponibile", "RED"),
+                              (5, "Sì / fornitore diretto", "GREEN"),
+                              (10, "Sconsigliato / da verificare", "AMBER"),
+                              (11, "Da compilare", "NOTE")):
+            bg, ink = COLORS[tone]
+            cell(ws, 3, c_, txt, bold=True, ink=ink, bg=bg, size=9)
+        ws.row_dimensions[3].height = 28
+        ws.freeze_panes = "A4"                       # 标题和图例一直看得到
+        r = 5
         for sec, xs in ((sec_a, parts[0]), (sec_b, parts[1])):
             if not xs:
                 continue
             heads = sec["heads"]
             cols = len(heads)
             top = r
-            band(ws, r, 1, cols, f"{sec['title']}  ({len(xs)})", 12, sec["ink"], sec["fill"], 24)
+            band(ws, r, 1, cols, f"{sec['title']}  ({len(xs)})", 12, "FFFFFF", SEC_BG, 26)
             r += 1
-            band(ws, r, 1, cols, sec["note"], 9, sec["ink"], h=28, bold=False)
+            band(ws, r, 1, cols, sec["note"], 9, MUTED, h=28, bold=False)
             r += 1
+            if sec is sec_a:              # 分组表头：左边门店要的原商品（灰）/ 右边替代商品（蓝）
+                band(ws, r, 1, 6, "Articolo richiesto dal negozio", 10, INK, "E5E7EB", 22)
+                band(ws, r, 7, 12, "Articolo alternativo – ordinato al suo posto", 10, "FFFFFF", BLUE_HEAD, 22)
+                for c_ in (1, 7):
+                    ws.cell(r, c_).alignment = center
+                r += 1
             hr = r
             for j, h in enumerate(heads, 1):
-                if sec is sec_a:
-                    fill = "DBEAFE" if j >= 7 else None            # 右边六列：替代商品，浅蓝
-                else:
-                    fill = "DDF3F1" if j in (8, 9) else "E7F5EC" if j == 10 else "FEF9C3" if j == 11 else None
-                cell(ws, r, j, h, bold=True, bg=fill or "F3F4F6")
+                bg, ink = "F3F4F6", INK
+                if sec is sec_a and j >= 7:
+                    bg, ink = "DBEAFE", BLUE                        # 右边六列：替代商品
+                elif sec is sec_b and j == 11:
+                    bg, ink = "FDE68A", "854D0E"                    # NOTA：留给人手写
+                cell(ws, r, j, h, bold=True, bg=bg, ink=ink)
             ws.row_dimensions[r].height = 30
             r += 1
             for k, x in enumerate(xs):
@@ -292,8 +315,9 @@ def write_problem_report(rows, path, store=None, url=None, when=None, sources=No
                         vals += [f'=IFERROR(_xlfn.IMAGE("{url.format(ean=ne)}","",3,{IMG},{IMG}),"")' if ne else "",
                                  ne or str(x.get("ean") or ""), str(rp.get("new_code") or ""),
                                  str(x.get("name") or ""), str(x.get("quote_sup") or ""), int(x.get("fbox") or 0)]
+                        tags = {j: "BLUE" for j in range(7, 13)}  # 找到替代商品：右边六格浅蓝
                     else:
-                        vals += [None] * 6
+                        vals += [None, None, None, "Nessuna alternativa trovata", None, None]
                         tags = {j: "RED" for j in range(7, 13)}   # 没找到替代商品：右边六格红底
                 else:
                     # 批发商都订不到的：比价时哪家都分不出去（进缺失报告），门店一件也收不到 → 订的箱数写 0
@@ -307,13 +331,9 @@ def write_problem_report(rows, path, store=None, url=None, when=None, sources=No
                     bg, ink, bold = zebra, INK, j == 4
                     if j in tags:
                         bg, ink = COLORS[tags[j]]
-                        bold = True
-                    elif sec is sec_a and j == 8:
-                        ink, bold = BLUE, True                     # 替代商品的条码：蓝字
-                    elif sec is sec_a and j == 10:
-                        bold = True
+                        bold = tags[j] != "BLUE" or j in (8, 10)   # 替代商品：条码、名称加粗
                     elif sec is sec_b and j == 11:
-                        bg = "FFFBEB"                              # NOTA：人工写，浅黄
+                        bg, ink = COLORS["NOTE"]                   # NOTA：人工写，浅黄
                     cell(ws, r, j, v, bold=bold, ink=ink, bg=bg, al=left if j in (4, 5, 10, 11) else center)
                 ws.row_dimensions[r].height = 42          # 放得下 48 像素的照片
                 r += 1
@@ -340,13 +360,14 @@ def write_problem_report(rows, path, store=None, url=None, when=None, sources=No
 
 def _direct_table(ws, summ, top, c0, cell, band, right):
     """② 右边：直厂能订的商品按供应商汇总（标题 · 说明 · 表头 · 每家一行 · 合计）"""
-    band(ws, top, c0, c0 + 5, f"Ordinabili dai fornitori diretti  ({sum(d['sku'] for d in summ)})", 12, "1E7A3C", "E7F5EC")
+    # 绿 = 可以直接向直厂订（和左边「Fornitore diretto / Sì」同一个颜色）
+    band(ws, top, c0, c0 + 5, f"Ordinabili dai fornitori diretti  ({sum(d['sku'] for d in summ)})", 12, "FFFFFF", "15803D", 26)
     band(ws, top + 1, c0, c0 + 5, "Articoli di questa lista presenti nelle schede d'ordine dei fornitori diretti: "
-                                  "si possono ordinare direttamente, senza passare dall'ordine DETERSIVI.", 9, "1E7A3C",
+                                  "si possono ordinare direttamente, senza passare dall'ordine DETERSIVI.", 9, "6B7280",
          h=28, bold=False)
     r = top + 2
     for j, h in enumerate(("Fornitore diretto", "SKU", "Colli", "Importo", "Minimo d'ordine", "Minimo raggiunto"), c0):
-        cell(ws, r, j, h, bold=True, bg="E7F5EC" if j == c0 else "F3F4F6")
+        cell(ws, r, j, h, bold=True, bg="DCFCE7", ink="166534")
     r += 1
     from openpyxl.styles import Alignment
     left = Alignment(horizontal="left", vertical="center", wrap_text=True, indent=1)
@@ -359,11 +380,11 @@ def _direct_table(ws, summ, top, c0, cell, band, right):
         cell(ws, r, c0 + 3, round(d["amount"], 2), bg=z, al=right, fmt=eur)
         cell(ws, r, c0 + 4, d["moq_text"], bg=z, al=left)
         if d["ok"] is None:
-            txt, bg, ink = "Da verificare", "FFF4E0", "A15C07"
+            txt, bg, ink = "Da verificare", "FEF3C7", "92400E"
         elif d["ok"]:
-            txt, bg, ink = "Sì", "E7F5EC", "1E7A3C"
+            txt, bg, ink = "Sì", "DCFCE7", "166534"
         else:
-            txt, bg, ink = f"No – mancano {d['short']}", "FDECEC", "B42318"
+            txt, bg, ink = f"No – mancano {d['short']}", "FEE2E2", "B91C1C"
         cell(ws, r, c0 + 5, txt, bold=True, bg=bg, ink=ink, al=left)
         r += 1
     cell(ws, r, c0, "Totale", bold=True, bg="F3F4F6", al=left)

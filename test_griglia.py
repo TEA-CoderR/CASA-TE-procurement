@@ -303,9 +303,11 @@ def test_report_shows_substitutes_note_and_direct_supplier_totals():
     assert [c.value for c in ws[next(i for i, r in enumerate(vals, 1) if r[1] == "EAN")]][6:12] == \
         ["Foto alternativo", "EAN alternativo", "Cod. Art. alternativo", "Descrizione alternativo", "Grossista", "Colli ordinati"]
     rb_i = next(i for i, r in enumerate(vals, 1) if r[1] == "8000000000028")  # 没找到：右边六格红底
-    assert vals[rb_i - 1][7] is None
-    assert all(ws.cell(rb_i, j).fill.fgColor.rgb.endswith("FDECEC") for j in range(7, 13))
-    assert not ws.cell(rb_i, 6).fill.fgColor.rgb.endswith("FDECEC")
+    assert vals[rb_i - 1][7] is None and vals[rb_i - 1][9] == "Nessuna alternativa trovata"
+    assert all(ws.cell(rb_i, j).fill.fgColor.rgb.endswith("FEE2E2") for j in range(7, 13))   # 红 = 没有替代
+    assert not ws.cell(rb_i, 6).fill.fgColor.rgb.endswith("FEE2E2")
+    ra_i = vals.index(ra) + 1
+    assert all(ws.cell(ra_i, j).fill.fgColor.rgb.endswith("EFF6FF") for j in range(7, 13))   # 蓝 = 替代商品
     assert vals.index(ra) < rb_i - 1                                         # 找到替代的排前面
     assert any(str(v).startswith("Articoli non in Griglia – si consiglia di non ordinarli, salvo urgenze") for v in flat)
     assert "NOTA" in flat and "Fornitore diretto" in flat and "Minimo raggiunto" in flat
