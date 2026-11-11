@@ -1052,7 +1052,7 @@ def griglia_add_replacements(grid, picks, by=None, via="desktop", excel=None, lo
         written = GR.write_rows(work, grid, plan, excel=excel, log=log, url=url, ops=ops)
         diffs, n_cells = GR.diff_cells(target, work, grid.get("sheet"), ops, limit=5000)
         if diffs:
-            sample = "；".join(f"{c}：{b!r} → {a!r}" for c, b, a in diffs[:3])
+            sample = "；".join(f"{c}：{GR._show(b)} → {GR._show(a)}" for c, b, a in diffs[:3])
             try:                                          # 全部不一样的格子写进 logs，方便查原因
                 from settings import app_dir
                 ld = os.path.join(app_dir(), "logs")

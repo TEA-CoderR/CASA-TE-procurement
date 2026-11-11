@@ -591,3 +591,21 @@ def test_external_link_renumbering_is_not_a_change():
     finally:
         GR._link_names = orig
         openpyxl.load_workbook = real
+
+
+def test_array_formulas_and_number_spelling_are_not_changes():
+    """用户 11-11 截图：B700 的 IMAGE 公式是动态数组公式，读出来是对象，每次都「不一样」 → 比公式本身；
+    小数存法不同、_xlfn. 前缀有没有，也不算改动"""
+    from openpyxl import Workbook
+    from openpyxl.worksheet.formula import ArrayFormula
+    d = tempfile.mkdtemp()
+    b, a = os.path.join(d, "b.xlsx"), os.path.join(d, "a.xlsx")
+    for path, img, price in ((b, '=_xlfn.IMAGE("u/1.webp")', 2.49), (a, '=IMAGE("u/1.webp")', 2.4900000000000002)):
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "GRIGLIA"
+        ws.append(["Immagine", "Codice EAN", "Prezzo"])
+        ws["B2"], ws["C2"] = "8001", price
+        ws["A2"] = ArrayFormula("A2", img)
+        wb.save(path)
+    assert GR.diff_cells(b, a, "GRIGLIA", [])[0] == []

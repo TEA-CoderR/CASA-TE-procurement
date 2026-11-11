@@ -737,6 +737,29 @@ def _link_names(wb):
     return out
 
 
+def _cmp_value(v):
+    """格子内容换成能比较的样子：只比「写的是什么」，不比 Excel / WPS 存文件的写法
+    （用户 11-11：动态数组公式读出来是 ArrayFormula 对象，每次读都是新对象 → 永远「不一样」）"""
+    if isinstance(v, (str, int, bool)):
+        pass
+    elif isinstance(v, float):
+        return round(v, 9)                       # 15 位小数存法不同（2.4900000000000002 = 2.49）
+    elif hasattr(v, "text") and isinstance(getattr(v, "text", None), str):
+        v = v.text                               # 数组公式 / 动态公式：比公式本身
+    elif hasattr(v, "__dict__"):
+        return type(v).__name__ + repr(sorted((k, str(x)) for k, x in vars(v).items()))
+    else:
+        return v                                 # 日期等照原样比
+    if isinstance(v, str) and v.startswith("="):
+        v = v.replace("_xlfn._xlws.", "").replace("_xlfn.", "").replace("_xlws.", "")   # 新函数的前缀有的软件写、有的不写
+    return v
+
+
+def _show(v):
+    t = str(v) if v is not None else "（空）"
+    return t if len(t) <= 60 else t[:57] + "…"
+
+
 def _sheet_cells(path, sheet, max_col):
     """{(行, 列): (内容 / 公式, 有没有删除线)}，只读（不读图片）；公式里的外部链接编号换成链接到的文件名"""
     import openpyxl
@@ -756,6 +779,7 @@ def _sheet_cells(path, sheet, max_col):
                 except Exception:
                     st = False
                 if v not in (None, ""):
+                    v = _cmp_value(v)
                     if isinstance(v, str) and v.startswith("=") and "[" in v:
                         v = _EXT.sub(ext, v)
                     out[(c.row, c.column)] = (v, st)
