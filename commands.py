@@ -205,6 +205,17 @@ def run_check(settings, lists, *, price_dir, log=print, progress=None, days=None
                 x["in_grid"] = G.contains(grid, x.get("ean"), x.get("code"))
             log(tr("[检查清单] Griglia {0}：{1} 个商品不在里面", grid["name"],
                    sum(1 for x in rows if x.get("in_grid") is False)))
+            # 停售的旧商品找过替代品的（找替代商品 → 替换进 Griglia）：门店清单里还写着旧条码 → 换成新商品去采购
+            try:
+                import griglia_replace as GR
+                from utils import clean_ean
+                subs = GR.substitutes(GR.load_done(os.path.dirname(grid["path"])), grid)
+                n_s = GR.apply_substitutes(rows, subs, clean_ean)
+                if n_s:
+                    log(tr("[检查清单] {0} 个停售的商品换成了替代商品：{1}", n_s, "、".join(
+                        f"{x['repl']['old_ean']} → {x['ean']}" for x in rows if x.get("repl"))[:400]))
+            except Exception as e:
+                log(tr("⚠ 替代商品没换上：{0}", e))
         # 非 Griglia 商品能不能直接向品牌供应商订：到 LUCAS定制采购的 SCHEDA 里找（门店报告用；读不了不影响检查）
         try:
             import store_orders as SO
@@ -215,9 +226,15 @@ def run_check(settings, lists, *, price_dir, log=print, progress=None, days=None
                      if r and os.path.isdir(r)]
             if sroot and any(x.get("in_grid") is False for x in rows):
                 idx = SO.scheda_index(sroot, os.path.join(app_dir(), "cache", "schede_index.json"), log)
+                ovr = dict((settings.get("store_pdv") or {}).get("moq_override") or {})
+                ovr.update((settings.get("store_orders") or {}).get("moq_override") or {})
                 for x in rows:
                     if x.get("in_grid") is False:
-                        x["brand"] = SO.brand_supplier(idx, x.get("ean"), x.get("code"))
+                        bi = SO.brand_item(idx, x.get("ean"), x.get("code"))
+                        x["brand"] = bi[0] if bi else None
+                        if bi:            # 门店报告右边的统计：直厂这几个商品多少箱、多少钱、起订量
+                            x["brand_pack"], x["brand_price"] = bi[1], bi[2]
+                            x["brand_moq"] = SO.apply_override(idx["moq"].get(bi[0]) or {}, ovr.get(bi[0]))
                 log(tr("[检查清单] 品牌供应商配单文件 {0} 份：{1} 个非 Griglia 商品可以直接向品牌供应商订", idx["files"],
                        sum(1 for x in rows if x.get("brand"))))
         except Exception as e:
@@ -994,3 +1011,103 @@ def mail_undo_prices(settings, undo, via="desktop"):
     with open(_prices_done_path(), "w", encoding="utf-8", newline="") as f:
         json.dump(ids, f)
     audit(settings.get("user_name") or "", via, "mail_undo_prices", {"files": undo["new"]}, None)
+
+
+# ===================================================================== Griglia：不做了的商品找替代品（2026-11-09）
+def griglia_replacements(grid, quotes, fresh=None, struck=False):
+    """
+    Griglia「都不做了」的 → 这周报价里像的商品（griglia_replace.suggest），已经替代过（新商品在 Griglia 里）的不算。
+    struck=True：只要 Griglia 里划了线的商品；"both"：批发商都没货的 + 划线的一起（窗口用这个，索引只建一次）
+    """
+    import griglia_replace as GR
+    done = GR.load_done(os.path.dirname(grid["path"])) if grid.get("path") else {}
+    return GR.suggest(grid, quotes, fresh=fresh, skip=GR.done_eans(done, grid), struck=struck)
+
+
+GRID_BACKUPS = 5          # 本地备份（不带图片，几 MB）留最近 5 份
+
+
+def griglia_add_replacements(grid, picks, by=None, via="desktop", excel=None, log=None, source=None, url=None,
+                             backup_dir=None):
+    """
+    选好的替代品写进 Griglia（用户 11-09：Griglia 是从同步文件夹拿来的，就直接改同步文件夹那份，本地留备份）：
+      改哪份：source（「换 Griglia…」时记下的原件，在同步文件夹）还在就改它，不然改工作文件夹「0 Griglia」那份；
+      改之前：在程序文件夹 backup/griglia 存一份不带图片的备份（图片换成 =IMAGE 公式，几百 MB → 几 MB）；
+      用 Excel 每个旧商品下面插一行新的、旧的字变灰；改完原件再复制回「0 Griglia」（程序读的那份跟着变）；
+      记进「0 Griglia/_替代记录.json」（时间、谁、旧 → 新、哪个文件、第几行），界面「替换记录」看得到。
+    picks = [(旧商品, 候选)]。返回 {"written": [(旧条码, 新商品所在行 或 None, 旧行挪到的行)], "backup": 备份路径, "file": 改的文件}
+    """
+    import shutil
+    import griglia_replace as GR
+    from datetime import datetime
+    path = grid["path"]
+    target = source if source and os.path.isfile(source) else path
+    by = by or os.environ.get("USERNAME") or os.environ.get("USER") or ""
+    d, name = os.path.dirname(target), os.path.basename(target)
+    if os.path.exists(os.path.join(d, "~$" + name)):
+        raise RuntimeError(tr("Griglia 正被 Excel 打开着（{0}），请先关掉再加", name))
+    bdir = backup_dir or GR.backup_dir()
+    stem, ext = os.path.splitext(name)
+    bk = os.path.join(bdir, f"{stem}_{datetime.now():%Y%m%d_%H%M%S}{ext}")
+    GR.light_copy(target, bk, url=url, log=log)
+    olds = sorted(f for f in os.listdir(bdir) if f.startswith(stem + "_") and f.endswith(ext))
+    for f in olds[:-GRID_BACKUPS]:
+        try:
+            os.remove(os.path.join(bdir, f))
+        except OSError:
+            pass
+    plan = GR.plan_rows(grid, picks)
+    # 用户 11-11：改完别的内容必须原封不动 → 先在本机临时副本上改，和原文件逐格比（内容 / 公式 / 删除线），
+    # 只有替换的那几行变了才把副本放回去；核对不过原文件一个字都不动
+    import tempfile
+    st0 = os.stat(target)
+    tmp_dir = tempfile.mkdtemp(prefix="casate_griglia_")
+    work = os.path.join(tmp_dir, name)
+    try:
+        shutil.copy2(target, work)
+        ops = []
+        written = GR.write_rows(work, grid, plan, excel=excel, log=log, url=url, ops=ops)
+        diffs, n_cells = GR.diff_cells(target, work, grid.get("sheet"), ops, limit=5000)
+        if diffs:
+            sample = "；".join(f"{c}：{GR._show(b)} → {GR._show(a)}" for c, b, a in diffs[:3])
+            try:                                          # 全部不一样的格子写进 logs，方便查原因
+                from settings import app_dir
+                ld = os.path.join(app_dir(), "logs")
+                os.makedirs(ld, exist_ok=True)
+                with open(os.path.join(ld, f"griglia_check_{datetime.now():%Y%m%d_%H%M%S}.txt"), "w",
+                          encoding="utf-8", newline="") as f:
+                    f.write(f"{target}\nops={ops}\n")
+                    for c, b_, a_ in diffs:
+                        f.write(f"{c}\t{b_!r}\t{a_!r}\n")
+            except Exception:
+                pass
+            if log:
+                for c, b_, a_ in diffs[:200]:
+                    log(f"⚠ Griglia 核对：{c} {b_!r} → {a_!r}")
+            more = f"{len(diffs)}+" if len(diffs) >= 5000 else str(len(diffs))
+            raise RuntimeError(tr("核对没通过：除了替换的那几行，还有 {0} 个格子变了（{1}），原文件没有改", more, sample))
+        st1 = os.stat(target)
+        if (st1.st_mtime, st1.st_size) != (st0.st_mtime, st0.st_size) or \
+                os.path.exists(os.path.join(d, "~$" + name)):
+            raise RuntimeError(tr("改的时候 Griglia 被别人打开或保存过（{0}），没有放回，请再试一次", name))
+        tmp = target + ".casate_tmp"
+        shutil.copy2(work, tmp)
+        os.replace(tmp, target)
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+    if os.path.normcase(os.path.abspath(target)) != os.path.normcase(os.path.abspath(path)):
+        shutil.copy2(target, path)                       # 工作文件夹那份跟着更新（程序读的是它）
+    gdir = os.path.dirname(path)
+    done = GR.load_done(gdir)
+    by_old = {o["ean"]: (o, c) for o, c in picks}
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    for old_ean, row, moved in written:
+        o, c = by_old[old_ean]
+        done[old_ean] = {"new": c["ean"], "name": c["name"], "old_name": o.get("name") or "", "at": now, "by": by,
+                         "file": target, "row": row, "moved_to": moved, "in_grid": bool(c.get("in_grid")),
+                         "struck": bool(o.get("struck")), "size": GR.change(o.get("name") or "", c["name"])[0],
+                         "best": c.get("best"), "best_sup": c.get("best_sup"), "score": c.get("score")}
+    GR.save_done(gdir, done)
+    audit(by, via, "griglia_add_replacements", {"file": target, "n": len(written), "backup": bk,
+                                                "pairs": [[o, by_old[o][1]["ean"]] for o, _r, _m in written]}, None)
+    return {"written": written, "backup": bk, "file": target, "checked": n_cells}

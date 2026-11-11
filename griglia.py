@@ -19,7 +19,7 @@ import hashlib
 from utils import clean_ean
 
 GRID_DIR = "0 Griglia"
-CACHE_VER = 4
+CACHE_VER = 6
 STORES = ("FOIANO", "MARLIA", "S.FILIPPO", "S.MARCO", "S.CONCORDIO")
 EXCEL = (".xlsx", ".xlsm")
 
@@ -103,8 +103,11 @@ def _cats(r, col, right):
     return [rt[0]] + [rt[k] or (left[k] if same else "") for k in (1, 2)]
 
 
-def parse_rows(rows):
+def parse_rows(rows, struck=()):
     """
+    struck = 划了线的 Excel 行号（用户 11-11：Griglia 里不做了的商品是挪到最下面、用线划掉的）：
+    这些行不算 Griglia 商品（不进 items，不会再出现在「都不做了」），放进 out["struck"]。
+
     Griglia 的所有行（值）→ {"items": {条码: {...}}, "suppliers": [价格列的批发商], "by_code": {商品编号: 条码}}。
     表头在前 10 行里找有「Codice EAN」的那一行
     """
@@ -126,7 +129,8 @@ def parse_rows(rows):
             right[f] = idx[-1]
     sup_cols = {h: i for i, h in enumerate(heads) if h in _SUP_COLS}
     store_cols = {h: i for i, h in enumerate(heads) if h in STORES}
-    items, by_code, bad = {}, {}, []
+    items, by_code, bad, struck_items = {}, {}, [], {}
+    struck = set(struck or ())
     for n, r in enumerate(rows[hr + 1:], hr + 2):
         def g(f):
             i = col.get(f)
@@ -147,11 +151,40 @@ def parse_rows(rows):
               "pack": _num(g("pack")), "cats": _cats(r, col, right),
               "direct": str(g("direct") or "").strip(),
               "prices": {h: _num(r[i]) for h, i in sup_cols.items() if i < len(r) and _num(r[i])},
-              "stores": [h for h, i in store_cols.items() if i < len(r) and _num(r[i])]}
+              "stores": [h for h, i in store_cols.items() if i < len(r) and _num(r[i])], "row": n}
+        if n in struck:
+            struck_items[e] = it
+            continue
         items[e] = it
         if code:
             by_code[code] = e
-    return {"items": items, "suppliers": list(sup_cols), "by_code": by_code, "bad_rows": bad}
+    # 列在哪（0 开始）、表头第几行（Excel 行号）：往 Griglia 里写替代商品时用（griglia_replace.write_rows）
+    return {"items": items, "suppliers": list(sup_cols), "by_code": by_code, "bad_rows": bad,
+            "cols": col, "sup_cols": sup_cols, "header_row": hr + 1,
+            "struck": {e: it for e, it in struck_items.items() if e not in items}}
+
+
+def struck_rows(ws, head):
+    """划了线的行（条码格或名称格是删除线）：Excel 行号集合。head = 前 10 行的值"""
+    hr = next((i for i, r in enumerate(head) if any(_norm(v) == "CODICE EAN" for v in r)), None)
+    if hr is None:
+        return set()
+    heads = [_norm(v) for v in head[hr]]
+    cols = sorted({i for i, h in enumerate(heads) if h == "CODICE EAN" or _FIELDS.get(h) == "name"})
+    if not cols:
+        return set()
+    out = set()
+    try:
+        for n, row in enumerate(ws.iter_rows(min_row=hr + 2, min_col=cols[0] + 1, max_col=cols[-1] + 1), hr + 2):
+            for c in cols:
+                cell = row[c - cols[0]] if c - cols[0] < len(row) else None
+                f = getattr(cell, "font", None) if cell is not None else None
+                if f is not None and f.strike and getattr(cell, "value", None) not in (None, ""):
+                    out.add(n)
+                    break
+    except Exception:
+        return set()                                     # 读不了格式（只读模式不支持等）：当没有划线
+    return out
 
 
 def parse_rows_any(wb):
@@ -163,7 +196,9 @@ def parse_rows_any(wb):
     for ws in sheets:
         head = list(ws.iter_rows(max_row=10, values_only=True))      # 先只看前 10 行，不是这页就不整页读
         if any(_norm(v) == "CODICE EAN" for r in head for v in r):
-            return parse_rows(ws.iter_rows(values_only=True))
+            out = parse_rows(ws.iter_rows(values_only=True), struck=struck_rows(ws, head))
+            out["sheet"] = ws.title
+            return out
     raise ValueError("Griglia 里找不到「Codice EAN」表头（所有工作表都看过了；表头要在前 10 行）")
 
 
@@ -196,6 +231,38 @@ def load(path, cache_dir=None):
         except Exception:
             pass
     return out
+
+
+def sync_from_source(root, source):
+    """
+    Griglia 的原件在同步文件夹（「换 Griglia…」时记下的 source）：原件比「0 Griglia」那份新（同事改过）就重新复制进来，
+    旧的挪进 _旧文件。返回复制进来的路径；原件不在 / 没变返回 None
+    """
+    import shutil
+    if not source or not os.path.isfile(source):
+        return None
+    d = grid_dir(root)
+    os.makedirs(d, exist_ok=True)
+    if os.path.normcase(os.path.dirname(os.path.abspath(source))) == os.path.normcase(os.path.abspath(d)):
+        return None
+    cur = find_file(root)
+    dst = os.path.join(d, os.path.basename(source))
+    if cur and os.path.normcase(cur) == os.path.normcase(dst) and \
+            os.path.getsize(cur) == os.path.getsize(source) and os.path.getmtime(source) <= os.path.getmtime(cur) + 2:
+        return None
+    import file_inbox as FI
+    for f in os.listdir(d):
+        fp = os.path.join(d, f)
+        if os.path.isfile(fp) and f.lower().endswith(EXCEL) and not f.startswith(("~", "$")) and \
+                os.path.normcase(fp) != os.path.normcase(dst):
+            try:
+                FI.archive(fp, os.path.join(d, "_旧文件"))
+            except OSError:
+                pass
+    tmp = dst + ".tmp"
+    shutil.copy2(source, tmp)
+    os.replace(tmp, dst)
+    return dst
 
 
 def load_for(root):
@@ -444,7 +511,7 @@ def overview(st, n_grid):
 
 
 # 导出的四张表（2026-11-07 用户：可以只导出其中几张；带照片、要美观专业，参考门店报告）
-EXPORT_TABLES = (("gone", "都不做了"), ("new", "新品"), ("prices", "价格"), ("odd", "价格可疑"))
+EXPORT_TABLES = (("gone", "停售"), ("new", "新品"), ("prices", "价格"), ("odd", "价格可疑"))
 
 
 def export(st, path, labels=None, which=None, rows=None, url=None, grid_name=None, when=None):
@@ -493,9 +560,9 @@ def export(st, path, labels=None, which=None, rows=None, url=None, grid_name=Non
                                                 Col("Prezzo Griglia", 12, "price", group="price")]
             data = [[x["ean"], x.get("code") or None, x.get("name"), x.get("brand") or None] + cats(x) +
                     [x.get("supplier") or None, x.get("best") or x.get("price")] for x in xs]
-            X.add_sheet(wb, "都不做了", "Griglia · Articoli non più trattati dai grossisti", sub(len(xs)), cols, data,
+            X.add_sheet(wb, "停售", "Griglia · Articoli non più trattati dai grossisti", sub(len(xs)), cols, data,
                         photo_eans=[x["ean"] for x in xs], url=url, tone="RED",
-                        note=f"都不做了：Griglia 里有，这周所有批发商的报价里都没有（{src}）。"
+                        note=f"停售：Griglia 里有，这周所有批发商的报价里都没有（{src}）。"
                              f" In Griglia ma assenti da tutti i listini di questa settimana.")
         elif key == "new":
             cols = [Col("EAN", 16, "ean"), Col("Descrizione", 40, bold=True)] + CATS + \

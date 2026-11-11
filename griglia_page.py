@@ -459,7 +459,7 @@ class GrigliaPage:
         lay.setSpacing(14)
         t = QLabel(tr("Griglia") + "  ⓘ")
         t.setObjectName("PageTitle")
-        t.setToolTip(tr("我们的 DETERSIVI 总表（工作文件夹「0 Griglia」里最新的一份）和这周批发商报价对比：哪些商品几家都不做了、哪些新品不在 Griglia 里（几家在做、各家价格）、Griglia 里的商品现在哪家最便宜。新品只算报价里「我们这几类」的部门（Griglia 商品所在的部门）"))
+        t.setToolTip(tr("我们的 DETERSIVI 总表（工作文件夹「0 Griglia」里最新的一份）和这周批发商报价对比：哪些商品停售了（批发商都不卖了）、哪些新品不在 Griglia 里（几家在做、各家价格）、Griglia 里的商品现在哪家最便宜。新品只算报价里「我们这几类」的部门（Griglia 商品所在的部门）"))
         head = QHBoxLayout()
         head.addWidget(t)
         head.addSpacing(12)
@@ -509,6 +509,21 @@ class GrigliaPage:
         nb.setContentsMargins(0, 0, 0, 0)
         nb.addWidget(self.scope)
         nb.addWidget(self.min_n)
+        self.gone_bar = QWidget()
+        gb = QHBoxLayout(self.gone_bar)
+        gb.setContentsMargins(0, 0, 0, 0)
+        self.b_repl = QPushButton(tr("🔄 找替代商品"))
+        self.b_repl.setToolTip(tr("停售的商品很多是换了规格（40 洗 → 50 洗、950 ml → 1000 ml）：在这周报价里找像的商品，核对后替换进 Griglia"))
+        self.b_repl.clicked.connect(self._find_repl)
+        self.b_log = QPushButton(tr("替换记录"))
+        self.b_log.setToolTip(tr("哪天谁把哪个原商品换成了哪个新商品、改的是哪个文件第几行"))
+        self.b_log.clicked.connect(self._repl_log)
+        gb.addWidget(self.b_repl)
+        gb.addWidget(self.b_log)
+        self._quotes, self._fresh = None, None
+        self._repl = None             # 找替代商品提前算好的 (grid, (候选, 搜索池))，点按钮直接打开（用户 11-11：点了卡一下）
+        self._repl_ready = threading.Event()
+        self._repl_ready.set()
         # 四张表的列跟着这周的批发商变（每家一列价格），统计完再建；列可以拖动换位置，记在设置里
         self.t_gone = self.t_new = self.t_price = self.t_odd = None
         self.boxes = []
@@ -516,7 +531,7 @@ class GrigliaPage:
             bx = QWidget()
             QVBoxLayout(bx).setContentsMargins(0, 0, 0, 0)
             self.boxes.append(bx)
-        for bx, text in zip(self.boxes, (tr("都不做了"), tr("新品"), tr("价格"), tr("价格可疑"))):
+        for bx, text in zip(self.boxes, (tr("停售"), tr("新品"), tr("价格"), tr("价格可疑"))):
             self.tabs.addTab(bx, text)
         self.tabs.setTabToolTip(3, tr("报价表里明显写错的价格（低于 €0.05，或比别家中间价低 70% 以上，多半是箱价 / 件价搞混）：不拿来比最低价，请找供应商确认"))
         bv.addWidget(self.tabs, 1)
@@ -570,8 +585,18 @@ class GrigliaPage:
                         FI.archive(fp, old)               # 重名加时间、一模一样的不多存一份
                     except OSError:
                         pass
-            shutil.copy2(p, os.path.join(d, os.path.basename(p)))
-            os.utime(os.path.join(d, os.path.basename(p)))      # 最新的一份
+            try:
+                shutil.copy2(p, os.path.join(d, os.path.basename(p)))
+                os.utime(os.path.join(d, os.path.basename(p)))      # 最新的一份
+            except OSError as e:                                     # 「0 Griglia」那份在 WPS / Excel 里开着
+                self.win.show_toast(tr("换不了 Griglia：「0 Griglia」里那份文件正在 WPS / Excel 里打开，请先关掉再试（{0}）", e))
+                return
+            src = os.path.abspath(p)                             # 记下原件：加替代品时直接改它（用户 11-09）
+        else:
+            src = ""
+        import settings as ST
+        self.settings.setdefault("griglia", {})["source"] = src
+        ST.save_settings(self.settings)
         self.refresh()
 
     # ---------- 统计 ----------
@@ -580,12 +605,21 @@ class GrigliaPage:
             return
         r = self._root()
         import griglia as G
+        if r and self.source():
+            try:
+                if G.sync_from_source(r, self.source()) and hasattr(self.win, "log"):
+                    self.win.log(tr("Griglia 原件有更新，已重新复制：{0}", self.source()))
+            except OSError as e:
+                if hasattr(self.win, "log"):
+                    self.win.log(tr("⚠ 读不了 Griglia 原件（{0}）：{1}", self.source(), e))
         if not r or not G.find_file(r):
             self.file_lbl.setText("")
             self.stack.setCurrentIndex(0)
             return
         self.running = True
         self.stack.setCurrentIndex(2)
+        self._repl = None
+        self._repl_ready.clear()
         def work():
             try:
                 import workspace as W
@@ -599,10 +633,30 @@ class GrigliaPage:
                 hist = any(seen.get(k, {}).get("since", today) < today for k in quotes)
                 seen, fresh = G.track(seen, quotes, today)
                 G.save_seen(sp, seen)
-                self.sig.done.emit((grid, G.stats(grid, quotes, fresh if hist else None), None))
+                st = G.stats(grid, quotes, fresh if hist else None)
+                import griglia_replace as GR
+                done = GR.done_eans(GR.load_done(os.path.dirname(grid["path"])), grid)   # 加过替代品的：不再算「都不做了」
+                st["gone"] = [x for x in st["gone"] if x["ean"] not in done]
+                self._quotes, self._fresh = quotes, (fresh if hist else None)
+                self.sig.done.emit((grid, st, None))
             except Exception as e:
+                self._repl_ready.set()
                 self.sig.done.emit((None, None, str(e)))
+                return
+            self._warm_replacements(grid, quotes, self._fresh)
         threading.Thread(target=work, daemon=True).start()
+
+    def _warm_replacements(self, grid, quotes, fresh):
+        """统计完在后台接着把「找替代商品」算好（约 1 秒）：点按钮时不用再等"""
+        try:
+            import commands as CMD
+            import griglia_replace as GR
+            res = (CMD.griglia_replacements(grid, quotes, fresh, struck="both"), GR.pool(grid, quotes))
+            self._repl = (grid, quotes, res)
+        except Exception:
+            self._repl = None
+        finally:
+            self._repl_ready.set()
 
     def _done(self, payload):
         grid, st, err = payload
@@ -622,7 +676,7 @@ class GrigliaPage:
             self.win.show_toast(msg)
         labels = st["labels"]
         self._labels = labels
-        self.tabs.setTabText(0, tr("都不做了（{0}）", len(st["gone"])))
+        self.tabs.setTabText(0, tr("停售（{0}）", len(st["gone"])))
         self.tabs.setTabText(1, tr("新品"))
         self.tabs.setTabText(2, tr("价格（{0:,}）", len(st["prices"])))
         self.tabs.setTabText(3, tr("价格可疑（{0}）", len(st["odd"])))
@@ -636,13 +690,17 @@ class GrigliaPage:
         st, grid = self.st, self.grid
         nf = sum(1 for x in st["new"] if x["fresh"])
         moved = sum(1 for x in st["prices"] if x["moved"])
-        stats = [(tr("都不做了"), f"{len(st['gone']):,}", "err", 0, tr("Griglia 里有、这周所有批发商报价里都没有")),
+        stats = [(tr("停售"), f"{len(st['gone']):,}", "err", 0, tr("Griglia 里有、这周所有批发商报价里都没有")),
                  (tr("新上架"), f"{nf:,}" if st["history"] else "—", "accent", 1,
                   tr("批发商报价里第一次出现、Griglia 里没有的商品（和以前读过的报价比，30 天内）。第一次统计只是记下现在有哪些，下次换了新报价才有")),
                  (tr("最低价换了供应商"), f"{moved:,}", "warn", 2, tr("现在最便宜的批发商不是 Griglia 里登记的那家")),
                  (tr("价格可疑"), f"{len(st['odd']):,}", "warn", 3,
                   tr("报价表里明显写错的价格（低于 €0.05，或比别家中间价低 70% 以上，多半是箱价 / 件价搞混）：不拿来比最低价，请找供应商确认"))]
-        self.file_lbl.setText(f"{grid['name']} · {datetime.fromtimestamp(grid.get('mtime') or 0):%d/%m/%Y}")
+        self.file_lbl.setText(f"{grid['name']} · {datetime.fromtimestamp(grid.get('mtime') or 0):%d/%m/%Y}"
+                              + (" · " + tr("同步文件夹") if self.source() and os.path.isfile(self.source()) else ""))
+        self.file_lbl.setToolTip(tr("原件：{0}\n程序读的是「0 Griglia」里的副本，原件变了会自动重新复制；加替代品时直接改原件", self.source())
+                                 if self.source() else tr("这份 Griglia 只在工作文件夹「0 Griglia」里（没有记下原件）。"
+                                                          "想直接改同步文件夹那份：点「换 Griglia…」从同步文件夹选一次"))
         self.panel.show_stats(G.overview(st, len(grid["items"])), len(self._labels), stats, self._best_sel())
 
     def _best_col(self):
@@ -732,11 +790,15 @@ class GrigliaPage:
                      (lambda x, l=l: x["prices"].get(l)),
                      (lambda x, l=l: "accent" if x.get("best_sup") == l else None)) for l in labels]
         # 都不做了
+        if self.t_gone is not None:
+            self.gone_bar.setParent(None)                 # 按钮先拿出来，旧表格删掉时别跟着删
         self.t_gone = self._tab(0, "gone", base + [(3, tr("编号"), "txt", lambda x: x.get("code"), None),
                                                    (4, tr("品牌"), "txt", lambda x: x.get("brand"), None)] + cats +
                                 [(9, tr("Griglia 供应商"), "txt", lambda x: x.get("supplier"), None),
                                  (10, tr("Griglia 价"), "price", lambda x: x.get("best") or x.get("price"), None)],
-                                st["gone"])
+                                st["gone"], extra=self.gone_bar)
+        self.b_repl.setEnabled(bool(st["gone"]) or bool((self.grid or {}).get("struck")))   # 划线的商品也能找（用户 11-11）
+        self._update_log_btn()
         # 新品
         if self.t_new is not None:
             self.new_bar.setParent(None)
@@ -827,6 +889,27 @@ class GrigliaPage:
         self.win.show_toast(tr("已导出：{0}", os.path.basename(p)))
         from erp_widgets import open_file                      # 导出完直接打开（2026-11-07 用户）
         open_file(self.win, p, tr("导出 Excel"))
+
+    def _find_repl(self):
+        from griglia_replace_dialog import open_replace
+        open_replace(self)
+
+    def _done_log(self):
+        import griglia_replace as GR
+        return GR.load_done(os.path.dirname(self.grid["path"])) if self.grid and self.grid.get("path") else {}
+
+    def _update_log_btn(self):
+        n = len(self._done_log())
+        self.b_log.setText(tr("替换记录（{0}）", n) if n else tr("替换记录"))
+        self.b_log.setEnabled(bool(n))
+
+    def _repl_log(self):
+        from griglia_replace_dialog import ReplaceLogDialog
+        ReplaceLogDialog(self.win, self.settings, self._done_log(), self.grid).exec()
+
+    def source(self):
+        """Griglia 原件（同步文件夹里的）：「换 Griglia…」时记下的"""
+        return (self.settings.get("griglia") or {}).get("source") or ""
 
     def _tab_of(self, key):
         return {"gone": self.t_gone, "new": self.t_new, "prices": self.t_price, "odd": self.t_odd}.get(key)

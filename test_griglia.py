@@ -104,7 +104,7 @@ def test_find_load_export(tmp_path=None):
     st = G.stats(g, {"X": {"9000000000001": _q(1.0)}})
     out = os.path.join(root, "stat.xlsx")
     G.export(st, out)
-    assert load_workbook(out).sheetnames == ["都不做了", "新品", "价格", "价格可疑"]
+    assert load_workbook(out).sheetnames == ["停售", "新品", "价格", "价格可疑"]
 
 
 def test_workspace_has_grid_folder():
@@ -264,6 +264,56 @@ def test_scheda_index_brand_supplier():
     assert SO.brand_supplier(idx, "08000000000028", "") == "DOPLA"          # 条码前面的 0 不影响
     assert SO.brand_supplier(idx, "", "456") == "DOPLA" and SO.brand_supplier(idx, "1", "9") is None
     assert SO.scheda_index(root, cache)["ean"] == idx["ean"]                # 第二次用缓存
+    assert SO.brand_item(idx, "8000000000028", "") == ("DOPLA", 6.0, 0.0)  # 每箱件数 / 件价（报告右边统计用）
+    assert SO.brand_item(SO.scheda_index(root, cache), "", "456")[0] == "DOPLA"
+
+
+def test_report_shows_substitutes_note_and_direct_supplier_totals():
+    """用户 11-11：① 换成替代商品的右边写替代商品、没找到的右边四格红底；② 标题、NOTA 列；右边直厂按供应商统计"""
+    import check_rules as OC
+    from openpyxl import load_workbook
+    rows = [{"store": 2, "code": "1", "ean": "8000000000011", "name": "VECCHIO 40", "in_db": True, "pack": 6,
+             "in_grid": True, "in_quote": True, "lbox": 2, "fbox": 3, "quote_sup": "MELONI", "sup_name": "MELONI WALTER",
+             "repl": {"old_ean": "8000000000099", "old_name": "VECCHIO 40", "old_code": "9", "new_code": ""}},
+            {"store": 2, "code": "2", "ean": "8000000000028", "name": "SPARITO", "in_db": True, "pack": 6,
+             "in_grid": True, "in_quote": False, "lbox": 1, "fbox": 1},
+            {"store": 2, "code": "3", "ean": "8000000000035", "name": "FADOR A", "in_db": True, "pack": 6,
+             "in_grid": False, "in_quote": True, "lbox": 4, "fbox": 4, "brand": "NEW FADOR", "brand_pack": 6,
+             "brand_price": 2.0, "brand_moq": {"amount": 100.0}},
+            {"store": 2, "code": "4", "ean": "8000000000042", "name": "FADOR B", "in_db": True, "pack": 6,
+             "in_grid": False, "in_quote": False, "lbox": 1, "fbox": 0, "brand": "NEW FADOR", "brand_pack": 12,
+             "brand_price": 1.0, "brand_moq": {"amount": 100.0}},
+            {"store": 2, "code": "5", "ean": "8000000000059", "name": "HENKEL A", "in_db": True, "pack": 6,
+             "in_grid": False, "in_quote": True, "lbox": 2, "fbox": 2, "brand": "HENKEL", "brand_pack": 6,
+             "brand_price": 1.0, "brand_moq": {"colli": 10.0}}]
+    summ = OC.direct_summary(rows[2:])
+    assert [(d["sup"], d["sku"], d["colli"], round(d["amount"], 2), d["ok"]) for d in summ] == \
+        [("NEW FADOR", 2, 5, 60.0, False), ("HENKEL", 1, 2, 12.0, False)]
+    assert summ[0]["short"] == "€ 40" and summ[1]["short"] == "8 colli" and summ[1]["moq_text"] == "10 colli"
+    assert OC.direct_summary([dict(rows[2], brand_moq={"pallets": 1.0})])[0]["ok"] is None     # 按板、没填每板几箱
+    d = tempfile.mkdtemp()
+    p = OC.write_problem_report(rows, os.path.join(d, "a.xlsx"), store=2)
+    ws = load_workbook(p).active
+    vals = [[c.value for c in r] for r in ws.iter_rows()]
+    flat = [v for r in vals for v in r if v is not None]
+    ra = next(r for r in vals if r[1] == "8000000000099")                  # 原商品的条码 / 名称，右边替代商品
+    # 右边替代商品和左边一一对应：照片 · 条码 · 编号 · 名称 · 批发商 · 箱数
+    assert ra[2] == "9" and ra[3] == "VECCHIO 40" and "8000000000011" in ra[6] and \
+        ra[7:12] == ["8000000000011", None, "VECCHIO 40", "MELONI", 3]
+    assert [c.value for c in ws[next(i for i, r in enumerate(vals, 1) if r[1] == "EAN")]][6:12] == \
+        ["Foto alternativo", "EAN alternativo", "Cod. Art. alternativo", "Descrizione alternativo", "Grossista", "Colli ordinati"]
+    rb_i = next(i for i, r in enumerate(vals, 1) if r[1] == "8000000000028")  # 没找到：右边六格红底
+    assert vals[rb_i - 1][7] is None and vals[rb_i - 1][9] == "Nessuna alternativa trovata"
+    assert all(ws.cell(rb_i, j).fill.fgColor.rgb.endswith("FEE2E2") for j in range(7, 13))   # 红 = 没有替代
+    assert not ws.cell(rb_i, 6).fill.fgColor.rgb.endswith("FEE2E2")
+    ra_i = vals.index(ra) + 1
+    assert all(ws.cell(ra_i, j).fill.fgColor.rgb.endswith("EFF6FF") for j in range(7, 13))   # 蓝 = 替代商品
+    assert vals.index(ra) < rb_i - 1                                         # 找到替代的排前面
+    assert any(str(v).startswith("Articoli non in Griglia – si consiglia di non ordinarli, salvo urgenze") for v in flat)
+    assert "NOTA" in flat and "Fornitore diretto" in flat and "Minimo raggiunto" in flat
+    rf = next(r for r in vals if r[13] == "NEW FADOR")
+    assert rf[14:18] == [2, 5, 60.0, "€ 100"] and rf[18] == "No – mancano € 40"
+    assert next(r for r in vals if r[13] == "Totale")[14:17] == [3, 7, 72.0]
 
 
 def test_overview_counts_carried_and_cheapest():
@@ -323,8 +373,8 @@ def test_export_chosen_tables_styled_with_photos(tmp_path):
     out = str(tmp_path / "g.xlsx")
     G.export(st, out, which=["gone"], grid_name="SCHEDA.xlsx")
     wb = load_workbook(out)
-    assert wb.sheetnames == ["都不做了"]
-    ws = wb["都不做了"]
+    assert wb.sheetnames == ["停售"]
+    ws = wb["停售"]
     assert "Griglia" in ws["A1"].value and ws["A1"].fill.fgColor.rgb.endswith("1F3A5F")
     assert ws["A1"].font.name == ws.cell(6, 4).font.name == "Microsoft YaHei"          # 清楚的字体（用户 11-07）
     hr = next(r for r in range(1, 8) if ws.cell(r, 2).value == "EAN")
@@ -333,7 +383,7 @@ def test_export_chosen_tables_styled_with_photos(tmp_path):
     out2 = str(tmp_path / "p.xlsx")
     G.export(st, out2, which=["prices", "gone"], rows={"prices": st["prices"], "gone": []})
     wb = load_workbook(out2)
-    assert wb.sheetnames == ["都不做了", "价格"]                                    # 顺序照表的顺序
+    assert wb.sheetnames == ["停售", "价格"]                                    # 顺序照表的顺序
     ws = wb["价格"]
     hr = next(r for r in range(1, 8) if ws.cell(r, 2).value == "EAN")
     heads = [c.value for c in ws[hr]]
@@ -375,3 +425,23 @@ def test_shifted_rows_ignored_and_reported():
     assert bad["supplier"] == "" and bad["cats"] == ["", "", ""] and bad["prices"] == {} and bad["price"] == 0.6
     assert g["items"]["8000000000011"]["cats"][0] == "CASA" and g["bad_rows"] == [4, 5]
     assert G.bad_rows_text([2759, 2760, 2761, 2770]) == "2759–2761、2770"
+
+
+def test_struck_rows_are_not_griglia_items(tmp_path=None):
+    """用户 11-11：不做了的商品挪到最下面、用线划掉 → 不算 Griglia 商品，不再出现在「都不做了」"""
+    import tempfile
+    from openpyxl import Workbook
+    from openpyxl.styles import Font
+    d = tempfile.mkdtemp()
+    p = os.path.join(d, "G.xlsx")
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "GRIGLIA"
+    ws.append(["Codice EAN", "Descrizione prodotto"])
+    ws.append(["8001111000014", "COCCOLINO 50 LAV"])
+    ws.append(["8001111000021", "COCCOLINO 40 LAV"])
+    for c in ws[3]:
+        c.font = Font(strike=True)
+    wb.save(p)
+    g = G.load(p)
+    assert set(g["items"]) == {"8001111000014"} and set(g["struck"]) == {"8001111000021"}

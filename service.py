@@ -1532,7 +1532,7 @@ def _write_missing_report(distribuire_path, rows, assignment):
 _DESC_HEADS = ("DESCRIZIONE", "DESCRIPTION", "ARTICOLO", "PRODOTTO", "DENOMINAZIONE", "NOME")
 
 
-PRICE_CACHE_VER = 3     # 读报价的规则改了（例如找列的办法）就加 1，旧的缓存自动作废
+PRICE_CACHE_VER = 4     # 读报价的规则改了（例如找列的办法）就加 1，旧的缓存自动作废
 
 
 def _price_cache_path(path):
@@ -1598,7 +1598,7 @@ def _guess_desc_col(ws, header_row, col_ean, rows=80):
             for cell in ws[i]:
                 v = cell.value
                 if cell.column != col_ean and isinstance(v, str) and len(v.strip()) >= 8 and \
-                        any(ch.isalpha() for ch in v):
+                        not v.lstrip().startswith("=") and any(ch.isalpha() for ch in v):   # 公式（=O3*(1-P3)）不是名称
                     cnt[cell.column] = cnt.get(cell.column, 0) + 1
             if n >= rows:
                 break
