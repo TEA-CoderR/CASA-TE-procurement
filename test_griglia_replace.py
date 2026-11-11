@@ -98,6 +98,10 @@ class _Cell:
     def AddComment(self, text):
         self.ws.comments[(self.r, self.c)] = text
 
+    @property
+    def Top(self):
+        return self.r * 20.0
+
 
 class _Style:
     def __init__(self):
@@ -338,6 +342,34 @@ def test_replaced_row_not_struck_through_and_gets_own_image():
                   excel=_Excel(ws))
     assert "8001111000021" in formulas[(4, 1)] and "IMAGE" in formulas[(4, 1)]   # 原地那行换成新条码的图片
     assert _font(ws, 4, "Strikethrough") is False
+    # 用户 11-11：挪到最下面的旧商品也要有图片——原来那一行没有浮着的图片 → 写旧条码的 IMAGE 公式
+    assert "8001111000014" in formulas[(8, 1)] and "IMAGE" in formulas[(8, 1)]
+
+    # 原来那一行有浮着的商品图片 → 图片跟着挪到最下面那一行（不再写公式），新商品那一行显示 IMAGE 公式
+    class Shape:
+        def __init__(self, top):
+            self.Top, self.deleted = top, False
+
+        @property
+        def TopLeftCell(self):
+            return type("TL", (), {"Row": int(self.Top // 20), "Column": 1})()
+
+        def Delete(self):
+            self.deleted = True
+    pic, other = Shape(4 * 20 + 3), Shape(5 * 20 + 3)
+    ws2 = _sheet()
+    for c in range(10, 0, -1):
+        for r in range(1, 7):
+            if (r, c) in ws2.v:
+                ws2.v[(r, c + 1)] = ws2.v.pop((r, c))
+    ws2.v[(3, 1)] = "Immagine"
+    formulas.clear()
+    ws2.Cells = lambda r, c: C(ws2, r, c)
+    ws2.Shapes = type("S", (), {"Count": 2, "Item": lambda _s, i: [pic, other][i - 1]})()
+    GR.write_rows("x.xlsx", g2, GR.plan_rows(g2, [(g2["items"]["8001111000014"], sug["8001111000014"][0])]),
+                  excel=_Excel(ws2))
+    assert pic.Top == 8 * 20 + 3 and other.Top == 5 * 20 + 3                  # 只挪这一张，格子里的位置不变
+    assert (8, 1) not in formulas and "8001111000021" in formulas[(4, 1)]
 
 
 def test_sync_from_source_copies_newer_original():

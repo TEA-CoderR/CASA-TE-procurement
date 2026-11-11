@@ -487,6 +487,58 @@ def _write_new(ws, row, vals, cols, img_col, new_ean, url, row_range, ec, replac
 IMG_HEADS = ("IMMAGINE", "IMMAGINI", "FOTO", "IMAGE", "IMG", "图片")
 
 
+def _set_formula(cell, f):
+    try:
+        cell.Formula2 = f
+    except Exception:
+        cell.Formula = f
+
+
+class _Pictures:
+    """图片列里浮着的商品图片（Shapes）：第一次要用时扫一遍，记下每张在哪一行"""
+
+    def __init__(self, ws, col):
+        self.ws, self.col, self.rows = ws, col, None
+
+    def _scan(self):
+        if self.rows is None:
+            self.rows = {}
+            try:
+                shapes = self.ws.Shapes
+                for i in range(1, int(shapes.Count) + 1):
+                    sh = shapes.Item(i)
+                    try:
+                        tl = sh.TopLeftCell
+                        if int(tl.Column) == self.col:
+                            self.rows.setdefault(int(tl.Row), []).append(sh)
+                    except Exception:
+                        continue
+            except Exception:
+                pass
+        return self.rows
+
+    def move(self, src, dst):
+        """src 行的图片挪到 dst 行（位置照原来在格子里的位置）；挪到了返回 True"""
+        shs = self._scan().pop(src, [])
+        if not shs:
+            return False
+        try:
+            top_src, top_dst = self.ws.Cells(src, self.col).Top, self.ws.Cells(dst, self.col).Top
+            for sh in shs:
+                sh.Top = top_dst + (sh.Top - top_src)
+            self.rows.setdefault(dst, []).extend(shs)
+            return True
+        except Exception:
+            return False
+
+    def remove(self, row):
+        for sh in self._scan().pop(row, []):
+            try:
+                sh.Delete()
+            except Exception:
+                pass
+
+
 def image_formula(ean, url=None):
     """=IMAGE(网址)：图片不放进文件，Excel 365 打开时自己读（和导出的报表一样）"""
     import product_images as PI
@@ -537,6 +589,7 @@ def write_rows(path, grid, plan, excel=None, log=None, url=None, ops=None):
         else:
             last = max(last, ws.UsedRange.Columns.Count + ws.UsedRange.Column - 1)
         img_col = next((c for c in range(1, min(last, 40) + 1) if hr and _is_img_head(ws.Cells(hr, c).Value)), None)
+        pics = _Pictures(ws, img_col)
         from utils import clean_ean
 
         def row_range(r):
@@ -588,6 +641,8 @@ def write_rows(path, grid, plan, excel=None, log=None, url=None, ops=None):
                     continue
             new_ean = vals.get(cols.get("ean"))
             if mode == "inplace":
+                if img_col:
+                    pics.remove(row)                  # 旧商品的图片（浮在上面）拿掉，新商品用 IMAGE 公式显示
                 _write_new(ws, row, vals, cols, img_col, new_ean, url, row_range, ec, old_ean)
                 ops.append(("write", row))
                 try:
@@ -614,6 +669,10 @@ def write_rows(path, grid, plan, excel=None, log=None, url=None, ops=None):
                 ws.Rows(dst).RowHeight = ws.Rows(row).RowHeight
             except Exception:
                 pass
+            # 商品图片是浮在格子上的图片，不跟着抄：把原来那一行的图片挪到最下面那一行；
+            # 原来那一行没有图片（或挪不了）→ 最下面那一行的图片列写 IMAGE 公式（用户 11-11：划线的旧商品也要有图片）
+            if img_col and not pics.move(row, dst):
+                _set_formula(ws.Cells(dst, img_col), image_formula(old_ean, url))
             moved = row_range(dst)
             moved.Font.Strikethrough = True
             moved.Font.Color = GREY_FONT
