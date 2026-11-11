@@ -134,7 +134,7 @@ def direct_summary(xs):
     """
     门店报告右边的统计（2026-11-11 用户）：清单里非 Griglia、品牌供应商（直厂）SCHEDA 里有的商品，按直厂汇总
     → [{"sup", "sku", "colli", "amount", "moq", "moq_text", "ok": True / False / None（按板没填每板几箱，要人看）, "short"}]，
-    金额多的在前。箱数 = 门店清单要的箱数；金额 = 箱数 × SCHEDA 每箱件数 × SCHEDA 件价（SCHEDA 没价格的用报价的）
+    够起订量的在前、要人看的中间、不够的最后，同一类金额多的在前。箱数 = 门店清单要的箱数；金额 = 箱数 × SCHEDA 每箱件数 × SCHEDA 件价（SCHEDA 没价格的用报价的）
     """
     import store_orders as SO
     g = {}
@@ -163,7 +163,8 @@ def direct_summary(xs):
             d["short"] = " · ".join(([f"{miss_c:g} colli"] if miss_c > 0 else []) +
                                     ([f"€ {miss_a:,.0f}".replace(",", ".")] if miss_a > 0 else []))
         out.append(d)
-    out.sort(key=lambda d: (-d["amount"], d["sup"]))
+    # 用户 11-11：够起订量的（Sì）在前，Da verificare 中间，No – mancano 最后；同一类金额大的在前
+    out.sort(key=lambda d: ({True: 0, None: 1, False: 2}[d["ok"]], -d["amount"], d["sup"]))
     return out
 
 
