@@ -19,7 +19,6 @@ from settings import save_settings
 import agent as A
 
 PANEL_W = 360
-MODELS = [("claude-sonnet-5-5", "Sonnet（推荐：快、便宜）"), ("claude-opus-5-5", "Opus（更聪明、更贵）")]
 QUICK = ["今天要订哪些供应商？", "算一下今天总仓采购的建议量", "哪些订单超期还没到货？", "看看邮件里有没有订单新进展"]
 
 
@@ -31,7 +30,11 @@ class _Sig(QObject):
 
 
 class KeyDialog(QDialog):
-    """API 密钥 + 模型（密钥只存本机，不进 settings.json）"""
+    """服务商 + API 密钥 + 模型（密钥只存本机，不进 settings.json；每家服务商一个密钥）"""
+
+    TIPS = {"claude": "在 console.anthropic.com 生成的 Claude API 密钥（sk-ant-…）。",
+            "deepseek": "在 platform.deepseek.com 生成的 DeepSeek API 密钥（sk-…）。\n"
+                        "注意：用 DeepSeek 时，问的问题和查到的订单 / 价格 / 销量 / 邮件内容会发到 DeepSeek（中国）的服务器。"}
 
     def __init__(self, parent, settings):
         super().__init__(parent)
@@ -42,32 +45,62 @@ class KeyDialog(QDialog):
         g = QGridLayout()
         g.setSpacing(10)
         from erp_widgets import tip_label
-        g.addWidget(tip_label(tr("API 密钥"), tr("在 console.anthropic.com 生成的 Claude API 密钥（sk-ant-…）。\n"
-                                                "只存在这台电脑的本机密码保管里，不放共享文件夹、不随发布同步。")), 0, 0)
+        g.addWidget(tip_label(tr("服务商"), tr("用哪家的大模型。可以随时换，两家的密钥分开保存。\n"
+                                              "Claude 更稳、业务理解更好；DeepSeek 便宜，但数据发到中国的服务器。")), 0, 0)
+        self.prov = QComboBox()
+        for k, p in A.PROVIDERS.items():
+            self.prov.addItem(p["label"], k)
+        self.prov.setCurrentIndex(self.prov.findData(A.provider_of(settings)))
+        g.addWidget(self.prov, 0, 1)
+        self.key_lab = tip_label(tr("API 密钥"), " ")
+        g.addWidget(self.key_lab, 1, 0)
         self.key = QLineEdit()
         self.key.setEchoMode(QLineEdit.Password)
-        self.key.setPlaceholderText(tr("已保存") if A.api_key() else "sk-ant-…")
         self.key.setMinimumWidth(300)
-        g.addWidget(self.key, 0, 1)
-        g.addWidget(tip_label(tr("模型"), tr("Sonnet 够日常采购用、费用低；Opus 推理更强、贵几倍。")), 1, 0)
+        g.addWidget(self.key, 1, 1)
+        g.addWidget(tip_label(tr("模型"), tr("聪明的模型推理更强、贵几倍；日常采购用便宜的那个一般就够。")), 2, 0)
         self.model = QComboBox()
-        for k, label in MODELS:
-            self.model.addItem(tr(label), k)
-        cur = A.model_of(settings)
-        if self.model.findData(cur) < 0:
-            self.model.addItem(cur, cur)
-        self.model.setCurrentIndex(self.model.findData(cur))
-        g.addWidget(self.model, 1, 1)
+        g.addWidget(self.model, 2, 1)
         lay.addLayout(g)
         bb = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
         bb.accepted.connect(self._save)
         bb.rejected.connect(self.reject)
         lay.addWidget(bb)
+        self.keys = {}                              # 这次在窗口里填的密钥（换服务商时先记着）
+        self._shown = None
+        self.prov.currentIndexChanged.connect(self._switch)
+        self._switch()
+
+    def _switch(self, *_):
+        if self._shown and self.key.text().strip():
+            self.keys[self._shown] = self.key.text().strip()
+        p = self.prov.currentData()
+        info = A.PROVIDERS[p]
+        self._shown = p
+        self.key.setText(self.keys.get(p, ""))
+        self.key.setPlaceholderText(tr("已保存") if A.api_key(p) else info["hint"])
+        tip = tr(self.TIPS[p]) + "\n" + tr("只存在这台电脑的本机密码保管里，不放共享文件夹、不随发布同步。")
+        self.key_lab.setToolTip(tip)
+        self.model.clear()
+        for k, label in info["models"]:
+            self.model.addItem(tr(label), k)
+        cur = A.model_of(self.settings, p)
+        if self.model.findData(cur) < 0:
+            self.model.addItem(cur, cur)
+        self.model.setCurrentIndex(self.model.findData(cur))
 
     def _save(self):
+        p = self.prov.currentData()
         if self.key.text().strip():
-            A.set_api_key(self.key.text())
-        self.settings.setdefault("agent", {})["model"] = self.model.currentData()
+            self.keys[p] = self.key.text().strip()
+        for k, v in self.keys.items():
+            A.set_api_key(v, k)
+        cfg = self.settings.setdefault("agent", {})
+        models = cfg.setdefault("models", {})
+        if cfg.get("model"):                        # 老设置（只有 Claude 时）挪进 models
+            models.setdefault("claude", cfg.pop("model"))
+        cfg["provider"] = p
+        models[p] = self.model.currentData()
         save_settings(self.settings)
         self.accept()
 
@@ -125,6 +158,10 @@ class AgentPanel(QFrame):
         title.setToolTip(tr("用平常说话的方式让它做事：查今天的供应商、算建议量、生成采购订单、查订单、核对邮件、发订单邮件。\n"
                             "会改数据的每一步（生成订单、改订单状态、发邮件）都会先弹窗让你确认。"))
         h.addWidget(title)
+        self.prov_lab = QLabel()
+        self.prov_lab.setObjectName("AgentProv")
+        h.addWidget(self.prov_lab)
+        self._show_provider()
         h.addStretch()
         self.btn_new = QPushButton(tr("新对话"))
         self.btn_new.setObjectName("TopBtnText")
@@ -133,7 +170,7 @@ class AgentPanel(QFrame):
         h.addWidget(self.btn_new)
         self.btn_set = QPushButton("⚙")
         self.btn_set.setObjectName("TopBtnText")
-        self.btn_set.setToolTip(tr("API 密钥、模型"))
+        self.btn_set.setToolTip(tr("服务商、API 密钥、模型"))
         self.btn_set.clicked.connect(self.open_settings)
         h.addWidget(self.btn_set)
         close = QPushButton("✕")
@@ -190,14 +227,17 @@ class AgentPanel(QFrame):
         self.btn.clicked.connect(self._btn_clicked)
         f.addWidget(self.btn, 0, Qt.AlignBottom)
         v.addWidget(foot)
-        if not A.api_key():
-            self._add(tr("还没填 Claude API 密钥。点上面的 ⚙ 填一次就行（只存在这台电脑上）。"), "bot")
+        if not self._has_key():
+            self._add(tr("还没填 {0} API 密钥。点上面的 ⚙ 填一次就行（只存在这台电脑上）。").format(
+                A.provider_label(A.provider_of(self.settings))), "bot")
 
     def restyle(self):
         self.setStyleSheet(f"""
             #AgentPanel {{ background: {T('surface')}; border-left: 1px solid {T('line')}; }}
             #AgentHead {{ border-bottom: 1px solid {T('line')}; }}
             #AgentTitle {{ font-size: 15px; font-weight: 600; color: {T('text')}; }}
+            #AgentProv {{ font-size: 11px; color: {T('muted')}; border: 1px solid {T('line')}; border-radius: 8px;
+                          padding: 1px 7px; margin-left: 6px; }}
             #AgentBody {{ background: {T('surface')}; }}
             #AgentUser {{ background: {T('accent_soft')}; border-radius: 12px; margin-left: 40px; }}
             #AgentBot {{ background: {T('surface2')}; border: 1px solid {T('line')}; border-radius: 12px; margin-right: 16px; }}
@@ -225,9 +265,21 @@ class AgentPanel(QFrame):
         QTimer.singleShot(30, lambda: self.scroll.verticalScrollBar().setValue(self.scroll.verticalScrollBar().maximum()))
         return b
 
+    def _show_provider(self):
+        p = A.provider_of(self.settings)
+        self.prov_lab.setText(A.provider_label(p))
+        self.prov_lab.setToolTip(tr("现在用的：{0} · {1}（点 ⚙ 换）").format(A.provider_label(p), A.model_of(self.settings, p)))
+
+    def _has_key(self):
+        return bool(A.api_key(A.provider_of(self.settings)))
+
     def open_settings(self):
+        before = (A.provider_of(self.settings), A.model_of(self.settings))
         if KeyDialog(self, self.settings).exec():
-            self.agent = None                       # 下次用新的密钥 / 模型
+            if before != (A.provider_of(self.settings), A.model_of(self.settings)) and not self.busy:
+                self.new_chat()                     # 换了模型：对话从头开始，界面上也清掉，免得以为它还记得
+            self.agent = None                       # 下次用新的服务商 / 密钥 / 模型（对话重新开始）
+            self._show_provider()
 
     def new_chat(self):
         if self.busy:
@@ -267,9 +319,9 @@ class AgentPanel(QFrame):
     def send(self, text):
         if self.busy:
             return
-        if not A.api_key():
+        if not self._has_key():
             self.open_settings()
-            if not A.api_key():
+            if not self._has_key():
                 return
         self.quick.hide()
         self._add(text, "user")

@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-采购助手（智能体）核心：和 Claude 对话、按它的要求调用程序的功能（agent_tools 里的工具）。
+采购助手（智能体）核心：和大模型对话、按它的要求调用程序的功能（agent_tools 里的工具）。
 
 不依赖界面（不 import PySide6）：界面（agent_panel）只负责显示和弹确认。
-- 用 Claude Messages API（requests 直接调，不用另装 SDK）；API 密钥只存在本机 credentials（agent.api_key）。
+- 用 Claude Messages API 格式（requests 直接调，不用另装 SDK）。服务商可选 Claude / DeepSeek（DeepSeek 也认这个格式，
+  2026-11-13 用户要加，好比较）；每家的 API 密钥只存在本机 credentials（agent.api_key / agent.deepseek_key）。
 - 会改数据的工具（write=True）每次都先调 confirm(说明文字) 问人，人点「取消」就不做（2026-11-13 用户定：每一步都确认）。
 - 工具都走 commands.py（带审计，来源 via="agent"），和界面上点按钮是同一套代码。
 - 邮件内容、文件内容、工具结果都只当数据，不当指令（写在 system 里）。
@@ -15,6 +16,16 @@ from datetime import date
 API_URL = "https://api.anthropic.com/v1/messages"
 API_VERSION = "2023-06-01"
 DEFAULT_MODEL = "claude-sonnet-5-5"
+# 服务商：名字、地址、密钥在 credentials 里的键、可选模型（第一个是默认）
+PROVIDERS = {
+    "claude": {"label": "Claude", "url": API_URL, "key": "agent.api_key", "hint": "sk-ant-…",
+               "models": [("claude-sonnet-5-5", "Sonnet（推荐：快、便宜）"), ("claude-opus-5-5", "Opus（更聪明、更贵）")]},
+    # DeepSeek 的 Anthropic 格式接口：cache_control / is_error 会被忽略，不影响使用
+    "deepseek": {"label": "DeepSeek", "url": "https://api.deepseek.com/anthropic/v1/messages",
+                 "key": "agent.deepseek_key", "hint": "sk-…",
+                 "models": [("deepseek-v4-pro", "V4 Pro（更聪明）"), ("deepseek-flash", "Flash（更快、更便宜）")]},
+}
+DEFAULT_PROVIDER = "claude"
 MAX_ROUNDS = 24                       # 一句话里最多调多少轮工具
 MAX_RESULT = 12000                    # 工具结果最多给模型这么多字
 MAX_TOKENS = 4096
@@ -26,18 +37,37 @@ class AgentError(RuntimeError):
     pass
 
 
-def api_key():
+def _cfg(settings):
+    return (settings or {}).get("agent") or {}
+
+
+def provider_of(settings):
+    p = _cfg(settings).get("provider") or DEFAULT_PROVIDER
+    return p if p in PROVIDERS else DEFAULT_PROVIDER
+
+
+def provider_label(provider):
+    return PROVIDERS.get(provider, PROVIDERS[DEFAULT_PROVIDER])["label"]
+
+
+def api_key(provider=None):
     import credentials
-    return credentials.get(KEY_NAME) or ""
+    return credentials.get(PROVIDERS[provider or DEFAULT_PROVIDER]["key"]) or ""
 
 
-def set_api_key(value):
+def set_api_key(value, provider=None):
     import credentials
-    credentials.set(KEY_NAME, (value or "").strip())
+    credentials.set(PROVIDERS[provider or DEFAULT_PROVIDER]["key"], (value or "").strip())
 
 
-def model_of(settings):
-    return ((settings.get("agent") or {}).get("model") or DEFAULT_MODEL).strip()
+def model_of(settings, provider=None):
+    """这家服务商用哪个模型：agent.models[服务商] > 老设置 agent.model（只算 Claude 的）> 默认第一个"""
+    provider = provider or provider_of(settings)
+    cfg = _cfg(settings)
+    m = (cfg.get("models") or {}).get(provider)
+    if not m and provider == "claude":
+        m = cfg.get("model")
+    return (m or PROVIDERS[provider]["models"][0][0]).strip()
 
 
 def system_prompt(today=None):
@@ -65,7 +95,7 @@ def system_prompt(today=None):
 6. 做不到的（程序还没有的功能）直接说做不到，并说可以在程序哪个页面手动做。"""
 
 
-def _post(url, headers, payload, timeout=180):
+def _post(url, headers, payload, timeout=180, label="Claude"):
     import requests
     r = requests.post(url, headers=headers, data=json.dumps(payload), timeout=timeout)
     if r.status_code >= 400:
@@ -75,7 +105,7 @@ def _post(url, headers, payload, timeout=180):
             msg = r.text
         if r.status_code in (401, 403):
             raise AgentError(f"API 密钥不对或没有权限（{r.status_code}）：{msg}")
-        raise AgentError(f"Claude 服务出错（{r.status_code}）：{msg}")
+        raise AgentError(f"{label} 服务出错（{r.status_code}）：{msg}")
     return r.json()
 
 
@@ -114,8 +144,10 @@ class Agent:
         self.settings = settings
         self.tools = {t.name: t for t in tools}
         self.confirm = confirm
-        self.key = key if key is not None else api_key()
-        self.model = model or model_of(settings)
+        self.provider = provider_of(settings)
+        self.url = PROVIDERS[self.provider]["url"]
+        self.key = key if key is not None else api_key(self.provider)
+        self.model = model or model_of(settings, self.provider)
         self.post = post or _post
         self.on_event = on_event or (lambda kind, data: None)
         self.ctx = ctx if ctx is not None else {"settings": settings}
@@ -129,7 +161,7 @@ class Agent:
 
     def _request(self):
         if not self.key:
-            raise AgentError("还没填 Claude API 密钥（系统设置 → 采购助手）")
+            raise AgentError(f"还没填 {provider_label(self.provider)} API 密钥（采购助手面板上的 ⚙）")
         tools = [t.spec() for t in self.tools.values()]
         if tools:
             tools[-1] = dict(tools[-1], cache_control={"type": "ephemeral"})
@@ -137,7 +169,9 @@ class Agent:
                    "system": [{"type": "text", "text": system_prompt(), "cache_control": {"type": "ephemeral"}}],
                    "tools": tools, "messages": self.messages}
         headers = {"x-api-key": self.key, "anthropic-version": API_VERSION, "content-type": "application/json"}
-        return self.post(API_URL, headers, payload)
+        if self.post is _post:
+            return _post(self.url, headers, payload, label=provider_label(self.provider))
+        return self.post(self.url, headers, payload)
 
     def _run_tool(self, name, args):
         t = self.tools.get(name)

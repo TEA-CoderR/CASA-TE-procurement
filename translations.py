@@ -3487,4 +3487,27 @@ TRANSLATIONS = {
     '看看邮件里有没有订单新进展': ('Any order updates in the mail?', 'Novità sugli ordini nella posta?'),
     'Sonnet（推荐：快、便宜）': ('Sonnet (recommended: fast, cheap)', 'Sonnet (consigliato: veloce, economico)'),
     'Opus（更聪明、更贵）': ('Opus (smarter, more expensive)', 'Opus (più intelligente, più caro)'),
+    # 采购助手：服务商 Claude / DeepSeek（2026-11-13）
+    '服务商': ('Provider', 'Fornitore AI'),
+    '服务商、API 密钥、模型': ('Provider, API key, model', 'Fornitore AI, chiave API, modello'),
+    '用哪家的大模型。可以随时换，两家的密钥分开保存。\nClaude 更稳、业务理解更好；DeepSeek 便宜，但数据发到中国的服务器。': (
+        'Which AI model provider to use. You can switch any time; each provider keeps its own key.\nClaude is more reliable and understands the business better; DeepSeek is cheaper, but data goes to servers in China.',
+        'Quale fornitore di modelli AI usare. Si può cambiare quando si vuole; ogni fornitore ha la sua chiave.\nClaude è più affidabile e capisce meglio il lavoro; DeepSeek costa meno, ma i dati vanno su server in Cina.'),
+    '聪明的模型推理更强、贵几倍；日常采购用便宜的那个一般就够。': (
+        'The smarter model reasons better but costs several times more; the cheaper one is usually enough for daily purchasing.',
+        'Il modello più intelligente ragiona meglio ma costa molto di più; per gli acquisti di tutti i giorni di solito basta quello economico.'),
+    '只存在这台电脑的本机密码保管里，不放共享文件夹、不随发布同步。': (
+        'Stored only in this computer\'s local password store; never in the shared folder or synced with releases.',
+        'Salvata solo nell\'archivio password locale di questo computer; mai nella cartella condivisa né sincronizzata con gli aggiornamenti.'),
+    '在 console.anthropic.com 生成的 Claude API 密钥（sk-ant-…）。': (
+        'Claude API key created at console.anthropic.com (sk-ant-…).', 'Chiave API Claude creata su console.anthropic.com (sk-ant-…).'),
+    '在 platform.deepseek.com 生成的 DeepSeek API 密钥（sk-…）。\n注意：用 DeepSeek 时，问的问题和查到的订单 / 价格 / 销量 / 邮件内容会发到 DeepSeek（中国）的服务器。': (
+        'DeepSeek API key created at platform.deepseek.com (sk-…).\nNote: with DeepSeek, your questions and the orders / prices / sales / e-mail content looked up are sent to DeepSeek\'s servers (China).',
+        'Chiave API DeepSeek creata su platform.deepseek.com (sk-…).\nAttenzione: con DeepSeek le domande e gli ordini / prezzi / vendite / contenuti e-mail consultati vengono inviati ai server di DeepSeek (Cina).'),
+    'V4 Pro（更聪明）': ('V4 Pro (smarter)', 'V4 Pro (più intelligente)'),
+    'Flash（更快、更便宜）': ('Flash (faster, cheaper)', 'Flash (più veloce, più economico)'),
+    '现在用的：{0} · {1}（点 ⚙ 换）': ('In use: {0} · {1} (click ⚙ to change)', 'In uso: {0} · {1} (clicca ⚙ per cambiare)'),
+    '还没填 {0} API 密钥。点上面的 ⚙ 填一次就行（只存在这台电脑上）。': (
+        'No {0} API key yet. Click ⚙ above to enter it once (stored only on this computer).',
+        'Manca la chiave API {0}. Clicca ⚙ qui sopra per inserirla una volta (resta solo su questo computer).'),
 }

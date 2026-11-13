@@ -169,3 +169,37 @@ def test_agent_store_tools_end_to_end(tmp_path, monkeypatch):
     assert "PROVA" in text and "720" in text and "待登记" in text
     got = tools["store_generate_orders"].run(ctx, {"kind": "pdv"})
     assert got["订单文件"] == 2
+
+
+def test_provider_choice_url_key_and_model(monkeypatch):
+    """服务商 Claude / DeepSeek：各自的地址、密钥、模型；老设置 agent.model 照用"""
+    import credentials
+    store = {}
+    monkeypatch.setattr(credentials, "get", lambda k: store.get(k))
+    monkeypatch.setattr(credentials, "set", lambda k, v: store.__setitem__(k, v))
+    old = {"agent": {"model": "claude-opus-5-5"}}
+    assert A.provider_of(old) == "claude" and A.model_of(old) == "claude-opus-5-5"
+    assert A.provider_of({"agent": {"provider": "xx"}}) == "claude"
+    ds = {"agent": {"provider": "deepseek"}}
+    assert A.model_of(ds) == "deepseek-v4-pro"
+    A.set_api_key("sk-ds", "deepseek")
+    assert A.api_key("deepseek") == "sk-ds" and A.api_key("claude") == ""
+    api = FakeAPI([{"stop_reason": "end_turn", "content": [{"type": "text", "text": "ok"}]}])
+    urls = []
+    ag = A.Agent(ds, [], confirm=lambda t, x: True, post=lambda u, h, p: (urls.append((u, h)), api(u, h, p))[1])
+    assert ag.send("你好") == "ok"
+    assert urls[0][0].startswith("https://api.deepseek.com/anthropic") and urls[0][1]["x-api-key"] == "sk-ds"
+    assert api.calls[0]["model"] == "deepseek-v4-pro"
+    # 没填 DeepSeek 密钥 → 提示写 DeepSeek
+    store.clear()
+    try:
+        A.Agent(ds, [], confirm=lambda t, x: True, post=api).send("x")
+    except A.AgentError as e:
+        assert "DeepSeek" in str(e)
+    else:
+        raise AssertionError("应该报错")
+
+
+def test_agent_settings_not_synced_company_wide():
+    import company_sync
+    assert "agent" in company_sync.SKIP_TOP
