@@ -291,6 +291,12 @@ def test_report_shows_substitutes_note_and_direct_supplier_totals():
         [("NEW FADOR", 2, 5, 60.0, False), ("HENKEL", 1, 2, 12.0, False)]
     assert summ[0]["short"] == "€ 40" and summ[1]["short"] == "8 colli" and summ[1]["moq_text"] == "10 colli"
     assert OC.direct_summary([dict(rows[2], brand_moq={"pallets": 1.0})])[0]["ok"] is None     # 按板、没填每板几箱
+    # 排序：Sì → Da verificare → No（同一类金额大的在前）
+    mix = [dict(rows[2], brand="NO BIG", brand_moq={"amount": 1000.0}),
+           dict(rows[4], brand="SI SMALL", brand_moq={}),
+           dict(rows[2], brand="CHECK", brand_moq={"pallets": 1.0}),
+           dict(rows[2], brand="SI BIG", brand_moq={"amount": 10.0})]
+    assert [d["sup"] for d in OC.direct_summary(mix)] == ["SI BIG", "SI SMALL", "CHECK", "NO BIG"]
     d = tempfile.mkdtemp()
     p = OC.write_problem_report(rows, os.path.join(d, "a.xlsx"), store=2)
     ws = load_workbook(p).active
