@@ -3506,7 +3506,6 @@ TRANSLATIONS = {
         'Chiave API DeepSeek creata su platform.deepseek.com (sk-…).\nAttenzione: con DeepSeek le domande e gli ordini / prezzi / vendite / contenuti e-mail consultati vengono inviati ai server di DeepSeek (Cina).'),
     'V4 Pro（更聪明）': ('V4 Pro (smarter)', 'V4 Pro (più intelligente)'),
     'Flash（更快、更便宜）': ('Flash (faster, cheaper)', 'Flash (più veloce, più economico)'),
-    '现在用的：{0} · {1}（点 ⚙ 换）': ('In use: {0} · {1} (click ⚙ to change)', 'In uso: {0} · {1} (clicca ⚙ per cambiare)'),
     '还没填 {0} API 密钥。点上面的 ⚙ 填一次就行（只存在这台电脑上）。': (
         'No {0} API key yet. Click ⚙ above to enter it once (stored only on this computer).',
         'Manca la chiave API {0}. Clicca ⚙ qui sopra per inserirla una volta (resta solo su questo computer).'),

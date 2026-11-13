@@ -158,10 +158,6 @@ class AgentPanel(QFrame):
         title.setToolTip(tr("用平常说话的方式让它做事：查今天的供应商、算建议量、生成采购订单、查订单、核对邮件、发订单邮件。\n"
                             "会改数据的每一步（生成订单、改订单状态、发邮件）都会先弹窗让你确认。"))
         h.addWidget(title)
-        self.prov_lab = QLabel()
-        self.prov_lab.setObjectName("AgentProv")
-        h.addWidget(self.prov_lab)
-        self._show_provider()
         h.addStretch()
         self.btn_new = QPushButton(tr("新对话"))
         self.btn_new.setObjectName("TopBtnText")
@@ -236,8 +232,6 @@ class AgentPanel(QFrame):
             #AgentPanel {{ background: {T('surface')}; border-left: 1px solid {T('line')}; }}
             #AgentHead {{ border-bottom: 1px solid {T('line')}; }}
             #AgentTitle {{ font-size: 15px; font-weight: 600; color: {T('text')}; }}
-            #AgentProv {{ font-size: 11px; color: {T('muted')}; border: 1px solid {T('line')}; border-radius: 8px;
-                          padding: 1px 7px; margin-left: 6px; }}
             #AgentBody {{ background: {T('surface')}; }}
             #AgentUser {{ background: {T('accent_soft')}; border-radius: 12px; margin-left: 40px; }}
             #AgentBot {{ background: {T('surface2')}; border: 1px solid {T('line')}; border-radius: 12px; margin-right: 16px; }}
@@ -265,11 +259,6 @@ class AgentPanel(QFrame):
         QTimer.singleShot(30, lambda: self.scroll.verticalScrollBar().setValue(self.scroll.verticalScrollBar().maximum()))
         return b
 
-    def _show_provider(self):
-        p = A.provider_of(self.settings)
-        self.prov_lab.setText(A.provider_label(p))
-        self.prov_lab.setToolTip(tr("现在用的：{0} · {1}（点 ⚙ 换）").format(A.provider_label(p), A.model_of(self.settings, p)))
-
     def _has_key(self):
         return bool(A.api_key(A.provider_of(self.settings)))
 
@@ -279,7 +268,6 @@ class AgentPanel(QFrame):
             if before != (A.provider_of(self.settings), A.model_of(self.settings)) and not self.busy:
                 self.new_chat()                     # 换了模型：对话从头开始，界面上也清掉，免得以为它还记得
             self.agent = None                       # 下次用新的服务商 / 密钥 / 模型（对话重新开始）
-            self._show_provider()
 
     def new_chat(self):
         if self.busy:
