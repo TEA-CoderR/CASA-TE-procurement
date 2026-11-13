@@ -1111,3 +1111,284 @@ def griglia_add_replacements(grid, picks, by=None, via="desktop", excel=None, lo
     audit(by, via, "griglia_add_replacements", {"file": target, "n": len(written), "backup": bk,
                                                 "pairs": [[o, by_old[o][1]["ean"]] for o, _r, _m in written]}, None)
     return {"written": written, "backup": bk, "file": target, "checked": n_cells}
+
+
+# ===================================================================== LUCAS定制采购：总仓采购 / 门店采购（2026-11-13，智能体用）
+# 和页面（store_order_page）同一套计算：读 SCHEDA → 查数据库算建议箱数 → 调货 → 每家供应商模拟配货 → 生成订单文件 + 待登记。
+# 页面照旧自己跑；这里是不开窗口的版本（智能体、命令行）。设置读同一份 settings（总仓采购 store_orders / 门店采购 store_pdv）
+STORE_KINDS = {"central": "store_orders", "pdv": "store_pdv"}
+STORE_TITLES = {"central": "总仓采购", "pdv": "门店采购"}
+
+
+def _preview_key(sc, calc, lines, fill, pk):
+    """起订量检查的模拟配货缓存键（界面线程和计算线程用同一个，计算线程算好的直接能用）"""
+    import json
+    import store_orders as S
+    return (sc["path"], id(calc["demand"]), tuple(calc["stores"]),
+            json.dumps(fill, sort_keys=True, default=str), json.dumps(pk, sort_keys=True),
+            tuple(sorted((sid, tuple(sorted(ln.items()))) for sid, ln in lines.items())), json.dumps(S.sc_moq(sc), default=str))
+
+
+def _plan_one(sc, calc, lines, fill, pk):
+    import store_orders as S
+    return S.plan_supplier(sc, calc["demand"], fill, calc["stores"], lines, "manual" if pk is not None else "auto", picks=pk)
+
+
+def finish_compute(calc, tcfg, tfar, sup_cfg, fill, picks, log=None):
+    """
+    计算线程里做完原来在界面线程做的收尾（2026-11-07 用户：后台运行完跳回去会卡）：调货、复制建议箱数、
+    每家供应商模拟配货一次（起订量检查的颜色）。结果放进 calc["_ui"]，界面线程只填表
+    """
+    import copy
+    import datetime as _dt
+    import store_orders as S
+    calc.setdefault("date", _dt.date.today())    # 周销量按计算当天往回数
+    note = None
+    try:
+        S.apply_transfers(calc, tcfg, tfar, sup_cfg)
+        if calc.get("transfers"):
+            note = tr("[总仓采购] 门店间调货：{0} 个商品", len(calc["transfers"]))
+    except Exception as e:
+        note = tr("[总仓采购] ⚠ 调货计算失败（按原来的建议订）：{0}", e)
+    if note and log:
+        log(note)
+    colli = copy.deepcopy(calc["base"])
+    cache = {}
+    for sc in calc["schede"]:
+        lines = colli.get(sc["path"], {})
+        pk = picks.get(sc["path"])
+        try:
+            cache[_preview_key(sc, calc, lines, fill, pk)] = _plan_one(sc, calc, lines, fill, pk)
+        except Exception:
+            pass                                   # 界面线程到时候自己再算（会报出原来的错）
+    calc["_ui"] = {"colli": colli, "pv": cache}
+    return calc
+
+
+def store_setup(settings, kind):
+    """页面上那些设置（不开窗口）：文件夹、门店、凑单 / 调货 / 起订量手动修改、算法、销量周期"""
+    import store_orders as S
+    import transfers as TR
+    if kind not in STORE_KINDS:
+        raise ValueError(tr("不认识的采购类型：{0}", kind))
+    key = STORE_KINDS[kind]
+    cfg = settings.get(key) or {}
+    central = settings.get("store_orders") or {}
+    rcfg = settings.get("reorder") or {}
+    pdv = kind == "pdv"
+    fill = dict(S.DEFAULT_FILL, **((central if pdv else cfg).get("fill") or {}))
+    fill["supplier_cfg"] = cfg.get("supplier_cfg") or {}
+    if pdv:
+        tcfg = dict(TR.config(None), enabled=False)
+    else:
+        tcfg = TR.config(cfg.get("transfer"))
+    tfar = TR.excluded_stores(cfg.get("transfer"), fill.get("far_stores"))
+    stores = [int(s) for s in (cfg.get("stores") or list(S.STORE_SHEETS))]
+    return {"kind": kind, "key": key, "title": STORE_TITLES[kind], "pdv": pdv, "cfg": cfg,
+            "folder": cfg.get("folder") or (S.PDV_DEFAULT_FOLDER if pdv else r"D:\CasaTe\采购配单"),
+            "stores": stores, "fill": fill, "tcfg": tcfg, "tfar": tfar, "sup_cfg": cfg.get("supplier_cfg"),
+            "moq_over": dict(cfg.get("moq_override") or {}), "skip": set(cfg.get("skip") or []),
+            "days": [int(d) for d in (cfg.get("days") or rcfg.get("days") or R.DEFAULT_SALES_DAYS)],
+            "cycle": int(cfg.get("cycle") or rcfg.get("cycle") or 30),
+            "use_cfg": bool(cfg.get("use_supplier_cycles", True)), "algo": algo_params(settings),
+            "source": "store_pdv" if pdv else "store_orders"}
+
+
+def today_day(today=None):
+    """今天是采购配单文件夹里的哪一天（周一…周五；周末返回 None）"""
+    import datetime as _dt
+    import store_orders as S
+    wd = (today or _dt.date.today()).weekday()
+    return S.DAY_FOLDERS[wd] if wd < len(S.DAY_FOLDERS) else None
+
+
+def store_suppliers(settings, kind, day=None):
+    """这一天（None = 全部）文件夹里的供应商：[{"name", "day", "path", "skipped"（页面上没勾）}]"""
+    import store_orders as S
+    su = store_setup(settings, kind)
+    if not os.path.isdir(su["folder"]):
+        raise RuntimeError(tr("{0}的文件夹不存在：{1}", tr(su["title"]), su["folder"]))
+    out = []
+    for d, p in S.list_schede(su["folder"], day):
+        n = S.supplier_short_name(p)
+        out.append({"name": n, "day": d, "path": p, "skipped": n in su["skip"]})
+    return out
+
+
+def _match_suppliers(rows, names):
+    """按名字挑供应商（不分大小写，名字里包含也算）；names 为空 = 页面上勾着的那些"""
+    if not names:
+        return [r for r in rows if not r["skipped"]]
+    want = [str(n).strip().upper() for n in names if str(n).strip()]
+    got = [r for r in rows if any(w == r["name"].upper() for w in want)]
+    rest = [w for w in want if not any(w == r["name"].upper() for r in got)]
+    for w in rest:
+        got += [r for r in rows if w in r["name"].upper() and r not in got]
+    return got
+
+
+def store_compute(settings, kind, day=None, suppliers=None, stores=None, log=print, progress=None, cancel=None,
+                  actor=None, via="agent", db=None):
+    """
+    算建议箱数（只读：读 SCHEDA、查数据库，不写任何文件）。suppliers = 供应商名字（空 = 页面上勾着的），
+    stores = 门店号（空 = 页面上选的）。返回 compute() 的 calc（带 _ui：建议箱数 + 每家模拟配货）
+    """
+    import store_orders as S
+    su = store_setup(settings, kind)
+    rows = _match_suppliers(store_suppliers(settings, kind, day), suppliers)
+    if not rows:
+        raise RuntimeError(tr("没有要算的供应商（{0} · {1}）", day or tr("全部"), ", ".join(suppliers or []) or tr("页面上勾着的")))
+    stores = [int(s) for s in (stores or su["stores"])]
+    transit = None
+    try:
+        import order_record as REC
+        if REC.tracking_folder(settings) and REC.deduct_on(settings):
+            transit = REC.cached(settings)
+    except Exception as e:
+        log(tr("⚠ 在途（RECORD ORDINE）读不了：{0}", e))
+    own = db is None
+    db = db or R.make_db(settings.get("db") or None)
+    try:
+        calc = S.compute(db, [(r["day"], r["path"]) for r in rows], stores, su["days"], su["cycle"], log=log,
+                         transit=transit, use_supplier_cycles=su["use_cfg"], algo=su["algo"],
+                         moq_overrides=su["moq_over"], progress=progress, cancel=cancel)
+    finally:
+        if own:
+            try:
+                db.engine.dispose()
+            except Exception:
+                pass
+    finish_compute(calc, su["tcfg"], su["tfar"], su["sup_cfg"], su["fill"], {}, log=log)
+    calc["_kind"] = kind
+    audit(actor or "", via, "store_compute", {"kind": kind, "day": day, "suppliers": [r["name"] for r in rows],
+                                              "stores": stores}, {"schede": len(calc["schede"]),
+                                                                  "errors": len(calc.get("errors") or [])})
+    return calc
+
+
+def store_plans(settings, calc, colli=None, picks=None):
+    """每家供应商现在的模拟配货（用 calc["_ui"]["colli"] 或给的 colli）：{路径: plan}"""
+    su = store_setup(settings, calc.get("_kind") or "central")
+    colli = colli if colli is not None else calc["_ui"]["colli"]
+    out = {}
+    for sc in calc["schede"]:
+        pk = (picks or {}).get(sc["path"])
+        out[sc["path"]] = _plan_one(sc, calc, colli.get(sc["path"], {}), su["fill"], pk)
+    return out
+
+
+def orderable(plan):
+    """模拟配货里有门店会下单（直送 / 凑单够了），或 BMS 够起订量"""
+    import store_orders as S
+    return any(st["status"] in ("direct", "filled") for st in plan["stores"].values()) or S.bms_ordered(plan.get("bms"))
+
+
+def store_summary(settings, calc, colli=None, picks=None):
+    """
+    给人 / 智能体看的结果：每家供应商一行 {name, day, moq, orderable, amount, colli, stores: {门店: {status, amount, colli}}, bms}
+    （金额不含税）
+    """
+    import store_orders as S
+    plans = store_plans(settings, calc, colli, picks)
+    out = []
+    for sc in calc["schede"]:
+        pl = plans[sc["path"]]
+        sts = {}
+        amt = col = 0.0
+        for sid, st in pl["stores"].items():
+            if st["status"] == "none":
+                continue
+            sts[S.STORE_SHEETS[sid]] = {"status": S.status_text(S.STORE_SHEETS[sid], st["status"]),
+                                        "amount": round(float(st.get("amount") or 0), 2), "colli": st.get("colli")}
+            if st["status"] in ("direct", "filled"):
+                amt += float(st.get("amount") or 0)
+                col += float(st.get("colli") or 0)
+        b = pl.get("bms")
+        bms = None
+        if b:
+            bms = {"status": S.status_text(S.BMS, b["status"]), "amount": round(float(b.get("amount") or 0), 2),
+                   "colli": b.get("colli")}
+            if S.bms_ordered(b):
+                amt += float(b.get("amount") or 0)
+                col += float(b.get("colli") or 0)
+        out.append({"name": sc["name"], "day": sc.get("day"), "path": sc["path"],
+                    "moq": S.moq_label(S.sc_moq(sc), short=True), "orderable": orderable(pl),
+                    "amount": round(amt, 2), "colli": col, "stores": sts, "bms": bms})
+    return out
+
+
+def store_lines(calc, supplier, store=None, colli=None, limit=200):
+    """一家供应商的订货明细（建议 / 现在的箱数）：[{store, row, code, ean, name, pack, price, sugg, boxes}]"""
+    import store_orders as S
+    sc = _find_scheda(calc, supplier)
+    colli = colli if colli is not None else calc["_ui"]["colli"]
+    base = calc.get("base_sugg") or calc.get("base") or {}
+    items = {it["row"]: it for it in sc.get("items") or []}
+    out = []
+    for sid, lines in (colli.get(sc["path"]) or {}).items():
+        if store and int(store) != int(sid):
+            continue
+        for row, n in lines.items():
+            sug = ((base.get(sc["path"]) or {}).get(sid) or {}).get(row)
+            if not n and not sug:
+                continue
+            it = items.get(row) or {}
+            out.append({"store": S.STORE_SHEETS.get(sid, sid), "store_id": sid, "row": row,
+                        "code": S.item_code(it) if it else None,
+                        "ean": it.get("ean"), "name": it.get("desc"), "pack": it.get("pack"), "price": it.get("price"),
+                        "sugg": sug, "boxes": n})
+    out.sort(key=lambda x: (str(x["store"]), -(x["boxes"] or 0)))
+    return out[:limit]
+
+
+def _find_scheda(calc, supplier):
+    want = str(supplier or "").strip().upper()
+    hits = [sc for sc in calc["schede"] if sc["name"].upper() == want] or \
+        [sc for sc in calc["schede"] if want and want in sc["name"].upper()]
+    if len(hits) != 1:
+        raise RuntimeError(tr("供应商「{0}」对不上（这次算了：{1}）", supplier, "、".join(sc["name"] for sc in calc["schede"])))
+    return hits[0]
+
+
+def store_set_boxes(calc, supplier, store, row, boxes):
+    """改一行的订货箱数（只改这次计算里的，生成订单时才写文件）。返回原来的箱数"""
+    sc = _find_scheda(calc, supplier)
+    colli = calc["_ui"]["colli"].setdefault(sc["path"], {}).setdefault(int(store), {})
+    old = colli.get(row, 0)
+    colli[row] = max(0, int(boxes))
+    calc.setdefault("_edited", set()).add((sc["path"], int(store), row))
+    return old
+
+
+def store_allocate(settings, calc, suppliers=None, log=print, progress=None, actor=None, via="agent"):
+    """
+    生成订单文件（会写文件）：只生成订得起来的供应商（suppliers 给了就只这些），一家供应商一个订单文件、配货汇总、调货单，
+    采购订单跟踪里每家供应商 × 每个去向一张「待登记」。返回 S.allocate 的结果 + tracked
+    """
+    import copy
+    import store_orders as S
+    import order_tracking as OT
+    su = store_setup(settings, calc.get("_kind") or "central")
+    plans = store_plans(settings, calc)
+    if suppliers:
+        chosen = [_find_scheda(calc, n) for n in suppliers]
+    else:
+        chosen = [sc for sc in calc["schede"] if orderable(plans[sc["path"]])]
+    if not chosen:
+        raise RuntimeError(tr("没有订得起来的供应商（都不够起订量）"))
+    out_root = S.new_run_folder(S.output_root(su["folder"]))
+    keep = {sc["path"] for sc in chosen}
+    sub = dict(calc, schede=chosen)
+    colli = {p: v for p, v in copy.deepcopy(calc["_ui"]["colli"]).items() if p in keep}
+    edited = {k for k in calc.get("_edited") or set() if k[0] in keep}
+    res = S.allocate(sub, colli, su["fill"], out_root, log=log, edited=edited, progress=progress)
+    try:
+        res["tracked"] = OT.register_store_orders(settings, res["written"], source=su["source"], log=log)
+    except Exception as e:
+        log(tr("⚠ 订单跟踪没登记上：{0}", e))
+        res["tracked"] = None
+    tot = S.plan_totals(res["results"])
+    audit(actor or "", via, "store_allocate", {"kind": su["kind"], "suppliers": [sc["name"] for sc in chosen],
+                                               "out_root": out_root},
+          {"files": len(S.written_files(res["written"])), "total": round(tot["total"], 2)})
+    return res
