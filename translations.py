@@ -3539,4 +3539,12 @@ TRANSLATIONS = {
     '✔ 门店报告（五家店一个文件）：{0}': ('✔ Store report (all stores in one file): {0}', '✔ Report negozi (tutti in un file): {0}'),
     '门店报告没写上：{0}': ('Store report not written: {0}', 'Report negozi non scritto: {0}'),
     '⚠ 上次的审核记录没用上：{0}': ('⚠ Last review record not used: {0}', "⚠ Registro dell'ultima verifica non usato: {0}"),
+    '[检查清单] {0}：清单 {1} 行 → {2} 个商品': ('[List check] {0}: list {1} lines → {2} items', '[Controllo lista] {0}: lista {1} righe → {2} articoli'),
+    '；数据库里没有（新商品？照清单订，在表格里判断写「数据库没有」）{0} 个：{1}': (
+        '; not in the database (new items? ordered as in the list, verdict "not in database") {0}: {1}',
+        '; non presenti nel database (articoli nuovi? ordinati come da lista, giudizio «non nel database») {0}: {1}'),
+    '；同一个商品写了几行、合成一行：{0}': ('; same item on several lines, merged into one: {0}', '; stesso articolo su più righe, unite in una: {0}'),
+    '合并 {0} 行': ('{0} lines merged', '{0} righe unite'),
+    '清单里这几行是同一个商品，合成一行（箱数加在一起）：': ('These list lines are the same item, merged into one (boxes added up):',
+                                         'Queste righe della lista sono lo stesso articolo, unite in una (colli sommati):'),
 }

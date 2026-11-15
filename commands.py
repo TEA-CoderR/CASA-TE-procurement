@@ -182,9 +182,20 @@ def run_check(settings, lists, *, price_dir, log=print, progress=None, days=None
         db.engine.dispose()
         rows = []
         for x in lists:
-            for r in R.check_rows(x["rows"], x["result"], x["unit"]):
+            mine = R.check_rows(x["rows"], x["result"], x["unit"])
+            for r in mine:
                 r["store"] = x["store"]
                 rows.append(r)
+            # 清单几行 → 检查里几个商品：差的写清楚（合并的、数据库里没有的），免得以为没读到（2026-11-15）
+            rep = R.list_report(x["rows"], mine)
+            line = tr("[检查清单] {0}：清单 {1} 行 → {2} 个商品", R.STORES.get(x["store"], x["store"]), rep["lines"], rep["items"])
+            if rep["nodb"]:
+                line += tr("；数据库里没有（新商品？照清单订，在表格里判断写「数据库没有」）{0} 个：{1}", len(rep["nodb"]),
+                           "、".join(n[:30] for n in rep["nodb"][:20]))
+            if rep["merged"]:
+                line += tr("；同一个商品写了几行、合成一行：{0}", "、".join(
+                    f"{a[:30]} ← {'、'.join(n[:30] for n in b)}" for a, b in rep["merged"][:10]))
+            log(line)
         R.add_supplier_info(rows, sup_info)
         if rows and not any(r.get("in_db") for r in rows):
             # 一个都没在数据库里找到：几乎一定是数据库刚才没连上或者清单不对，不能拿这个结果去生成主订单

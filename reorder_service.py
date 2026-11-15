@@ -1318,6 +1318,9 @@ def check_rows(file_rows, result_rows, unit="colli"):
             continue
         if key in merged:
             merged[key]["qty"] = (merged[key]["qty"] or 0) + (f.get("qty") or 0)
+            # 记下合并了哪几行（同一个商品清单里写了两行，或者两个条码在数据库里是同一个商品）：界面上写明，免得以为没读到
+            merged[key].setdefault("merged", []).append({"ean": f.get("ean", ""), "name": f.get("name", ""),
+                                                         "qty": f.get("qty")})
             continue
         merged[key] = dict(f)
         order.append(key)
@@ -1348,8 +1351,20 @@ def check_rows(file_rows, result_rows, unit="colli"):
                    "store_inv": None, "sales": [None] * 4, "inv_days": None, "tier": "", "decision": "",
                    "pack": 0, "suggested": 0, "ord_colli": 0, "file_qty": qty, "file_pcs": qty,
                    "final": int(math.ceil(qty)), "verdict": "数据库没有", "in_db": False}
+        if f.get("merged"):
+            row["merged"] = f["merged"]
+            row["list_ean"] = f.get("ean", "")
         out.append(row)
     return out
+
+
+def list_report(file_rows, rows):
+    """清单读进来的情况（日志用，让人一眼对得上清单的行数）：
+    {"lines": 清单几行, "items": 检查里几个商品, "nodb": [数据库里没有的商品名], "merged": [(合到哪个, [合进来的])]}"""
+    return {"lines": len(file_rows), "items": len(rows),
+            "nodb": [str(x.get("name") or x.get("ean") or "") for x in rows if not x.get("in_db", True)],
+            "merged": [(str(x.get("name") or ""), [str(m.get("name") or m.get("ean") or "") for m in x["merged"]])
+                       for x in rows if x.get("merged")]}
 
 
 # =====================================================================

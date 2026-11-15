@@ -161,3 +161,15 @@ def test_store_report_one_file_every_store_a_sheet():
     assert wb.sheetnames == ["FOIANO", "MARLIA", "S.FILIPPO", "S.MARCO", "S.CONCORDIO"]
     assert "Nessun articolo" in str(wb["FOIANO"]["A4"].value)
     assert os.path.basename(p).startswith("Articoli_da_verificare_") and "FOIANO" not in os.path.basename(p)
+
+
+def test_list_report_explains_merged_and_missing_from_database():
+    """清单几行 → 检查里几个商品：同一个商品写了两行合成一行、数据库里没有的（新商品）都写明"""
+    f = [{"code": "1", "ean": "801", "name": "A", "qty": 2}, {"code": "1", "ean": "809", "name": "A bis", "qty": 1},
+         {"code": "", "ean": "8004260019033", "name": "NICKY", "qty": 7}]
+    res = [{"code": "1", "ean": "801", "name": "A", "store_inv": 1, "sales": [1, 2, 3, 4], "inv_days": 5, "tier": "B",
+            "decision": "", "pack": 6, "suggested": 12, "ord_colli": 2}]
+    rows = R.check_rows(f, res)
+    assert len(rows) == 2 and rows[0]["file_qty"] == 3 and rows[0]["merged"][0]["ean"] == "809"
+    rep = R.list_report(f, rows)
+    assert rep["lines"] == 3 and rep["items"] == 2 and rep["nodb"] == ["NICKY"] and rep["merged"] == [("A", ["A bis"])]

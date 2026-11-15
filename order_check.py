@@ -1033,6 +1033,10 @@ class OrderCheck:
         elif x.get("review") == "changed":
             rv.append(("review", tr("清单改过"), tr("上次审核时清单是 {0} 箱，现在是 {1} 箱：按系统建议重新算了，要审核",
                                                    x.get("review_prev"), x.get("lbox"))))
+        if x.get("merged"):
+            rv.append(("merged", tr("合并 {0} 行", len(x["merged"]) + 1),
+                       tr("清单里这几行是同一个商品，合成一行（箱数加在一起）：") + "\n" + "\n".join(
+                           f"{m.get('ean') or ''}  {m.get('name') or ''}  × {m.get('qty') or 0:g}" for m in x["merged"])))
         if not x.get("in_db", True):
             return rv
         out = rv + R.review_marks(x.get("target") is not None, x["final"] > 0, self._arrive_days(x), x.get("store_inv"))
@@ -1770,7 +1774,15 @@ class OrderCheck:
             (view == "phantom" and not x.get("phantom")) or (view == "promo" and not x.get("promo")) or \
             (view == "review" and x.get("review") not in ("new", "changed"))
         return hide or \
-               (bool(text) and text not in f"{x['code']} {x['ean']} {x['name']} {x.get('sup_code') or ''} {x.get('sup_name') or ''}".lower())
+               (bool(text) and text not in self._search_text(x))
+
+    @staticmethod
+    def _search_text(x):
+        """搜索框：编号、条码、名称、供应商；换成替代商品的原条码 / 原名称、合并进来的那几行也搜得到"""
+        rp = x.get("repl") or {}
+        extra = " ".join(f"{m.get('ean') or ''} {m.get('name') or ''}" for m in x.get("merged") or [])
+        return (f"{x['code']} {x['ean']} {x['name']} {x.get('sup_code') or ''} {x.get('sup_name') or ''} "
+                f"{rp.get('old_ean') or ''} {rp.get('old_name') or ''} {x.get('list_ean') or ''} {extra}").lower()
 
     def _fill(self):
         missing = [x for x in self.rows if "fbox" not in x]
