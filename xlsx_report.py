@@ -27,7 +27,8 @@ TONES = {"GREEN": ("E7F5EC", "1E7A3C"), "RED": ("FDECEC", "B42318"), "AMBER": ("
 # 表头分组颜色
 HEAD_TONES = {"id": "F3F4F6", "cat": "EEF2FF", "price": "E7F5EC", "sup": "E8F0FE", "warn": "FFF4E0"}
 IMG = 48                                      # 照片 48 × 48 像素
-FMT = {"price": '€ #,##0.00', "num": '#,##0', "pct": '+0.0%;-0.0%;0.0%', "ean": "@", "txt": "@"}
+FMT = {"price": '€ #,##0.00', "num": '#,##0', "pct": '+0.0%;-0.0%;0.0%', "ean": "@", "txt": "@",
+       "rate": '0.0%', "dec": '+0.00;-0.00;0.00'}       # rate：毛利率这种不带正负号的百分数；dec：两位小数（带正负号）
 
 
 class Col:
@@ -119,13 +120,13 @@ def add_sheet(wb, name, title, subtitle, cols, rows, marks=None, photo_eans=None
                 pc.fill = zebra
         for j, c in enumerate(cols):
             v = vals[j] if j < len(vals) else None
-            if c.kind == "pct" and isinstance(v, (int, float)):
+            if c.kind in ("pct", "rate") and isinstance(v, (int, float)):
                 v = v / 100.0                                  # 传进来的是 12.3（%），Excel 里存 0.123 用百分比格式
             if c.kind == "ean" and v not in (None, ""):
                 v = str(v)
             dc = ws.cell(r, j + 1 + off, v)
             dc.border = box
-            dc.alignment = left if c.left else right if c.kind in ("num", "price", "pct") else center
+            dc.alignment = left if c.left else right if c.kind in ("num", "price", "pct", "rate", "dec") else center
             dc.number_format = FMT.get(c.kind, "General")
             t = marks.get((k, j))
             if t:
