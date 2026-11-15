@@ -2936,6 +2936,8 @@ class MainWindow(QMainWindow):
             self.legacy_pages.append(lp)
             pg, scroll = lp.build(), True
         self.pages[i] = pg
+        if key in self.FROZEN_PAGES:                   # 用户 2026-11-15：这两页很喜欢，照旧样式
+            theme.freeze(pg)
         getattr(self, "_boot_times", []).append((key, time.perf_counter() - t_page))
         cur = self.stack.currentIndex()
         old = self.stack.widget(i)
@@ -2945,6 +2947,7 @@ class MainWindow(QMainWindow):
         if cur == i:
             self.stack.setCurrentIndex(i)
 
+    FROZEN_PAGES = ("store_orders", "store_pdv")     # 总仓采购 / 门店采购：套旧样式（theme.build_qss_legacy）
     LAZY_PAGES = ("distribution", "import")      # 要加载 pandas 的页面：点进去才建（后台先把 pandas 读好）
 
     def _build_next(self):
@@ -3039,8 +3042,8 @@ class MainWindow(QMainWindow):
     def _page(self, title, sub):
         w = QWidget()
         lay = QVBoxLayout(w)
-        lay.setContentsMargins(24, 20, 24, 24)
-        lay.setSpacing(14)
+        lay.setContentsMargins(28, 24, 28, 28)
+        lay.setSpacing(16)
         t = QLabel(title + ("  ⓘ" if sub else ""))      # 说明收进鼠标提示（界面要简洁）
         t.setObjectName("PageTitle")
         if sub:
@@ -3055,15 +3058,15 @@ class MainWindow(QMainWindow):
     def _build_sidebar(self):
         side = QFrame()
         side.setObjectName("Sidebar")
-        side.setFixedWidth(232)
+        side.setFixedWidth(240)
         v = QVBoxLayout(side)
-        v.setContentsMargins(0, 0, 0, 10)
+        v.setContentsMargins(0, 0, 0, 12)
         v.setSpacing(0)
         top = QHBoxLayout()
-        top.setContentsMargins(18, 18, 18, 14)
-        top.setSpacing(10)
+        top.setContentsMargins(20, 18, 18, 16)
+        top.setSpacing(11)
         logo = QLabel()
-        logo.setPixmap(app_icon().pixmap(34, 34))
+        logo.setPixmap(app_icon().pixmap(36, 36))
         col = QVBoxLayout()
         col.setSpacing(1)
         brand = QLabel(APP_NAME)
@@ -3077,11 +3080,15 @@ class MainWindow(QMainWindow):
         top.addWidget(logo)
         top.addLayout(col, 1)
         v.addLayout(top)
+        bl_ = QFrame()
+        bl_.setObjectName("BrandLine")
+        bl_.setFixedHeight(1)
+        v.addWidget(bl_)
 
         nav = QWidget()
-        nav.setObjectName("Sidebar")
+        nav.setObjectName("SidebarNav")
         nv = QVBoxLayout(nav)
-        nv.setContentsMargins(10, 0, 10, 0)
+        nv.setContentsMargins(12, 4, 12, 0)
         nv.setSpacing(2)
         self.nav_group = QButtonGroup(self)
         self.nav_group.setExclusive(True)
@@ -3091,7 +3098,7 @@ class MainWindow(QMainWindow):
         self.nav_badges = {}
         idx = 0
         for gname, items in self.NAV_GROUPS:
-            gl = QLabel(gname)
+            gl = QLabel(gname.upper())
             gl.setObjectName("NavGroup")
             nv.addWidget(gl)
             for key, text in items:
@@ -3099,7 +3106,7 @@ class MainWindow(QMainWindow):
                 b.setObjectName("NavBtn")
                 b.setCheckable(True)
                 b.setCursor(Qt.PointingHandCursor)
-                b.setIconSize(QSize(17, 17))
+                b.setIconSize(QSize(18, 18))
                 b.clicked.connect(lambda _=False, k=key: self._side_clicked(k))
                 self.nav_group.addButton(b, idx)
                 self.nav_btns.append((b, key))
@@ -3152,7 +3159,7 @@ class MainWindow(QMainWindow):
                     wrap.hide()
                     nv.addWidget(wrap)
                     self.nav_tree[key] = (b, arrow, wrap)
-            nv.addSpacing(6)
+            nv.addSpacing(2)
         nv.addStretch()
         sa = QScrollArea()
         sa.setWidgetResizable(True)
@@ -3182,7 +3189,7 @@ class MainWindow(QMainWindow):
         db.setCursor(Qt.PointingHandCursor)
         db.mousePressEvent = lambda _e: self.go_page("settings")
         wrap = QHBoxLayout()
-        wrap.setContentsMargins(10, 8, 10, 0)
+        wrap.setContentsMargins(12, 8, 12, 0)
         wrap.addWidget(db)
         v.addLayout(wrap)
         self._set_db_state(None)
@@ -3192,9 +3199,9 @@ class MainWindow(QMainWindow):
         from PySide6.QtWidgets import QCompleter, QMenu
         bar = QFrame()
         bar.setObjectName("TopBar")
-        bar.setFixedHeight(56)
+        bar.setFixedHeight(60)
         h = QHBoxLayout(bar)
-        h.setContentsMargins(24, 0, 20, 0)
+        h.setContentsMargins(28, 0, 20, 0)
         h.setSpacing(10)
         self.crumb_sec = QLabel("")
         self.crumb_sec.setObjectName("Crumb")
@@ -3220,7 +3227,7 @@ class MainWindow(QMainWindow):
         self.bg_pill = BgTaskPill(bar)          # 后台运行中的任务：进度 + 点一下看详情（没有时藏起来）
         h.addWidget(self.bg_pill)
         self.agent_btn = QPushButton(tr("✦ 助手"))
-        self.agent_btn.setObjectName("Primary")
+        self.agent_btn.setObjectName("AgentBtn")
         self.agent_btn.setCursor(Qt.PointingHandCursor)
         self.agent_btn.setToolTip(tr("让助手查供应商、算建议量、生成采购订单、查订单、核对邮件；改数据前都会问你"))
         self.agent_btn.clicked.connect(lambda: self.toggle_agent())
@@ -3228,9 +3235,9 @@ class MainWindow(QMainWindow):
         self.search = QLineEdit()
         self.search.setObjectName("Search")
         self.search.setPlaceholderText(tr("搜索功能页面…  Ctrl K"))
-        self.search.setFixedWidth(320)
+        self.search.setFixedWidth(300)
         self.search_icon = QLabel(self.search)
-        self.search_icon.move(10, 9)
+        self.search_icon.move(11, 10)
         comp = QCompleter([t for _, t in self.NAV], self.search)
         comp.setCaseSensitivity(Qt.CaseInsensitive)
         comp.setFilterMode(Qt.MatchContains)
@@ -3248,7 +3255,7 @@ class MainWindow(QMainWindow):
         self.bell.clicked.connect(self._show_notes)
         self.bell_dot = QLabel(self.bell)
         self.bell_dot.setFixedSize(8, 8)
-        self.bell_dot.move(21, 6)
+        self.bell_dot.move(22, 7)
         self.bell_dot.hide()
         h.addWidget(self.bell)
         self.theme_btn = QPushButton()
@@ -3268,7 +3275,7 @@ class MainWindow(QMainWindow):
         name = settings.get("user_name") or tr("采购部")
         av = QLabel(name[:1])
         av.setObjectName("Avatar")
-        av.setFixedSize(30, 30)
+        av.setFixedSize(32, 32)
         av.setAlignment(Qt.AlignCenter)
         uc = QVBoxLayout()
         uc.setSpacing(0)
@@ -3282,7 +3289,12 @@ class MainWindow(QMainWindow):
         user.addLayout(uc)
         uw = QWidget()
         uw.setLayout(user)
-        h.addSpacing(4)
+        tsep = QFrame()
+        tsep.setObjectName("TopSep")
+        tsep.setFixedSize(1, 26)
+        h.addSpacing(2)
+        h.addWidget(tsep)
+        h.addSpacing(6)
         h.addWidget(uw)
         return bar
 
@@ -3486,6 +3498,7 @@ class MainWindow(QMainWindow):
         theme.set_theme(settings.get("theme", "light"))
         if qss:
             QApplication.instance().setStyleSheet(build_qss())
+            theme.refresh_frozen()
         for b, ic in self.nav_btns:
             b.setIcon(icon(ic, "#FFFFFF" if b.isChecked() else T("side_text")))
         for pk, (pb, _arrow, _wrap) in self.nav_tree.items():

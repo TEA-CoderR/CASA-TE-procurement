@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (QWidget, QLabel, QPushButton, QLineEdit, QComboBo
                                QCheckBox, QFrame, QStackedWidget, QScrollArea, QDialog, QDialogButtonBox,
                                QHeaderView, QButtonGroup, QApplication)
 
+import theme
 from i18n import tr
 from settings import save_settings
 from theme import T, icon, num_font, open_path
@@ -1535,7 +1536,7 @@ class StoreOrderPage:
         if not self.calc or self.detail_win is not None:
             return
         from store_detail_window import DetailWindow
-        self.detail_win = DetailWindow(self)
+        self.detail_win = theme.freeze(DetailWindow(self))
         self.detail_win.load()
 
     def open_detail(self, path=ALL, sid=ALL):
@@ -1543,7 +1544,7 @@ class StoreOrderPage:
             return
         if self.detail_win is None:
             from store_detail_window import DetailWindow
-            self.detail_win = DetailWindow(self)
+            self.detail_win = theme.freeze(DetailWindow(self))
             self.detail_win.load()
         self.detail_win.set_filter(path, sid)
         self.detail_win.bring_up()
