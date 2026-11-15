@@ -134,3 +134,19 @@ def test_real_volantino_file_layout_and_christmas_kind():
     assert (got["start"], got["end"]) == (date(date.today().year, 10, 15), date(date.today().year, 11, 1))
     assert V.kind_of({"name": "ELENCO NATALE 2026"}) == "natale" and V.kind_of({"name": "Volantino"}) == "volantino"
     assert V.kind_of({"name": "Natale", "kind": "volantino"}) == "volantino"
+
+
+def test_before_period_totals_and_daily_values(monkeypatch):
+    """报告用的：活动前同样天数的销售额 / 毛利（KPI 上的「比活动前」）、每天的件数 / 让利、前几名商品"""
+    import pandas as pd
+    db, fake = _db()
+    monkeypatch.setattr(pd, "read_sql", lambda q, e, params=None: fake(q.replace("DATE(Data)", "substr(Data,1,10)"), e, params))
+    p = V.db_periods(db, since=date(2026, 1, 1))[0]
+    res = V.analyze(db, p, today=date(2026, 11, 30))
+    pr = res["store"][1]["prev"]
+    assert round(pr["qty"]) == 2 and abs(pr["rev"] - 7.32 / 1.22) < 1e-6 and res["total"]["prev"]["qty"] == 2
+    assert V.change(13, 2) == 5.5 and V.change(3, 0) is None
+    qty = dict(V.day_values(res, "qty"))
+    assert qty[date(2026, 11, 13)] == 10 and qty[date(2026, 11, 20)] == 3
+    assert abs(dict(V.day_values(res, "disc", 1))[date(2026, 11, 13)] - 10) < 1e-6
+    assert [r["code"] for r in V.top_items(res)] == ["1", "2"]

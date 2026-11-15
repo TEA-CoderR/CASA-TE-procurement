@@ -345,16 +345,16 @@ def _sql_store(db, sid, codes, d1, d2, m1, m2, b1):
                              f"GROUP BY CodArticolo", db.engine, params=tuple(chunk) + (d1, nxt))
             for r in df.to_dict("records"):
                 out["items"][str(int(r["CodArticolo"]))] = _money(r)
-            df = pd.read_sql(f"SELECT CodArticolo, SUM(Qta) AS q FROM {t} WHERE CodArticolo IN ({ph}) "
+            df = pd.read_sql(f"SELECT CodArticolo, {_SUMS} FROM {t} WHERE CodArticolo IN ({ph}) "
                              f"AND Data >= %s AND Data < %s GROUP BY CodArticolo", db.engine, params=tuple(chunk) + (b1, d1))
             for r in df.to_dict("records"):
-                out["before"][str(int(r["CodArticolo"]))] = _f(r.get("q"))
+                out["before"][str(int(r["CodArticolo"]))] = _money(r)
             df = pd.read_sql(f"SELECT DATE(Data) AS d, {_SUMS} FROM {t} WHERE CodArticolo IN ({ph}) AND Data >= %s AND Data < %s "
                              f"GROUP BY DATE(Data)", db.engine, params=tuple(chunk) + (d1, nxt))
             for r in df.to_dict("records"):
                 k = str(r["d"])[:10]
                 m = _money(r)
-                cur = out["days"].setdefault(k, {"rev": 0.0, "profit": 0.0, "qty": 0.0})
+                cur = out["days"].setdefault(k, {"rev": 0.0, "profit": 0.0, "qty": 0.0, "disc": 0.0})
                 for f in cur:
                     cur[f] += m[f]
     df = pd.read_sql(f"SELECT {_SUMS} FROM {t} WHERE Data >= %s AND Data < %s", db.engine,
@@ -419,7 +419,8 @@ def analyze(db, period, today=None, upto=None, log=None, on_store=None):
     """
     一期 VOLANTINO 的分析 → {
       "period", "start", "end", "month": (m1, m2), "stores": [门店号],
-      "store": {门店: {qty rev cost profit margin disc erp sold(卖出几个商品) share(占当月销售额) month{…} impact{…}}},
+      "store": {门店: {qty rev cost profit margin disc erp sold(卖出几个商品) share(占当月销售额) month{…} impact{…}
+                       prev{qty rev cost profit margin}（名单商品在活动前同样天数里）}},
       "total": 同上（五家合计）,
       "items": [{code ean name price stores{门店: {qty rev profit margin disc before}} + 合计字段}],
       "days": {门店: {日期: {rev profit qty}}},
@@ -453,15 +454,21 @@ def analyze(db, period, today=None, upto=None, log=None, on_store=None):
                         "stores": {}}
         order.append(key)
     out_store, total, no_cost = {}, {"sold": 0}, set()
-    total_month = {}
+    total_month, total_prev = {}, {}
     for sid in stores:
         res = per[sid]
         agg = {"sold": 0}
+        prev = {}
+        for c, m in res["before"].items():            # 活动前同样天数（名单里的商品）：用来比「多卖了几成」
+            if c in by_code:
+                _add(prev, m, ("qty", "rev", "cost", "profit"))
+        for f in ("qty", "rev", "cost", "profit"):
+            prev.setdefault(f, 0.0)
         for c, m in res["items"].items():
             row = by_code.get(c)
             if row is None:
                 continue
-            m = summarize(dict(m, before=res["before"].get(c, 0.0)))
+            m = summarize(dict(m, before=(res["before"].get(c) or {}).get("qty", 0.0)))
             row["stores"][sid] = m
             _add(agg, m)
             if m["qty"] > 0:
@@ -474,7 +481,9 @@ def analyze(db, period, today=None, upto=None, log=None, on_store=None):
         agg["month"] = summarize(dict(res["month"]))
         agg["impact"] = month_impact(agg["month"], agg["disc"])
         agg["share"] = agg["rev"] / agg["month"]["rev"] if agg["month"]["rev"] else None
+        agg["prev"] = summarize(prev)
         out_store[sid] = agg
+        _add(total_prev, prev, ("qty", "rev", "cost", "profit"))
         _add(total, agg)
         _add(total_month, agg["month"])
     for f in ("qty", "rev", "cost", "profit", "disc", "erp"):
@@ -484,6 +493,9 @@ def analyze(db, period, today=None, upto=None, log=None, on_store=None):
     total["month"] = summarize(total_month)
     total["impact"] = month_impact(total_month, total["disc"])
     total["share"] = total["rev"] / total_month["rev"] if total_month["rev"] else None
+    for f in ("qty", "rev", "cost", "profit"):
+        total_prev.setdefault(f, 0.0)
+    total["prev"] = summarize(total_prev)
     rows = []
     for key in order:
         row = by_code[key]
@@ -502,6 +514,29 @@ def analyze(db, period, today=None, upto=None, log=None, on_store=None):
             "stores": stores, "store": out_store, "total": total, "items": rows,
             "days": {sid: per[sid]["days"] for sid in stores}, "no_cost": len(no_cost),
             "matched": len(codes)}
+
+
+def change(cur, prev):
+    """比活动前多 / 少几成：(现在 − 以前) / 以前；以前是 0 → None"""
+    return (cur - prev) / prev if prev else None
+
+
+def top_items(res, store=None, n=8, key="rev"):
+    """销售额（或别的字段）最高的几个商品"""
+    rows = [r for r in item_rows(res, store) if r.get(key, 0) > 0]
+    rows.sort(key=lambda r: r.get(key, 0), reverse=True)
+    return rows[:n]
+
+
+def day_values(res, field, store=None):
+    """周期里每天某个字段（rev / profit / qty / disc）的合计：[(date, 值)]"""
+    d, out = res["start"], []
+    stores = [store] if store else res["stores"]
+    while d <= res["end"]:
+        k = d.isoformat()
+        out.append((d, sum(res["days"].get(s, {}).get(k, {}).get(field, 0.0) for s in stores)))
+        d += timedelta(days=1)
+    return out
 
 
 def day_series(res, store=None):

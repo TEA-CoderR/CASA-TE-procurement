@@ -4,19 +4,18 @@
 
   上面：标题 · 类型（VOLANTINO / 圣诞货，下拉只列这一类）· 这一期（下拉：导入的名单 + 数据库里的促销单）· 导入名单… · 修改… · 刷新 · 导出 Excel
   门店按钮：全部门店 / 每家店（整页跟着门店）
-  总览（一个外框三块）：VOLANTINO 商品（毛利率圆环、销售额、毛利、销量、让利）· 当月毛利率（全店所有商品：实际 / 没有让利 / 影响）·
-                       周期里每天的销售额和毛利（柱子）
-  标签页：门店对比（五家店一行一家）/ 商品（每个商品；全部门店时多五列各店销量）
+  报告（volantino_report.Report，可以往下滚）：KPI 五张卡 · 每天销售额与毛利率 · 对当月毛利率的影响 · 门店排名 ·
+    销售额前 8 名商品；下面「明细」标签页：门店对比（五家店一行一家）/ 商品（每个商品；全部门店时多五列各店销量）
 """
 import os
 import threading
 from datetime import date, datetime
 
-from PySide6.QtCore import Qt, QObject, Signal, QDate, QRectF
+from PySide6.QtCore import Qt, QObject, Signal, QDate
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QLineEdit, QComboBox,
                                QTabWidget, QFileDialog, QStackedWidget, QFrame, QDialog, QCheckBox, QButtonGroup,
-                               QSizePolicy, QDateEdit, QGridLayout, QMessageBox, QHeaderView)
+                               QDateEdit, QGridLayout, QMessageBox, QHeaderView)
 
 from i18n import tr
 
@@ -139,273 +138,6 @@ class PeriodDialog(QDialog):
         return [sid for sid, cb in self.boxes.items() if cb.isChecked()]
 
 
-# =====================================================================
-# 总览：VOLANTINO 商品 · 当月毛利率 · 每天
-# =====================================================================
-class _DayChart(QWidget):
-    """周期里每天一根柱子：浅色 = 销售额，里面深色 = 毛利；今天以后的日子虚线框；鼠标停上去看数字"""
-
-    def __init__(self, ui):
-        super().__init__()
-        self.ui = ui
-        self.days, self.hover = [], -1
-        self.setMouseTracking(True)
-        self.setMinimumHeight(120)
-
-    def set(self, days):
-        self.days = days
-        self.update()
-
-    def _idx(self, x):
-        n = len(self.days)
-        if not n:
-            return -1
-        i = int(x * n / max(1, self.width()))
-        return i if 0 <= i < n else -1
-
-    def mouseMoveEvent(self, e):
-        i = self._idx(e.position().x() if hasattr(e, "position") else e.x())
-        if i != self.hover:
-            self.hover = i
-            self.update()
-            if i >= 0:
-                d, rev, pr = self.days[i]
-                self.setToolTip(tr("{0:%a %d/%m}：销售额 € {1:,.2f} · 毛利 € {2:,.2f}（{3}）", d, rev, pr, _pct(pr / rev if rev else None)))
-
-    def leaveEvent(self, _e):
-        self.hover = -1
-        self.update()
-
-    def paintEvent(self, _e):
-        from PySide6.QtGui import QPainter, QPen, QFont
-        from theme import NUM_FONT
-        T = self.ui.T
-        n = len(self.days)
-        if not n:
-            return
-        p = QPainter(self)
-        p.setRenderHint(QPainter.Antialiasing)
-        W, H = self.width(), self.height()
-        lab_h = 16
-        top_pad = 4
-        base = H - lab_h - 2
-        cw = W / n
-        bw = max(4.0, min(26.0, cw * 0.62))
-        top = max((r for _, r, _ in self.days), default=0) or 1
-        today = date.today()
-        f = QFont(NUM_FONT)
-        f.setPixelSize(10)
-        p.setFont(f)
-        step = max(1, int(28 // max(cw, 1)) + 1)           # 日子多时隔几天写一个日期
-        for i, (d, rev, pr) in enumerate(self.days):
-            cx = i * cw + cw / 2
-            if i == self.hover:
-                p.setPen(Qt.NoPen)
-                p.setBrush(QColor(T("surface2")))
-                p.drawRoundedRect(QRectF(i * cw + 1, 0, cw - 2, H), 6, 6)
-            h = (base - top_pad) * rev / top
-            x0 = cx - bw / 2
-            if d > today:
-                pen = QPen(QColor(T("line")), 1, Qt.DashLine)
-                p.setPen(pen)
-                p.setBrush(Qt.NoBrush)
-                p.drawRoundedRect(QRectF(x0, base - 18, bw, 18), 3, 3)
-            elif rev > 0:
-                p.setPen(Qt.NoPen)
-                p.setBrush(QColor(T("accent_soft")))
-                p.drawRoundedRect(QRectF(x0, base - h, bw, h), 3, 3)
-                hp = (base - top_pad) * max(pr, 0) / top
-                p.setBrush(QColor(T("accent") if i != self.hover else T("accent")))
-                p.drawRoundedRect(QRectF(x0 + bw * 0.22, base - hp, bw * 0.56, hp), 2, 2)
-            if i % step == 0 or i == n - 1:
-                p.setPen(QColor(T("accent") if d == today else T("faint")))
-                p.drawText(QRectF(i * cw - 10, base + 2, cw + 20, lab_h), Qt.AlignHCenter | Qt.AlignVCenter, f"{d:%d}")
-        p.setPen(QPen(QColor(T("line")), 1))
-        p.drawLine(0, int(base), W, int(base))
-        p.end()
-
-
-class VolPanel(QFrame):
-    def __init__(self, ui):
-        super().__init__()
-        from erp_widgets import Ring
-        self.ui = ui
-        self.setObjectName("Panel")
-        h = QHBoxLayout(self)
-        h.setContentsMargins(18, 12, 14, 12)
-        h.setSpacing(16)
-        # 左：VOLANTINO 商品
-        lw = QWidget()
-        lw.setFixedWidth(300)
-        lv = QVBoxLayout(lw)
-        lv.setContentsMargins(0, 0, 0, 0)
-        lv.setSpacing(8)
-        self.cap1 = QLabel("")
-        self.cap1.setObjectName("VpCap")
-        lv.addWidget(self.cap1)
-        row = QHBoxLayout()
-        row.setSpacing(14)
-        self.ring = Ring()
-        row.addWidget(self.ring, 0, Qt.AlignVCenter)
-        tv = QVBoxLayout()
-        tv.setSpacing(2)
-        self.big = QLabel("")
-        self.big.setObjectName("VpBig")
-        self.sub1, self.sub2, self.sub3 = QLabel(""), QLabel(""), QLabel("")
-        tv.addStretch()
-        tv.addWidget(self.big)
-        for x in (self.sub1, self.sub2, self.sub3):
-            x.setObjectName("VpSub")
-            tv.addWidget(x)
-        tv.addStretch()
-        row.addLayout(tv, 1)
-        lv.addLayout(row)
-        lv.addStretch()
-        h.addWidget(lw)
-        self.seps = [QFrame(), QFrame()]
-        h.addWidget(self.seps[0])
-        # 中：当月毛利率
-        mw = QWidget()
-        mw.setFixedWidth(290)
-        mv = QVBoxLayout(mw)
-        mv.setContentsMargins(0, 0, 0, 0)
-        mv.setSpacing(6)
-        self.cap2 = QLabel("")
-        self.cap2.setObjectName("VpCap")
-        mv.addWidget(self.cap2)
-        mr = QHBoxLayout()
-        mr.setSpacing(10)
-        self.m_big = QLabel("")
-        self.m_big.setObjectName("VpBig")
-        mr.addWidget(self.m_big, 0, Qt.AlignBottom)
-        self.m_chip = QLabel("")
-        mr.addWidget(self.m_chip, 0, Qt.AlignVCenter)
-        mr.addStretch()
-        mv.addLayout(mr)
-        self.m_wo = QLabel("")
-        self.m_wo.setObjectName("VpSub")
-        self.m_share = QLabel("")
-        self.m_share.setObjectName("VpSub")
-        self.m_month = QLabel("")
-        self.m_month.setObjectName("VpFaint")
-        self.m_bar = _ImpactBar(ui)
-        mv.addWidget(self.m_bar)
-        mv.addWidget(self.m_wo)
-        mv.addWidget(self.m_share)
-        mv.addWidget(self.m_month)
-        mv.addStretch()
-        h.addWidget(mw)
-        h.addWidget(self.seps[1])
-        # 右：每天
-        rw = QWidget()
-        rv = QVBoxLayout(rw)
-        rv.setContentsMargins(0, 0, 0, 0)
-        rv.setSpacing(6)
-        cr = QHBoxLayout()
-        self.cap3 = QLabel(tr("每天销售额"))
-        self.cap3.setObjectName("VpCap")
-        cr.addWidget(self.cap3)
-        cr.addStretch()
-        self.legend = QLabel("")
-        self.legend.setObjectName("VpSub")
-        cr.addWidget(self.legend)
-        rv.addLayout(cr)
-        self.chart = _DayChart(ui)
-        rv.addWidget(self.chart, 1)
-        h.addWidget(rw, 1)
-        for sp in self.seps:
-            sp.setFixedWidth(1)
-        self.kname = "VOLANTINO"
-        self.set_kind(self.kname)
-        self.restyle()
-
-    def set_kind(self, kname, months=1):
-        """VOLANTINO / 圣诞货：标题和鼠标提示里的叫法；活动跨了几个月时「当月」写成「活动这几个月」"""
-        self.kname = kname
-        self.months = months
-        self.cap1.setText(tr("{0} 商品", kname) + "  ⓘ")
-        self.cap1.setToolTip(tr("这一期名单里的商品，在活动日期里卖了多少（不含税）。圆圈 = 毛利率\n"
-                                "毛利 = 销售额 − 进价；让利 = (原价 − 实际售价) × 数量（不含税）"))
-        self.ring.setToolTip(tr("{0} 商品的毛利率", kname))
-        cap = tr("当月毛利率（全店所有商品）") if months <= 1 else tr("活动这几个月的毛利率（全店所有商品）")
-        self.cap2.setText(cap + "  ⓘ")
-        self.cap2.setToolTip(tr("活动所在的整月（到销售数据最新的那天为止），这几家店所有商品的毛利率。\n"
-                                "没有让利 = 假设 {0} 商品按原价卖：(当月毛利 + 让利) ÷ (当月销售额 + 让利)\n"
-                                "影响 = 实际 − 没有让利，单位是百分点", kname))
-        self.m_bar.setToolTip(tr("深色 = 实际毛利率；浅红那一截 = {0} 让利吃掉的", kname))
-
-    def show(self, a, days, month_rng):
-        from erp_widgets import set_chip
-        T = self.ui.T
-        m = a.get("margin")
-        self.ring.set(m, "ok" if m is None or m >= 0.25 else "warn" if m >= 0.10 else "err", color_text=False)
-        self.big.setText(_eur(a.get("rev", 0)))
-        self.sub1.setText(tr("毛利 {0} · {1:,.0f} 件", _eur(a.get("profit", 0)), a.get("qty", 0)))
-        self.sub2.setText(tr("让利 {0}", _eur(a.get("disc", 0))))
-        n_items = a.get("items")
-        self.sub3.setText(tr("卖出 {0} / {1} 个商品", a.get("sold", 0), n_items) if n_items else
-                          tr("卖出 {0} 个商品", a.get("sold", 0)))
-        im = a.get("impact") or {}
-        self.m_big.setText(_pct(im.get("margin")))
-        imp = im.get("impact")
-        if imp is None:
-            set_chip(self.m_chip, "—", "gray")
-        else:
-            set_chip(self.m_chip, tr("{0:+.2f} 个百分点", imp), "err" if imp <= -0.5 else "warn" if imp < 0 else "ok")
-        self.m_chip.setToolTip(tr("{0} 让利把当月毛利率拉低了多少（百分点）", self.kname))
-        self.m_bar.set(im.get("margin"), im.get("margin_wo"))
-        self.m_wo.setText(tr("没有让利：{0}", _pct(im.get("margin_wo"))))
-        self.m_share.setText(tr("{0} 占当月销售额 {1}", self.kname, _pct(a.get("share"))))
-        self.m_month.setText(tr("当月：{0:%d/%m} – {1:%d/%m}", month_rng[0], month_rng[1]))
-        self.legend.setText(tr("浅色 销售额 · 深色 毛利"))
-        self.chart.set(days)
-
-    def restyle(self):
-        from theme import NUM_FONT
-        T = self.ui.T
-        self.setStyleSheet(
-            f"#VpCap {{ color: {T('muted')}; font-size: 12px; font-weight: 600; }}"
-            f"#VpBig {{ font-family: \"{NUM_FONT}\"; font-size: 24px; font-weight: 600; color: {T('text')}; }}"
-            f"#VpSub {{ color: {T('muted')}; font-size: 12px; }}"
-            f"#VpFaint {{ color: {T('faint')}; font-size: 11px; }}")
-        for sp in self.seps:
-            sp.setStyleSheet(f"background: {T('line')};")
-        for w in (self.ring, self.chart, self.m_bar):
-            w.update()
-
-
-class _ImpactBar(QWidget):
-    """一根横条：实际毛利率（实心）和没有让利时的毛利率（浅色），两者之间那一截就是让利吃掉的"""
-
-    def __init__(self, ui):
-        super().__init__()
-        self.ui = ui
-        self.a = self.b = None
-        self.setFixedHeight(10)
-
-    def set(self, act, wo):
-        self.a, self.b = act, wo
-        self.update()
-
-    def paintEvent(self, _e):
-        from PySide6.QtGui import QPainter
-        T = self.ui.T
-        p = QPainter(self)
-        p.setRenderHint(QPainter.Antialiasing)
-        W, H = self.width(), self.height()
-        p.setPen(Qt.NoPen)
-        p.setBrush(QColor(T("track")))
-        p.drawRoundedRect(QRectF(0, 0, W, H), H / 2, H / 2)
-        top = max(0.5, (self.b or 0) * 1.25, (self.a or 0) * 1.25)      # 刻度：两个数都放得下
-        if self.b:
-            p.setBrush(QColor(T("err_soft")))
-            p.drawRoundedRect(QRectF(0, 0, W * max(0, self.b) / top, H), H / 2, H / 2)
-        if self.a:
-            p.setBrush(QColor(T("accent")))
-            p.drawRoundedRect(QRectF(0, 0, W * max(0, self.a) / top, H), H / 2, H / 2)
-        p.end()
-
-
 class _Spread(QObject):
     """行很少的表（门店对比）：列宽按比例铺满整个宽度，表格变宽变窄跟着变（用户自己拖过列宽就不管）"""
 
@@ -443,27 +175,52 @@ class VolantinoPage:
         self.running = False
         self._loaded = False
         self._db_list = []
-        self.panel = None
+        self.report = None
         self.kind = self.cfg.get("kind") or "volantino"
 
     # ---------- 界面 ----------
     def build(self):
-        ui = self.ui
         w = QWidget()
         lay = QVBoxLayout(w)
         lay.setContentsMargins(24, 20, 24, 24)
         lay.setSpacing(12)
+        # 第一行：标题 + 这一期的说明 · 右边操作
         head = QHBoxLayout()
         head.setSpacing(8)
+        tv = QVBoxLayout()
+        tv.setSpacing(2)
         t = QLabel(tr("促销分析") + "  ⓘ")
         t.setObjectName("PageTitle")
         t.setToolTip(tr("每一期 VOLANTINO（促销传单）/ 圣诞货的销售情况：各门店卖了多少、毛利多少、毛利率，五家店汇总，"
                         "以及让利把整个月的毛利率拉低了多少。\n名单可以导入 Excel（条码 / 商品编号 + 日期），"
                         "也可以直接选数据库里的促销单。数据库只读"))
-        head.addWidget(t)
-        head.addSpacing(12)
+        tv.addWidget(t)
+        self.status = QLabel("")
+        self.status.setObjectName("PageSub")
+        tv.addWidget(self.status)
+        head.addLayout(tv)
+        head.addStretch()
+        self.b_imp = QPushButton(tr("导入名单…"))
+        self.b_imp.setToolTip(tr("选这一期的名单 Excel：有条码或商品编号就行；促销价、日期能认就自动认"))
+        self.b_imp.clicked.connect(self.import_file)
+        self.b_edit = QPushButton(tr("修改…"))
+        self.b_edit.setToolTip(tr("改这一期的名称、日期、门店，或删除（只有导入的名单能改）"))
+        self.b_edit.clicked.connect(self.edit_period)
+        self.b_ref = QPushButton(tr("刷新"))
+        self.b_ref.setToolTip(tr("重新从数据库读销售"))
+        self.b_ref.clicked.connect(self.run)
+        self.b_exp = QPushButton(tr("导出 Excel"))
+        self.b_exp.setObjectName("Primary")
+        self.b_exp.clicked.connect(self.export)
+        for b in (self.b_imp, self.b_edit, self.b_ref, self.b_exp):
+            head.addWidget(b, 0, Qt.AlignVCenter)
+        lay.addLayout(head)
+
+        # 第二行：类型 · 这一期 · 门店
         import volantino as V
         from erp_widgets import fit_chip
+        bar = QHBoxLayout()
+        bar.setSpacing(8)
         self.kind_group = QButtonGroup(w)
         self.kind_group.setExclusive(True)
         self.kind_btns = {}
@@ -477,36 +234,23 @@ class VolantinoPage:
             b.clicked.connect(lambda _=False, k=k: self.set_kind(k))
             self.kind_group.addButton(b)
             self.kind_btns[k] = b
-            head.addWidget(b)
-        head.addSpacing(8)
+            bar.addWidget(b)
+        bar.addSpacing(4)
         self.period = QComboBox()
-        self.period.setMinimumWidth(320)
+        self.period.setMinimumWidth(300)
         self.period.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
         self.period.setToolTip(tr("哪一期：上面是导入的名单，下面是数据库里的促销单"))
         self.period.currentIndexChanged.connect(self._period_changed)
-        head.addWidget(self.period, 1)
-        self.b_imp = QPushButton(tr("导入名单…"))
-        self.b_imp.setToolTip(tr("选这一期的名单 Excel：有条码或商品编号就行；促销价、日期能认就自动认"))
-        self.b_imp.clicked.connect(self.import_file)
-        self.b_edit = QPushButton(tr("修改…"))
-        self.b_edit.setToolTip(tr("改这一期的名称、日期、门店，或删除（只有导入的名单能改）"))
-        self.b_edit.clicked.connect(self.edit_period)
-        self.b_ref = QPushButton(tr("刷新"))
-        self.b_ref.setToolTip(tr("重新从数据库读销售"))
-        self.b_ref.clicked.connect(self.run)
-        self.b_exp = QPushButton(tr("导出 Excel"))
-        self.b_exp.clicked.connect(self.export)
-        for b in (self.b_imp, self.b_edit, self.b_ref, self.b_exp):
-            head.addWidget(b)
-        lay.addLayout(head)
-
-        # 门店
-        sr = QHBoxLayout()
-        sr.setSpacing(8)
+        bar.addWidget(self.period, 1)
+        bar.addSpacing(12)
+        sep = QFrame()
+        sep.setFixedSize(1, 22)
+        sep.setObjectName("VpSep")
+        bar.addWidget(sep)
+        bar.addSpacing(4)
         self.store_group = QButtonGroup(w)
         self.store_group.setExclusive(True)
         self.store_btns = {}
-        from erp_widgets import fit_chip
         for code, text in [(None, tr("全部门店"))] + STORES:
             b = QPushButton(text)
             b.setObjectName("Chip")
@@ -517,12 +261,9 @@ class VolantinoPage:
             b.clicked.connect(lambda _=False, c=code: self.set_store(c))
             self.store_group.addButton(b)
             self.store_btns[code] = b
-            sr.addWidget(b)
-        sr.addStretch()
-        self.status = QLabel("")
-        self.status.setObjectName("Faint")
-        sr.addWidget(self.status)
-        lay.addLayout(sr)
+            bar.addWidget(b)
+        lay.addLayout(bar)
+        self._seps = [sep]
 
         self.stack = QStackedWidget()
         from erp_widgets import EmptyState
@@ -533,22 +274,42 @@ class VolantinoPage:
         b.clicked.connect(self.import_file)
         self.empty.buttons.addWidget(b)
         self.stack.addWidget(self.empty)
+        # 报告（可以往下滚）：KPI · 走势 · 影响 · 门店排名 · 前几名商品 · 明细表
+        from PySide6.QtWidgets import QScrollArea
+        from volantino_report import Report
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         body = QWidget()
+        body.setObjectName("VpBody")
         bv = QVBoxLayout(body)
-        bv.setContentsMargins(0, 0, 0, 0)
-        bv.setSpacing(12)
-        self.panel = VolPanel(ui)
-        bv.addWidget(self.panel)
+        bv.setContentsMargins(0, 4, 4, 8)
+        bv.setSpacing(14)
+        self.report = Report()
+        self.report.store_picked.connect(self.set_store)
+        self.report.show_items.connect(self._jump_items)
+        bv.addWidget(self.report)
+        dh = QHBoxLayout()
+        dt = QLabel(tr("明细"))
+        dt.setObjectName("Section")
+        dh.addWidget(dt)
+        dh.addStretch()
+        bv.addLayout(dh)
         self.tabs = QTabWidget()
         self.tabs.addTab(self._build_stores_tab(), tr("门店对比"))
         self.tabs.addTab(self._build_items_tab(), tr("商品"))
-        bv.addWidget(self.tabs, 1)
-        self.stack.addWidget(body)
+        self.tabs.setMinimumHeight(480)
+        bv.addWidget(self.tabs)
+        scroll.setWidget(body)
+        self.scroll = scroll
+        self.stack.addWidget(scroll)
         self.busy = QLabel(tr("正在读销售数据…"))
         self.busy.setAlignment(Qt.AlignCenter)
         self.busy.setObjectName("Faint")
         self.stack.addWidget(self.busy)
         lay.addWidget(self.stack, 1)
+        self._style_bits()
         w.showEvent = lambda e: (QWidget.showEvent(w, e), self._first_show())
         self.page = w
         self._fill_periods()
@@ -659,10 +420,31 @@ class VolantinoPage:
             self.run()
 
     def restyle(self):
-        if self.panel is not None:
-            self.panel.restyle()
+        if self.report is not None:
+            self.report.restyle()
+            self._style_bits()
         if self.res is not None:
             self.update_view()
+
+    def _style_bits(self):
+        T = self.ui.T
+        for sp in getattr(self, "_seps", []):
+            sp.setStyleSheet(f"background:{T('line')};")
+        self.scroll.setStyleSheet("QScrollArea { background: transparent; }")
+        self.scroll.widget().setStyleSheet("#VpBody { background: transparent; }")
+
+    def _jump_items(self, what):
+        """报告里点了「没卖出 n」/ 双击一个商品 → 下面的商品明细"""
+        self.tabs.setCurrentIndex(1)
+        if what in ("sold", "unsold", "loss"):
+            self.search.clear()
+            self.show_sel.setCurrentIndex(max(0, self.show_sel.findData(what)))
+        else:
+            self.show_sel.setCurrentIndex(0)
+            self.search.setText(what)
+        self.scroll.ensureWidgetVisible(self.tabs, 0, 0)
+        bar = self.scroll.verticalScrollBar()
+        bar.setValue(min(bar.maximum(), self.tabs.mapTo(self.scroll.widget(), self.tabs.rect().topLeft()).y() - 8))
 
     # ---------- 几期 ----------
     def _base(self):
@@ -886,14 +668,12 @@ class VolantinoPage:
     def update_view(self):
         import volantino as V
         res = self.res
-        a = V.view(res, self.store)
-        if self.store is not None:
-            a = dict(a, items=res["total"]["items"])
-        m1, m2 = res["month"]
-        self.panel.set_kind(tr(V.kind_label(V.kind_of(res["period"]))), (m2.year - m1.year) * 12 + m2.month - m1.month + 1)
-        self.panel.show(a, V.day_series(res, self.store), res["month"])
+        kname = tr(V.kind_label(V.kind_of(res["period"])))
+        self.report.show(res, self.store, kname, NAMES)
         upto = res.get("upto")
-        bits = [tr("{0:%d/%m} – {1:%d/%m} · {2} 天", res["start"], res["end"], (res["end"] - res["start"]).days + 1)]
+        bits = [res["period"].get("name") or kname,
+                tr("{0:%d/%m} – {1:%d/%m/%Y} · {2} 天", res["start"], res["end"], (res["end"] - res["start"]).days + 1),
+                tr("{0} 家门店", len(res["stores"])) if self.store is None else NAMES.get(self.store, "")]
         if upto:
             bits.append(tr("销售数据到 {0:%d/%m}", upto))
         if res["matched"] < res["total"]["items"]:
