@@ -2846,6 +2846,7 @@ class MainWindow(QMainWindow):
         self._boot_times = []                   # 启动用时：每页建了多久（_finish_startup 写进日志）
         self.setWindowTitle(f"{APP_NAME} {APP_VERSION}")
         self.setWindowIcon(app_icon())
+        theme.load_fonts()                       # 程序自带的 Inter / JetBrains Mono（设计稿的字体）
         self.resize(1280, 840)
         self.setMinimumSize(1060, 680)
 
@@ -2913,7 +2914,7 @@ class MainWindow(QMainWindow):
             "home": lambda: (self.dashboard.build(), True),
             "store_orders": lambda: (self.store_orders.build(), False),
             "store_pdv": lambda: (self.store_pdv.build(), False),
-            "order": lambda: (self._page_order(), True),
+            "order": lambda: (self._page_order(), False),
             "result": lambda: (self._page_result(), True),
             "history": lambda: (self._page_history(), True),
             "rules": lambda: (self._page_rules(), True),
@@ -2968,6 +2969,11 @@ class MainWindow(QMainWindow):
             self.legacy_pages.append(lp)
             pg, scroll = lp.build(), True
         self.pages[i] = pg
+        # 设计稿：页面名字只在顶栏写一次；页面里自己的大标题藏起来（说明 ⓘ 挪到顶栏标题的鼠标提示）
+        self._page_tips = getattr(self, "_page_tips", {})
+        for lb in pg.findChildren(QLabel, "PageTitle"):
+            self._page_tips[key] = lb.toolTip()
+            lb.hide()
         if key in self.FROZEN_PAGES:                   # 用户 2026-11-15：这两页很喜欢，照旧样式
             theme.freeze(pg)
         getattr(self, "_boot_times", []).append((key, time.perf_counter() - t_page))
@@ -2979,7 +2985,7 @@ class MainWindow(QMainWindow):
         if cur == i:
             self.stack.setCurrentIndex(i)
 
-    FROZEN_PAGES = ("store_orders", "store_pdv")     # 总仓采购 / 门店采购：套旧样式（theme.build_qss_legacy）
+    FROZEN_PAGES = ()     # 2026-11-15 第 3 轮（用户：总仓 / 门店采购也照新设计）：不再套旧样式
     LAZY_PAGES = ("distribution", "import")      # 要加载 pandas 的页面：点进去才建（后台先把 pandas 读好）
 
     def _build_next(self):
@@ -3147,7 +3153,39 @@ class MainWindow(QMainWindow):
             for k in pages:
                 self.nav_badges[k] = badge
             v.addWidget(b, 0, Qt.AlignHCenter)
+        # 最下面：头像（点开：通知 / 深浅色 / 语言）——设计稿里顶栏只放搜索、数据库状态、助手
+        name = settings.get("user_name") or tr("采购部")
+        self.avatar = QToolButton()
+        self.avatar.setObjectName("RailAvatar")
+        self.avatar.setText(name[:1])
+        self.avatar.setFixedSize(36, 36)
+        self.avatar.setCursor(Qt.PointingHandCursor)
+        self.avatar.setToolTip(f"{name} · {settings.get('user_site') or tr('BMS 总仓')}")
+        self.avatar.clicked.connect(self._avatar_menu)
+        v.addSpacing(6)
+        v.addWidget(self.avatar, 0, Qt.AlignHCenter)
+        self.bell_dot = QLabel(self.avatar)
+        self.bell_dot.setFixedSize(9, 9)
+        self.bell_dot.move(27, 0)
+        self.bell_dot.hide()
         return side
+
+    def _avatar_menu(self):
+        from PySide6.QtWidgets import QMenu
+        m = QMenu(self)
+        n = len(self.notes)
+        m.addAction(icon("bell", T("muted"), 16), tr("通知（{0}）", n) if n else tr("通知"), self._show_notes)
+        dark = settings.get("theme") == "dark"
+        m.addAction(icon("sun" if dark else "moon", T("muted"), 16), tr("浅色模式") if dark else tr("深色模式"),
+                    self.toggle_theme)
+        lm = m.addMenu(tr("语言"))
+        for code, label in LANGS:
+            a = lm.addAction(label, lambda c=code: self.lang_box.setCurrentIndex(self.lang_box.findData(c)))
+            a.setCheckable(True)
+            a.setChecked(code == get_language())
+        m.addSeparator()
+        m.addAction(icon("settings", T("muted"), 16), tr("系统设置"), lambda: self.go_page("settings"))
+        m.exec(self.avatar.mapToGlobal(self.avatar.rect().topRight()))
 
     def _paint_rail(self):
         for rid, _t, ic, _p in self.RAIL:
@@ -3215,7 +3253,8 @@ class MainWindow(QMainWindow):
         self.search.setMaximumWidth(460)
         self.search.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.search_icon = QLabel(self.search)
-        self.search_icon.move(13, 13)
+        self.search_icon.setFixedSize(16, 16)
+        self.search_icon.move(13, 12)
         self.search_key = self.search.hint
         comp = QCompleter([t for _, t in self.NAV], self.search)
         comp.setCaseSensitivity(Qt.CaseInsensitive)
@@ -3254,40 +3293,18 @@ class MainWindow(QMainWindow):
         self.agent_btn.clicked.connect(lambda: self.toggle_agent())
         h.addWidget(self.agent_btn)
 
-        self.bell = QPushButton()
-        self.bell.setObjectName("TopBtn")
-        self.bell.setToolTip(tr("通知"))
-        self.bell.setCursor(Qt.PointingHandCursor)
+        # 通知 / 深浅色 / 语言挪到左下角头像的菜单里（对象留着，别的代码还在用）
+        self.bell = QPushButton(bar)
+        self.bell.hide()
         self.bell_menu = QMenu(self)
-        self.bell.clicked.connect(self._show_notes)
-        self.bell_dot = QLabel(self.bell)
-        self.bell_dot.setFixedSize(8, 8)
-        self.bell_dot.move(22, 7)
-        self.bell_dot.hide()
-        h.addWidget(self.bell)
-        self.theme_btn = QPushButton()
-        self.theme_btn.setObjectName("TopBtn")
-        self.theme_btn.setCursor(Qt.PointingHandCursor)
-        self.theme_btn.clicked.connect(self.toggle_theme)
-        h.addWidget(self.theme_btn)
-        self.lang_box = QComboBox()
-        self.lang_box.setObjectName("LangBox")
+        self.theme_btn = QPushButton(bar)
+        self.theme_btn.hide()
+        self.lang_box = QComboBox(bar)
         for code, label in LANGS:
             self.lang_box.addItem(label, code)
         self.lang_box.setCurrentIndex(max(0, self.lang_box.findData(get_language())))
         self.lang_box.currentIndexChanged.connect(self.change_language)
-        h.addWidget(self.lang_box)
-        name = settings.get("user_name") or tr("采购部")
-        av = QLabel(name[:1])
-        av.setObjectName("Avatar")
-        av.setFixedSize(32, 32)
-        av.setAlignment(Qt.AlignCenter)
-        av.setToolTip(f"{name} · {settings.get('user_site') or tr('BMS 总仓')}")
-        tsep = QFrame()
-        tsep.setObjectName("TopSep")
-        tsep.setFixedSize(1, 26)
-        h.addWidget(tsep)
-        h.addWidget(av)
+        self.lang_box.hide()
         return bar
 
     def _search_go(self, text):
@@ -3322,7 +3339,7 @@ class MainWindow(QMainWindow):
             m.addAction(tr("清空通知"), lambda: (self.notes.clear(), self._update_bell()))
         self.unread = 0
         self._update_bell()
-        m.exec(self.bell.mapToGlobal(self.bell.rect().bottomLeft()))
+        m.exec(self.avatar.mapToGlobal(self.avatar.rect().topRight()))
 
     def _update_bell(self):
         self.bell_dot.setVisible(self.unread > 0)
@@ -3459,8 +3476,13 @@ class MainWindow(QMainWindow):
         if key in self.tab_btns:
             self.tab_btns[key].setChecked(True)
         self.tabstrip.setVisible(multi)
-        self.top_eyebrow.setText(rail[rid][0].upper() if multi else APP_NAME.upper())
-        self.top_title.setText(self._tab_label(key))
+        if key == "home":
+            _wd = [tr("周一"), tr("周二"), tr("周三"), tr("周四"), tr("周五"), tr("周六"), tr("周日")][datetime.now().weekday()]
+            self.top_eyebrow.setText(f"{_wd} · {datetime.now():%d/%m/%Y}")
+        else:
+            self.top_eyebrow.setText(rail[rid][0] + (f" / {self._tab_label(key)}" if multi else ""))
+        self.top_title.setText(self._tab_label(key) + ("  ⓘ" if getattr(self, "_page_tips", {}).get(key) else ""))
+        self.top_title.setToolTip(getattr(self, "_page_tips", {}).get(key, ""))
         self._last_sub[rid] = key
         self._paint_rail()
         if key == "home" and hasattr(self, "dashboard"):
@@ -3481,7 +3503,7 @@ class MainWindow(QMainWindow):
         self.theme_btn.setToolTip(tr("浅色模式") if dark else tr("深色模式"))
         self.bell.setIcon(icon("bell", T("muted"), 16))
         self.search_icon.setPixmap(icon("search", T("muted"), 15).pixmap(15, 15))
-        self.bell_dot.setStyleSheet(f"background:{T('err')}; border-radius:4px;")
+        self.bell_dot.setStyleSheet(f"background:{T('err')}; border-radius:4px; border:1px solid {T('side')};")
         self._set_db_state(getattr(self, "_db_ok", None))
         for pg in (getattr(self, "dashboard", None), getattr(self, "store_orders", None), getattr(self, "store_pdv", None),
                    getattr(self, "settings_page", None), getattr(self, "order_check", None),
@@ -3550,10 +3572,24 @@ class MainWindow(QMainWindow):
 
     # ---------- 页面：订单处理 ----------
     def _page_order(self):
-        w, lay = self._page(tr("DETERSIVO采购"), tr("几家批发商卖的商品差不多：按最低价给每个商品选供应商，帮有起订量的供应商凑单，把订购数量写回各家报价文件。"))
-        from erp_widgets import StepBar, DropZone
-        self.cmp_steps = StepBar([(tr("放文件"), ""), (tr("检查门店清单"), ""), (tr("自动比价"), ""), (tr("查看结果"), "")])
-        lay.addWidget(self.cmp_steps)
+        # 2026-11-15 第 3 轮（设计稿「DETERSIVO 采购 · 四步流程」）：顶上四步 收集文件 → 审核清单 → 比价分配 → 下单发送，
+        # 下面一步一屏（cmp_stack）；审核清单不再单独开窗口（order_check.window = EmbedHost）
+        from erp_widgets import FlowBar, DropZone
+        w = QWidget()
+        w.setObjectName("Content")
+        outer = QVBoxLayout(w)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        self.cmp_steps = FlowBar([(tr("收集文件"), ""), (tr("审核清单"), ""), (tr("比价分配"), ""), (tr("下单发送"), "")])
+        self.cmp_steps.setToolTip(tr("几家批发商卖的商品差不多：按最低价给每个商品选供应商，帮有起订量的供应商凑单，把订购数量写回各家报价文件。点一步看那一步"))
+        self.cmp_steps.clicked.connect(self._cmp_show)
+        outer.addWidget(self.cmp_steps)
+        self.cmp_stack = QStackedWidget()
+        outer.addWidget(self.cmp_stack, 1)
+        p0 = QWidget()
+        lay = QVBoxLayout(p0)
+        lay.setContentsMargins(28, 22, 28, 28)
+        lay.setSpacing(16)
 
         # ---- 工作文件夹：固定一个，程序自动建好四个子文件夹（见 workspace.py）----
         p1 = Panel(tr("工作文件夹"))
@@ -3629,31 +3665,75 @@ class MainWindow(QMainWindow):
         lay.addWidget(p1)
 
         # ---- 一个按钮：检查门店清单 → 确认 → 自动一家一家比价 ----
-        go = QHBoxLayout()
+        foot0 = QFrame()                      # 设计稿：底部一条，左边写现在的状态，右边一个主按钮
+        foot0.setObjectName("StatusBar")
+        go = QHBoxLayout(foot0)
+        go.setContentsMargins(28, 12, 28, 12)
         go.setSpacing(16)
-        self.btn_start = QPushButton(tr("开始"))
-        self.btn_start.setObjectName("Run")
+        self.btn_start = QPushButton(tr("开始检查") + "  →")
+        self.btn_start.setObjectName("Primary")
+        self.btn_start.setMinimumHeight(40)
         self.btn_start.setCursor(Qt.PointingHandCursor)
         self.btn_start.setToolTip(tr("检查 1 门店清单 里的所有清单；你核对后点「确认，开始比价」，程序自动一家一家比价（F5）"))
         self.btn_start.clicked.connect(self.start_check)
-        go.addWidget(self.btn_start)
         self.ws_status = QLabel("")
         self.ws_status.setWordWrap(True)
         go.addWidget(self.ws_status, 1)
-        lay.addLayout(go)
-        oc_panel = self.order_check.build()          # 检查清单的部件：窗口和参数在里面，页面上只放提示和摘要
+        go.addWidget(self.btn_start)
+        oc_panel = self.order_check.build()          # 检查清单的部件：参数在里面；审核表格在第 2 步
         oc_panel.hide()
         self._oc_panel = oc_panel
         lay.addWidget(self.order_check.msg)
         lay.addWidget(self.order_check.summary_row)
+        lay.addStretch()
+        p0box = QWidget()
+        p0v = QVBoxLayout(p0box)
+        p0v.setContentsMargins(0, 0, 0, 0)
+        p0v.setSpacing(0)
+        p0v.addWidget(self._scroll(p0), 1)
+        p0v.addWidget(foot0)
+        self.cmp_stack.addWidget(p0box)
 
-        # 这一批的门店：比完的点一下看结果
+        # ---- 第 2 步：审核清单（检查完的表格；还没检查时一个空状态）----
+        p1 = QStackedWidget()
+        from erp_widgets import EmptyState
+        es = QWidget()
+        ev = QVBoxLayout(es)
+        ev.addStretch()
+        e1 = QLabel(tr("还没有检查门店清单"))
+        e1.setObjectName("EmptyTitle")
+        e1.setAlignment(Qt.AlignCenter)
+        ev.addWidget(e1)
+        eb = QPushButton(tr("开始检查"))
+        eb.setObjectName("Primary")
+        eb.setCursor(Qt.PointingHandCursor)
+        eb.clicked.connect(self.start_check)
+        ebl = QHBoxLayout()
+        ebl.addStretch()
+        ebl.addWidget(eb)
+        ebl.addStretch()
+        ev.addSpacing(10)
+        ev.addLayout(ebl)
+        ev.addStretch()
+        p1.addWidget(es)
+        oc_host = self.order_check.window
+        oc_host.on_show = lambda: (self.go_page("order"), self._cmp_show(1))
+        p1.addWidget(oc_host)
+        self._review_stack = p1
+        self.cmp_stack.addWidget(p1)
+
+        # ---- 第 3 步：比价分配（进度 + 处理过程）----
+        p2 = QWidget()
+        lay = QVBoxLayout(p2)
+        lay.setContentsMargins(28, 22, 28, 28)
+        lay.setSpacing(16)
+
+        # 这一批的门店：比完的点一下看结果（放在第 4 步）
         self.batch_box = QWidget()
         self.batch_lay = QHBoxLayout(self.batch_box)
         self.batch_lay.setContentsMargins(0, 0, 0, 0)
         self.batch_lay.setSpacing(8)
         self.batch_box.hide()
-        lay.addWidget(self.batch_box)
 
         # 比价的开关和规则：收进「设置」窗口（平时不用改）
         self._build_cmp_options()
@@ -3690,7 +3770,48 @@ class MainWindow(QMainWindow):
         self.feed.setMinimumHeight(160)
         p3.lay.addWidget(self.feed)
         lay.addWidget(p3, 1)
+        self.cmp_stack.addWidget(p2)
+
+        # ---- 第 4 步：下单发送（这一批每家店的结果 + 去发订单）----
+        p4 = QWidget()
+        lay = QVBoxLayout(p4)
+        lay.setContentsMargins(28, 22, 28, 28)
+        lay.setSpacing(16)
+        pd = Panel(tr("这一批的门店"))
+        pd.setToolTip(tr("点一家门店切换过去看它的比价结果"))
+        pd.lay.addWidget(self.batch_box)
+        self.done_note = QLabel(tr("比价完成后，每家店的结果在这里"))
+        self.done_note.setObjectName("Faint")
+        pd.lay.addWidget(self.done_note)
+        lay.addWidget(pd)
+        acts = QHBoxLayout()
+        acts.setSpacing(10)
+        b_res = QPushButton(tr("查看比价结果"))
+        b_res.clicked.connect(lambda: self.go_page("result"))
+        b_rep = QPushButton(tr("门店报告"))
+        b_rep.clicked.connect(lambda: self.open_store_report())
+        b_send = QPushButton(tr("去发送订单") + "  →")
+        b_send.setObjectName("Primary")
+        b_send.setToolTip(tr("程序生成的订单在采购订单跟踪里是「待登记」：双击审核邮件后发给供应商"))
+        b_send.clicked.connect(lambda: self.go_page("tracking"))
+        acts.addWidget(b_res)
+        acts.addWidget(b_rep)
+        acts.addStretch()
+        acts.addWidget(b_send)
+        lay.addLayout(acts)
+        lay.addStretch()
+        self.cmp_stack.addWidget(p4)
+        self._cmp_show(0)
         return w
+
+    def _cmp_show(self, i):
+        """DETERSIVO 四步：切到第 i 步那一屏（顶上蓝线跟着）"""
+        if not hasattr(self, "cmp_stack"):
+            return
+        if i == 1:
+            self._review_stack.setCurrentIndex(1 if self.order_check.rows else 0)
+        self.cmp_stack.setCurrentIndex(i)
+        self.cmp_steps.set_shown(i)
 
     def _fact(self, label, value):
         col = QVBoxLayout()
@@ -4760,11 +4881,12 @@ class MainWindow(QMainWindow):
         if ok and bg:                                   # 点过「后台运行」：问要不要回去看结果
             from erp_widgets import ask_return
             ask_return(self, type("_Bg", (), {"in_background": True})(), msg.split("。")[0],
-                       lambda: self.go_page("result"))
+                       lambda: (self.go_page("order"), self._cmp_show(3)))
             return
         self.show_toast(msg.split("。")[0])
         if ok:
-            self.go_page("result")
+            self.go_page("order")
+            self._cmp_show(3)
 
     def _refresh_batch(self, path):
         """① 下面一行：这一批的门店（点了切换总文件夹），每家显示「待比价 / 已比价」"""
@@ -4774,6 +4896,8 @@ class MainWindow(QMainWindow):
             if it.widget():
                 it.widget().deleteLater()
         batch = (settings.get("wholesale_batch") or {}).get("stores") or {}
+        if hasattr(self, "done_note"):
+            self.done_note.setVisible(not batch)
         if not batch:
             self.batch_box.hide()
             return
@@ -5180,6 +5304,7 @@ class MainWindow(QMainWindow):
         if auto and getattr(self, "_batch_bg", False):    # 一批里前面那家点过「后台运行」：后面几家也在后台比，不再一家弹一次
             self._cmp_task.to_background()
         self.cmp_steps.set_current(2)
+        self._cmp_show(2)
 
         ordine_file = os.path.join(root_path, ORDINE_FOLDER, info["ordine"])
         elim = os.path.join(root_path, ELIMINARE_FOLDER)
@@ -5565,7 +5690,7 @@ class MainWindow(QMainWindow):
         self.refresh_folder()
         from erp_widgets import ask_return
         ask_return(self, dlg, tr("{0} 比价完成", store),
-                   lambda: (self.go_page("result"), self.show_toast(tr("{0} 比价完成", store))))
+                   lambda: (self.go_page("order"), self._cmp_show(3), self.show_toast(tr("{0} 比价完成", store))))
 
     def show_transfers(self, *_):
         s = self.last_summary or {}
@@ -6287,7 +6412,10 @@ def main():
     from erp_widgets import ScreenFit
     app._screen_fit = ScreenFit(app)            # 窗口打开时不会比屏幕大、不会跑出屏幕
     app.installEventFilter(app._screen_fit)
-    f = QFont(UI_FONT, 10)
+    theme.load_fonts()
+    f = QFont()
+    f.setFamilies([theme.LATIN_FONT, UI_FONT])
+    f.setPointSize(10)
     app.setFont(f)
     win = MainWindow()
     win.show()

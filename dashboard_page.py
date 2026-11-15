@@ -90,7 +90,7 @@ class DashboardPage:
         self.hello = QLabel("")
         self.hello.setObjectName("PageSub")
         self.hello.setTextFormat(Qt.RichText)
-        col.addWidget(self.date_lbl)
+        self.date_lbl.hide()                      # 日期在顶栏（设计稿）
         col.addWidget(self.greet)
         col.addWidget(self.hello)
         head.addLayout(col, 1)
@@ -164,6 +164,11 @@ class DashboardPage:
         self.k_attn_l = self._label(tr("需要处理"), v4)
         self.k_attn = self._value(v4)
         self.k_attn_sub = self._sub(v4)
+        self.attn_go = QPushButton(tr("去处理") + " →")
+        self.attn_go.setObjectName("Link")
+        self.attn_go.setCursor(Qt.PointingHandCursor)
+        self.attn_go.clicked.connect(lambda: self.win.go_page("tracking"))
+        v4.insertWidget(v4.count() - 1, self.attn_go, 0, Qt.AlignLeft)
         for i, c in enumerate((c1, c2, c3, self.c_attn)):
             g.addWidget(c, 0, i)
             g.setColumnStretch(i, 1)
@@ -185,7 +190,7 @@ class DashboardPage:
         self.sup_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.sup_table.setFocusPolicy(Qt.NoFocus)
         self.sup_table.verticalHeader().setDefaultSectionSize(42)
-        self.sup_table.setItemDelegateForColumn(2, DotsDelegate(self.sup_table))
+        self.sup_table.setItemDelegateForColumn(2, _SquaresDelegate(self.sup_table))
         self.sup_table.setItemDelegateForColumn(3, _ChipDelegate(self.sup_table))
         hh = self.sup_table.horizontalHeader()
         hh.setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
@@ -376,7 +381,11 @@ class DashboardPage:
         tones = [x[0] for x in items]
         self.k_attn.setText(str(self._n_attn) if items else "0")
         self.k_attn_sub.setText(" · ".join(x[1] for x in items[:3]) if items else tr("一切正常"))
-        self._attn_tone = "err" if "err" in tones else "warn" if items else "ok"
+        self._attn_tone = "warn" if items else "ok"           # 设计稿：有事就是琥珀色卡片
+        self.attn_go.setVisible(bool(items))
+        if items:
+            self.attn_go.clicked.disconnect()
+            self.attn_go.clicked.connect(lambda _=False, pg=items[0][4]: self.win.go_page(pg))
         self._style_attn_card()
         m = self._month
         if m is None:
@@ -818,6 +827,29 @@ class _SplitBar(QWidget):
                 p.setBrush(QColor(T("cyan")))
                 p.drawRoundedRect(QRectF(wa + (2 if self.a else 0), 0, max(6, w - wa - (2 if self.a else 0)), 6), 3, 3)
         p.end()
+
+
+class _SquaresDelegate(QStyledItemDelegate):
+    """五家门店：一排 14 像素的圆角小方块（颜色和起订量检查一样）"""
+
+    def paint(self, p, opt, idx):
+        super().paint(p, opt, idx)
+        cols = idx.data(DOTS_ROLE) or []
+        p.save()
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setPen(Qt.NoPen)
+        x = opt.rect.x() + 10
+        y = opt.rect.center().y() - 7
+        for c in cols:
+            p.setBrush(QColor(c))
+            p.drawRoundedRect(QRectF(x, y, 14, 14), 4, 4)
+            x += 19
+        p.restore()
+
+    def sizeHint(self, opt, idx):
+        s = super().sizeHint(opt, idx)
+        s.setWidth(max(s.width(), 10 + 19 * 5 + 10))
+        return s
 
 
 class _ChipDelegate(QStyledItemDelegate):

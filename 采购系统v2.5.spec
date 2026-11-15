@@ -6,7 +6,7 @@ a = Analysis(
     ['main.py'],
     pathex=[],
     binaries=[],
-    datas=[],
+    datas=[('fonts', 'fonts')],
     hiddenimports=[
         'openpyxl', 'openpyxl.workbook', 'openpyxl.worksheet',
         'win32com', 'win32com.client',

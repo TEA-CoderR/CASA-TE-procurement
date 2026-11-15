@@ -13,7 +13,26 @@ from PySide6.QtSvg import QSvgRenderer
 
 APP_VERSION = "v3.3.22"
 UI_FONT = "Microsoft YaHei UI"
-NUM_FONT = "Bahnschrift"
+FONT_DIR = os.path.join(getattr(sys, "_MEIPASS", None) or os.path.dirname(os.path.abspath(__file__)), "fonts")
+# 2026-11-15 第 3 轮（用户：要和设计稿一模一样）：程序自带设计稿的字体——英文 / 数字 Inter，数字列 JetBrains Mono（等宽，表格对得齐）；
+# 中文没有自带，照旧微软雅黑（Inter 里没有的字 Qt 自动用后面的字体）
+LATIN_FONT = "Inter" if os.path.exists(os.path.join(FONT_DIR, "Inter-Regular.ttf")) else UI_FONT
+NUM_FONT = "JetBrains Mono" if os.path.exists(os.path.join(FONT_DIR, "JetBrainsMono-Medium.ttf")) else "Bahnschrift"
+_fonts_loaded = []
+
+
+def load_fonts():
+    """把 fonts 文件夹里的字体登记给 Qt（要在 QApplication 建好以后；重复调用没事）"""
+    if _fonts_loaded:
+        return
+    _fonts_loaded.append(True)
+    try:
+        from PySide6.QtGui import QFontDatabase
+        for f in sorted(os.listdir(FONT_DIR)):
+            if f.lower().endswith((".ttf", ".otf")):
+                QFontDatabase.addApplicationFont(os.path.join(FONT_DIR, f))
+    except Exception:
+        pass
 
 THEMES = {
     "light": {
@@ -321,7 +340,7 @@ def build_qss():
     dark = _state["theme"] == "dark"
     card_bottom = t["border"] if not dark else t["line"]
     return f"""
-    * {{ font-family: "{UI_FONT}", "Microsoft YaHei", "Noto Sans CJK SC", "Noto Sans CJK TC", sans-serif; font-size: 13px; color: {t['text']}; }}
+    * {{ font-family: "{LATIN_FONT}", "{UI_FONT}", "Microsoft YaHei", "Noto Sans CJK SC", "Noto Sans CJK TC", sans-serif; font-size: 13px; color: {t['text']}; }}
     QMainWindow, #Content {{ background: {t['canvas']}; }}
     QDialog {{ background: {t['surface']}; }}
     QMenu {{ background: {t['surface']}; border: 1px solid {t['border']}; border-radius: 10px; padding: 6px; }}
@@ -331,6 +350,10 @@ def build_qss():
     QMenu::separator {{ height: 1px; background: {t['line']}; margin: 5px 8px; }}
 
     /* ---------- 左边图标栏 ---------- */
+    QToolButton#RailAvatar {{ background: {t['side_active'] if dark else t['accent']}; color: {'#C9D4EA' if dark else '#FFFFFF'};
+                              border: none; border-radius: 18px; font-weight: 700; font-size: 12px; }}
+    QToolButton#RailAvatar:hover {{ background: {t['accent']}; color: {t['on_accent']}; }}
+    QToolButton#RailAvatar::menu-indicator {{ image: none; width: 0; }}
     #Rail {{ background: {t['side']}; border-right: 1px solid {t['side_line']}; }}
     #RailLogo {{ background: {t['accent']}; color: {t['on_accent'] if dark else '#FFFFFF'}; border-radius: 12px;
                  font-family: "{NUM_FONT}"; font-size: 15px; font-weight: 700; }}
@@ -483,7 +506,18 @@ def build_qss():
     #Dialog {{ background: {t['surface']}; }}
     #DialogFoot {{ background: {t['surface2']}; border-top: 1px solid {t['line']}; }}
     #WinTitle {{ font-size: 17px; font-weight: 700; }}
-    #StatusBar {{ background: {t['surface']}; border-top: 1px solid {t['line']}; }}
+    #StatusBar {{ background: {t['side'] if dark else t['surface']}; border-top: 1px solid {t['line']}; }}
+    #StoreSide {{ background: {t['side'] if dark else t['surface2']}; border: none; border-right: 1px solid {t['line']}; }}
+    #SideEyebrow {{ color: {t['muted']}; font-size: 11px; font-weight: 700; letter-spacing: 1.5px; margin: 0 4px 4px 4px; }}
+    QPushButton#StoreCard {{ background: {t['surface']}; border: 1px solid {t['line']}; border-radius: 12px; padding: 0; text-align: left; }}
+    QPushButton#StoreCard:hover {{ border-color: {t['accent_ring']}; background: {t['surface']}; }}
+    QPushButton#StoreCard:checked {{ background: {t['accent_soft'] if not dark else '#101B33'}; border: 1px solid {t['accent_ring']}; }}
+    #StoreName {{ font-weight: 600; background: transparent; }}
+    #StoreSub {{ color: {t['muted']}; font-size: 11px; font-family: "{NUM_FONT}"; background: transparent; }}
+    QPushButton#ViewChip {{ background: transparent; border: 1px solid {t['border']}; border-radius: 9px; padding: 6px 12px;
+                            font-size: 12px; color: {t['muted']}; font-weight: 500; }}
+    QPushButton#ViewChip:hover {{ border-color: {t['accent_ring']}; color: {t['text']}; background: transparent; }}
+    QPushButton#ViewChip:checked {{ border-color: {t['accent']}; background: {t['accent_soft']}; color: {t['accent'] if not dark else '#CFE0FF'}; font-weight: 600; }}
     #StatusText {{ color: {t['muted']}; font-size: 12px; }}
     #Drawer {{ background: {t['surface2']}; border-left: 1px solid {t['line']}; }}
     #MiniCard {{ background: {t['surface']}; border: 1px solid {t['line']}; border-radius: 10px; }}

@@ -158,6 +158,114 @@ def promo_text(p):
     return s
 
 
+# 设计稿的一排筛选小按钮（其余几种在「更多 ▾」里）
+VIEW_CHIPS = (("review", "要审核"), ("all", "全部"), ("changed", "有变化"), ("none", "不订"), ("less", "少订"), ("promo", "促销"))
+
+
+class _StoreCard(QPushButton):
+    """左边门店列表的一张卡：店名 + 右边小标签（已审核 / n 个待审）+ 细进度条 + 「已看 n / m」"""
+
+    def __init__(self, fn):
+        super().__init__()
+        self.setObjectName("StoreCard")
+        self.setCheckable(True)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setMinimumHeight(74)
+        self.clicked.connect(fn)
+        v = QVBoxLayout(self)
+        v.setContentsMargins(12, 10, 12, 10)
+        v.setSpacing(7)
+        top = QHBoxLayout()
+        top.setSpacing(6)
+        self.name = QLabel("")
+        self.name.setObjectName("StoreName")
+        self.badge = QLabel("")
+        self.badge.setFixedHeight(20)
+        top.addWidget(self.name, 1)
+        top.addWidget(self.badge)
+        v.addLayout(top)
+        self.bar = _ThinBar()
+        v.addWidget(self.bar)
+        self.sub = QLabel("")
+        self.sub.setObjectName("StoreSub")
+        v.addWidget(self.sub)
+        for w in (self.name, self.badge, self.sub, self.bar):
+            w.setAttribute(Qt.WA_TransparentForMouseEvents)
+
+    def set(self, name, total, need, seen, edited, on):
+        from theme import T
+        self.name.setText(name)
+        done = need == 0 or seen >= need
+        self.badge.setText(tr("已审核") if done else tr("{0} 个待审", need - seen))
+        tone = "ok" if done else "warn"
+        self.badge.setStyleSheet(f"background:{T(tone + '_soft')}; color:{T(tone)}; border-radius:10px; padding:0 8px; font-size:11px;")
+        self.bar.set(1.0 if need == 0 else seen / need, T("ok") if done else T("accent"))
+        self.sub.setText(tr("共 {0} 个 · 不用审核", total) if need == 0 else tr("已看 {0} / {1} · 改了 {2}", seen, need, edited))
+        self.setChecked(on)
+
+
+class _ThinBar(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.p, self.c = 0.0, "#4F8CFF"
+        self.setFixedHeight(4)
+
+    def set(self, p, c):
+        self.p, self.c = max(0.0, min(1.0, p)), c
+        self.update()
+
+    def paintEvent(self, _e):
+        from PySide6.QtGui import QPainter, QColor
+        from theme import T
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(T("track")))
+        p.drawRoundedRect(self.rect(), 2, 2)
+        if self.p:
+            p.setBrush(QColor(self.c))
+            r = self.rect()
+            r.setWidth(int(r.width() * self.p))
+            p.drawRoundedRect(r, 2, 2)
+        p.end()
+
+
+class _StoreSide(QFrame):
+    """审核清单左边一列：全部门店 + 这次检查的每家店"""
+
+    def __init__(self, on_pick):
+        super().__init__()
+        self.setObjectName("StoreSide")
+        self.setFixedWidth(214)
+        self.on_pick = on_pick
+        self.v = QVBoxLayout(self)
+        self.v.setContentsMargins(14, 16, 14, 16)
+        self.v.setSpacing(8)
+        t = QLabel(tr("门店清单").upper())
+        t.setObjectName("SideEyebrow")
+        self.v.addWidget(t)
+        self.cards = []
+        self.v.addStretch()
+
+    def set_data(self, items):
+        while len(self.cards) < len(items):
+            c = _StoreCard(lambda _=False, k=len(self.cards): self._clicked(k))
+            self.v.insertWidget(1 + len(self.cards), c)
+            self.cards.append(c)
+        self.items = items
+        for k, c in enumerate(self.cards):
+            if k < len(items):
+                sid, name, t, need, seen, ed, on = items[k]
+                c.set(name, t, need, seen, ed, on)
+                c.show()
+            else:
+                c.hide()
+
+    def _clicked(self, k):
+        if k < len(getattr(self, "items", [])):
+            self.on_pick(self.items[k][0])
+
+
 class _Sig(QObject):
     done = Signal(object)
     months = Signal(object)          # 近两年每月销量读好了（后台线程 → 界面）
@@ -323,8 +431,9 @@ class OrderCheck:
         p.lay.addWidget(self.msg)
 
         # 检查结果在独立窗口里（表格大，不挤在页面上）
-        from erp_widgets import ToolWindow
-        self.window = ToolWindow(self.win, tr("检查门店订货清单"), (1360, 820))
+        # 2026-11-15 第 3 轮（设计稿）：检查结果不再单独开窗口，放在 DETERSIVO 第 2 步「审核清单」里（EmbedHost，main 接上 on_show）
+        from erp_widgets import EmbedHost
+        self.window = EmbedHost(self.win)
         self.box = QWidget()
         self.box.setObjectName("Dialog")
         bl = QVBoxLayout(self.box)
@@ -364,7 +473,18 @@ class OrderCheck:
             self.view.addItem(tr(text), key)
         self.view.setToolTip(tr("有变化 = 判断是多订、少订、不订或建议调货"))
         self.view.currentIndexChanged.connect(self._filter)
+        self.view.currentIndexChanged.connect(lambda _i: self._sync_view_chips())
+        self.view.hide()                       # 设计稿：一排筛选小按钮（下拉框留着，程序里照旧按它筛）
         tb.addWidget(self.view)
+        self.view_chips = {}
+        for key, text in VIEW_CHIPS:
+            vb = QPushButton(tr(text))
+            vb.setObjectName("ViewChip")
+            vb.setCheckable(True)
+            vb.setCursor(Qt.PointingHandCursor)
+            vb.clicked.connect(lambda _=False, k=key: self.view.setCurrentIndex(max(0, self.view.findData(k))))
+            self.view_chips[key] = vb
+            tb.addWidget(vb)
         # 「看哪些」右边：一个「⚠ 待核对」按钮（有才显示），点开是一个窗口，按问题分标签页（用户：按钮别排一长串、名字要好懂）
         from PySide6.QtWidgets import QTabWidget
         self.prob = {}
@@ -432,10 +552,9 @@ class OrderCheck:
             self.prob_tabs.setTabToolTip(idx, tip)
             self.prob[kind] = (idx, page, t)
         tb.addStretch()
-        b_s = QPushButton(tr("恢复建议值"))
+        b_s = QPushButton(tr("恢复系统建议"))
         b_s.setToolTip(tr("全部商品的确定件数恢复成系统建议的（人工改的调货也恢复）"))
         b_s.clicked.connect(lambda: self._set_all("sugg"))
-        tb.addWidget(b_s)
         more = QPushButton(tr("更多") + " ▾")
         more.setToolTip(tr("全部用清单数量、显示哪些列、导出 Excel"))
         more.clicked.connect(lambda: self._more_menu(more))
@@ -459,6 +578,9 @@ class OrderCheck:
         hh.setStretchLastSection(False)
         import product_images as PI          # 「商品」那一格：左边商品图（条码在藏起来的条码列），右边名称
         self.table.setItemDelegateForColumn(_col(3), PI.ThumbDelegate(self.table, _col(2), None, self.settings))
+        from erp_widgets import PillDelegate         # 判断：彩色小胶囊（设计稿）
+        self._pill = PillDelegate(self.table)
+        self.table.setItemDelegateForColumn(_col(0), self._pill)
         for c, wd in enumerate(_perm((96, 80, 130, PI.thumb_size(self.settings) + 300, 60, 52, 52, 52, 52, 76, 52, 56, 70, 70, 76,
                                       70, 50, 50, 60, 70, 76, 120, 80, 76, 110, 380, 110, 120, 60, 76, 180, 60))):
             self.table.setColumnWidth(c, wd)
@@ -530,12 +652,20 @@ class OrderCheck:
         self._mem_timer.setInterval(2000)
         self._mem_timer.timeout.connect(self._save_memory)
         self.ctl.rendered.connect(lambda n, tot: self._status(n, tot))
+        self.ctl.rendered.connect(lambda *_a: self._side_timer.start() if hasattr(self, "_side_timer") else None)
         # 表格 + 右边详情栏（和门店配货的订货明细一样：选中一行看为什么）
         mid = QHBoxLayout()
         mid.setContentsMargins(0, 0, 0, 0)
         mid.setSpacing(0)
+        self.side = _StoreSide(self._pick_store)     # 设计稿：左边一列门店（要审核几个、看过几个）
+        mid.addWidget(self.side)
         mid.addWidget(self.table, 1)
         mid.addWidget(self._build_drawer())
+        self._seen = set()
+        self._side_timer = QTimer()
+        self._side_timer.setSingleShot(True)
+        self._side_timer.setInterval(200)
+        self._side_timer.timeout.connect(self._refresh_side)
         bl.addLayout(mid, 1)
         self._cur_i = None
         self._by_key = {}
@@ -544,12 +674,13 @@ class OrderCheck:
         sb = QFrame()
         sb.setObjectName("StatusBar")
         sh = QHBoxLayout(sb)
-        sh.setContentsMargins(16, 7, 16, 7)
+        sh.setContentsMargins(28, 12, 28, 12)
         sh.setSpacing(12)
         self.count_lbl = QLabel("")
         self.count_lbl.setObjectName("StatusText")
         sh.addWidget(self.count_lbl, 1)
-        self.btn_confirm = QPushButton(tr("确认，开始比价"))
+        sh.addWidget(b_s)
+        self.btn_confirm = QPushButton(tr("审核完成，去比价") + "  →")
         self.btn_confirm.setObjectName("Primary")
         self.btn_confirm.setToolTip(tr("按「确定件数」给每家门店生成主订单，然后自动一家一家比价"))
         self.btn_confirm.clicked.connect(self.confirm)
@@ -800,6 +931,7 @@ class OrderCheck:
         self.ctl.sort_col, self.ctl.sort_desc = _col(0), False     # 要看的排前面，照清单订的在最后
         self._fill_prob()
         self._build_chips(meta["stores"])
+        self._seen = set()
         self._fill_suppliers()
         self._apply_forced()
         self.ctl.filters = {}
@@ -1342,6 +1474,9 @@ class OrderCheck:
             return
         dr = self.drawer
         x = self.rows[i]
+        if i not in self._seen:                         # 门店列表的「已看 n / m」
+            self._seen.add(i)
+            self._side_timer.start()
         code = str(x.get("code"))
         sid = x.get("store")
         pack = x.get("pack") or 0
@@ -1456,6 +1591,7 @@ class OrderCheck:
             b.setMinimumWidth(QFontMetrics(bf).horizontalAdvance(text) + 28)
             self.store_group.addButton(b)
             self.chip_lay.addWidget(b)
+            b.hide()                            # 门店在左边一列选（_StoreSide），按钮留着记住选的是哪家
 
     def _fill_suppliers(self):
         """供应商下拉框：这次清单里商品的供应商（数据库登记的），后面带商品数"""
@@ -1715,6 +1851,56 @@ class OrderCheck:
         box.exec()
         return box.clickedButton() is same
 
+    def _sync_view_chips(self):
+        cur = self.view.currentData()
+        for key, b in getattr(self, "view_chips", {}).items():
+            b.setChecked(key == cur)
+
+    def _pick_store(self, sid):
+        for b in self.store_group.buttons():
+            v = b.property("sid")
+            if (sid is None and int(v) < 0) or (sid is not None and int(v) == int(sid)):
+                b.setChecked(True)
+                break
+        self._store_changed()
+        self._refresh_side()
+
+    def _side_data(self):
+        """左边门店列表：每家店 要审核几个（判断不是照清单订的 + 新加 / 清单改过的）、看过几个、改了几个"""
+        stores = list((self.meta or {}).get("stores") or [])
+        per = {int(k): [0, 0, 0, 0] for k in stores}        # 共几个 · 要审核 · 看过 · 改了
+        for i, x in enumerate(self.rows):
+            sid = x.get("store")
+            try:
+                d = per[int(sid)]
+            except (KeyError, TypeError, ValueError):
+                continue
+            d[0] += 1
+            need = self._verdict(x)[0] in ("transfer", "more", "less", "none") or x.get("review") in ("new", "changed")
+            if need:
+                d[1] += 1
+                if i in self._seen or _edited(x):
+                    d[2] += 1
+            if _edited(x):
+                d[3] += 1
+        sel = self._store_sel()
+        out = [(None, tr("全部门店"), sum(v[0] for v in per.values()), sum(v[1] for v in per.values()),
+                sum(v[2] for v in per.values()), sum(v[3] for v in per.values()), sel is None)]
+        for sid in sorted(per):
+            t, need, seen, ed = per[sid]
+            out.append((sid, store_label(sid), t, need, seen, ed, sel == sid))
+        return out
+
+    def _refresh_side(self):
+        if hasattr(self, "side") and self.rows:
+            data = self._side_data()
+            self.side.set_data(data)
+            st = getattr(self.win, "cmp_steps", None)
+            if st is not None and st.states[1] != "done":
+                need = data[0][3]
+                seen = data[0][4]
+                st.set_state(1, st.states[1], tr("{0} 家门店 · 已看 {1} / {2}", len(data) - 1, seen, need))
+
     def _store_sel(self):
         b = self.store_group.checkedButton() if hasattr(self, "store_group") else None
         v = b.property("sid") if b is not None else -1
@@ -1733,6 +1919,11 @@ class OrderCheck:
 
     def _more_menu(self, btn):
         m = QMenu(self.window)
+        views = {}
+        for key, text in VIEWS:
+            if key not in dict(VIEW_CHIPS):
+                views[m.addAction(tr(text))] = key
+        m.addSeparator()
         a_file = m.addAction(tr("全部用清单数量"))
         a_fresh = m.addAction(tr("不沿用上次的审核…"))
         a_fresh.setEnabled(any(x.get("review") for x in self.rows))
@@ -1742,7 +1933,9 @@ class OrderCheck:
         a_exp = m.addAction(tr("导出 Excel"))
         pos = btn.mapToGlobal(btn.rect().bottomLeft())
         got = m.exec(pos)
-        if got == a_file:
+        if got in views:
+            self.view.setCurrentIndex(max(0, self.view.findData(views[got])))
+        elif got == a_file:
             self._set_all("file")
         elif got == a_fresh:
             self._forget_review()
@@ -1764,6 +1957,10 @@ class OrderCheck:
             key = self.view.itemData(k)
             text = tr(dict(VIEWS)[key])
             self.view.setItemText(k, f"{text}（{n.get(key, 0)}）" if key in n else text)
+        for key, text in VIEW_CHIPS:
+            if key in self.view_chips:
+                self.view_chips[key].setText(f"{tr(text)}  {n.get(key, 0)}" if key in n else tr(text))
+        self._sync_view_chips()
 
     def _status(self, shown, total):
         """状态栏一行（和订货明细一样）：显示几行 · 改了几处 · 当前筛选合计几箱、多少钱"""
@@ -1832,7 +2029,7 @@ class OrderCheck:
             else:
                 it.setFlags(it.flags() & ~Qt.ItemIsEditable)
         tip = short_decision(x["decision"]) if x["in_db"] else tr("数据库里找不到这个商品，箱规未知；确定件数默认 = 清单数量，请核对")
-        t.item(k, 0).setToolTip(tip)
+        t.item(k, _col(0)).setToolTip(tip)
         t.item(k, 0).setData(Qt.UserRole, i)
         t.item(k, _col(3)).setToolTip(f"{x['name']}\nEAN {x['ean'] or '—'}")
         tri = self._transit_of(x)
@@ -1883,7 +2080,7 @@ class OrderCheck:
         reason = "\n".join(self._reason_lines(x) + ["⚠ " + m[2] for m in self._marks(x)])
         t.item(k, _col(REASON_COL)).setToolTip(reason)
         t.item(k, _col(REASON_COL)).setForeground(QColor(T("muted")))
-        t.item(k, 0).setToolTip(reason)          # 鼠标停在「判断」上也能看为什么
+        t.item(k, _col(0)).setToolTip(reason)    # 鼠标停在「判断」上也能看为什么
         v = _cover(x, x["file_pcs"]) if (x.get("file_pcs") or 0) > 0 else None
         if v is not None and v > self._limit():
             t.item(k, LIST_AFTER_COL).setForeground(QColor(T("warn")))
@@ -1934,7 +2131,7 @@ class OrderCheck:
         # 判断：跟着确定件数变
         kind, vt = self._verdict(x)
         marks = self._marks(x)
-        vc = self.table.item(k, 0)
+        vc = self.table.item(k, _col(0))         # 「判断」列（以前写成第 0 列 = 门店列，门店名被判断盖掉）
         vc.setText(" · ".join([vt] + [m[1] for m in marks]))
         vc.setForeground(QColor(T("warn") if (marks and kind in ("same", "more")) else T(VERDICT_TOKEN.get(kind, "text"))))
         f = vc.font()
