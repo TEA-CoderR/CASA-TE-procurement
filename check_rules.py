@@ -102,7 +102,10 @@ def _report_rows(rows, store):
 
 
 def report_name(store, when=None):
-    """发给门店的报告文件名（意大利文）：Articoli_da_verificare_FOIANO_0111.xlsx"""
+    """发给门店的报告文件名（意大利文）：Articoli_da_verificare_FOIANO_0111.xlsx；store = None：五家店合成一个
+    Articoli_da_verificare_0111.xlsx"""
+    if store is None:
+        return f"Articoli_da_verificare_{(when or datetime.now()):%d%m}.xlsx"
     return f"Articoli_da_verificare_{R.STORES.get(store, store)}_{(when or datetime.now()):%d%m}.xlsx"
 
 
@@ -168,7 +171,7 @@ def direct_summary(xs):
     return out
 
 
-def write_problem_report(rows, path, store=None, url=None, when=None, sources=None):
+def write_problem_report(rows, path, store=None, url=None, when=None, sources=None, stores=None):
     """
     发给门店的意大利文报告（2026-11-01 用户：格式漂亮、颜色、不要无关的数据、IMAGE 函数读我们网站的图片、文件要小）。
     一家店一个工作表（store = None：每家有待核对商品的店各一页），每页：
@@ -179,6 +182,8 @@ def write_problem_report(rows, path, store=None, url=None, when=None, sources=No
       ② Articoli non in Griglia – si consiglia di non ordinarli, salvo urgenze; altrimenti ordinarli dai fornitori diretti：
          … Colli ordinati、Disp. grossisti、Disp. fornitore diretto、Consiglio、NOTA（空着，人工写）
          右边一张小表（2026-11-11）：直厂能订的商品按供应商汇总 SKU / 箱数 / 金额 / 起订量 / 够不够（direct_summary）
+    stores = [门店…]：这几家店每家一页（没有要写的商品也有一页，写「Nessun articolo da verificare」）——
+      确认开始比价时自动生成的汇总文件用（2026-11-15 用户：不要一家店一个文件，一个文件汇总五个表）
     照片 = =IMAGE("https://img.casaete.top/prodotti/<EAN>/01.webp","",3,48,48)（Excel 365 打开时自己读，文件里不放图）。
     每段是一个 Excel 表格（自带筛选按钮，一页里两段都能筛）。这家店没有要写的商品返回 None
     """
@@ -190,7 +195,8 @@ def write_problem_report(rows, path, store=None, url=None, when=None, sources=No
     import product_images as PI
     url = url or PI.DEFAULT_URL
     when = when or datetime.now()
-    stores = [store] if store is not None else \
+    every = stores is not None
+    stores = list(stores) if every else [store] if store is not None else \
         sorted({x.get("store") for x in rows if x.get("repl") or _tab_of(_problem(x)) in ("nogrid", "noquote")},
                key=lambda v: v or 0)
     wb = Workbook()
@@ -253,6 +259,14 @@ def write_problem_report(rows, path, store=None, url=None, when=None, sources=No
     for sid in stores:
         parts = _report_rows(rows, sid)
         if not any(parts):
+            if every:                                # 汇总文件：这家店也有一页，写明没有要核对的
+                ws = wb.create_sheet(str(R.STORES.get(sid, sid))[:31])
+                ws.sheet_view.showGridLines = False
+                for i, w in enumerate(widths[:ncol], 1):
+                    ws.column_dimensions[get_column_letter(i)].width = w
+                band(ws, 1, 1, ncol, f"Articoli da verificare – {R.STORES.get(sid, sid)}", 16, "FFFFFF", "1F3A5F", 32)
+                band(ws, 2, 1, ncol, f"CASA&TE · {when:%d/%m/%Y} · 0 articoli", 10, MUTED, h=20, bold=False)
+                band(ws, 4, 1, ncol, "Nessun articolo da verificare questa settimana.", 11, "166534", "DCFCE7", 26)
             continue
         summ = direct_summary(parts[1])
         last_c = S0 + 5 if summ else ncol

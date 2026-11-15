@@ -3509,4 +3509,34 @@ TRANSLATIONS = {
     '还没填 {0} API 密钥。点上面的 ⚙ 填一次就行（只存在这台电脑上）。': (
         'No {0} API key yet. Click ⚙ above to enter it once (stored only on this computer).',
         'Manca la chiave API {0}. Clicca ⚙ qui sopra per inserirla una volta (resta solo su questo computer).'),
+    # 检查清单：审核记录、门店报告汇总（2026-11-15）
+    '只看要审核的': ('Only items to review', 'Solo articoli da verificare'),
+    '意大利文报告，可以直接发给门店（带商品照片，Excel 365 打开时从网上读）。确认生成主订单时，这一天的比价结果文件夹里会自动生成一个汇总文件（每家店一页）': (
+        'Italian report you can send to the stores (with product photos, loaded from the web in Excel 365). When the main orders are confirmed, one summary file (one sheet per store) is created automatically in that day\'s results folder',
+        'Report in italiano da mandare ai negozi (con le foto, caricate da internet in Excel 365). Quando si confermano gli ordini principali, nella cartella dei risultati del giorno viene creato in automatico un unico file riepilogativo (un foglio per negozio)'),
+    '已改回系统建议，审核记录删掉了': ('Back to system suggestions, review record deleted', 'Tornati ai suggerimenti del sistema, registro di verifica eliminato'),
+    '不沿用上次的审核…': ('Do not reuse the last review…', "Non riusare l'ultima verifica…"),
+    '不沿用上次的审核': ('Do not reuse the last review', "Non riusare l'ultima verifica"),
+    '沿用上次的审核 {0} 个，要审核 {1} 个（新加 / 清单改过，已经筛出来）': (
+        'Reused the last review for {0} items; {1} to review (new / list changed, already filtered)',
+        'Riusata la verifica precedente per {0} articoli; {1} da verificare (nuovi / lista cambiata, già filtrati)'),
+    '{0} 个商品现在用的是上次审核定的箱数。\n改回系统建议、删掉这几家店的审核记录，全部重新审核吗？': (
+        '{0} items now use the boxes decided in the last review.\nGo back to the system suggestions, delete these stores\' review record and review everything again?',
+        "{0} articoli usano i colli decisi nell'ultima verifica.\nTornare ai suggerimenti del sistema, eliminare il registro di verifica di questi negozi e rifare tutta la verifica?"),
+    '[审核记录] {0}：沿用 {1} 个，新加 {2} 个，清单改过 {3} 个（{4} 的审核{5}）': (
+        '[Review record] {0}: reused {1}, new {2}, list changed {3} (review of {4}{5})',
+        '[Registro verifica] {0}: riusati {1}, nuovi {2}, lista cambiata {3} (verifica del {4}{5})'),
+    '，从上次确认的主订单补的': (', rebuilt from the last confirmed main order', ", ricostruita dall'ultimo ordine principale confermato"),
+    '新加': ('New', 'Nuovo'),
+    '上次审核时清单里没有这个商品（或者以前的程序没读到），要审核': (
+        'Not in the list at the last review (or the old version did not read it): to review',
+        "Non era nella lista all'ultima verifica (o la versione precedente non l'aveva letto): da verificare"),
+    '清单改过': ('List changed', 'Lista cambiata'),
+    '上次审核时清单是 {0} 箱，现在是 {1} 箱：按系统建议重新算了，要审核': (
+        'At the last review the list had {0} boxes, now {1}: recalculated from the system suggestion, to review',
+        "All'ultima verifica la lista aveva {0} colli, ora {1}: ricalcolato dal suggerimento del sistema, da verificare"),
+    '⚠ 审核记录没存上：{0}': ('⚠ Review record not saved: {0}', '⚠ Registro di verifica non salvato: {0}'),
+    '✔ 门店报告（五家店一个文件）：{0}': ('✔ Store report (all stores in one file): {0}', '✔ Report negozi (tutti in un file): {0}'),
+    '门店报告没写上：{0}': ('Store report not written: {0}', 'Report negozi non scritto: {0}'),
+    '⚠ 上次的审核记录没用上：{0}': ('⚠ Last review record not used: {0}', "⚠ Registro dell'ultima verifica non usato: {0}"),
 }

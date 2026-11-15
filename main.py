@@ -5115,7 +5115,9 @@ class MainWindow(QMainWindow):
         import glob
         d = self._shown_state().get("distribuire_path")
         folder = os.path.dirname(os.path.abspath(d)) if d else self.folder_edit.text().strip()
-        files = sorted(glob.glob(os.path.join(folder, "Articoli_da_verificare_*.xlsx")) if folder else [],
+        # 2026-11-15 起五家店合成一个文件（每店一页），放在这一天的文件夹（门店文件夹的上一层）
+        files = sorted((glob.glob(os.path.join(folder, "Articoli_da_verificare_*.xlsx")) +
+                        glob.glob(os.path.join(os.path.dirname(folder), "Articoli_da_verificare_*.xlsx"))) if folder else [],
                        key=os.path.getmtime)
         if files:
             open_path(files[-1])
