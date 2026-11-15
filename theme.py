@@ -144,10 +144,12 @@ def build_qss():
     #EmptyTitle {{ font-size: 16px; font-weight: 600; }}
 
     /* ---------- 输入 ---------- */
-    QLineEdit, QDoubleSpinBox, QSpinBox, QComboBox {{
+    QLineEdit, QDoubleSpinBox, QSpinBox, QComboBox, QDateEdit {{
         background: {t['surface2']}; border: 1px solid {t['line']}; border-radius: 7px;
         padding: 6px 10px; selection-background-color: {t['accent']}; selection-color: #FFFFFF; }}
-    QLineEdit:focus, QDoubleSpinBox:focus, QSpinBox:focus, QComboBox:focus {{ border: 1px solid {t['accent']}; }}
+    QLineEdit:focus, QDoubleSpinBox:focus, QSpinBox:focus, QComboBox:focus, QDateEdit:focus {{ border: 1px solid {t['accent']}; }}
+    QDateEdit::drop-down {{ border: none; width: 26px; subcontrol-origin: padding; subcontrol-position: center right; }}
+    QDateEdit::down-arrow {{ image: url("{_arrow_svg(t['muted'])}"); width: 10px; height: 10px; margin-right: 8px; }}
     QLineEdit:disabled, QSpinBox:disabled, QComboBox:disabled {{ color: {t['faint']}; }}
     QDoubleSpinBox::up-button, QDoubleSpinBox::down-button {{ width: 0; border: none; }}
     QSpinBox::up-button, QSpinBox::down-button {{ width: 0; border: none; }}
@@ -261,6 +263,7 @@ ICONS = {
     "refresh": '<path d="M20 11a8 8 0 0 0-14-4.5L4 9M4 4v5h5M4 13a8 8 0 0 0 14 4.5l2-2.5M20 20v-5h-5"/>',
     "play": '<path d="M7 5l12 7-12 7z"/>',
     "box": '<path d="M3 8l9-5 9 5v8l-9 5-9-5z"/><path d="M3 8l9 5 9-5M12 13v8"/>',
+    "volantino": '<path d="M3 10v4h3l7 4V6L6 10z"/><path d="M16.5 9a4 4 0 0 1 0 6M19 6.5a7.5 7.5 0 0 1 0 11"/>',
 }
 
 

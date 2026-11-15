@@ -2793,6 +2793,7 @@ class MainWindow(QMainWindow):
         (tr("概览"), [("home", tr("工作台"))]),
         (tr("采购管理"), [("store_orders", tr("LUCAS定制采购")), ("order", tr("DETERSIVO采购")),
                         ("tracking", tr("采购订单跟踪"))]),
+        (tr("销售分析"), [("volantino", tr("促销分析"))]),
         (tr("分货管理"), [("distribution", tr("分货数据处理")), ("import", tr("导入 / 导出"))]),
         (tr("系统"), [("settings", tr("系统设置")), ("log", tr("运行日志"))]),
     ]
@@ -2872,6 +2873,8 @@ class MainWindow(QMainWindow):
         self.griglia_page = GrigliaPage(self, settings, _UI)
         from tracking_page import TrackingPage
         self.tracking = TrackingPage(self, settings, _UI)
+        from volantino_page import VolantinoPage
+        self.volantino = VolantinoPage(self, settings, _UI)
         builders = {
             "distribution": lambda: (self._make_distribution().build(), True),
             "import": lambda: (self._make_import().build(), True),
@@ -2885,6 +2888,7 @@ class MainWindow(QMainWindow):
             "search": lambda: (self._page_missing(), True),
             "griglia": lambda: (self.griglia_page.build(), False),
             "tracking": lambda: (self.tracking.build(), False),
+            "volantino": lambda: (self.volantino.build(), False),
             "settings": lambda: (self.settings_page.build(), True),
             "log": lambda: (self._page_log(), True),
         }
@@ -3496,7 +3500,8 @@ class MainWindow(QMainWindow):
         for pg in (getattr(self, "dashboard", None), getattr(self, "store_orders", None), getattr(self, "store_pdv", None),
                    getattr(self, "settings_page", None), getattr(self, "order_check", None),
                    getattr(self, "distribution", None), getattr(self, "import_page", None),
-                   getattr(self, "griglia_page", None), getattr(self, "tracking", None), getattr(self, "agent_panel", None)):
+                   getattr(self, "griglia_page", None), getattr(self, "tracking", None), getattr(self, "agent_panel", None),
+                   getattr(self, "volantino", None)):
             if pg is not None and hasattr(pg, "restyle"):
                 pg.restyle()
         for b in (self.banner_folder, self.banner_result, self.banner_rules):

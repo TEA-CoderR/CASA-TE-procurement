@@ -803,6 +803,8 @@ class OrderCheck:
         self._fill_suppliers()
         self._apply_forced()
         self.ctl.filters = {}
+        if self._review and not self._ask_reuse():       # 新一周的清单：不沿用（2026-11-15 用户：换了新清单再沿用就错了）
+            self._drop_review()
         todo = sum(v["new"] + v["changed"] for v in self._review.values())
         self.view.blockSignals(True)                    # 沿用了上次的审核：默认只看要审核的（新加 / 清单改过）
         self.view.setCurrentIndex(max(0, self.view.findData("review" if todo else "all")))
@@ -1673,6 +1675,13 @@ class OrderCheck:
                 tr("{0} 个商品现在用的是上次审核定的箱数。\n改回系统建议、删掉这几家店的审核记录，全部重新审核吗？", n)) \
                 != QMessageBox.Yes:
             return
+        self._drop_review()
+        self.view.setCurrentIndex(0)
+        self._replan()
+        self.win.show_toast(tr("已改回系统建议，审核记录删掉了"))
+
+    def _drop_review(self):
+        """不沿用：沿用过来的箱数改回系统建议、去掉 新加 / 清单改过 标记、删掉这几家店的审核记录"""
         for x in self.rows:
             if x.get("review") == "kept" and x.get("sbox") is not None:
                 _set_box(x, x["sbox"])
@@ -1682,9 +1691,29 @@ class OrderCheck:
         for sid in (self.meta or {}).get("stores") or []:
             RM.clear(root, sid)
         self._review, self._mem_ok = {}, {}
-        self.view.setCurrentIndex(0)
-        self._replan()
-        self.win.show_toast(tr("已改回系统建议，审核记录删掉了"))
+
+    def _ask_reuse(self):
+        """检查完找到了上次的审核：问一句这次是同一批清单（改过 / 重新算）还是新的清单。
+        超过 2 天的记录默认选「新的清单」。返回 True = 沿用"""
+        whens = [v.get("when") or "" for v in self._review.values()]
+        last = max(whens) if whens else ""
+        try:
+            age = (datetime.now() - datetime.fromisoformat(last)).total_seconds() / 86400
+        except ValueError:
+            age = 99
+        kept = sum(v["kept"] for v in self._review.values())
+        box = QMessageBox(self.window)
+        box.setIcon(QMessageBox.Question)
+        box.setWindowTitle(tr("上次的审核"))
+        box.setText(tr("找到 {0} 的审核记录（{1}，{2} 个商品定过箱数）。\n这次的门店清单是：", last[:16].replace("T", " "),
+                       "、".join(store_label(k) for k in self._review), kept))
+        box.setInformativeText(tr("同一批清单（改过、或者程序更新后重新算）→ 沿用审核，只看新加 / 清单改过的。\n"
+                                  "新一周的清单 → 不沿用，全部重新审核（审核记录会删掉）。"))
+        same = box.addButton(tr("同一批清单（沿用审核）"), QMessageBox.AcceptRole)
+        new = box.addButton(tr("新的清单（重新审核）"), QMessageBox.RejectRole)
+        box.setDefaultButton(new if age >= 2 else same)
+        box.exec()
+        return box.clickedButton() is same
 
     def _store_sel(self):
         b = self.store_group.checkedButton() if hasattr(self, "store_group") else None
