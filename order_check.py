@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (QWidget, QLabel, QPushButton, QLineEdit, QComboBo
 from i18n import tr
 from settings import save_settings
 import reorder_service as R
+import review_memory as RM
 import transfers as TR
 from reorder_page import short_decision, store_label, algo_widgets
 
@@ -144,7 +145,7 @@ def key_tags(x, transit_boxes=0, edited=False):
 
 VERDICT_TOKEN = {"transfer": "ok", "more": "accent", "less": "warn", "none": "err", "same": "muted", "nodb": "err"}
 # 「看哪些」下拉框
-VIEWS = (("all", "全部商品"), ("changed", "只看有变化的"), ("transfer", "只看调货"), ("more", "只看多订"),
+VIEWS = (("all", "全部商品"), ("review", "只看要审核的"), ("changed", "只看有变化的"), ("transfer", "只看调货"), ("more", "只看多订"),
          ("less", "只看少订"), ("none", "只看不订"), ("phantom", "只看库存可能不准"),
          ("promo", "只看促销"))
 
@@ -384,7 +385,7 @@ class OrderCheck:
         close = QPushButton(tr("关闭"))
         close.clicked.connect(dlg.accept)
         exp = QPushButton(tr("导出门店报告") + " ▾")
-        exp.setToolTip(tr("意大利文报告，可以直接发给门店（带商品照片，Excel 365 打开时从网上读）。确认生成主订单时，每家店的比价文件夹里也会自动生成一份"))
+        exp.setToolTip(tr("意大利文报告，可以直接发给门店（带商品照片，Excel 365 打开时从网上读）。确认生成主订单时，这一天的比价结果文件夹里会自动生成一个汇总文件（每家店一页）"))
         em = QMenu(exp)                               # 两种导出放在一个按钮的下拉里（用户：每店一个 / 合成一个都要）
         em.addAction(tr("每家店一个文件"), self._export_prob)
         em.addAction(tr("合成一个文件（每店一页）"), self._export_prob_one)
@@ -524,6 +525,10 @@ class OrderCheck:
         self._plan_timer.setSingleShot(True)
         self._plan_timer.setInterval(250)
         self._plan_timer.timeout.connect(self._replan_in_place)
+        self._mem_timer = QTimer()                     # 审核记录：改了箱数停手 2 秒再存（连着改不反复写文件）
+        self._mem_timer.setSingleShot(True)
+        self._mem_timer.setInterval(2000)
+        self._mem_timer.timeout.connect(self._save_memory)
         self.ctl.rendered.connect(lambda n, tot: self._status(n, tot))
         # 表格 + 右边详情栏（和门店配货的订货明细一样：选中一行看为什么）
         mid = QHBoxLayout()
@@ -723,6 +728,7 @@ class OrderCheck:
         log = self.win.log
         price_dir = self._price_dir()
         box_algo, box_cfg = self._algo(), copy.deepcopy(self.cfg)
+        mem_root = self._mem_root()
         self.running = True
         self.btn_run.setEnabled(False)
         self.msg.setText(tr("正在连接数据库并计算，商品多时要几十秒…"))
@@ -744,6 +750,14 @@ class OrderCheck:
                                            days=days, cycle=cycle, use_cfg=use_cfg, algo=algo)
                 init_boxes(rows, None, box_algo, box_cfg)       # 建议箱数也在这里算好（1000 多行，别在界面线程算）
                 meta["_boxed"] = True
+                # 审核记录：上次审过的（清单箱数没变）用上次定的箱数，只有新加 / 清单改过的要审（2026-11-15）
+                try:
+                    by_store = {}
+                    for x in rows:
+                        by_store.setdefault(x.get("store"), []).append(x)
+                    meta["_review"] = RM.restore(mem_root, by_store, {x["store"]: x["path"] for x in lists}, _set_box)
+                except Exception as e:
+                    log(tr("⚠ 上次的审核记录没用上：{0}", e))
                 dlg.post_finished(True, tr("完成：{0} 个商品", len(rows)))
                 self.sig.done.emit((rows, None, meta))
             except Exception as e:
@@ -770,6 +784,8 @@ class OrderCheck:
         if not meta.pop("_boxed", False):
             init_boxes(rows, None, self._algo(), self.cfg)
         self.rows, self.meta = rows, meta
+        self._review = meta.pop("_review", None) or {}
+        self._mem_ok = {sid: v.get("confirmed") for sid, v in self._review.items() if v.get("confirmed")}   # 上次确认整张清单的时间
         self.transit = meta.get("transit")            # 在途（检查时读好的，建议箱数里扣过了）
         # 人工改的调货 {(门店, 商品编号): {"from", "pieces", "auto"} 或 0 = 不调}；改过一次就冻结（别的行不再跟着变）
         self.transfer_ov = {}
@@ -787,6 +803,10 @@ class OrderCheck:
         self._fill_suppliers()
         self._apply_forced()
         self.ctl.filters = {}
+        todo = sum(v["new"] + v["changed"] for v in self._review.values())
+        self.view.blockSignals(True)                    # 沿用了上次的审核：默认只看要审核的（新加 / 清单改过）
+        self.view.setCurrentIndex(max(0, self.view.findData("review" if todo else "all")))
+        self.view.blockSignals(False)
         self._replan(render=False)
         self._fill()
         self._load_transit()                            # 在途列：后台读（检查时一般已经读好，这里直接返回）
@@ -800,6 +820,14 @@ class OrderCheck:
         self.window.setWindowTitle(tr("检查门店订货清单 — {0} · {1} 个商品",
                                       "、".join(store_label(k) for k in meta["stores"]), len(rows)))
         done = tr("✔ {0}：{1} 个商品", "、".join(store_label(k) for k in meta["stores"]), len(rows))
+        if self._review:
+            kept = sum(v["kept"] for v in self._review.values())
+            done += "\n" + tr("沿用上次的审核 {0} 个，要审核 {1} 个（新加 / 清单改过，已经筛出来）", kept, todo)
+            for sid, v in self._review.items():
+                self.win.log(tr("[审核记录] {0}：沿用 {1} 个，新加 {2} 个，清单改过 {3} 个（{4} 的审核{5}）", store_label(sid),
+                                v["kept"], v["new"], v["changed"], (v.get("when") or "")[:16].replace("T", " "),
+                                tr("，从上次确认的主订单补的") if v.get("source") == "main_order" else ""))
+            self._save_memory()                         # 从主订单补的马上存成审核记录（下次直接用）
         self.msg.setText(done)
         from erp_widgets import ask_return
         ask_return(self.win, getattr(self, "_task", None), tr("订货清单检查完成") + "\n" + done, self.window.bring_up)
@@ -998,10 +1026,20 @@ class OrderCheck:
         return lines
 
     def _marks(self, x):
-        """判断后面的提醒：慢销（订了要卖很久）；库存可能不准（虚库存）"""
+        """判断后面的提醒：新加 / 清单改过（要审核）；慢销（订了要卖很久）；库存可能不准（虚库存）"""
+        rv = []
+        if x.get("review") == "new":
+            rv.append(("review", tr("新加"), tr("上次审核时清单里没有这个商品（或者以前的程序没读到），要审核")))
+        elif x.get("review") == "changed":
+            rv.append(("review", tr("清单改过"), tr("上次审核时清单是 {0} 箱，现在是 {1} 箱：按系统建议重新算了，要审核",
+                                                   x.get("review_prev"), x.get("lbox"))))
+        if x.get("merged"):
+            rv.append(("merged", tr("合并 {0} 行", len(x["merged"]) + 1),
+                       tr("清单里这几行是同一个商品，合成一行（箱数加在一起）：") + "\n" + "\n".join(
+                           f"{m.get('ean') or ''}  {m.get('name') or ''}  × {m.get('qty') or 0:g}" for m in x["merged"])))
         if not x.get("in_db", True):
-            return []
-        out = R.review_marks(x.get("target") is not None, x["final"] > 0, self._arrive_days(x), x.get("store_inv"))
+            return rv
+        out = rv + R.review_marks(x.get("target") is not None, x["final"] > 0, self._arrive_days(x), x.get("store_inv"))
         cz = x.get("censored")
         if cz:
             out.append(("censored", tr("断货补算"),
@@ -1562,7 +1600,7 @@ class OrderCheck:
             return
         try:
             p = write_problem_report(self.rows, path, store=None, url=self.settings.get("image_url") or None,
-                                     sources=self.meta.get("quote_labels"))
+                                     sources=self.meta.get("quote_labels"), stores=self.meta.get("stores"))
         except Exception as e:
             QMessageBox.warning(self.prob_dlg, tr("导出门店报告"), tr("导出失败：{0}", e))
             return
@@ -1598,6 +1636,56 @@ class OrderCheck:
             except Exception:
                 pass
 
+    # ---------- 审核记录（review_memory）----------
+    def _mem_root(self):
+        try:
+            return self.win.ws_root() if hasattr(self.win, "ws_root") else self.batch_root()
+        except Exception:
+            return None
+
+    def _save_memory(self, confirmed=False):
+        """每家店的审核记录存进工作文件夹（改了箱数停手 2 秒、确认开始比价时）；写不了不影响检查"""
+        root = self._mem_root()
+        if not root or not self.rows:
+            return
+        import getpass
+        import socket
+        who = f"{getpass.getuser()}@{socket.gethostname()}"
+        for sid in (self.meta or {}).get("stores") or []:
+            rows = [x for x in self.rows if x.get("store") == sid]
+            when = (getattr(self, "_mem_ok", {}) or {}).get(sid)
+            mem = RM.build(rows, sid, prev={"confirmed": when} if when else None, confirmed=confirmed,
+                           edited=_edited, who=who)
+            if not mem["items"] and not confirmed and not os.path.exists(RM.path_for(root, sid)):
+                continue                                   # 还没审（没改过）：不建空记录
+            try:
+                RM.save(root, sid, mem)
+            except Exception as e:
+                self.win.log(tr("⚠ 审核记录没存上：{0}", e))
+                return
+            if confirmed:
+                self._mem_ok[sid] = mem["confirmed"]
+
+    def _forget_review(self):
+        n = sum(1 for x in self.rows if x.get("review") == "kept")
+        if QMessageBox.question(
+                self.window, tr("不沿用上次的审核"),
+                tr("{0} 个商品现在用的是上次审核定的箱数。\n改回系统建议、删掉这几家店的审核记录，全部重新审核吗？", n)) \
+                != QMessageBox.Yes:
+            return
+        for x in self.rows:
+            if x.get("review") == "kept" and x.get("sbox") is not None:
+                _set_box(x, x["sbox"])
+            x.pop("review", None)
+            x.pop("review_prev", None)
+        root = self._mem_root()
+        for sid in (self.meta or {}).get("stores") or []:
+            RM.clear(root, sid)
+        self._review, self._mem_ok = {}, {}
+        self.view.setCurrentIndex(0)
+        self._replan()
+        self.win.show_toast(tr("已改回系统建议，审核记录删掉了"))
+
     def _store_sel(self):
         b = self.store_group.checkedButton() if hasattr(self, "store_group") else None
         v = b.property("sid") if b is not None else -1
@@ -1617,6 +1705,8 @@ class OrderCheck:
     def _more_menu(self, btn):
         m = QMenu(self.window)
         a_file = m.addAction(tr("全部用清单数量"))
+        a_fresh = m.addAction(tr("不沿用上次的审核…"))
+        a_fresh.setEnabled(any(x.get("review") for x in self.rows))
         m.addSeparator()
         a_cols = m.addAction(tr("显示哪些列…"))
         a_order = m.addAction(tr("恢复默认列顺序"))
@@ -1625,6 +1715,8 @@ class OrderCheck:
         got = m.exec(pos)
         if got == a_file:
             self._set_all("file")
+        elif got == a_fresh:
+            self._forget_review()
         elif got == a_cols:
             self.cols.menu(pos)
         elif got == a_order:
@@ -1638,6 +1730,7 @@ class OrderCheck:
         n.update(cnt)
         n["phantom"] = sum(1 for x in self.rows if x.get("phantom") and not _problem(x))
         n["promo"] = sum(1 for x in self.rows if x.get("promo"))
+        n["review"] = sum(1 for x in self.rows if x.get("review") in ("new", "changed"))
         for k in range(self.view.count()):
             key = self.view.itemData(k)
             text = tr(dict(VIEWS)[key])
@@ -1678,9 +1771,18 @@ class OrderCheck:
         kind = self._verdict(x)[0]
         hide = (view == "changed" and kind not in ("transfer", "more", "less", "none")) or \
             (view in ("transfer", "more", "less", "none") and kind != view) or \
-            (view == "phantom" and not x.get("phantom")) or (view == "promo" and not x.get("promo"))
+            (view == "phantom" and not x.get("phantom")) or (view == "promo" and not x.get("promo")) or \
+            (view == "review" and x.get("review") not in ("new", "changed"))
         return hide or \
-               (bool(text) and text not in f"{x['code']} {x['ean']} {x['name']} {x.get('sup_code') or ''} {x.get('sup_name') or ''}".lower())
+               (bool(text) and text not in self._search_text(x))
+
+    @staticmethod
+    def _search_text(x):
+        """搜索框：编号、条码、名称、供应商；换成替代商品的原条码 / 原名称、合并进来的那几行也搜得到"""
+        rp = x.get("repl") or {}
+        extra = " ".join(f"{m.get('ean') or ''} {m.get('name') or ''}" for m in x.get("merged") or [])
+        return (f"{x['code']} {x['ean']} {x['name']} {x.get('sup_code') or ''} {x.get('sup_name') or ''} "
+                f"{rp.get('old_ean') or ''} {rp.get('old_name') or ''} {x.get('list_ean') or ''} {extra}").lower()
 
     def _fill(self):
         missing = [x for x in self.rows if "fbox" not in x]
@@ -1917,6 +2019,8 @@ class OrderCheck:
         self._summary()
 
     def _summary(self):
+        if self.rows and hasattr(self, "_mem_timer"):
+            self._mem_timer.start()                    # 改了箱数：停手 2 秒后存审核记录
         cnt = {v: 0 for v in R.VERDICT_RANK}
         for x in self.rows:
             k_ = self._verdict(x)[0]
@@ -2053,6 +2157,7 @@ class OrderCheck:
             QMessageBox.warning(self.win, tr("确认，开始比价"), tr("还没有工作文件夹。"))
             return
         folders = {sid: R.batch_store_folder(root_dir, sid) for sid in self.meta["stores"] if self._to_order(sid)}
+        self._save_memory(confirmed=True)              # 整张清单都审核过了：以后清单改了 / 重新计算，只审新加和改过的
         tag = datetime.now().strftime("%Y%m%d_%H%M")
         day_dir = R.batch_folder(root_dir)
         os.makedirs(day_dir, exist_ok=True)
@@ -2107,18 +2212,20 @@ class OrderCheck:
                         R.save_snapshot(path, sid, self.meta.get("snap") or {}, rows, transfers=mine, transfers_file=tf)
                     except Exception as e:
                         problems.append(tr("{0}：门店库存快照没存上：{1}", R.STORES.get(sid), e))
-                try:                                       # 发给门店的提醒：非 Griglia 商品下次别加、这次批发商没货的
-                    rep = write_problem_report(self.rows, os.path.join(root, report_name(sid)), store=sid,
-                                               url=self.settings.get("image_url") or None, sources=self.meta.get("quote_labels"))
-                    if rep:
-                        self.win.log(tr("✔ 门店报告：{0}", rep))
-                except Exception as e:
-                    problems.append(tr("{0}：门店提醒没写上：{1}", R.STORES.get(sid), e))
                 self.win.log(tr("✔ 采购主订单：{0}（{1} 个商品）", path, written))
                 if skipped:
                     self.win.log(tr("⚠ {0} 个商品没有条码，没写进主订单：{1}", len(skipped),
                                     "、".join(f"{x['code']} {x['name'][:20]}" for x in skipped[:10])))
                 made.append((sid, root, written, len(skipped)))
+            # 门店报告：五家店合成一个文件、每家店一页（2026-11-15 用户：不要一家店一个文件），放在这一天的文件夹
+            try:
+                rep = write_problem_report(self.rows, os.path.join(day_dir, report_name(None)),
+                                           url=self.settings.get("image_url") or None,
+                                           sources=self.meta.get("quote_labels"), stores=self.meta["stores"])
+                if rep:
+                    self.win.log(tr("✔ 门店报告（五家店一个文件）：{0}", rep))
+            except Exception as e:
+                problems.append(tr("门店报告没写上：{0}", e))
             return all_tf
 
         from erp_widgets import BusyDialog

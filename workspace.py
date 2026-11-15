@@ -77,12 +77,22 @@ def _excel(folder):
 
 
 def guess_store(name):
-    """文件名里有门店名 → 门店编号，否则 None（S.MARCO / S MARCO / SMARCO 都认）"""
+    """文件名里有门店名 → 门店编号（S.MARCO / S MARCO / SMARCO 都认）；没有门店名就看文件名最后的门店编号
+    （DETER1 … DETER5，2026-11-15 用户：清单文件名后面都带 1–5）；都没有 → None"""
     low = re.sub(r"[\s._\-]", "", os.path.basename(name or "").upper())
     for sid, n in STORES.items():
         if re.sub(r"[\s._\-]", "", n) in low:
             return sid
-    return None
+    return number_store(name)
+
+
+def number_store(name):
+    """文件名最后的门店编号：「DETER3.xlsx」「Ordine - 3.xlsx」→ 3。前面紧挨着数字的不算（「1810」「05」是日期），
+    Windows 复制出来的「 (1)」后缀先去掉；不是 1–5 → None"""
+    stem = os.path.splitext(os.path.basename(name or ""))[0]
+    stem = re.sub(r"\s*\(\d+\)\s*$", "", stem)
+    m = re.search(r"(?<!\d)([1-5])\s*$", stem)
+    return int(m.group(1)) if m else None
 
 
 def is_price_name(name):

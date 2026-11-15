@@ -201,7 +201,10 @@ def read_values(path):
     from openpyxl import load_workbook as _lw
     wb = _lw(path, data_only=True, read_only=True)
     try:
-        return ValueSheet(wb.active.iter_rows(values_only=True))
+        ws = wb.active
+        if hasattr(ws, "reset_dimensions"):
+            ws.reset_dimensions()       # 文件里记的表格范围可能比实际少（后来加的行），一直读到最后一行
+        return ValueSheet(ws.iter_rows(values_only=True))
     finally:
         wb.close()
 

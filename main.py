@@ -2855,6 +2855,8 @@ class MainWindow(QMainWindow):
         self.stack.setObjectName("Content")
         rv.addWidget(self.stack, 1)
         h.addWidget(right, 1)
+        self._root_h = h                         # 采购助手面板（第一次打开时才建）放在最右边
+        self.agent_panel = None
 
         from dashboard_page import DashboardPage
         from legacy_pages import LegacyPage
@@ -3213,6 +3215,12 @@ class MainWindow(QMainWindow):
         from erp_widgets import BgTaskPill
         self.bg_pill = BgTaskPill(bar)          # 后台运行中的任务：进度 + 点一下看详情（没有时藏起来）
         h.addWidget(self.bg_pill)
+        self.agent_btn = QPushButton(tr("✦ 助手"))
+        self.agent_btn.setObjectName("Primary")
+        self.agent_btn.setCursor(Qt.PointingHandCursor)
+        self.agent_btn.setToolTip(tr("让助手查供应商、算建议量、生成采购订单、查订单、核对邮件；改数据前都会问你"))
+        self.agent_btn.clicked.connect(lambda: self.toggle_agent())
+        h.addWidget(self.agent_btn)
         self.search = QLineEdit()
         self.search.setObjectName("Search")
         self.search.setPlaceholderText(tr("搜索功能页面…  Ctrl K"))
@@ -3390,6 +3398,30 @@ class MainWindow(QMainWindow):
         if getattr(self, "_crumb_home", None):
             self.go_page(self._crumb_home)
 
+    def toggle_agent(self, show=None):
+        """右边的采购助手面板：打开 / 收起（第一次打开时才建）"""
+        if self.agent_panel is None:
+            if show is False:
+                return
+            self._ensure_all()
+            from agent_panel import AgentPanel
+            self.agent_panel = AgentPanel(self, settings)
+            self._root_h.addWidget(self.agent_panel)
+            self.agent_panel.show()
+            self._fit_topbar()
+            self.agent_panel.input.setFocus()
+            return
+        vis = (not self.agent_panel.isVisible()) if show is None else bool(show)
+        self.agent_panel.setVisible(vis)
+        self._fit_topbar()
+        if vis:
+            self.agent_panel.input.setFocus()
+
+    def _fit_topbar(self):
+        """助手面板开着时顶栏窄了：搜索框缩短（1366 宽的笔记本也放得下）"""
+        on = self.agent_panel is not None and self.agent_panel.isVisible()
+        self.search.setFixedWidth(180 if on else 320)
+
     def go_page(self, key):
         self.go([k for k, _ in self.NAV].index(key))
 
@@ -3464,7 +3496,7 @@ class MainWindow(QMainWindow):
         for pg in (getattr(self, "dashboard", None), getattr(self, "store_orders", None), getattr(self, "store_pdv", None),
                    getattr(self, "settings_page", None), getattr(self, "order_check", None),
                    getattr(self, "distribution", None), getattr(self, "import_page", None),
-                   getattr(self, "griglia_page", None), getattr(self, "tracking", None)):
+                   getattr(self, "griglia_page", None), getattr(self, "tracking", None), getattr(self, "agent_panel", None)):
             if pg is not None and hasattr(pg, "restyle"):
                 pg.restyle()
         for b in (self.banner_folder, self.banner_result, self.banner_rules):
@@ -5083,7 +5115,9 @@ class MainWindow(QMainWindow):
         import glob
         d = self._shown_state().get("distribuire_path")
         folder = os.path.dirname(os.path.abspath(d)) if d else self.folder_edit.text().strip()
-        files = sorted(glob.glob(os.path.join(folder, "Articoli_da_verificare_*.xlsx")) if folder else [],
+        # 2026-11-15 起五家店合成一个文件（每店一页），放在这一天的文件夹（门店文件夹的上一层）
+        files = sorted((glob.glob(os.path.join(folder, "Articoli_da_verificare_*.xlsx")) +
+                        glob.glob(os.path.join(os.path.dirname(folder), "Articoli_da_verificare_*.xlsx"))) if folder else [],
                        key=os.path.getmtime)
         if files:
             open_path(files[-1])

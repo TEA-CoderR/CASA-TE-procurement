@@ -34,10 +34,18 @@ FIELD_ALIASES = {
 
 
 def _norm(v):
+    """表头比较：不管大小写、空格和点 / 下划线 / 横线（「Cod.Barre」= CodBarre，2026-11-15：FOIANO 清单的条码列以前没认出来，
+    清单最后只有条码、没写商品编号的新商品整行被跳过）"""
+    return re.sub(r"[\s._\-]+", "", str(v or "")).lower()
+
+
+def _norm_old(v):
+    """2026-11-15 以前的表头比较（只去空格）：沿用以前的审核时，判断哪些行以前的程序读得到"""
     return re.sub(r"\s+", "", str(v or "")).lower()
 
 
 _ALIAS = {f: {_norm(a) for a in names} for f, names in FIELD_ALIASES.items()}
+_ALIAS_OLD = {f: {_norm_old(a) for a in names} for f, names in FIELD_ALIASES.items()}
 
 
 def _clean_code(v):
@@ -70,12 +78,13 @@ def _num(v):
 
 
 def guess_store(filename):
-    """文件名里有门店名就返回门店编号，否则 None"""
+    """文件名里有门店名就返回门店编号；没有门店名看文件名最后的门店编号（DETER1 … DETER5）；都没有 None"""
     low = re.sub(r"[\s._\-]", "", os.path.basename(filename or "").upper())
     for sid, name in STORES.items():
         if sid and re.sub(r"[\s._\-]", "", name.upper()) in low:
             return sid
-    return None
+    import workspace as W
+    return W.number_store(filename)
 
 
 BATCH_DIR = "4 比价结果"          # workspace.RESULTS
@@ -118,13 +127,15 @@ def make_store_folder(path):
 # =====================================================================
 # 订货清单解析
 # =====================================================================
-def parse_order_file(path):
+def parse_order_file(path, legacy=False):
     """
     读取门店订货清单，按表头自动识别字段。
     返回 {"rows": [{code, ean, name, qty, stock, supplier}], "fields": {字段: 表头}, "sheet", "header_row", "warnings"}
     找不到商品编号也找不到条码时抛 ValueError。
+    legacy=True：照 2026-11-15 以前的读法（只用来判断以前的程序读得到哪些行，见 review_memory）
     """
     from openpyxl import load_workbook
+    norm, alias = (_norm_old, _ALIAS_OLD) if legacy else (_norm, _ALIAS)
     wb = load_workbook(path, read_only=True, data_only=True)
     try:
         sheets = list(wb.worksheets)
@@ -136,10 +147,10 @@ def parse_order_file(path):
             for i, row in enumerate(grid):
                 found = {}
                 for c, v in enumerate(row):
-                    n = _norm(v)
+                    n = norm(v)
                     if not n:
                         continue
-                    for f, al in _ALIAS.items():
+                    for f, al in alias.items():
                         if f not in found and n in al:
                             found[f] = (c, str(v).strip())
                 if ("code" in found or "ean" in found):
@@ -153,6 +164,8 @@ def parse_order_file(path):
         _, ws, hdr, found = best
         warnings = []
         rows = []
+        if not legacy and hasattr(ws, "reset_dimensions"):
+            ws.reset_dimensions()             # 文件里记的表格范围可能没包括后来加的行：一直读到最后一行
         for r in ws.iter_rows(min_row=hdr + 2, values_only=True):
             r = list(r)
 
@@ -168,9 +181,11 @@ def parse_order_file(path):
                          "qty": _num(get("qty")), "stock": _num(get("stock")),
                          "supplier": _clean_code(get("supplier"))})
         # 商品编号列里大多不是数字（比如表头对错了列）→ 改用条码
-        if "code" in found and rows:
-            ok = sum(1 for x in rows if re.fullmatch(r"\d{1,9}", x["code"] or ""))
-            if ok < len(rows) * 0.5:
+        # 只看写了编号的行（2026-11-15：清单最后加的新商品只写条码，以前一起算，写了编号的也被清掉）
+        has = [x for x in rows if x["code"]] if not legacy else rows
+        if "code" in found and has:
+            ok = sum(1 for x in has if re.fullmatch(r"\d{1,9}", x["code"] or ""))
+            if ok < len(has) * 0.5:
                 warnings.append(f"「{found['code'][1]}」列里大多不是数字商品编号，改用条码查商品")
                 for x in rows:
                     x["code"] = ""
@@ -1303,6 +1318,9 @@ def check_rows(file_rows, result_rows, unit="colli"):
             continue
         if key in merged:
             merged[key]["qty"] = (merged[key]["qty"] or 0) + (f.get("qty") or 0)
+            # 记下合并了哪几行（同一个商品清单里写了两行，或者两个条码在数据库里是同一个商品）：界面上写明，免得以为没读到
+            merged[key].setdefault("merged", []).append({"ean": f.get("ean", ""), "name": f.get("name", ""),
+                                                         "qty": f.get("qty")})
             continue
         merged[key] = dict(f)
         order.append(key)
@@ -1333,8 +1351,20 @@ def check_rows(file_rows, result_rows, unit="colli"):
                    "store_inv": None, "sales": [None] * 4, "inv_days": None, "tier": "", "decision": "",
                    "pack": 0, "suggested": 0, "ord_colli": 0, "file_qty": qty, "file_pcs": qty,
                    "final": int(math.ceil(qty)), "verdict": "数据库没有", "in_db": False}
+        if f.get("merged"):
+            row["merged"] = f["merged"]
+            row["list_ean"] = f.get("ean", "")
         out.append(row)
     return out
+
+
+def list_report(file_rows, rows):
+    """清单读进来的情况（日志用，让人一眼对得上清单的行数）：
+    {"lines": 清单几行, "items": 检查里几个商品, "nodb": [数据库里没有的商品名], "merged": [(合到哪个, [合进来的])]}"""
+    return {"lines": len(file_rows), "items": len(rows),
+            "nodb": [str(x.get("name") or x.get("ean") or "") for x in rows if not x.get("in_db", True)],
+            "merged": [(str(x.get("name") or ""), [str(m.get("name") or m.get("ean") or "") for m in x["merged"]])
+                       for x in rows if x.get("merged")]}
 
 
 # =====================================================================

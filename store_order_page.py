@@ -537,45 +537,8 @@ class MoqDialog(QDialog):
 # =====================================================================
 # 页面
 # =====================================================================
-def _preview_key(sc, calc, lines, fill, pk):
-    """起订量检查的模拟配货缓存键（界面线程和计算线程用同一个，计算线程算好的直接能用）"""
-    import json
-    return (sc["path"], id(calc["demand"]), tuple(calc["stores"]),
-            json.dumps(fill, sort_keys=True, default=str), json.dumps(pk, sort_keys=True),
-            tuple(sorted((sid, tuple(sorted(ln.items()))) for sid, ln in lines.items())), json.dumps(S.sc_moq(sc), default=str))
-
-
-def _plan_one(sc, calc, lines, fill, pk):
-    return S.plan_supplier(sc, calc["demand"], fill, calc["stores"], lines, "manual" if pk is not None else "auto", picks=pk)
-
-
-def finish_compute(calc, tcfg, tfar, sup_cfg, fill, picks, log=None):
-    """
-    计算线程里做完原来在界面线程做的收尾（2026-11-07 用户：后台运行完跳回去会卡）：调货、复制建议箱数、
-    每家供应商模拟配货一次（起订量检查的颜色）。结果放进 calc["_ui"]，界面线程只填表
-    """
-    import datetime as _dt
-    calc.setdefault("date", _dt.date.today())    # 周销量按计算当天往回数
-    note = None
-    try:
-        S.apply_transfers(calc, tcfg, tfar, sup_cfg)
-        if calc.get("transfers"):
-            note = tr("[总仓采购] 门店间调货：{0} 个商品", len(calc["transfers"]))
-    except Exception as e:
-        note = tr("[总仓采购] ⚠ 调货计算失败（按原来的建议订）：{0}", e)
-    if note and log:
-        log(note)
-    colli = copy.deepcopy(calc["base"])
-    cache = {}
-    for sc in calc["schede"]:
-        lines = colli.get(sc["path"], {})
-        pk = picks.get(sc["path"])
-        try:
-            cache[_preview_key(sc, calc, lines, fill, pk)] = _plan_one(sc, calc, lines, fill, pk)
-        except Exception:
-            pass                                   # 界面线程到时候自己再算（会报出原来的错）
-    calc["_ui"] = {"colli": colli, "pv": cache}
-    return calc
+# 模拟配货缓存键 / 计算收尾：挪到 commands（智能体不开窗口也要用），这里照旧提供这几个名字
+from commands import _preview_key, _plan_one, finish_compute  # noqa: E402,F401
 
 
 class _OnFirstShow(QObject):
