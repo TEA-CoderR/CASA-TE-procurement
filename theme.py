@@ -29,8 +29,26 @@ THEMES = {
         # 2026-11-15 新设计（企业级界面）多用的几个颜色；老的不改，总仓 / 门店采购两页照旧
         "canvas": "#F4F6FA", "border": "#D5DBE5", "head": "#344054", "hover": "#F1F5FB",
         "side2": "#0F2347", "side_line": "#1C3260", "accent_ring": "#BFD3FB",
+        "cyan": "#0E7490", "cyan_soft": "#E0F5FA", "violet": "#6D28D9", "violet_soft": "#F1ECFE",
     },
-    "dark": {
+    "dark": {          # 2026-11-15 第 2 轮（用户选的深色科技风）：深海军蓝底 + 电光蓝
+        "bg": "#070B14", "surface": "#0C1222", "surface2": "#0E1424", "line": "#172036",
+        "text": "#E6EBF5", "muted": "#8B98B0", "faint": "#6B7891",
+        "accent": "#4F8CFF", "accent_hover": "#6E9FFF", "accent_soft": "#12204A", "on_accent": "#04101F",
+        "side": "#0A0F1C", "side_text": "#8B98B0", "side_muted": "#6B7891", "side_active": "#16213A",
+        "side_bar": "#4F8CFF",
+        "ok": "#34D399", "ok_soft": "#0F2A20", "warn": "#FBBF24", "warn_soft": "#2A210A",
+        "err": "#F87171", "err_soft": "#2A1215", "info": "#4F8CFF", "info_soft": "#12204A",
+        "ghost": "#24406E", "track": "#1A2440", "near": "#EBA845", "far": "#45536B",
+        "shadow": "#000000",
+        "canvas": "#070B14", "border": "#1E2A44", "head": "#A9B6CE", "hover": "#111A2C",
+        "side2": "#0A0F1C", "side_line": "#172036", "accent_ring": "#2B4374",
+        "cyan": "#22D3EE", "cyan_soft": "#0B2530", "violet": "#A78BFA", "violet_soft": "#1E1838",
+    },
+}
+
+# 2026-11-15 以前的深色（总仓 / 门店采购两页的旧样式表照这个；浅色没变，两页浅色和以前逐像素一样）
+LEGACY_DARK = {
         "bg": "#0A111E", "surface": "#111A2B", "surface2": "#0E1625", "line": "#1E2A3E",
         "text": "#E6EBF3", "muted": "#9AA8BE", "faint": "#66768F",
         "accent": "#6A9BF4", "accent_hover": "#86AEF7", "accent_soft": "#172848", "on_accent": "#0A111E",
@@ -42,10 +60,9 @@ THEMES = {
         "shadow": "#000000",
         "canvas": "#0A111E", "border": "#2A3850", "head": "#B4C0D3", "hover": "#16213A",
         "side2": "#0B1426", "side_line": "#18243A", "accent_ring": "#2B4A85",
-    },
 }
 
-_state = {"theme": "light"}
+_state = {"theme": "dark"}
 
 
 def set_theme(name):
@@ -58,6 +75,11 @@ def current():
 
 def T(key):
     return THEMES[_state["theme"]][key]
+
+
+def _legacy_t():
+    """旧样式表用的颜色：浅色 = 现在的浅色，深色 = 以前的深色"""
+    return LEGACY_DARK if _state["theme"] == "dark" else THEMES["light"]
 
 
 def num_font(size=10, bold=False):
@@ -82,7 +104,7 @@ def _arrow_svg(color):
 
 def build_qss_legacy():
     """2026-11-15 以前的样式。总仓采购 / 门店采购两页（用户：这两页很喜欢，不用动）套这一份，别的页面用新的 build_qss"""
-    t = THEMES[_state["theme"]]
+    t = _legacy_t()
     return f"""
     * {{ font-family: "{UI_FONT}", "Microsoft YaHei", "Noto Sans CJK SC", "Noto Sans CJK TC", sans-serif; font-size: 13px; color: {t['text']}; }}
     QMainWindow, #Content {{ background: {t['bg']}; }}
@@ -243,7 +265,7 @@ _FROZEN = []          # 套旧样式的窗口 / 页面（weakref）：总仓采�
 def _frozen_qss():
     """旧样式 + 把新样式里旧样式没写的那些属性改回旧的样子（Qt 里页面自己的样式表只在同一个属性上压过全局的，
     旧样式没写的属性会从全局新样式「漏」进来）"""
-    t = THEMES[_state["theme"]]
+    t = _legacy_t()
     return build_qss_legacy() + f"""
     QPushButton, QPushButton#Link, QPushButton#Link:hover, #KpiLabel {{ font-weight: normal; }}
     QPushButton:hover, QPushButton:pressed, QPushButton:disabled {{ background: {t['surface']}; }}
@@ -308,53 +330,45 @@ def build_qss():
     QMenu::item:disabled {{ color: {t['faint']}; }}
     QMenu::separator {{ height: 1px; background: {t['line']}; margin: 5px 8px; }}
 
-    /* ---------- 导航栏 ---------- */
-    #Sidebar {{ background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 {t['side2']}, stop:1 {t['side']}); }}
-    #SidebarNav {{ background: transparent; }}
-    #Brand {{ color: #FFFFFF; font-size: 15px; font-weight: 700; }}
-    #BrandSub {{ color: {t['side_muted']}; font-size: 11px; font-family: "{NUM_FONT}"; }}
-    #BrandLine {{ background: {t['side_line']}; }}
-    #NavGroup {{ color: {t['side_muted']}; font-size: 10px; font-weight: 700; letter-spacing: 1px; padding: 14px 12px 5px 12px; }}
-    #NavBtn {{ background: transparent; color: {t['side_text']}; border: none; border-radius: 8px;
-               text-align: left; padding: 0 10px; min-height: 36px; max-height: 36px; font-size: 13px; }}
-    #NavBtn:hover {{ background: rgba(255,255,255,0.06); color: #FFFFFF; }}
-    #NavBtn:checked {{ background: rgba(96,145,255,0.16); color: #FFFFFF; font-weight: 600;
-                       border-left: 3px solid {t['side_bar']}; padding-left: 7px; }}
-    #NavBadge {{ background: {t['side_bar']}; color: #FFFFFF; border-radius: 8px; font-size: 11px; padding: 0 6px;
-                 font-family: "{NUM_FONT}"; font-weight: 600; }}
-    #NavBtn[open="true"] {{ color: #FFFFFF; font-weight: 600; }}
-    #NavArrow {{ color: {t['side_muted']}; font-size: 14px; background: transparent; }}
-    #NavSubBox {{ background: transparent; border: none; border-left: 1px solid {t['side_line']}; }}
-    #NavSub {{ background: transparent; color: {t['side_text']}; border: none; border-radius: 7px;
-               text-align: left; padding: 0 12px; min-height: 32px; max-height: 32px; font-size: 12px; margin-left: 6px; }}
-    #NavSub:hover {{ background: rgba(255,255,255,0.06); color: #FFFFFF; }}
-    #NavSub:checked {{ background: rgba(96,145,255,0.16); color: #FFFFFF; font-weight: 600; }}
-    #NavSoon {{ background: rgba(255,255,255,0.08); color: {t['side_muted']}; border-radius: 8px; font-size: 10px; padding: 0 6px; }}
-    #DbBox {{ background: rgba(255,255,255,0.05); border: 1px solid {t['side_line']}; border-radius: 10px; }}
-    #DbTitle {{ color: #E6EBF3; font-size: 12px; font-weight: 600; }}
-    #DbSub {{ color: {t['side_muted']}; font-size: 11px; font-family: "{NUM_FONT}"; }}
+    /* ---------- 左边图标栏 ---------- */
+    #Rail {{ background: {t['side']}; border-right: 1px solid {t['side_line']}; }}
+    #RailLogo {{ background: {t['accent']}; color: {t['on_accent'] if dark else '#FFFFFF'}; border-radius: 12px;
+                 font-family: "{NUM_FONT}"; font-size: 15px; font-weight: 700; }}
+    QToolButton#RailBtn {{ background: transparent; color: {t['side_text']}; border: 1px solid transparent; border-radius: 12px;
+                           font-size: 11px; padding: 6px 0 4px 0; }}
+    QToolButton#RailBtn:hover {{ background: rgba(255,255,255,0.06); color: #FFFFFF; }}
+    QToolButton#RailBtn:checked {{ background: {t['side_active']}; color: #FFFFFF; font-weight: 600;
+                                   border: 1px solid {t['accent_ring'] if dark else t['side_line']}; }}
+    #RailBadge {{ background: {t['err']}; color: #FFFFFF; border-radius: 9px; font-size: 10px; font-weight: 700;
+                  padding: 0 5px; font-family: "{NUM_FONT}"; }}
 
-    /* ---------- 顶栏 ---------- */
-    #TopBar {{ background: {t['surface']}; border-bottom: 1px solid {t['line']}; }}
-    #Crumb {{ color: {t['faint']}; }}
-    #CrumbCur {{ font-weight: 600; color: {t['text']}; }}
-    QPushButton#CrumbLink {{ font-weight: 500; background: transparent; border: none; padding: 0; color: {t['muted']}; }}
-    QPushButton#CrumbLink:hover {{ color: {t['accent']}; }}
-    QLineEdit#Search {{ background: {t['surface2']}; border: 1px solid {t['line']}; border-radius: 10px; padding: 7px 10px 7px 32px; }}
-    QLineEdit#Search:focus {{ background: {t['surface']}; border: 1px solid {t['accent']}; }}
+    /* ---------- 顶栏 + 标签 ---------- */
+    #TopBar {{ background: {t['side'] if dark else t['surface']}; border-bottom: 1px solid {t['line']}; }}
+    #TopEyebrow {{ color: {t['muted']}; font-size: 10px; font-weight: 700; letter-spacing: 1px; }}
+    #TopTitle {{ color: {t['text']}; font-size: 15px; font-weight: 700; }}
+    QLineEdit#Search {{ background: {t['surface2']}; border: 1px solid {t['border']}; border-radius: 10px;
+                        padding: 9px 64px 9px 36px; color: {t['text']}; }}
+    QLineEdit#Search:hover {{ border-color: {t['accent_ring']}; }}
+    QLineEdit#Search:focus {{ border: 1px solid {t['accent']}; }}
+    #KeyHint {{ color: {t['muted']}; border: 1px solid {t['border']}; border-radius: 6px; padding: 1px 6px;
+                font-family: "{NUM_FONT}"; font-size: 11px; background: transparent; }}
+    #TabStrip {{ background: {t['side'] if dark else t['surface']}; border-bottom: 1px solid {t['line']}; }}
+    QPushButton#TabBtn {{ background: transparent; border: none; border-radius: 0; border-bottom: 2px solid transparent;
+                          color: {t['muted']}; padding: 11px 2px 11px 2px; font-weight: 500; min-height: 0; }}
+    QPushButton#TabBtn:hover {{ background: transparent; color: {t['text']}; }}
+    QPushButton#TabBtn:checked {{ background: transparent; color: {t['text']}; border-bottom: 2px solid {t['accent']}; font-weight: 600; }}
     QPushButton#TopBtn {{ background: transparent; border: 1px solid transparent; border-radius: 9px; padding: 0;
                           min-width: 36px; max-width: 36px; min-height: 36px; max-height: 36px; }}
     QPushButton#TopBtn:hover {{ background: {t['hover']}; border-color: {t['line']}; }}
-    QPushButton#AgentBtn {{ background: {t['accent_soft']}; color: {t['accent']}; border: 1px solid {t['accent_ring']};
-                            border-radius: 9px; padding: 7px 14px; font-weight: 600; }}
+    QPushButton#AgentBtn {{ background: {t['accent_soft']}; color: {t['accent'] if not dark else '#CFE0FF'}; border: 1px solid {t['accent_ring']};
+                            border-radius: 10px; padding: 8px 14px; font-weight: 600; }}
     QPushButton#AgentBtn:hover {{ background: {t['accent']}; color: {t['on_accent']}; border-color: {t['accent']}; }}
     QPushButton#AgentBtn:checked {{ background: {t['accent']}; color: {t['on_accent']}; border-color: {t['accent']}; }}
     QComboBox#LangBox {{ min-height: 20px; background: transparent; border: 1px solid transparent; }}
     QComboBox#LangBox:hover {{ background: {t['hover']}; border-color: {t['line']}; }}
     #TopSep {{ background: {t['line']}; }}
-    #Avatar {{ background: {t['accent']}; color: #FFFFFF; border-radius: 16px; font-weight: 700; font-size: 13px; }}
-    #UserName {{ font-weight: 600; font-size: 12px; }}
-    #UserSub {{ color: {t['faint']}; font-size: 11px; }}
+    #Avatar {{ background: {t['side_active'] if dark else t['accent']}; color: {'#C9D4EA' if dark else '#FFFFFF'}; border-radius: 16px; font-weight: 700; font-size: 13px; }}
+    #DbTitle {{ font-size: 12px; font-weight: 600; }}
 
     /* ---------- 页面 ---------- */
     #PageTitle {{ font-size: 22px; font-weight: 700; color: {t['text']}; }}
@@ -521,6 +535,9 @@ ICONS = {
     "volantino": '<path d="M3 10v4h3l7 4V6L6 10z"/><path d="M16.5 9a4 4 0 0 1 0 6M19 6.5a7.5 7.5 0 0 1 0 11"/>',
     "griglia": '<rect x="4" y="4" width="16" height="16" rx="2"/><path d="M4 10h16M4 15h16M10 4v16"/>',
     "store_pdv": '<path d="M4 10l1.5-5h13L20 10"/><path d="M4 10v9h16v-9"/><path d="M9 19v-5h6v5"/>',
+    "truck": '<path d="M3 6h11v10H3zM14 9h4l3 3v4h-7"/><circle cx="7" cy="18" r="2"/><circle cx="17" cy="18" r="2"/>',
+    "spark": '<path d="M12 3l2.2 5.8L20 11l-5.8 2.2L12 19l-2.2-5.8L4 11l5.8-2.2z"/>',
+    "cart": '<circle cx="9" cy="20" r="1.5"/><circle cx="18" cy="20" r="1.5"/><path d="M2 3h3l2.5 12h12l2-8H6.2"/>',
 }
 
 

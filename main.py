@@ -40,7 +40,7 @@ _skip_pyside_source_scan()
 from PySide6.QtGui import (QColor, QPainter, QPen, QBrush, QFont, QIcon, QPixmap, QFontDatabase,
                            QTextCursor, QPainterPath, QKeySequence, QShortcut)
 from PySide6.QtSvg import QSvgRenderer
-from PySide6.QtWidgets import (QAbstractSpinBox, 
+from PySide6.QtWidgets import (QAbstractSpinBox, QToolButton, 
     QApplication, QMainWindow, QWidget, QFrame, QLabel, QPushButton, QLineEdit, QCheckBox,
     QHBoxLayout, QVBoxLayout, QGridLayout, QStackedWidget, QButtonGroup, QTextEdit,
     QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView, QFileDialog, QMessageBox,
@@ -103,7 +103,14 @@ file_logger = _setup_file_logger()
 # =====================================================================
 import theme
 from theme import T, build_qss, icon, app_icon, UI_FONT, NUM_FONT, ICONS, THEMES
-theme.set_theme(settings.get("theme", "light"))
+if not settings.get("ui_dark_v2"):          # 2026-11-15 用户：新界面先用深色（顶栏可以切回浅色），每台电脑只换一次
+    settings["theme"] = "dark"
+    settings["ui_dark_v2"] = True
+    try:
+        save_settings(settings)
+    except Exception:
+        pass
+theme.set_theme(settings.get("theme", "dark"))
 
 
 # =====================================================================
@@ -2787,10 +2794,25 @@ def _all_pages(side, sub_pages):
     return list(side) + [(k, t) for subs in sub_pages.values() for k, t in subs if k not in on_side]
 
 
+class _SearchBox(QLineEdit):
+    """顶栏搜索框：右边一个「Ctrl K」小标"""
+
+    def __init__(self):
+        super().__init__()
+        self.hint = QLabel("Ctrl K", self)
+        self.hint.setObjectName("KeyHint")
+        self.hint.setAttribute(Qt.WA_TransparentForMouseEvents)
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self.hint.adjustSize()
+        self.hint.move(self.width() - self.hint.width() - 10, (self.height() - self.hint.height()) // 2)
+
+
 class MainWindow(QMainWindow):
     # 货物分配系统是主系统；采购管理是其中一个模块
     NAV_GROUPS = [
-        (tr("概览"), [("home", tr("工作台"))]),
+        (tr("概览"), [("home", tr("驾驶舱"))]),
         (tr("采购管理"), [("store_orders", tr("LUCAS定制采购")), ("order", tr("DETERSIVO采购")),
                         ("tracking", tr("采购订单跟踪"))]),
         (tr("销售分析"), [("volantino", tr("促销分析"))]),
@@ -2809,6 +2831,15 @@ class MainWindow(QMainWindow):
     NAV = _all_pages(NAV_SIDE, SUB_PAGES)                                    # 所有页面（含标签页）
     NAV_SECTION = {k: g for g, items in NAV_GROUPS for k, _ in items}
     SOON = set()          # 还没做的模块（侧边栏上标「二期」）
+    # 2026-11-15 第 2 轮（用户：全面重构、要科技感、流程简洁）：左边一条图标栏，六个入口；
+    # 一个入口里有几页的，顶栏下面一排标签切换。NAV / SUB_PAGES 照旧（页面编号、别的代码都按它们）
+    RAIL = [("home", tr("驾驶舱"), "home", ["home"]),
+            ("buy", tr("采购"), "cart",
+             ["store_orders", "store_pdv", "order", "result", "history", "rules", "search", "griglia"]),
+            ("tracking", tr("订单"), "truck", ["tracking"]),
+            ("analysis", tr("分析"), "result", ["volantino"]),
+            ("data", tr("数据"), "db", ["distribution", "import"]),
+            ("settings", tr("设置"), "rules", ["settings", "log"])]
 
     def __init__(self):
         super().__init__()
@@ -2852,6 +2883,7 @@ class MainWindow(QMainWindow):
         rv.setSpacing(0)
         self._last_sub = {}
         rv.addWidget(self._build_topbar())
+        rv.addWidget(self._build_tabstrip())
         self.stack = QStackedWidget()
         self.stack.setObjectName("Content")
         rv.addWidget(self.stack, 1)
@@ -2901,9 +2933,9 @@ class MainWindow(QMainWindow):
         self._startup_done = False
         for _ in self.NAV:
             self.stack.addWidget(QWidget())                 # 先占位
-        theme.set_theme(settings.get("theme", "light"))     # 主题先套上：第一页出来就是对的样子
+        theme.set_theme(settings.get("theme", "dark"))     # 主题先套上：第一页出来就是对的样子
         QApplication.instance().setStyleSheet(build_qss())
-        self._qss_theme = settings.get("theme", "light")
+        self._qss_theme = settings.get("theme", "dark")
         keys = [k for k, _ in self.NAV]
         for key in ("store_orders", "home"):
             self._build_page(keys.index(key))
@@ -3006,7 +3038,7 @@ class MainWindow(QMainWindow):
         self.refresh_history()
         mark("refresh_history")
         # 样式表开头已经套过（套一次要零点几秒）；这期间换过深浅色才再套
-        self.apply_theme(qss=settings.get("theme", "light") != self._qss_theme)
+        self.apply_theme(qss=settings.get("theme", "dark") != self._qss_theme)
         mark("apply_theme")
         QTimer.singleShot(5000, lambda: threading.Thread(target=_preload_libs, daemon=True).start())
         self.log(tr("{0} {1} 启动 {2:%Y-%m-%d %H:%M:%S}", APP_NAME, APP_VERSION, datetime.now()))
@@ -3055,197 +3087,172 @@ class MainWindow(QMainWindow):
         lay.addSpacing(2)
         return w, lay
 
+    def _tab_label(self, key):
+        """标签 / 顶栏标题用的页面名字"""
+        if key == "order":
+            return tr("DETERSIVO采购")
+        for subs in self.SUB_PAGES.values():
+            for k, t in subs:
+                if k == key:
+                    return t
+        return dict(self.NAV).get(key, key)
+
+    def _rail_of(self, key):
+        for rid, _t, _i, pages in self.RAIL:
+            if key in pages:
+                return rid
+        return "home"
+
     def _build_sidebar(self):
+        """左边图标栏（76 宽）：品牌方块 + 六个入口（设置放最下面）"""
         side = QFrame()
-        side.setObjectName("Sidebar")
-        side.setFixedWidth(240)
+        side.setObjectName("Rail")
+        side.setFixedWidth(76)
         v = QVBoxLayout(side)
-        v.setContentsMargins(0, 0, 0, 12)
-        v.setSpacing(0)
-        top = QHBoxLayout()
-        top.setContentsMargins(20, 18, 18, 16)
-        top.setSpacing(11)
-        logo = QLabel()
-        logo.setPixmap(app_icon().pixmap(36, 36))
-        col = QVBoxLayout()
-        col.setSpacing(1)
-        brand = QLabel(APP_NAME)
-        brand.setObjectName("Brand")
-        brand.setWordWrap(True)     # 英文 / 意大利文名字较长时换行
-        sub = QLabel(f"{tr('采购 · 分货管理')} · {APP_VERSION}")
-        sub.setObjectName("BrandSub")
-        sub.setWordWrap(True)
-        col.addWidget(brand)
-        col.addWidget(sub)
-        top.addWidget(logo)
-        top.addLayout(col, 1)
-        v.addLayout(top)
-        bl_ = QFrame()
-        bl_.setObjectName("BrandLine")
-        bl_.setFixedHeight(1)
-        v.addWidget(bl_)
-
-        nav = QWidget()
-        nav.setObjectName("SidebarNav")
-        nv = QVBoxLayout(nav)
-        nv.setContentsMargins(12, 4, 12, 0)
-        nv.setSpacing(2)
-        self.nav_group = QButtonGroup(self)
-        self.nav_group.setExclusive(True)
-        self.nav_sub_btns = {}     # 二级菜单按钮 {页面: 按钮}
-        self.nav_tree = {}         # 有二级菜单的父菜单 {页面: (按钮, 箭头, 子菜单)}
-        self.nav_btns = []
+        v.setContentsMargins(8, 14, 8, 14)
+        v.setSpacing(4)
+        logo = QLabel("C&&T".replace("&&", "&"))
+        logo.setObjectName("RailLogo")
+        logo.setFixedSize(52, 42)
+        logo.setAlignment(Qt.AlignCenter)
+        logo.setToolTip(f"{APP_NAME} {APP_VERSION}")
+        v.addWidget(logo, 0, Qt.AlignHCenter)
+        v.addSpacing(14)
+        self.rail_group = QButtonGroup(self)
+        self.rail_group.setExclusive(True)
+        self.rail_btns = {}
         self.nav_badges = {}
-        idx = 0
-        for gname, items in self.NAV_GROUPS:
-            gl = QLabel(gname.upper())
-            gl.setObjectName("NavGroup")
-            nv.addWidget(gl)
-            for key, text in items:
-                b = QPushButton("  " + text.replace("&", "&&"))
-                b.setObjectName("NavBtn")
-                b.setCheckable(True)
-                b.setCursor(Qt.PointingHandCursor)
-                b.setIconSize(QSize(18, 18))
-                b.clicked.connect(lambda _=False, k=key: self._side_clicked(k))
-                self.nav_group.addButton(b, idx)
-                self.nav_btns.append((b, key))
-                b.toggled.connect(lambda on, b=b, k=key: b.setIcon(icon(k, "#FFFFFF" if on else T("side_text"))))
-                bl = QHBoxLayout(b)
-                bl.setContentsMargins(0, 0, 8, 0)
-                bl.addStretch()
-                if key in self.SOON:
-                    tag = QLabel(tr("二期"))
-                    tag.setObjectName("NavSoon")
-                    tag.setFixedHeight(17)
-                    tag.setAlignment(Qt.AlignCenter)
-                    bl.addWidget(tag, 0, Qt.AlignVCenter)
-                else:
-                    badge = QLabel("")
-                    badge.setObjectName("NavBadge")
-                    badge.setFixedHeight(17)
-                    badge.setMinimumWidth(20)
-                    badge.setAlignment(Qt.AlignCenter)
-                    badge.hide()
-                    bl.addWidget(badge, 0, Qt.AlignVCenter)
-                    self.nav_badges[key] = badge
-                nv.addWidget(b)
-                idx += 1
-                if key in self.SUB_PAGES:
-                    # 二级菜单：父菜单只负责展开 / 进入，自己不参与「选中」；右边一个小箭头
-                    self.nav_group.removeButton(b)
-                    b.setCheckable(False)
-                    arrow = QLabel("›")
-                    arrow.setObjectName("NavArrow")
-                    bl.addWidget(arrow, 0, Qt.AlignVCenter)
-                    box = QFrame()
-                    box.setObjectName("NavSubBox")
-                    sv = QVBoxLayout(box)
-                    sv.setContentsMargins(0, 2, 0, 4)
-                    sv.setSpacing(1)
-                    for sk, st in self.SUB_PAGES[key]:
-                        c = QPushButton(st.replace("&", "&&"))
-                        c.setObjectName("NavSub")
-                        c.setCheckable(True)
-                        c.setCursor(Qt.PointingHandCursor)
-                        c.clicked.connect(lambda _=False, k=sk: self.go_page(k))
-                        self.nav_group.addButton(c)
-                        self.nav_sub_btns[sk] = c
-                        sv.addWidget(c)
-                    wrap = QWidget()
-                    wl = QHBoxLayout(wrap)
-                    wl.setContentsMargins(22, 0, 0, 0)       # 缩进，左边一条细竖线（NavSubBox 的左边框）
-                    wl.addWidget(box)
-                    wrap.hide()
-                    nv.addWidget(wrap)
-                    self.nav_tree[key] = (b, arrow, wrap)
-            nv.addSpacing(2)
-        nv.addStretch()
-        sa = QScrollArea()
-        sa.setWidgetResizable(True)
-        sa.setFrameShape(QFrame.NoFrame)
-        sa.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        sa.setWidget(nav)
-        sa.setStyleSheet("QScrollArea{background:transparent;}")
-        v.addWidget(sa, 1)
-
-        db = QFrame()
-        db.setObjectName("DbBox")
-        dv = QVBoxLayout(db)
-        dv.setContentsMargins(12, 10, 12, 10)
-        dv.setSpacing(3)
-        row = QHBoxLayout()
-        row.setSpacing(8)
-        self.db_dot = QLabel()
-        self.db_dot.setFixedSize(8, 8)
-        self.db_title = QLabel(tr("正在检查数据库…"))
-        self.db_title.setObjectName("DbTitle")
-        row.addWidget(self.db_dot)
-        row.addWidget(self.db_title, 1)
-        dv.addLayout(row)
-        self.db_sub = QLabel("")
-        self.db_sub.setObjectName("DbSub")
-        dv.addWidget(self.db_sub)
-        db.setCursor(Qt.PointingHandCursor)
-        db.mousePressEvent = lambda _e: self.go_page("settings")
-        wrap = QHBoxLayout()
-        wrap.setContentsMargins(12, 8, 12, 0)
-        wrap.addWidget(db)
-        v.addLayout(wrap)
-        self._set_db_state(None)
+        for rid, text, _ic, pages in self.RAIL:
+            if rid == "settings":
+                v.addStretch()
+            b = QToolButton()
+            b.setObjectName("RailBtn")
+            b.setText(text)
+            b.setCheckable(True)
+            b.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
+            b.setIconSize(QSize(22, 22))
+            b.setFixedSize(60, 58)
+            b.setCursor(Qt.PointingHandCursor)
+            b.setToolTip(" · ".join(self._tab_label(k) for k in pages))
+            b.clicked.connect(lambda _=False, r=rid: self._rail_clicked(r))
+            self.rail_group.addButton(b)
+            self.rail_btns[rid] = b
+            badge = QLabel("", b)
+            badge.setObjectName("RailBadge")
+            badge.setFixedHeight(18)
+            badge.setMinimumWidth(18)
+            badge.setAlignment(Qt.AlignCenter)
+            badge.move(38, 2)
+            badge.hide()
+            for k in pages:
+                self.nav_badges[k] = badge
+            v.addWidget(b, 0, Qt.AlignHCenter)
         return side
 
+    def _paint_rail(self):
+        for rid, _t, ic, _p in self.RAIL:
+            b = self.rail_btns[rid]
+            b.setIcon(icon(ic, "#FFFFFF" if b.isChecked() else T("side_text"), 22))
+
+    def _rail_clicked(self, rid):
+        pages = dict((r, p) for r, _t, _i, p in self.RAIL)[rid]
+        self.go_page(self._last_sub.get(rid, pages[0]))
+
+    def _build_tabstrip(self):
+        """一个入口里有几页（采购 / 数据 / 设置）：顶栏下面一排标签"""
+        bar = QFrame()
+        bar.setObjectName("TabStrip")
+        bar.setFixedHeight(44)
+        h = QHBoxLayout(bar)
+        h.setContentsMargins(28, 0, 28, 0)
+        h.setSpacing(26)
+        self.tab_group = QButtonGroup(self)
+        self.tab_group.setExclusive(True)
+        self.tab_btns = {}
+        for _rid, _t, _i, pages in self.RAIL:
+            if len(pages) < 2:
+                continue
+            for k in pages:
+                b = QPushButton(self._tab_label(k).replace("&", "&&"))
+                b.setObjectName("TabBtn")
+                b.setCheckable(True)
+                b.setCursor(Qt.PointingHandCursor)
+                b.clicked.connect(lambda _=False, kk=k: self.go_page(kk))
+                self.tab_group.addButton(b)
+                self.tab_btns[k] = b
+                h.addWidget(b)
+                b.hide()
+        h.addStretch()
+        self.tabstrip = bar
+        return bar
+
     def _build_topbar(self):
-        from PySide6.QtWidgets import QCompleter, QMenu
+        from PySide6.QtWidgets import QCompleter, QMenu, QSizePolicy
         bar = QFrame()
         bar.setObjectName("TopBar")
-        bar.setFixedHeight(60)
+        bar.setFixedHeight(64)
         h = QHBoxLayout(bar)
         h.setContentsMargins(28, 0, 20, 0)
-        h.setSpacing(10)
-        self.crumb_sec = QLabel("")
-        self.crumb_sec.setObjectName("Crumb")
-        sep = QLabel("/")
-        sep.setObjectName("Crumb")
-        # 批发商比价的标签页（比价结果、历史记录…）：「批发商比价」可以点，回到比价主页面
-        self.crumb_parent = QPushButton("")
-        self.crumb_parent.setObjectName("CrumbLink")
-        self.crumb_parent.setCursor(Qt.PointingHandCursor)
-        self.crumb_parent.setToolTip(tr("回到这一块的主页面"))
-        self.crumb_parent.clicked.connect(self._crumb_back)
-        self.crumb_sep2 = QLabel("/")
-        self.crumb_sep2.setObjectName("Crumb")
-        self.crumb_cur = QLabel("")
-        self.crumb_cur.setObjectName("CrumbCur")
-        h.addWidget(self.crumb_sec)
-        h.addWidget(sep)
-        h.addWidget(self.crumb_parent)
-        h.addWidget(self.crumb_sep2)
-        h.addWidget(self.crumb_cur)
-        h.addStretch()
-        from erp_widgets import BgTaskPill
-        self.bg_pill = BgTaskPill(bar)          # 后台运行中的任务：进度 + 点一下看详情（没有时藏起来）
-        h.addWidget(self.bg_pill)
-        self.agent_btn = QPushButton(tr("✦ 助手"))
-        self.agent_btn.setObjectName("AgentBtn")
-        self.agent_btn.setCursor(Qt.PointingHandCursor)
-        self.agent_btn.setToolTip(tr("让助手查供应商、算建议量、生成采购订单、查订单、核对邮件；改数据前都会问你"))
-        self.agent_btn.clicked.connect(lambda: self.toggle_agent())
-        h.addWidget(self.agent_btn)
-        self.search = QLineEdit()
+        h.setSpacing(12)
+        tc = QVBoxLayout()
+        tc.setSpacing(1)
+        self.top_eyebrow = QLabel("")
+        self.top_eyebrow.setObjectName("TopEyebrow")
+        self.top_title = QLabel("")
+        self.top_title.setObjectName("TopTitle")
+        tc.addWidget(self.top_eyebrow)
+        tc.addWidget(self.top_title)
+        tw = QWidget()
+        tw.setLayout(tc)
+        tw.setMinimumWidth(150)
+        h.addWidget(tw)
+        h.addSpacing(8)
+        self.search = _SearchBox()
         self.search.setObjectName("Search")
-        self.search.setPlaceholderText(tr("搜索功能页面…  Ctrl K"))
-        self.search.setFixedWidth(300)
+        self.search.setPlaceholderText(tr("搜页面，或直接告诉助手要做什么…"))
+        self.search.setToolTip(tr("输入页面名字回车直接过去；输入别的（例如「今天该订什么」）回车交给采购助手"))
+        self.search.setMinimumWidth(240)
+        self.search.setMaximumWidth(460)
+        self.search.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.search_icon = QLabel(self.search)
-        self.search_icon.move(11, 10)
+        self.search_icon.move(13, 13)
+        self.search_key = self.search.hint
         comp = QCompleter([t for _, t in self.NAV], self.search)
         comp.setCaseSensitivity(Qt.CaseInsensitive)
         comp.setFilterMode(Qt.MatchContains)
         comp.activated.connect(self._search_go)
         self.search.setCompleter(comp)
         self.search.returnPressed.connect(lambda: self._search_go(self.search.text()))
-        h.addWidget(self.search)
+        h.addWidget(self.search, 1)
         QShortcut(QKeySequence("Ctrl+K"), self, activated=lambda: (self.search.setFocus(), self.search.selectAll()))
+        h.addStretch()
+        from erp_widgets import BgTaskPill
+        self.bg_pill = BgTaskPill(bar)          # 后台运行中的任务：进度 + 点一下看详情（没有时藏起来）
+        h.addWidget(self.bg_pill)
+        # 数据库状态（以前在侧边栏左下角）：一个小胶囊，点了去系统设置
+        self.db_pill = QFrame()
+        self.db_pill.setObjectName("DbPill")
+        self.db_pill.setFixedHeight(32)
+        self.db_pill.setCursor(Qt.PointingHandCursor)
+        self.db_pill.mousePressEvent = lambda _e: self.go_page("settings")
+        dp = QHBoxLayout(self.db_pill)
+        dp.setContentsMargins(12, 0, 14, 0)
+        dp.setSpacing(8)
+        self.db_dot = QLabel()
+        self.db_dot.setFixedSize(8, 8)
+        self.db_title = QLabel(tr("正在检查数据库…"))
+        self.db_title.setObjectName("DbTitle")
+        self.db_sub = QLabel("")                # 数据库地址：放进鼠标提示
+        self.db_sub.hide()
+        dp.addWidget(self.db_dot)
+        dp.addWidget(self.db_title)
+        h.addWidget(self.db_pill)
+        self.agent_btn = QPushButton(tr("✦ 助手"))
+        self.agent_btn.setObjectName("AgentBtn")
+        self.agent_btn.setCursor(Qt.PointingHandCursor)
+        self.agent_btn.setToolTip(tr("让助手查供应商、算建议量、生成采购订单、查订单、核对邮件；改数据前都会问你"))
+        self.agent_btn.clicked.connect(lambda: self.toggle_agent())
+        h.addWidget(self.agent_btn)
 
         self.bell = QPushButton()
         self.bell.setObjectName("TopBtn")
@@ -3270,32 +3277,17 @@ class MainWindow(QMainWindow):
         self.lang_box.setCurrentIndex(max(0, self.lang_box.findData(get_language())))
         self.lang_box.currentIndexChanged.connect(self.change_language)
         h.addWidget(self.lang_box)
-        user = QHBoxLayout()
-        user.setSpacing(8)
         name = settings.get("user_name") or tr("采购部")
         av = QLabel(name[:1])
         av.setObjectName("Avatar")
         av.setFixedSize(32, 32)
         av.setAlignment(Qt.AlignCenter)
-        uc = QVBoxLayout()
-        uc.setSpacing(0)
-        un = QLabel(name)
-        un.setObjectName("UserName")
-        us = QLabel(settings.get("user_site") or tr("BMS 总仓"))
-        us.setObjectName("UserSub")
-        uc.addWidget(un)
-        uc.addWidget(us)
-        user.addWidget(av)
-        user.addLayout(uc)
-        uw = QWidget()
-        uw.setLayout(user)
+        av.setToolTip(f"{name} · {settings.get('user_site') or tr('BMS 总仓')}")
         tsep = QFrame()
         tsep.setObjectName("TopSep")
         tsep.setFixedSize(1, 26)
-        h.addSpacing(2)
         h.addWidget(tsep)
-        h.addSpacing(6)
-        h.addWidget(uw)
+        h.addWidget(av)
         return bar
 
     def _search_go(self, text):
@@ -3308,7 +3300,13 @@ class MainWindow(QMainWindow):
                 self.search.clear()
                 self.search.clearFocus()
                 return
-        self.show_toast(tr("没有找到「{0}」", text))
+        # 不是页面名字：交给采购助手（用户 2026-11-15 定的新界面：一个框，搜页面或直接说要做什么）
+        raw = self.search.text().strip()
+        self.search.clear()
+        self.search.clearFocus()
+        self.toggle_agent(True)
+        if self.agent_panel is not None and raw:
+            self.agent_panel.send(raw)
 
     def _show_notes(self):
         m = self.bell_menu
@@ -3340,6 +3338,9 @@ class MainWindow(QMainWindow):
         if b is None:
             return
         b.setText(str(value) if value else "")
+        b.adjustSize()
+        b.setFixedWidth(max(18, b.sizeHint().width()))
+        b.move(60 - b.width() - 2, 2)
         b.setVisible(bool(value))
 
     # ---------- 数据库状态 ----------
@@ -3351,17 +3352,20 @@ class MainWindow(QMainWindow):
         stale = late is not None and late > R.STALE_DAYS
         color = (T("warn") if stale else T("ok")) if ok else ("#E7A23A" if ok is None else T("err"))
         self.db_dot.setStyleSheet(f"background:{color}; border-radius:4px;")
+        c = QColor(color)
+        self.db_pill.setStyleSheet(f"#DbPill {{ background: rgba({c.red()},{c.green()},{c.blue()},0.10); "
+                                   f"border: 1px solid rgba({c.red()},{c.green()},{c.blue()},0.35); border-radius: 16px; }}"
+                                   f"#DbTitle {{ color: {color}; font-size: 12px; font-weight: 600; }}")
         if stale:            # 连上了，但数据停在几天前（诊断 36：同步停了一周，配货 / 检查清单都会用旧销量、旧库存）
             self.db_title.setText(tr("⚠ 数据只到 {0}", upto.strftime("%d/%m")))
-            self.db_title.setStyleSheet(f"color:{T('warn')};")
             self.db_title.setToolTip(tr("数据库里最新的销售是 {0}，已经 {1} 天没同步：销量、库存都是那天的，配货和检查清单会按旧数据算。请联系负责数据库同步的人。",
                                         upto.strftime("%d/%m/%Y %H:%M"), late))
         else:
             self.db_title.setText(tr("数据库已连接") if ok else (tr("正在检查数据库…") if ok is None else tr("数据库未连接")))
-            self.db_title.setStyleSheet("")
             self.db_title.setToolTip("")
         if sub is not None:
             self.db_sub.setText(sub)
+        self.db_pill.setToolTip("\n".join(x for x in (self.db_title.toolTip(), self.db_sub.text()) if x))
 
     def _on_db_state(self, ok):
         self._set_db_state(ok)
@@ -3410,10 +3414,6 @@ class MainWindow(QMainWindow):
 
         threading.Thread(target=work, daemon=True).start()
 
-    def _crumb_back(self):
-        if getattr(self, "_crumb_home", None):
-            self.go_page(self._crumb_home)
-
     def toggle_agent(self, show=None):
         """右边的采购助手面板：打开 / 收起（第一次打开时才建）"""
         if self.agent_panel is None:
@@ -3436,78 +3436,51 @@ class MainWindow(QMainWindow):
     def _fit_topbar(self):
         """助手面板开着时顶栏窄了：搜索框缩短（1366 宽的笔记本也放得下）"""
         on = self.agent_panel is not None and self.agent_panel.isVisible()
-        self.search.setFixedWidth(180 if on else 320)
+        self.search.setMaximumWidth(260 if on else 460)
 
     def go_page(self, key):
         self.go([k for k, _ in self.NAV].index(key))
 
     def go(self, i):
-        """i = 页面在 NAV 里的位置（侧边栏的页面在前，批发商比价里的标签页在后）"""
+        """i = 页面在 NAV 里的位置"""
         if not self._startup_done and self.NAV[i][0] != "home":
             self._ensure_all()
         if self.pages[i] is None:
             self._build_page(i)
         self.stack.setCurrentIndex(i)
         key, text = self.NAV[i]
-        parent = self.SUB_PARENT.get(key, key)
-        side = [k for k, _ in self.NAV_SIDE]
-        if key in self.nav_sub_btns:
-            self.nav_sub_btns[key].setChecked(True)
-        elif parent in side:
-            self.nav_btns[side.index(parent)][0].setChecked(True)
-        ptext = dict(self.NAV_SIDE).get(parent, text)
-        self.crumb_sec.setText(self.NAV_SECTION.get(parent, ""))
-        sub = parent in self.SUB_PAGES
-        self._crumb_home = self.SUB_PAGES[parent][0][0] if sub else None
-        self.crumb_parent.setText(ptext)
-        self.crumb_parent.setVisible(sub)
-        self.crumb_sep2.setVisible(sub)
-        # 面包屑最后一段写子页面自己的名字（「LUCAS定制采购 / 总仓采购」，以前第一页会重复写一遍上一级）
-        self.crumb_cur.setText(dict(self.SUB_PAGES[parent]).get(key, text) if sub else ptext)
-        # 二级菜单：在这一块里就展开，换到别的模块就收起（同一时间只展开一组）
-        for pk, (pb, arrow, wrap) in self.nav_tree.items():
-            on = pk == parent
-            wrap.setVisible(on)
-            arrow.setText("⌄" if on else "›")
-            pb.setProperty("open", on)
-            pb.style().unpolish(pb)
-            pb.style().polish(pb)
-            pb.setIcon(icon(pk, "#FFFFFF" if on else T("side_text")))
-        if parent in self.SUB_PAGES:
-            self._last_sub[parent] = key
+        rid = self._rail_of(key)
+        rail = {r: (t, p) for r, t, _i, p in self.RAIL}
+        self.rail_btns[rid].setChecked(True)
+        pages = rail[rid][1]
+        multi = len(pages) > 1
+        for k, b in self.tab_btns.items():
+            b.setVisible(multi and k in pages)
+        if key in self.tab_btns:
+            self.tab_btns[key].setChecked(True)
+        self.tabstrip.setVisible(multi)
+        self.top_eyebrow.setText(rail[rid][0].upper() if multi else APP_NAME.upper())
+        self.top_title.setText(self._tab_label(key))
+        self._last_sub[rid] = key
+        self._paint_rail()
         if key == "home" and hasattr(self, "dashboard"):
             self.dashboard.refresh()
         if key == "order" and hasattr(self, "price_mail"):
             self.price_mail.maybe_check(self.ws_root())      # 后台看邮件里有没有新报价（30 分钟最多一次）
 
-    def _side_clicked(self, key):
-        """侧边栏一级菜单。有二级菜单的（批发商比价）：不在这一块里 → 展开并回到上次看的那一页；
-        已经在这一块里 → 只是收起 / 展开子菜单，不换页面"""
-        cur = self.NAV[self.stack.currentIndex()][0] if self.stack.count() else None
-        if key in self.nav_tree and self.SUB_PARENT.get(cur, cur) == key:
-            pb, arrow, wrap = self.nav_tree[key]
-            show = wrap.isHidden()
-            wrap.setVisible(show)
-            arrow.setText("⌄" if show else "›")
-            return
-        self.go_page(self._last_sub.get(key, key))
-
     def apply_theme(self, qss=True):
         if not getattr(self, "_startup_done", True):
             return                                       # 页面还没建完：建完时会套一次
-        theme.set_theme(settings.get("theme", "light"))
+        theme.set_theme(settings.get("theme", "dark"))
         if qss:
             QApplication.instance().setStyleSheet(build_qss())
             theme.refresh_frozen()
-        for b, ic in self.nav_btns:
-            b.setIcon(icon(ic, "#FFFFFF" if b.isChecked() else T("side_text")))
-        for pk, (pb, _arrow, _wrap) in self.nav_tree.items():
-            pb.setIcon(icon(pk, "#FFFFFF" if pb.property("open") else T("side_text")))
+        self._paint_rail()
         dark = settings.get("theme") == "dark"
         self.theme_btn.setIcon(icon("sun" if dark else "moon", T("muted"), 16))
         self.theme_btn.setToolTip(tr("浅色模式") if dark else tr("深色模式"))
         self.bell.setIcon(icon("bell", T("muted"), 16))
-        self.search_icon.setPixmap(icon("search", T("muted"), 14).pixmap(14, 14))
+        self.search_icon.setPixmap(icon("search", T("muted"), 15).pixmap(15, 15))
         self.bell_dot.setStyleSheet(f"background:{T('err')}; border-radius:4px;")
         self._set_db_state(getattr(self, "_db_ok", None))
         for pg in (getattr(self, "dashboard", None), getattr(self, "store_orders", None), getattr(self, "store_pdv", None),
