@@ -4,7 +4,7 @@
 """
 import json
 
-COMPANY_DEFAULTS_VER = 17          # v3.3.21 发布时同步
+COMPANY_DEFAULTS_VER = 18          # v3.3.22 发布时同步
 
 COMPANY_DEFAULTS = json.loads(r'''
 {
@@ -362,9 +362,9 @@ COMPANY_DEFAULTS = json.loads(r'''
    "2": 130,
    "20": 76,
    "21": 104,
-   "22": 0,
+   "22": 80,
    "23": 0,
-   "24": 0,
+   "24": 110,
    "25": 0,
    "26": 0,
    "27": 203,
@@ -786,7 +786,78 @@ COMPANY_DEFAULTS = json.loads(r'''
   "transit_dlg_cols_hidden": [],
   "transit_dlg_cols_hidden_ver": 1,
   "transit_dlg_columns_ver": 1,
-  "written_at": "11-09 11:30"
+  "written_at": "11-15 14:40"
+ },
+ "volantino": {
+  "items_cols_cols_hidden": [
+   0
+  ],
+  "items_cols_cols_hidden_ver": 1,
+  "items_cols_columns": [
+   0,
+   1,
+   2,
+   3,
+   4,
+   5,
+   6,
+   7,
+   8,
+   9,
+   10,
+   11,
+   12,
+   13,
+   14
+  ],
+  "items_cols_columns_ver": 1,
+  "items_cols_widths": {
+   "0": 0,
+   "1": 344,
+   "10": 74,
+   "11": 74,
+   "12": 74,
+   "13": 87,
+   "14": 0,
+   "2": 72,
+   "3": 66,
+   "4": 100,
+   "5": 90,
+   "6": 74,
+   "7": 90,
+   "8": 86,
+   "9": 84
+  },
+  "kind": "volantino",
+  "stores_cols_cols_hidden": [],
+  "stores_cols_cols_hidden_ver": 1,
+  "stores_cols_columns": [
+   0,
+   1,
+   2,
+   3,
+   4,
+   5,
+   6,
+   7,
+   8,
+   9,
+   10
+  ],
+  "stores_cols_columns_ver": 1,
+  "stores_cols_widths": {
+   "0": 213,
+   "1": 114,
+   "10": 128,
+   "2": 171,
+   "3": 156,
+   "4": 128,
+   "5": 156,
+   "6": 128,
+   "7": 156,
+   "8": 142,
+   "9": 142
+  }
  },
  "wholesale_transfer": {
   "enabled": false,
