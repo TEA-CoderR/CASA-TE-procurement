@@ -72,6 +72,10 @@ START_HEADS = ("start", "inizio", "datainizio", "dal", "开始")
 END_HEADS = ("end", "fine", "datafine", "al", "结束")
 KINDS = (("volantino", "VOLANTINO"), ("natale", "圣诞货"))
 _NATALE = re.compile(r"natal|xmas|christmas|圣诞", re.I)
+NATALE_SHARE = 0.25      # 数据库促销单：商品名里有 NATAL / LED / ALBERO… 的占这么多 → 当圣诞货（诊断 54：41 号单 38%）
+_NATALE_SQL = ("p.Descrizione LIKE '%%NATAL%%' OR p.Descrizione LIKE '%%LED%%' OR p.Descrizione LIKE '%%ALBERO%%' "
+               "OR p.Descrizione LIKE '%%PRESEP%%' OR p.Descrizione LIKE '%%XMAS%%' OR p.Descrizione LIKE '%%BEFANA%%' "
+               "OR p.Descrizione LIKE '%%PALLINE%%' OR p.Descrizione LIKE '%%ADDOBB%%'")
 
 
 def kind_of(p):
@@ -79,7 +83,9 @@ def kind_of(p):
     k = (p or {}).get("kind")
     if k in dict(KINDS):
         return k
-    return "natale" if _NATALE.search(str((p or {}).get("name") or "")) else "volantino"
+    if _NATALE.search(str((p or {}).get("name") or "")):
+        return "natale"
+    return "natale" if (p or {}).get("natale_share", 0) >= NATALE_SHARE else "volantino"
 
 
 def kind_label(k):
@@ -211,21 +217,59 @@ def store_path(base):
 
 
 def load_periods(base):
+    return [p for p in _read_store(base).get("periods") or [] if p.get("start") and p.get("end")]
+
+
+def _read_store(base):
     try:
         with open(store_path(base), encoding="utf-8") as f:
-            data = json.load(f)
-        return [p for p in data.get("periods") or [] if p.get("start") and p.get("end")]
+            return json.load(f)
     except (OSError, ValueError):
-        return []
+        return {}
 
 
-def save_periods(base, periods):
+def _write_store(base, data):
     p = store_path(base)
     os.makedirs(os.path.dirname(p), exist_ok=True)
     tmp = p + ".tmp"
     with open(tmp, "w", encoding="utf-8", newline="") as f:
-        json.dump({"periods": [x for x in periods if x.get("source") != "db"]}, f, ensure_ascii=False, indent=0)
+        json.dump(data, f, ensure_ascii=False, indent=0)
     os.replace(tmp, p)
+
+
+def save_periods(base, periods):
+    data = _read_store(base)
+    data["periods"] = [x for x in periods if x.get("source") != "db"]
+    _write_store(base, data)
+
+
+DB_EDITABLE = ("name", "kind", "start", "end", "stores")
+
+
+def load_overrides(base):
+    """数据库促销单在程序里改过的（名称 / 类型 / 日期 / 门店）：{"db41": {...}}，数据库本身不动"""
+    return _read_store(base).get("db") or {}
+
+
+def save_override(base, pid, values):
+    data = _read_store(base)
+    db = data.setdefault("db", {})
+    if values:
+        db[pid] = {k: values[k] for k in DB_EDITABLE if k in values}
+    else:
+        db.pop(pid, None)
+    _write_store(base, data)
+
+
+def apply_overrides(periods, ov):
+    """数据库来的几期套上程序里改过的（原来的值记在 orig 里，界面能「恢复数据库原样」）"""
+    out = []
+    for p in periods:
+        o = ov.get(p.get("id"))
+        if o:
+            p = dict(p, orig={k: p.get(k) for k in DB_EDITABLE}, **o)
+        out.append(p)
+    return out
 
 
 def new_id(periods):
@@ -249,14 +293,19 @@ def _stores_of(neg):
 
 
 def db_periods(db, since=None):
-    """数据库里的促销单（最近的在前）：[{… source "db", promo, items 空（选中时再读）}]；查不了返回 []"""
+    """
+    数据库里的促销单（最近的在前）：[{… source "db", promo, name, natale_share, items 空（选中时再读）}]；查不了返回 []
+    名称用 promozioni.Descrizione（诊断 43：促销单自己有名称），没有再看 promozioni_volantino 的标题
+    """
     import pandas as pd
     since = since or (date.today() - timedelta(days=400))
     try:
-        df = pd.read_sql("SELECT p.l, p.Data_a, p.Data_f, p.negozio, COUNT(pl.CodArticolo) AS n "
-                         "FROM promozioni p LEFT JOIN promozioni_list pl ON pl.promozioni_l = p.l "
-                         "AND (pl.invalid IS NULL OR pl.invalid = 0) "
-                         "WHERE p.Data_f >= %s GROUP BY p.l, p.Data_a, p.Data_f, p.negozio", db.engine, params=(since,))
+        df = pd.read_sql("SELECT pr.*, x.n, x.natale FROM promozioni pr JOIN ("
+                         "SELECT pl.promozioni_l AS pid, COUNT(*) AS n, "
+                         f"SUM(CASE WHEN {_NATALE_SQL} THEN 1 ELSE 0 END) AS natale "
+                         "FROM promozioni_list pl LEFT JOIN prodotti p ON p.CodArticolo = pl.CodArticolo "
+                         "WHERE pl.invalid IS NULL OR pl.invalid = 0 GROUP BY pl.promozioni_l) x ON x.pid = pr.l "
+                         "WHERE pr.Data_f >= %s", db.engine, params=(since,))
     except Exception:
         return []
     titles = {}
@@ -268,21 +317,24 @@ def db_periods(db, since=None):
         pass
     out = []
     for r in df.to_dict("records"):
-        s, e = _d(r["Data_a"]), _d(r["Data_f"])
-        if not s or not e or not r.get("n"):
+        s_, e = _d(r["Data_a"]), _d(r["Data_f"])
+        n = int(_f(r.get("n")))
+        if not s_ or not e or not n:
             continue
         l_ = int(r["l"])
-        out.append({"id": f"db{l_}", "promo": l_, "source": "db", "start": s.isoformat(), "end": e.isoformat(),
-                    "stores": _stores_of(r.get("negozio")), "items": [], "n": int(r["n"]),
-                    "name": titles.get(l_) or f"Promozione {l_}"})
+        name = str(r.get("Descrizione") or "").strip() or titles.get(l_) or f"Promozione {l_}"
+        out.append({"id": f"db{l_}", "promo": l_, "source": "db", "start": s_.isoformat(), "end": e.isoformat(),
+                    "stores": _stores_of(r.get("negozio")), "items": [], "n": n,
+                    "natale_share": _f(r.get("natale")) / n, "name": name})
     out.sort(key=lambda p: p["start"], reverse=True)
     return out
 
 
 def db_items(db, promo):
-    """一张促销单的商品：[{code, ean, name, price}]"""
+    """一张促销单的商品：[{code, ean, name, price 促销价, normal 原价}]（诊断 44 / 53：Prezzo_a 促销价、Prezzo_p 原价）"""
     import pandas as pd
-    df = pd.read_sql("SELECT pl.CodArticolo, pl.Prezzo_p, p.CodBarre, p.Descrizione FROM promozioni_list pl "
+    import reorder_service as R
+    df = pd.read_sql("SELECT pl.*, p.CodBarre, p.Descrizione, p.PrezzoVedi1 FROM promozioni_list pl "
                      "LEFT JOIN prodotti p ON p.CodArticolo = pl.CodArticolo "
                      "WHERE pl.promozioni_l = %s AND (pl.invalid IS NULL OR pl.invalid = 0)", db.engine, params=(int(promo),))
     out = []
@@ -291,17 +343,27 @@ def db_items(db, promo):
             code = str(int(r["CodArticolo"]))
         except (TypeError, ValueError):
             continue
+        normal = _f(r.get("Prezzo_p")) or _f(r.get("PrezzoVedi1")) or None
         out.append({"code": code, "ean": str(r.get("CodBarre") or "").strip(), "name": str(r.get("Descrizione") or "").strip(),
-                    "price": r.get("Prezzo_p")})
+                    "price": R.promo_list_price(r, r.get("PrezzoVedi1")) or None, "normal": normal})
     return out
 
 
 # ---------------------------------------------------------------- 计算
 def month_range(start, end, upto=None):
-    """周期跨过的整月：开始那个月 1 号 → 结束那个月最后一天（不超过 upto）"""
-    m1 = start.replace(day=1)
-    nxt = (end.replace(day=28) + timedelta(days=4)).replace(day=1)
-    m2 = nxt - timedelta(days=1)
+    """
+    活动的「当月」：活动天数最多的那个月（一样多取前面的），1 号 → 月底（不超过 upto）。
+    2026-11-15 核对：以前是开始那个月 1 号 → 结束那个月月底，VOLANTINO 15/10 – 01/11 就成了 10 月 + 半个 11 月
+    """
+    from collections import Counter
+    cnt = Counter()
+    d = start
+    while d <= end:
+        cnt[(d.year, d.month)] += 1
+        d += timedelta(days=1)
+    y, m = max(cnt, key=lambda k: (cnt[k], -k[0], -k[1])) if cnt else (start.year, start.month)
+    m1 = date(y, m, 1)
+    m2 = (m1.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
     if upto and m2 > upto:
         m2 = max(upto, m1)
     return m1, m2
@@ -335,7 +397,7 @@ def _sql_store(db, sid, codes, d1, d2, m1, m2, b1):
     """一家店：VOLANTINO 商品（周期内、活动前同样天数）每个商品的合计、每天的合计，全店当月合计"""
     import pandas as pd
     t = f"vendite_list_{int(sid)}"
-    out = {"items": {}, "before": {}, "days": {}, "month": {}}
+    out = {"items": {}, "before": {}, "days": {}, "month": {}, "lines": []}
     nxt = d2 + timedelta(days=1)
     if codes:
         for i in range(0, len(codes), 2000):
@@ -349,14 +411,11 @@ def _sql_store(db, sid, codes, d1, d2, m1, m2, b1):
                              f"AND Data >= %s AND Data < %s GROUP BY CodArticolo", db.engine, params=tuple(chunk) + (b1, d1))
             for r in df.to_dict("records"):
                 out["before"][str(int(r["CodArticolo"]))] = _money(r)
-            df = pd.read_sql(f"SELECT DATE(Data) AS d, {_SUMS} FROM {t} WHERE CodArticolo IN ({ph}) AND Data >= %s AND Data < %s "
-                             f"GROUP BY DATE(Data)", db.engine, params=tuple(chunk) + (d1, nxt))
-            for r in df.to_dict("records"):
-                k = str(r["d"])[:10]
-                m = _money(r)
-                cur = out["days"].setdefault(k, {"rev": 0.0, "profit": 0.0, "qty": 0.0, "disc": 0.0})
-                for f in cur:
-                    cur[f] += m[f]
+            df = pd.read_sql(f"SELECT DATE(Data) AS d, CodArticolo, {_SUMS} FROM {t} WHERE CodArticolo IN ({ph}) "
+                             f"AND Data >= %s AND Data < %s GROUP BY DATE(Data), CodArticolo", db.engine,
+                             params=tuple(chunk) + (d1, nxt))
+            for r in df.to_dict("records"):            # 每天每个商品一行：让利按名单原价算（analyze 里）
+                out["lines"].append((str(r["d"])[:10], str(int(r["CodArticolo"])), r))
     df = pd.read_sql(f"SELECT {_SUMS} FROM {t} WHERE Data >= %s AND Data < %s", db.engine,
                      params=(m1, m2 + timedelta(days=1)))
     rows = df.to_dict("records")
@@ -389,6 +448,10 @@ def _names(db, codes):
         for r in df.to_dict("records"):
             out[str(int(r["CodArticolo"]))] = (str(r.get("CodBarre") or "").strip(), str(r.get("Descrizione") or "").strip())
     return out
+
+
+def pct_txt(v):
+    return f"{v * 100:.2f}%" if v is not None else "—"
 
 
 def margin(profit, rev):
@@ -438,6 +501,11 @@ def analyze(db, period, today=None, upto=None, log=None, on_store=None):
         items = db_items(db, period["promo"])
     codes = _codes(db, items)
     names = _names(db, codes)
+    normal = {}                                       # 商品编号 → 原价（含税，名单里的 Prezzo Continuo / 促销单 Prezzo_p）
+    for x in items:
+        v = _f(x.get("normal"))
+        if v > 0 and x.get("code"):
+            normal.setdefault(str(x["code"]), v)
     m1, m2 = month_range(d1, d2, upto or today)
     b1 = d1 - (d2 - d1 + timedelta(days=1))               # 活动前同样天数
     stores = [s for s in (period.get("stores") or STORE_IDS) if s in STORE_IDS]
@@ -453,6 +521,31 @@ def analyze(db, period, today=None, upto=None, log=None, on_store=None):
         by_code[key] = {"code": c, "ean": x.get("ean") or e, "name": x.get("name") or n, "price": x.get("price"),
                         "stores": {}}
         order.append(key)
+    in_month = lambda k: m1.isoformat() <= k <= m2.isoformat()        # noqa: E731
+    by_list = set()                                   # 让利按名单原价算的商品（其余按收银记录的原价）
+    for sid in stores:                               # 每天每个商品 → 让利（名单有原价：原价 × 件数 − 实收；没有：收银记录的原价）
+        res_ = per[sid]
+        items_disc, days, mdisc = {}, {}, 0.0
+        for k, c, r in res_["lines"]:
+            m = _money(r)
+            nv = normal.get(c)
+            if nv:
+                gross = _f(r.get("gross"))
+                ratio = m["rev"] / gross if gross else 1 / 1.22
+                m["disc"] = max(0.0, nv * m["qty"] - gross) * ratio
+                by_list.add(c)
+            items_disc[c] = items_disc.get(c, 0.0) + m["disc"]
+            cur = days.setdefault(k, {"rev": 0.0, "profit": 0.0, "qty": 0.0, "disc": 0.0})
+            for f in cur:
+                cur[f] += m[f]
+            if in_month(k):
+                mdisc += m["disc"]
+        res_["days"] = days
+        res_["mdisc"] = mdisc
+        res_["mrev"] = sum(v["rev"] for k, v in days.items() if in_month(k))
+        for c, v in items_disc.items():
+            if c in res_["items"]:
+                res_["items"][c]["disc"] = v
     out_store, total, no_cost = {}, {"sold": 0}, set()
     total_month, total_prev = {}, {}
     for sid in stores:
@@ -479,20 +572,23 @@ def analyze(db, period, today=None, upto=None, log=None, on_store=None):
             agg.setdefault(f, 0.0)
         summarize(agg)
         agg["month"] = summarize(dict(res["month"]))
-        agg["impact"] = month_impact(agg["month"], agg["disc"])
-        agg["share"] = agg["rev"] / agg["month"]["rev"] if agg["month"]["rev"] else None
+        agg["disc_month"], agg["rev_month"] = res["mdisc"], res["mrev"]     # 只算活动在「当月」里的那几天
+        agg["impact"] = month_impact(agg["month"], agg["disc_month"])
+        agg["share"] = agg["rev_month"] / agg["month"]["rev"] if agg["month"]["rev"] else None
         agg["prev"] = summarize(prev)
         out_store[sid] = agg
         _add(total_prev, prev, ("qty", "rev", "cost", "profit"))
         _add(total, agg)
-        _add(total_month, agg["month"])
+        _add(total_month, agg["month"], ("qty", "rev", "cost", "profit", "erp"))
     for f in ("qty", "rev", "cost", "profit", "disc", "erp"):
         total.setdefault(f, 0.0)
         total_month.setdefault(f, 0.0)
     summarize(total)
     total["month"] = summarize(total_month)
-    total["impact"] = month_impact(total_month, total["disc"])
-    total["share"] = total["rev"] / total_month["rev"] if total_month["rev"] else None
+    total["disc_month"] = sum(out_store[s_]["disc_month"] for s_ in stores)
+    total["rev_month"] = sum(out_store[s_]["rev_month"] for s_ in stores)
+    total["impact"] = month_impact(total_month, total["disc_month"])
+    total["share"] = total["rev_month"] / total_month["rev"] if total_month["rev"] else None
     for f in ("qty", "rev", "cost", "profit"):
         total_prev.setdefault(f, 0.0)
     total["prev"] = summarize(total_prev)
@@ -508,12 +604,15 @@ def analyze(db, period, today=None, upto=None, log=None, on_store=None):
         rows.append(row)
     total["sold"] = sum(1 for r in rows if r["qty"] > 0)
     total["items"] = len(rows)
-    log(f"[VOLANTINO] {period.get('name') or ''} {d1:%d/%m}–{d2:%d/%m}：{len(rows)} 个商品（{len(codes)} 个对上数据库），"
-        f"卖出 {total['sold']} 个；销售额 €{total['rev']:,.2f}、毛利 €{total['profit']:,.2f}（ERP 毛利合计 €{total['erp']:,.2f}）")
+    log(f"[促销分析] {period.get('name') or ''} {d1:%d/%m}–{d2:%d/%m}：{len(rows)} 个商品（{len(codes)} 个对上数据库），"
+        f"卖出 {total['sold']} 个；销售额 €{total['rev']:,.2f}、毛利 €{total['profit']:,.2f}（ERP 毛利合计 €{total['erp']:,.2f}）；"
+        f"让利 €{total['disc']:,.2f}（{len(by_list)} 个商品按名单原价算，其余按收银记录的原价）；"
+        f"当月 {m1:%d/%m}–{m2:%d/%m} 全店毛利率 {pct_txt(total['impact'].get('margin'))}，"
+        f"没有让利 {pct_txt(total['impact'].get('margin_wo'))}")
     return {"period": period, "start": d1, "end": d2, "month": (m1, m2), "before": (b1, d1 - timedelta(days=1)),
             "stores": stores, "store": out_store, "total": total, "items": rows,
             "days": {sid: per[sid]["days"] for sid in stores}, "no_cost": len(no_cost),
-            "matched": len(codes)}
+            "matched": len(codes), "by_list": len(by_list)}
 
 
 def change(cur, prev):

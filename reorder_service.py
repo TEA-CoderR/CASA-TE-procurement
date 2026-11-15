@@ -615,7 +615,8 @@ def query_monthly_sales(db, store_id, codes, months=24, today=None):
 #   单品特价    prodotti.PrezzoVediOfferta + PrezzoVediOfferta_inizio / _fine（文字格式的日期）
 #   会员限时价  prodotti_vip.PrezzoVedi + Prezzofine
 #   促销单      promozioni（l, Data_a, Data_f, negozio = "0,1,2,3" 空 = 全部门店）+ promozioni_list（promozioni_l, CodArticolo,
-#               Prezzo_p 促销价 / sconto 折扣 %, invalid）
+#               Prezzo_a 促销价 / Prezzo_p 原价 / sconto 折扣 %, invalid；2026-11-15 诊断 44 / 45 / 53 核对：
+#               Prezzo_a = Prezzo_p × (1 − sconto)，以前把 Prezzo_p 当促销价是错的）
 # 会员价按 prodotti_vip 的结束日期（ERP「会员价格」页面），prodotti.PrezzoVedi3 过期了也还在、不能单独用。
 # 注意：这个库里 prodotti_vip / promozioni 停在 2026-04-09（没同步），只有单品特价（商品表）是每天同步的 → query_promos 在 _warn 里提醒。
 # 今天有效、比标价便宜的都算；同一个商品几种都有，取最便宜的。查不到的表跳过（不影响别的）
@@ -677,6 +678,19 @@ def promo_pick(list_price, offers):
     return best
 
 
+def promo_list_price(r, list_price=None):
+    """促销单（promozioni_list）里一行的促销价：Prezzo_a；没写就 原价（Prezzo_p，再没有用商品标价）× (1 − sconto %)；
+    都没有用 Prezzo_p（老数据只写了一个价）"""
+    a = _num(r.get("Prezzo_a"))
+    if a > 0:
+        return a
+    full = _num(r.get("Prezzo_p")) or _num(list_price)
+    s = _num(r.get("sconto"))
+    if s > 0 and full > 0:
+        return round(full * (1 - s / 100), 2)
+    return _num(r.get("Prezzo_p"))
+
+
 def query_promos(db, store_id, codes, today=None):
     """本店这些商品里今天在促销的：{商品编号(str): promo_pick}（只读查询）"""
     import pandas as pd
@@ -716,7 +730,7 @@ def query_promos(db, store_id, codes, today=None):
         except Exception as e:
             warn.add(f"促销没查到（prodotti_vip）：{e}")
         try:
-            df = pd.read_sql(f"SELECT pl.CodArticolo, pl.Prezzo_p, pl.sconto, pl.invalid, pr.Data_a, pr.Data_f, pr.negozio "
+            df = pd.read_sql(f"SELECT pl.*, pr.Data_a, pr.Data_f, pr.negozio "
                              f"FROM promozioni_list pl JOIN promozioni pr ON pr.l = pl.promozioni_l "
                              f"WHERE pl.CodArticolo IN ({ph})", db.engine, params=tuple(chunk))
             for r in df.to_dict("records"):
@@ -724,10 +738,7 @@ def query_promos(db, store_id, codes, today=None):
                         not _in_store(r.get("negozio"), store_id):
                     continue
                 c = str(int(r["CodArticolo"]))
-                p = _num(r.get("Prezzo_p"))
-                if p <= 0 and _num(r.get("sconto")) > 0:
-                    p = _num(lists.get(c)) * (1 - _num(r.get("sconto")) / 100)
-                add(c, "promo", p, r.get("Data_f"))
+                add(c, "promo", promo_list_price(r, lists.get(c)), r.get("Data_f"))
         except Exception as e:
             warn.add(f"促销没查到（promozioni）：{e}")
     out = {}

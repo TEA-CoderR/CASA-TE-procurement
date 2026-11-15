@@ -40,7 +40,7 @@ class _Sig(QObject):
 # 一期 VOLANTINO：名称、开始 / 结束、哪几家店（导入名单 / 修改）
 # =====================================================================
 class PeriodDialog(QDialog):
-    def __init__(self, parent, period, n_items, can_delete=False):
+    def __init__(self, parent, period, n_items, can_delete=False, can_reset=False):
         super().__init__(parent)
         from erp_widgets import tip_label
         self.setWindowTitle(tr("这一期促销"))
@@ -104,6 +104,12 @@ class PeriodDialog(QDialog):
             de.setObjectName("Danger")
             de.clicked.connect(self._delete)
             foot.addWidget(de)
+        self.reset = False
+        if can_reset:
+            rs = QPushButton(tr("恢复数据库原样"))
+            rs.setToolTip(tr("去掉在程序里改的名称 / 类型 / 日期 / 门店，照数据库里促销单的原样"))
+            rs.clicked.connect(self._reset)
+            foot.addWidget(rs)
         foot.addStretch()
         cancel = QPushButton(tr("取消"))
         cancel.clicked.connect(self.reject)
@@ -128,6 +134,10 @@ class PeriodDialog(QDialog):
                 == QMessageBox.Yes:
             self.deleted = True
             self.accept()
+
+    def _reset(self):
+        self.reset = True
+        self.accept()
 
     def values(self):
         to = lambda q: date(q.year(), q.month(), q.day()).isoformat()      # noqa: E731
@@ -204,7 +214,7 @@ class VolantinoPage:
         self.b_imp.setToolTip(tr("选这一期的名单 Excel：有条码或商品编号就行；促销价、日期能认就自动认"))
         self.b_imp.clicked.connect(self.import_file)
         self.b_edit = QPushButton(tr("修改…"))
-        self.b_edit.setToolTip(tr("改这一期的名称、日期、门店，或删除（只有导入的名单能改）"))
+        self.b_edit.setToolTip(tr("改这一期的名称、类型、日期、门店；导入的名单还能删除。数据库里的促销单只在程序里改，数据库不动"))
         self.b_edit.clicked.connect(self.edit_period)
         self.b_ref = QPushButton(tr("刷新"))
         self.b_ref.setToolTip(tr("重新从数据库读销售"))
@@ -377,7 +387,7 @@ class VolantinoPage:
         if thumb:
             self.t_it.setItemDelegateForColumn(1, PI.ThumbDelegate(self.t_it, 0, None, self.settings))
             self.t_it.verticalHeader().setDefaultSectionSize(PI.row_height(self.settings))
-        tips = {7: tr("(原价 − 实际售价) × 数量，不含税"), 8: tr("活动开始前同样天数里的销量"),
+        tips = {7: tr("让利 = (原价 − 实际售价) × 数量，不含税。原价用名单里写的原价（Prezzo Continuo / 促销单原价），名单没写的用收银记录里的原价"), 8: tr("活动开始前同样天数里的销量"),
                 9: tr("活动期间销量比活动前多 / 少几成")}
         for c, tp in tips.items():
             self.t_it.horizontalHeaderItem(c).setToolTip(tp)
@@ -398,7 +408,7 @@ class VolantinoPage:
         import volantino as V
         k = V.kind_label(self.kind)
         k = tr(k)
-        tips = {4: tr("{0} 商品的毛利率", k), 5: tr("(原价 − 实际售价) × 数量，不含税"),
+        tips = {4: tr("{0} 商品的毛利率", k), 5: tr("让利 = (原价 − 实际售价) × 数量，不含税。原价用名单里写的原价（Prezzo Continuo / 促销单原价），名单没写的用收银记录里的原价"),
                 7: tr("{0} 商品销售额 ÷ 这家店当月全部销售额", k), 8: tr("这家店当月所有商品的毛利率"),
                 9: tr("假设 {0} 商品按原价卖时当月的毛利率", k), 10: tr("实际 − 没有让利，单位百分点；负数 = 让利拉低了毛利率")}
         for c, tp in tips.items():
@@ -478,7 +488,7 @@ class VolantinoPage:
             i = 0
         self.period.setCurrentIndex(i)
         self.period.blockSignals(False)
-        self.b_edit.setEnabled(bool(self.current() and self.current().get("source") == "file"))
+        self.b_edit.setEnabled(bool(self.current()))
         has = self.period.count() > 0
         for b in (self.b_ref, self.b_exp):
             b.setEnabled(has)
@@ -516,7 +526,9 @@ class VolantinoPage:
 
     def _db_periods_arrived(self, ps):
         had = self.current()
-        self._db_list = ps
+        import volantino as V
+        self._db_raw = ps
+        self._db_list = V.apply_overrides(ps, V.load_overrides(self._base()))
         self._fill_periods(had["id"] if had else None)
         if not had and self.current():
             self.run()
@@ -528,7 +540,7 @@ class VolantinoPage:
         self.cfg["last"] = p["id"]
         import settings as ST
         ST.save_settings(self.settings)
-        self.b_edit.setEnabled(p.get("source") == "file")
+        self.b_edit.setEnabled(True)
         self.run()
 
     def import_file(self):
@@ -579,7 +591,21 @@ class VolantinoPage:
     def edit_period(self):
         import volantino as V
         cur = self.current()
-        if not cur or cur.get("source") != "file":
+        if not cur:
+            return
+        if cur.get("source") == "db":
+            dlg = PeriodDialog(self.win, cur, cur.get("n") or len(cur.get("items") or []), can_reset=bool(cur.get("orig")))
+            if not dlg.exec():
+                return
+            V.save_override(self._base(), cur["id"], None if dlg.reset else dlg.values())
+            self._db_list = V.apply_overrides(getattr(self, "_db_raw", []), V.load_overrides(self._base()))
+            new = next((p for p in self._db_list if p["id"] == cur["id"]), cur)
+            self.cfg["last"] = cur["id"]
+            if V.kind_of(new) != self.kind:
+                self.set_kind(V.kind_of(new))
+                return
+            self._fill_periods(cur["id"])
+            self.run()
             return
         dlg = PeriodDialog(self.win, cur, len(cur.get("items") or []), can_delete=True)
         if not dlg.exec():

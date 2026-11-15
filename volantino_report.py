@@ -615,7 +615,7 @@ class Report(QWidget):
         self.k_pro = Kpi(tr("毛利"), tr("销售额 − 进价"))
         self.k_mar = Kpi(tr("毛利率"), tr("毛利 ÷ 销售额"))
         self.k_qty = Kpi(tr("销量"), tr("卖了多少件"))
-        self.k_dis = Kpi(tr("让利"), tr("(原价 − 实际售价) × 数量，不含税"))
+        self.k_dis = Kpi(tr("让利"), tr("让利 = (原价 − 实际售价) × 数量，不含税。原价用名单里写的原价（Prezzo Continuo / 促销单原价），名单没写的用收银记录里的原价"))
         for k in (self.k_rev, self.k_pro, self.k_mar, self.k_qty, self.k_dis):
             kr.addWidget(k)
         v.addLayout(kr)
@@ -730,8 +730,10 @@ class Report(QWidget):
         mrng = res["month"]
         months = (mrng[1].year - mrng[0].year) * 12 + mrng[1].month - mrng[0].month + 1
         self.c_imp.set_title(tr("对当月毛利率的影响") if months <= 1 else tr("对活动这几个月毛利率的影响"),
-                             tr("这几家店所有商品（不只是 {0}）在活动所在整月的毛利率。\n没有让利 = 假设 {0} 商品按原价卖："
-                                "(当月毛利 + 让利) ÷ (当月销售额 + 让利)\n影响 = 实际 − 没有让利，单位是百分点", kname))
+                             tr("这几家店所有商品（不只是 {0}）在「当月」的毛利率；当月 = 活动天数最多的那个月"
+                                "（{1:%d/%m} – {2:%d/%m}，最多到销售数据最新那天）。\n没有让利 = 假设 {0} 商品按原价卖："
+                                "(当月毛利 + 当月里的让利) ÷ (当月销售额 + 当月里的让利)，活动落在别的月的那几天不算\n"
+                                "影响 = 实际 − 没有让利，单位是百分点", kname, mrng[0], mrng[1]))
         self.imp_sub.setText(tr("{0} 让利把全店毛利率从 {1} 拉到 {2}", kname, pct(im.get("margin_wo")), pct(im.get("margin"))))
         self.bridge.set(im.get("margin_wo"), im.get("margin"), (tr("没有让利"), tr("让利"), tr("实际")))
         self.imp_foot.setText(tr("{0} 占当月销售额 {1} · 当月 {2:%d/%m} – {3:%d/%m}", kname, pct(a.get("share")),
