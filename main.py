@@ -13,7 +13,7 @@ import logging
 import threading
 from datetime import datetime
 
-from PySide6.QtCore import Qt, QObject, Signal, QTimer, QRectF, QSize, QByteArray, QPointF
+from PySide6.QtCore import Qt, QObject, Signal, QTimer, QRectF, QSize, QByteArray, QPointF, QPoint
 
 
 def _skip_pyside_source_scan():
@@ -3174,6 +3174,7 @@ class MainWindow(QMainWindow):
         from PySide6.QtWidgets import QMenu
         m = QMenu(self)
         n = len(self.notes)
+        m.addAction(icon("spark", T("muted"), 16), tr("采购助手"), lambda: self.toggle_agent(True))
         m.addAction(icon("bell", T("muted"), 16), tr("通知（{0}）", n) if n else tr("通知"), self._show_notes)
         dark = settings.get("theme") == "dark"
         m.addAction(icon("sun" if dark else "moon", T("muted"), 16), tr("浅色模式") if dark else tr("深色模式"),
@@ -3193,8 +3194,34 @@ class MainWindow(QMainWindow):
             b.setIcon(icon(ic, "#FFFFFF" if b.isChecked() else T("side_text"), 22))
 
     def _rail_clicked(self, rid):
+        """一个入口只有一页：直接过去；有几页（采购 / 数据 / 设置）：旁边弹出一个小菜单选哪一页（设计稿里没有那排标签）"""
         pages = dict((r, p) for r, _t, _i, p in self.RAIL)[rid]
-        self.go_page(self._last_sub.get(rid, pages[0]))
+        cur = self.NAV[self.stack.currentIndex()][0]
+        self.rail_btns[self._rail_of(cur)].setChecked(True)      # 还没换页：选中的还是现在这个入口
+        if len(pages) == 1:
+            self.go_page(pages[0])
+            return
+        b = self.rail_btns[rid]
+        self._flyout(pages, b.mapToGlobal(b.rect().topRight()) + QPoint(10, 0))
+
+    def _flyout(self, pages, pos):
+        from PySide6.QtWidgets import QMenu
+        cur = self.NAV[self.stack.currentIndex()][0]
+        m = QMenu(self)
+        m.setObjectName("Flyout")
+        m.setWindowFlags(m.windowFlags() | Qt.FramelessWindowHint | Qt.NoDropShadowWindowHint)
+        m.setAttribute(Qt.WA_TranslucentBackground)
+        for k in pages:
+            a = m.addAction(self._tab_label(k), lambda kk=k: self.go_page(kk))
+            a.setCheckable(True)
+            a.setChecked(k == cur)
+        m.exec(pos)
+
+    def _crumb_menu(self):
+        cur = self.NAV[self.stack.currentIndex()][0]
+        pages = dict((r, p) for r, _t, _i, p in self.RAIL)[self._rail_of(cur)]
+        if len(pages) > 1:
+            self._flyout(pages, self.top_eyebrow.mapToGlobal(self.top_eyebrow.rect().bottomLeft()) + QPoint(0, 6))
 
     def _build_tabstrip(self):
         """一个入口里有几页（采购 / 数据 / 设置）：顶栏下面一排标签"""
@@ -3234,8 +3261,9 @@ class MainWindow(QMainWindow):
         h.setSpacing(12)
         tc = QVBoxLayout()
         tc.setSpacing(1)
-        self.top_eyebrow = QLabel("")
-        self.top_eyebrow.setObjectName("TopEyebrow")
+        self.top_eyebrow = QPushButton("")
+        self.top_eyebrow.setObjectName("TopCrumb")
+        self.top_eyebrow.clicked.connect(self._crumb_menu)
         self.top_title = QLabel("")
         self.top_title.setObjectName("TopTitle")
         tc.addWidget(self.top_eyebrow)
@@ -3292,6 +3320,13 @@ class MainWindow(QMainWindow):
         self.agent_btn.setToolTip(tr("让助手查供应商、算建议量、生成采购订单、查订单、核对邮件；改数据前都会问你"))
         self.agent_btn.clicked.connect(lambda: self.toggle_agent())
         h.addWidget(self.agent_btn)
+        self.top_set_btn = QPushButton(tr("设置"))
+        self.top_set_btn.setMinimumHeight(36)
+        self.top_set_btn.setCursor(Qt.PointingHandCursor)
+        self.top_set_btn.setToolTip(tr("比价开关、起订规则、供应商名称、门店间调货、检查用的订货周期和算法"))
+        self.top_set_btn.clicked.connect(lambda: (self._ensure_all(), self.open_cmp_settings()))
+        self.top_set_btn.hide()
+        h.addWidget(self.top_set_btn)
 
         # 通知 / 深浅色 / 语言挪到左下角头像的菜单里（对象留着，别的代码还在用）
         self.bell = QPushButton(bar)
@@ -3475,13 +3510,20 @@ class MainWindow(QMainWindow):
             b.setVisible(multi and k in pages)
         if key in self.tab_btns:
             self.tab_btns[key].setChecked(True)
-        self.tabstrip.setVisible(multi)
+        self.tabstrip.setVisible(False)             # 设计稿没有这一排：换页点左边图标（弹小菜单）或顶栏小标
         if key == "home":
             _wd = [tr("周一"), tr("周二"), tr("周三"), tr("周四"), tr("周五"), tr("周六"), tr("周日")][datetime.now().weekday()]
             self.top_eyebrow.setText(f"{_wd} · {datetime.now():%d/%m/%Y}")
         else:
-            self.top_eyebrow.setText(rail[rid][0] + (f" / {self._tab_label(key)}" if multi else ""))
-        self.top_title.setText(self._tab_label(key) + ("  ⓘ" if getattr(self, "_page_tips", {}).get(key) else ""))
+            self.top_eyebrow.setText(rail[rid][0] + (f" / {'DETERSIVO' if key == 'order' else self._tab_label(key)}  ▾" if multi else ""))
+        self.top_eyebrow.setCursor(Qt.PointingHandCursor if multi else Qt.ArrowCursor)
+        self.top_eyebrow.setToolTip(tr("点一下换到这个入口里的别的页面") if multi else "")
+        title = tr("本周 DETERSIVO 采购 · {0:%d/%m}", datetime.now()) if key == "order" else self._tab_label(key)
+        self.top_title.setText(title + ("  ⓘ" if getattr(self, "_page_tips", {}).get(key) else ""))
+        own = key == "order"                       # 设计稿：DETERSIVO 页顶栏右边只有「设置」
+        self.top_set_btn.setVisible(own)
+        self.db_pill.setVisible(not own)
+        self.agent_btn.setVisible(not own)
         self.top_title.setToolTip(getattr(self, "_page_tips", {}).get(key, ""))
         self._last_sub[rid] = key
         self._paint_rail()

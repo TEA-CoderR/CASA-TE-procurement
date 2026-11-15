@@ -507,6 +507,17 @@ def build_qss():
     #DialogFoot {{ background: {t['surface2']}; border-top: 1px solid {t['line']}; }}
     #WinTitle {{ font-size: 17px; font-weight: 700; }}
     #StatusBar {{ background: {t['side'] if dark else t['surface']}; border-top: 1px solid {t['line']}; }}
+    QTableWidget#ReviewTable, QTableWidget#CleanTable {{ background: {t['canvas']}; selection-background-color: {'#101B33' if dark else t['accent_soft']}; }}
+    QTableWidget#ReviewTable::item, QTableWidget#CleanTable::item {{ border-right: none; border-bottom: 1px solid {'#121A2D' if dark else t['line']}; padding: 4px 10px; }}
+    #ReviewTable QHeaderView::section, #CleanTable QHeaderView::section {{ background: {'#0A1020' if dark else t['surface2']}; color: {t['muted']};
+        font-size: 11px; font-weight: 500; border: none; border-bottom: 1px solid {t['line']}; padding: 9px 10px; }}
+    #ReviewTable QHeaderView, #CleanTable QHeaderView {{ background: {'#0A1020' if dark else t['surface2']}; }}
+    QMenu#Flyout {{ background: {t['surface']}; border: 1px solid {t['border']}; border-radius: 12px; padding: 8px; }}
+    QMenu#Flyout::item {{ padding: 9px 28px 9px 14px; border-radius: 8px; font-size: 13px; }}
+    QMenu#Flyout::item:selected {{ background: {t['hover']}; color: {t['text']}; }}
+    QMenu#Flyout::item:checked {{ color: {t['accent']}; font-weight: 600; }}
+    QPushButton#TopCrumb {{ background: transparent; border: none; padding: 0; color: {t['muted']}; font-size: 11px; font-weight: 500; text-align: left; min-height: 0; }}
+    QPushButton#TopCrumb:hover {{ background: transparent; color: {t['accent']}; }}
     #StoreSide {{ background: {t['side'] if dark else t['surface2']}; border: none; border-right: 1px solid {t['line']}; }}
     #SideEyebrow {{ color: {t['muted']}; font-size: 11px; font-weight: 700; letter-spacing: 1.5px; margin: 0 4px 4px 4px; }}
     QPushButton#StoreCard {{ background: {t['surface']}; border: 1px solid {t['line']}; border-radius: 12px; padding: 0; text-align: left; }}

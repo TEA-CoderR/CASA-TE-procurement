@@ -155,6 +155,8 @@ class DashboardPage:
         c3, v3 = self._card()
         self._label(tr("在途订单"), v3)
         self.k_open = self._value(v3)
+        self.spark = _Spark()
+        v3.addWidget(self.spark)
         self.k_open_sub = self._sub(v3)
         c3.setToolTip(tr("已下单、还没到货的订单"))
         c3.setCursor(Qt.PointingHandCursor)
@@ -184,6 +186,7 @@ class DashboardPage:
         self.sup_table.setHorizontalHeaderLabels(heads)
         self.sup_table.horizontalHeaderItem(2).setToolTip(
             " · ".join(f"{k} {n}" for k, n in S.STORE_SHEETS.items()))
+        self.sup_table.setObjectName("CleanTable")
         self.sup_table.verticalHeader().setVisible(False)
         self.sup_table.setShowGrid(False)
         self.sup_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
@@ -318,6 +321,20 @@ class DashboardPage:
                 rows = OT.rows(st)
                 s = OT.summary(rows, st, datetime.now().strftime("%Y-%m"))
                 self._month = s
+                try:                             # 在途卡片的小走势：最近 10 周每周下了几张单
+                    today = datetime.now().date()
+                    wk = [0] * 10
+                    for r in rows:
+                        d = r.get("date")
+                        d = d.date() if hasattr(d, "date") else d
+                        if d is None or r["status"] == "draft":
+                            continue
+                        k = (today - d).days // 7
+                        if 0 <= k < 10:
+                            wk[9 - k] += 1
+                    self._weeks = wk
+                except Exception:
+                    self._weeks = []
 
                 def names(pick):
                     xs = []
@@ -406,6 +423,8 @@ class DashboardPage:
                 self.k_month_sub.setText(tr("这个月还没设预算"))
                 self.ring.set(None, "accent")
             self.k_open.setText(tr("{0} 张", m.get("open", 0)))
+            self.spark.set(getattr(self, "_weeks", []))
+            self.spark.setToolTip(tr("最近 10 周每周下了几张单"))
             self.k_open_sub.setText(f"<span style='color:{T('err')}'>" + tr("{0} 张已超期", m["overdue"]) + "</span>"
                                     if m["overdue"] else tr("都没超期"))
         self._update_hello()
@@ -794,6 +813,39 @@ class _Pipeline(QWidget):
             p.setPen(QColor(sc))
             el = QFontMetrics(f3).elidedText(sub or "", Qt.ElideRight, int(cw - 20))
             p.drawText(QRectF(tx, cy + r + 30, cw - 20, 20), Qt.AlignLeft | Qt.AlignVCenter, el)
+        p.end()
+
+
+class _Spark(QWidget):
+    """小走势线（设计稿「在途订单」卡片里那条）"""
+
+    def __init__(self):
+        super().__init__()
+        self.vals = []
+        self.setFixedHeight(30)
+
+    def set(self, vals):
+        self.vals = list(vals or [])
+        self.update()
+
+    def paintEvent(self, _e):
+        if len(self.vals) < 2 or not max(self.vals):
+            return
+        from PySide6.QtGui import QPainterPath
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        mx, mn = max(self.vals), min(self.vals)
+        span = (mx - mn) or 1
+        w, h = self.width(), self.height() - 6
+        path = QPainterPath()
+        for i, v in enumerate(self.vals):
+            x = w * i / (len(self.vals) - 1)
+            y = 3 + h - h * (v - mn) / span
+            path.moveTo(x, y) if i == 0 else path.lineTo(x, y)
+        c = QColor(T("accent"))
+        c.setAlpha(210)
+        p.setPen(QPen(c, 2))
+        p.drawPath(path)
         p.end()
 
 

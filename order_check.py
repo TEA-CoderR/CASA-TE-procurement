@@ -53,14 +53,15 @@ from reorder_page import short_decision, store_label, algo_widgets
 #   2026-11-01 加 30 = 情况（Griglia 商品 · 批发商都没有 / 非 Griglia 商品 · 批发商都没有 / 非 Griglia 商品 · 批发商有），放在判断后面，
 #   待核对的商品也在主表格里显示，右键表头按「情况」筛选、直接改（用户：在列表里直接判断和修改）
 #   2026-11-03 加 31 = 在途箱数（已经订了还没到货的箱数，order_record；用户同一天定：从建议箱数里扣，init_boxes），放在现在够卖后面
-_ORDER = [22, 3, 27, 4, 28, 9, 31, 10, 11, 15, 20, 29, 0, 30, 24, 2, 26, 16, 17, 18, 5, 6, 7, 8, 14, 12, 13, 19, 21, 23, 25, 1]
+# 2026-11-15 第 4 轮（设计稿）：默认只有 商品（小图 + 名称 + 条码）· 库存 · 月销 · 清单 · 确定箱数 · 订后够卖 · 判断（+ 看全部门店时的门店）
+_ORDER = [3, 4, 28, 11, 15, 20, 0, 30, 22, 27, 9, 31, 10, 29, 24, 2, 26, 16, 17, 18, 5, 6, 7, 8, 14, 12, 13, 19, 21, 23, 25, 1]
 SITU = 30
 TRANSIT = 31
 # 2026-10-21 第四版：窗口和订货明细一个样子（门店按钮、一行工具条、状态栏），名称显示、供应商和原因收起来（详情栏里有）：
 #   门店 条码 Codice 名称 等级 周期 本店库存 日均 库存够卖 每箱件数 | 清单 判断 确定箱数 确定件数 ✎ 调货 ✎ | 到货后够卖
-_LAYOUT_VER = 9           # 改了默认顺序就加 1（第 9 版起列宽也一起恢复默认）
-_DEFAULT_HIDDEN = [2, 26, 16, 17, 18, 5, 6, 7, 8, 14, 12, 13, 19, 21, 23, 25, 1]
-_HIDDEN_VER = 7           # 改了默认藏哪些列就加 1（settings.COMPANY_DEFAULTS 里的 check_cols_hidden 一起改）
+_LAYOUT_VER = 10           # 改了默认顺序就加 1（第 9 版起列宽也一起恢复默认）
+_DEFAULT_HIDDEN = [27, 9, 31, 10, 29, 30, 24, 2, 26, 16, 17, 18, 5, 6, 7, 8, 14, 12, 13, 19, 21, 23, 25, 1]
+_HIDDEN_VER = 8           # 改了默认藏哪些列就加 1（settings.COMPANY_DEFAULTS 里的 check_cols_hidden 一起改）
 CHANGE_COL, TRANSFER_COL, REASON_COL = 23, 24, 25
 AMOUNT = 29
 # 「判断」排序：要看的排前面（不订、少订、调货、多订），照清单订的放最后
@@ -143,7 +144,7 @@ def key_tags(x, transit_boxes=0, edited=False):
     return out
 
 
-VERDICT_TOKEN = {"transfer": "ok", "more": "accent", "less": "warn", "none": "err", "same": "muted", "nodb": "err"}
+VERDICT_TOKEN = {"transfer": "violet", "more": "accent", "less": "warn", "none": "err", "same": "ok", "nodb": "err"}   # 设计稿的颜色
 # 「看哪些」下拉框
 VIEWS = (("all", "全部商品"), ("review", "只看要审核的"), ("changed", "只看有变化的"), ("transfer", "只看调货"), ("more", "只看多订"),
          ("less", "只看少订"), ("none", "只看不订"), ("phantom", "只看库存可能不准"),
@@ -160,6 +161,92 @@ def promo_text(p):
 
 # 设计稿的一排筛选小按钮（其余几种在「更多 ▾」里）
 VIEW_CHIPS = (("review", "要审核"), ("all", "全部"), ("changed", "有变化"), ("none", "不订"), ("less", "少订"), ("promo", "促销"))
+
+
+class _ProductDelegate(QStyledItemDelegate):
+    """设计稿的「商品」格：34 像素圆角小图（没图 = 名字头两个字母的色块）+ 名称 + 下面一行等宽小字条码；
+    选中的行最左边一条蓝线。鼠标停在小图上看大图（借 product_images.ThumbDelegate 的）"""
+    SIZE = 34
+
+    def __init__(self, view, ean_col, settings):
+        super().__init__(view)
+        import product_images as PI
+        self.view, self.ean_col = view, ean_col
+        self._thumb = PI.ThumbDelegate(view, ean_col, self.SIZE, settings)
+        self.store = self._thumb.store
+
+    def helpEvent(self, ev, view, opt, idx):
+        return self._thumb.helpEvent(ev, view, opt, idx)
+
+    def paint(self, p, opt, idx):
+        from PySide6.QtWidgets import QStyleOptionViewItem, QStyle, QApplication
+        from PySide6.QtGui import QPainter, QPainterPath, QFont
+        from PySide6.QtCore import QRectF
+        from theme import T, NUM_FONT
+        o = QStyleOptionViewItem(opt)
+        self.initStyleOption(o, idx)
+        o.text = ""
+        w = opt.widget
+        (w.style() if w else QApplication.style()).drawPrimitive(QStyle.PE_PanelItemViewItem, o, p, w)
+        r = opt.rect
+        p.save()
+        p.setRenderHint(QPainter.Antialiasing)
+        if opt.state & QStyle.State_Selected and self.view.horizontalHeader().visualIndex(idx.column()) == 0:
+            p.fillRect(QRectF(r.left(), r.top(), 3, r.height()), QColor(T("accent")))
+        ean = idx.sibling(idx.row(), self.ean_col).data() or ""
+        name = idx.data(Qt.DisplayRole) or ""
+        box = QRectF(r.left() + 20, r.top() + (r.height() - self.SIZE) / 2, self.SIZE, self.SIZE)
+        dpr = w.devicePixelRatioF() if w is not None else None
+        pm = self.store.pixmap(ean, self.SIZE, dpr) if self.store.enabled and ean else None
+        path = QPainterPath()
+        path.addRoundedRect(box, 8, 8)
+        if pm is not None:
+            p.setClipPath(path)
+            p.fillRect(box, QColor("#FFFFFF"))
+            pw, ph = pm.width() / pm.devicePixelRatio(), pm.height() / pm.devicePixelRatio()
+            p.setRenderHint(QPainter.SmoothPixmapTransform)
+            p.drawPixmap(int(box.left() + (self.SIZE - pw) / 2), int(box.top() + (self.SIZE - ph) / 2), pm)
+            p.setClipping(False)
+        else:
+            p.fillPath(path, QColor(T("accent_soft")))
+            f0 = QFont(opt.font)
+            f0.setPixelSize(11)
+            f0.setBold(True)
+            p.setFont(f0)
+            p.setPen(QColor(T("accent")))
+            p.drawText(box, Qt.AlignCenter, "".join(ch for ch in name if ch.isalnum())[:2].upper())
+        tx = box.right() + 10
+        tw = r.right() - tx - 6
+        f1 = QFont(opt.font)
+        f1.setPixelSize(13)
+        f1.setWeight(QFont.Medium)
+        p.setFont(f1)
+        fg = idx.data(Qt.ForegroundRole)
+        p.setPen(fg.color() if fg is not None and hasattr(fg, "color") else QColor(T("text")))
+        p.drawText(QRectF(tx, r.top() + 9, tw, 20), Qt.AlignLeft | Qt.AlignVCenter,
+                   QFontMetrics(f1).elidedText(name, Qt.ElideRight, int(tw)))
+        f2 = QFont(NUM_FONT)
+        f2.setPixelSize(11)
+        p.setFont(f2)
+        p.setPen(QColor(T("faint")))
+        p.drawText(QRectF(tx, r.top() + 29, tw, 16), Qt.AlignLeft | Qt.AlignVCenter, str(ean))
+        p.restore()
+
+
+class _NumDelegate(QStyledItemDelegate):
+    """数字格：等宽数字字体（JetBrains Mono），可以带单位（订后够卖 → 「41 天」）"""
+
+    def __init__(self, view, unit=""):
+        super().__init__(view)
+        self.unit = unit
+
+    def initStyleOption(self, o, idx):
+        super().initStyleOption(o, idx)
+        from theme import NUM_FONT
+        o.font.setFamily(NUM_FONT)
+        t = o.text.strip()
+        if self.unit and t and t[:1].isdigit():
+            o.text = f"{t} {self.unit}"
 
 
 class _StoreCard(QPushButton):
@@ -444,7 +531,7 @@ class OrderCheck:
         bar = QFrame()
         bar.setObjectName("TopBar")
         tb = QHBoxLayout(bar)
-        tb.setContentsMargins(16, 8, 16, 8)
+        tb.setContentsMargins(20, 12, 20, 12)
         tb.setSpacing(8)
         self.chip_lay = QHBoxLayout()          # 门店按钮：检查完按这次的门店建
         self.chip_lay.setSpacing(8)
@@ -462,12 +549,16 @@ class OrderCheck:
         self.f_sup.addItem(tr("全部供应商"), None)
         self.f_sup.currentIndexChanged.connect(self._filter)
         tb.addWidget(self.f_sup)
+        self.f_sup.hide()                      # 设计稿的工具条只有搜索 + 筛选小按钮；按供应商筛在「⋯」里
         self.flt = QLineEdit()
         self.flt.setPlaceholderText(tr("编号、条码或名称"))
         self.flt.setMinimumWidth(90)
         self.flt.setMaximumWidth(200)
         self.flt.textChanged.connect(self._filter)
-        tb.addWidget(self.flt)
+        self.flt.setPlaceholderText(tr("名称 / 条码"))
+        self.flt.setMinimumWidth(220)
+        self.flt.setMaximumWidth(220)
+        tb.insertWidget(0, self.flt)
         self.view = QComboBox()
         for key, text in VIEWS:
             self.view.addItem(tr(text), key)
@@ -555,7 +646,8 @@ class OrderCheck:
         b_s = QPushButton(tr("恢复系统建议"))
         b_s.setToolTip(tr("全部商品的确定件数恢复成系统建议的（人工改的调货也恢复）"))
         b_s.clicked.connect(lambda: self._set_all("sugg"))
-        more = QPushButton(tr("更多") + " ▾")
+        more = QPushButton("⋯")
+        more.setFixedWidth(40)
         more.setToolTip(tr("全部用清单数量、显示哪些列、导出 Excel"))
         more.clicked.connect(lambda: self._more_menu(more))
         tb.addWidget(more)
@@ -577,7 +669,14 @@ class OrderCheck:
         hh.setSectionResizeMode(QHeaderView.Interactive)
         hh.setStretchLastSection(False)
         import product_images as PI          # 「商品」那一格：左边商品图（条码在藏起来的条码列），右边名称
-        self.table.setItemDelegateForColumn(_col(3), PI.ThumbDelegate(self.table, _col(2), None, self.settings))
+        self.table.setItemDelegateForColumn(_col(3), _ProductDelegate(self.table, _col(2), self.settings))
+        self.table.verticalHeader().setDefaultSectionSize(56)
+        self._num = _NumDelegate(self.table)
+        for c_ in (4, 28, 11):
+            self.table.setItemDelegateForColumn(_col(c_), self._num)
+        self._days_dg = _NumDelegate(self.table, tr("天"))
+        self.table.setItemDelegateForColumn(AFTER_COL, self._days_dg)
+        self.table.setObjectName("ReviewTable")
         from erp_widgets import PillDelegate         # 判断：彩色小胶囊（设计稿）
         self._pill = PillDelegate(self.table)
         self.table.setItemDelegateForColumn(_col(0), self._pill)
@@ -589,7 +688,8 @@ class OrderCheck:
         self.table.horizontalHeaderItem(_col(10)).setText(tr("每箱"))
         self.table.horizontalHeaderItem(AMOUNT_COL).setToolTip(tr("金额 = 确定箱数 × 每箱件数 × 件价（有调货的按调货以后的箱数）"))
         self.table.horizontalHeaderItem(EDIT_COL).setToolTip(tr("确定订几箱：点 − / ＋ 改 1 箱，双击直接输入，0 = 不订"))
-        self.table.horizontalHeaderItem(EDIT_COL).setText(tr("确定") + " ✎")
+        self.table.horizontalHeaderItem(EDIT_COL).setText(tr("确定箱数"))
+        self.table.horizontalHeaderItem(EDIT_COL).setTextAlignment(Qt.AlignCenter)
         self.table.horizontalHeaderItem(_col(10)).setToolTip(
             tr("每箱件数：按 distribuire 里最便宜那家报价的箱规（比价默认挑它）；报价里没有的用数据库箱规。蓝色 = 和数据库不一样"))
         self.table.horizontalHeaderItem(_col(9)).setToolTip(
@@ -635,6 +735,12 @@ class OrderCheck:
         self._forced = set()
         self.cols = ColumnChooser(self.table, self.cfg, "check_cols", _ORDER, lambda: save_settings(self.settings),
                                   _DEFAULT_HIDDEN, ver=_HIDDEN_VER, forced=lambda: self._forced)
+        if self.cfg.get("check_fit2") != _LAYOUT_VER:        # 设计稿的默认列宽：商品铺满，别的固定（之后拖过的照用户的）
+            self.cfg["check_fit2"] = _LAYOUT_VER
+            for cid, wd in ((4, 60), (28, 60), (11, 54), (15, 118), (20, 92), (0, 112), (22, 90)):
+                self.table.setColumnWidth(_col(cid), wd)
+        hh.setSectionResizeMode(_col(3), QHeaderView.Stretch)
+        hh.setMinimumSectionSize(50)
         self._moves_in, self._moves_out = {}, {}
         self.transfer_ov = {}
         self.transfer_frozen = False
@@ -932,6 +1038,10 @@ class OrderCheck:
         self._fill_prob()
         self._build_chips(meta["stores"])
         self._seen = set()
+        first = sorted(int(k) for k in meta["stores"])[:1]
+        for b in self.store_group.buttons():      # 设计稿：左边选着第一家门店（再点一下它 = 全部门店）
+            if first and int(b.property("sid")) == first[0]:
+                b.setChecked(True)
         self._fill_suppliers()
         self._apply_forced()
         self.ctl.filters = {}
@@ -943,6 +1053,7 @@ class OrderCheck:
         self.view.blockSignals(False)
         self._replan(render=False)
         self._fill()
+        self.table.horizontalHeader().setSectionResizeMode(_col(3), QHeaderView.Stretch)   # 商品列铺满剩下的宽度
         self._load_transit()                            # 在途列：后台读（检查时一般已经读好，这里直接返回）
         # 不急的：每月销量（查数据库）、商品详情窗口（建窗口 + 连数据库）等界面空下来再做，
         # 不和「后台任务完成」弹窗、打开检查窗口抢时间（2026-11-07 用户：跳过去会卡一会）
@@ -1857,6 +1968,8 @@ class OrderCheck:
             b.setChecked(key == cur)
 
     def _pick_store(self, sid):
+        if sid is not None and self._store_sel() == sid and len((self.meta or {}).get("stores") or []) > 1:
+            sid = None                           # 再点一下选中的门店 = 看全部门店
         for b in self.store_group.buttons():
             v = b.property("sid")
             if (sid is None and int(v) < 0) or (sid is not None and int(v) == int(sid)):
@@ -1884,11 +1997,11 @@ class OrderCheck:
             if _edited(x):
                 d[3] += 1
         sel = self._store_sel()
-        out = [(None, tr("全部门店"), sum(v[0] for v in per.values()), sum(v[1] for v in per.values()),
-                sum(v[2] for v in per.values()), sum(v[3] for v in per.values()), sel is None)]
+        self._side_tot = (sum(v[1] for v in per.values()), sum(v[2] for v in per.values()))
+        out = []
         for sid in sorted(per):
             t, need, seen, ed = per[sid]
-            out.append((sid, store_label(sid), t, need, seen, ed, sel == sid))
+            out.append((sid, R.STORES.get(sid, str(sid)), t, need, seen, ed, sel == sid))
         return out
 
     def _refresh_side(self):
@@ -1897,9 +2010,9 @@ class OrderCheck:
             self.side.set_data(data)
             st = getattr(self.win, "cmp_steps", None)
             if st is not None and st.states[1] != "done":
-                need = data[0][3]
-                seen = data[0][4]
-                st.set_state(1, st.states[1], tr("{0} 家门店 · 已看 {1} / {2}", len(data) - 1, seen, need))
+                need, seen = self._side_tot
+                done = sum(1 for d_ in data if d_[3] == 0 or d_[4] >= d_[3])
+                st.set_state(1, st.states[1], tr("{0} / {1} 家门店", done, len(data)))
 
     def _store_sel(self):
         b = self.store_group.checkedButton() if hasattr(self, "store_group") else None
@@ -1919,6 +2032,13 @@ class OrderCheck:
 
     def _more_menu(self, btn):
         m = QMenu(self.window)
+        sups = {}
+        sm = m.addMenu(tr("按供应商筛选"))
+        for k_ in range(self.f_sup.count()):
+            a_ = sm.addAction(self.f_sup.itemText(k_))
+            a_.setCheckable(True)
+            a_.setChecked(k_ == self.f_sup.currentIndex())
+            sups[a_] = k_
         views = {}
         for key, text in VIEWS:
             if key not in dict(VIEW_CHIPS):
@@ -1933,7 +2053,9 @@ class OrderCheck:
         a_exp = m.addAction(tr("导出 Excel"))
         pos = btn.mapToGlobal(btn.rect().bottomLeft())
         got = m.exec(pos)
-        if got in views:
+        if got in sups:
+            self.f_sup.setCurrentIndex(sups[got])
+        elif got in views:
             self.view.setCurrentIndex(max(0, self.view.findData(views[got])))
         elif got == a_file:
             self._set_all("file")
@@ -1980,9 +2102,28 @@ class OrderCheck:
                 amt += b * _pk(x) * (p if p == p else 0)
             except (TypeError, ValueError):
                 pass
-        self.count_lbl.setText(tr("显示 {0} / {1} 行 · 已改 {2} 处 · 当前筛选合计 {3:g} 箱 · €{4:,.2f}",
-                                  shown, total, n_edit, boxes, amt))
-        self.count_lbl.setToolTip(getattr(self, "page_sum", None).text() if hasattr(self, "page_sum") else "")
+        from theme import T as _T, NUM_FONT as _NF
+        sid = self._store_sel()
+        mine = [x for x in self.rows if sid is None or x.get("store") == sid]
+        need = sum(1 for x in mine if self._verdict(x)[0] in ("transfer", "more", "less", "none")
+                   or x.get("review") in ("new", "changed"))
+        ed = sum(1 for x in mine if _edited(x))
+        tot = 0.0
+        for x in mine:
+            try:
+                tot += float(self._amount(x) or 0)
+            except (TypeError, ValueError):
+                pass
+
+        def b_(v, c="text"):
+            return f"<b style=\"font-family:'{_NF}'; color:{_T(c)}\">{v}</b>"
+        self.count_lbl.setTextFormat(Qt.RichText)
+        self.count_lbl.setText(f"<span style='color:{_T('head')}; font-size:13px'>" +
+                               tr("{0} · 要审核 {1} 个 · 已改 {2} 个 · 估算 {3}",
+                                  R.STORES.get(sid, str(sid)) if sid is not None else tr("全部门店"), b_(need),
+                                  b_(ed, "warn" if ed else "text"), b_(f"€{tot:,.0f}")) + "</span>")
+        self.count_lbl.setToolTip(tr("显示 {0} / {1} 行 · 已改 {2} 处 · 当前筛选合计 {3:g} 箱 · €{4:,.2f}",
+                                     shown, total, n_edit, boxes, amt))
 
     def _hidden(self, i):
         x = self.rows[i]
