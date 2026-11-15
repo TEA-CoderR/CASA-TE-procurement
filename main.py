@@ -2793,7 +2793,7 @@ class MainWindow(QMainWindow):
         (tr("概览"), [("home", tr("工作台"))]),
         (tr("采购管理"), [("store_orders", tr("LUCAS定制采购")), ("order", tr("DETERSIVO采购")),
                         ("tracking", tr("采购订单跟踪"))]),
-        (tr("销售分析"), [("volantino", tr("VOLANTINO 分析"))]),
+        (tr("销售分析"), [("volantino", tr("促销分析"))]),
         (tr("分货管理"), [("distribution", tr("分货数据处理")), ("import", tr("导入 / 导出"))]),
         (tr("系统"), [("settings", tr("系统设置")), ("log", tr("运行日志"))]),
     ]

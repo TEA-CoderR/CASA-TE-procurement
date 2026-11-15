@@ -64,46 +64,145 @@ def guess_dates(texts, year=None):
 
 PRICE_HEADS = ("prezzovolantino", "prezzopromo", "prezzopromozione", "prezzoofferta", "offerta", "promo", "prezzop",
                "促销价", "特价")
+NORMAL_HEADS = ("prezzocontinuo", "prezzonormale", "prezzolistino", "prezzopieno", "prezzovendita", "原价", "正常价")
+EAN_HEADS = ("codiceean", "ean", "codbarre", "codicebarre", "barcode", "barre", "条码")
+CODE_HEADS = ("codicearticolo", "codarticolo", "codart", "articolo", "codice", "商品编号", "编号")
+NAME_HEADS = ("descrizione", "descr", "nome", "商品名称", "名称", "商品")
+START_HEADS = ("start", "inizio", "datainizio", "dal", "开始")
+END_HEADS = ("end", "fine", "datafine", "al", "结束")
+KINDS = (("volantino", "VOLANTINO"), ("natale", "圣诞货"))
+_NATALE = re.compile(r"natal|xmas|christmas|圣诞", re.I)
+
+
+def kind_of(p):
+    """一期是 VOLANTINO 还是圣诞货：记了就用记的，没记按名称（NATALE / 圣诞 → 圣诞货）"""
+    k = (p or {}).get("kind")
+    if k in dict(KINDS):
+        return k
+    return "natale" if _NATALE.search(str((p or {}).get("name") or "")) else "volantino"
+
+
+def kind_label(k):
+    return dict(KINDS).get(k, "VOLANTINO")
+
+
+def _h(v):
+    return re.sub(r"[\s._\-:]+", "", str(v or "")).lower()
+
+
+def _col(head, heads, exact=False):
+    """表头里第一个对得上的列（先找完全一样的，再找开头一样的）"""
+    for c, h in enumerate(head):
+        if h and h in heads:
+            return c
+    if exact:
+        return None
+    for c, h in enumerate(head):
+        if h and any(h.startswith(x) for x in heads if len(x) > 2):
+            return c
+    return None
+
+
+def _num(v):
+    try:
+        x = float(str(v).replace("€", "").replace(",", ".").strip()) if isinstance(v, str) else float(v)
+        return x if x == x else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _day(v):
+    if isinstance(v, datetime):
+        return v.date()
+    if isinstance(v, date):
+        return v
+    a, _b = guess_dates([v, v])
+    return a
+
+
+def _scan(rows):
+    """一个工作表（前面的行）→ {"items", "texts", "dates"}；没有像名单的表头 → None
+    一行一个商品：条码列照条码；编号列里是长数字（≥ 8 位）的当条码（VOLANTINO 名单的
+    「Codice Articolo」里写的其实是条码）；没写编号也没写条码的行（分组标题）跳过"""
+    import reorder_service as R
+    rows = list(rows)
+    hdr = None
+    for i, row in enumerate(rows[:15]):
+        head = [_h(v) for v in row]
+        if _col(head, EAN_HEADS) is not None or _col(head, CODE_HEADS, exact=True) is not None:
+            hdr = i
+            break
+    if hdr is None:
+        return None
+    head = [_h(v) for v in rows[hdr]]
+    ce, cc = _col(head, EAN_HEADS), _col(head, CODE_HEADS, exact=True)
+    if cc is None:
+        cc = _col(head, CODE_HEADS)
+    if cc == ce:
+        cc = None
+    cn = _col(head, NAME_HEADS)
+    cp, cr = _col(head, PRICE_HEADS), _col(head, NORMAL_HEADS)
+    cs, cx = _col(head, START_HEADS, exact=True), _col(head, END_HEADS, exact=True)
+    get = lambda r, c: r[c] if c is not None and c < len(r) else None      # noqa: E731
+    items, seen, dates = [], set(), []
+    for r in rows[hdr + 1:]:
+        ean, code = R._clean_code(get(r, ce)), R._clean_code(get(r, cc))
+        if code and len(code) >= 8 and code.isdigit():         # 编号列里写的是条码
+            ean, code = ean or code, ""
+        ean = ean if ean.isdigit() else ""
+        code = code if code.isdigit() else ""
+        if not ean and not code:
+            continue
+        key = ean or "#" + code
+        if key in seen:
+            continue
+        seen.add(key)
+        items.append({"code": code, "ean": ean, "name": str(get(r, cn) or "").strip(),
+                      "price": _num(get(r, cp)), "normal": _num(get(r, cr))})
+        s, e = _day(get(r, cs)), _day(get(r, cx))
+        if s and e and s <= e:
+            dates.append((s, e))
+    texts = [str(v) for row in rows[:hdr] for v in row if v not in (None, "")]
+    return {"items": items, "texts": texts, "dates": dates}
 
 
 def read_file(path):
-    """上传的 VOLANTINO 名单 → {"items": [...], "start", "end", "name"}（日期认不出是 None，界面里让人选）"""
-    import reorder_service as R
-    info = R.parse_order_file(path)
-    items = [{"code": x.get("code") or "", "ean": x.get("ean") or "", "name": x.get("name") or ""} for x in info["rows"]]
-    texts = [os.path.splitext(os.path.basename(path))[0]]
-    prices = {}
-    try:                                             # 促销价列、文件最上面几行写的日期（读不到不要紧）
-        from openpyxl import load_workbook
-        wb = load_workbook(path, read_only=True, data_only=True)
-        try:
-            ws = wb[info["sheet"]]
+    """
+    上传的名单（VOLANTINO / 圣诞货）→ {"items": [{code, ean, name, price, normal}], "start", "end", "name", "sheet",
+                                         "prices": {第几个商品: 促销价}}（日期认不出是 None，界面里让人选）
+    一个文件好几页都是名单（例如 BOZZA ELENCO 草稿 / ELENCO 定稿 / ORDINE PROMO）：用商品最多的那几页里
+    名字不是草稿（BOZZA）的那页；日期 = 每行 start / end 里最常见的（几页一起数，年份离今年超过 1 年的不算），
+    没有就看文件名和表头上面几行。
+    """
+    from collections import Counter
+    from openpyxl import load_workbook
+    wb = load_workbook(path, read_only=True, data_only=True)
+    found = []
+    try:
+        for i, ws in enumerate(wb.worksheets):
             if hasattr(ws, "reset_dimensions"):
                 ws.reset_dimensions()
-            hdr = info["header_row"]
-            pc = None
-            for r, row in enumerate(ws.iter_rows(values_only=True), 1):
-                if r < hdr:
-                    texts += [str(v) for v in row if v not in (None, "")]
-                    continue
-                if r == hdr:
-                    for c, v in enumerate(row):
-                        n = re.sub(r"[\s._\-]+", "", str(v or "")).lower()
-                        if n and any(n.startswith(h) for h in PRICE_HEADS):
-                            pc = c
-                            break
-                    if pc is None:
-                        break
-                    continue
-                k = r - hdr - 1
-                prices[k] = row[pc] if pc < len(row) else None
-        finally:
-            wb.close()
-    except Exception:
-        pass
-    start, end = guess_dates(texts)
-    return {"items": items, "start": start, "end": end, "name": os.path.splitext(os.path.basename(path))[0],
-            "prices": prices}
+            got = _scan(ws.iter_rows(values_only=True))
+            if got and got["items"]:
+                found.append((i, ws.title, got))
+    finally:
+        wb.close()
+    name = os.path.splitext(os.path.basename(path))[0]
+    if not found:
+        return {"items": [], "start": None, "end": None, "name": name, "sheet": None, "prices": {}}
+    most = max(len(g["items"]) for _, _, g in found)
+    good = [f for f in found if len(f[2]["items"]) >= most * 0.8]
+    draft = re.compile(r"bozza|draft|草稿", re.I)
+    best = next((f for f in good if not draft.search(f[1])), good[0])
+    items = best[2]["items"]
+    this = date.today().year
+    cnt = Counter(d for f in good for d in f[2]["dates"] if abs(d[0].year - this) <= 1 and (d[1] - d[0]).days <= 200)
+    if cnt:
+        start, end = cnt.most_common(1)[0][0]
+    else:
+        start, end = guess_dates([name] + best[2]["texts"])
+    return {"items": items, "start": start, "end": end, "name": name, "sheet": best[1],
+            "prices": {k: x["price"] for k, x in enumerate(items) if x.get("price") is not None}}
 
 
 # ---------------------------------------------------------------- 保存的几期
@@ -443,10 +542,11 @@ def export(res, path, url=None, names=None):
     names = names or {}
     wb = X.new_book()
     p = res["period"]
+    kind = "Natale" if kind_of(p) == "natale" else "Volantino"
     sub = f"{res['start']:%d/%m/%Y} – {res['end']:%d/%m/%Y} · " \
           f"mese {res['month'][0]:%d/%m} – {res['month'][1]:%d/%m/%Y}"
     cols = [X.Col("Negozio", 16), X.Col("Pezzi", 9, "num"), X.Col("Vendite € (netto IVA)", 14, "price"),
-            X.Col("Margine €", 12, "price"), X.Col("Margine %", 10, "rate"), X.Col("Sconto € (volantino)", 14, "price"),
+            X.Col("Margine €", 12, "price"), X.Col("Margine %", 10, "rate"), X.Col("Sconto € (promo)", 14, "price"),
             X.Col("Quota sul mese %", 12, "rate"), X.Col("Margine mese %", 12, "rate", "warn"),
             X.Col("Margine mese senza sconto %", 16, "rate", "warn"), X.Col("Impatto (punti)", 12, "dec", "warn")]
     rows, marks = [], {}
@@ -463,7 +563,7 @@ def export(res, path, url=None, names=None):
     for k, r in enumerate(rows):
         if r[9] is not None and r[9] < 0:
             marks[(k, 9)] = "RED"
-    X.add_sheet(wb, "Negozi", f"Volantino – {p.get('name') or ''}", sub, cols, rows, marks=marks)
+    X.add_sheet(wb, "Negozi", f"{kind} – {p.get('name') or ''}", sub, cols, rows, marks=marks)
     st = res["stores"]
     cols2 = [X.Col("EAN", 15, "ean"), X.Col("Descrizione", 38), X.Col("Prezzo promo", 10, "price"),
              X.Col("Pezzi", 9, "num"), X.Col("Vendite €", 12, "price"), X.Col("Margine €", 11, "price"),
@@ -478,7 +578,7 @@ def export(res, path, url=None, names=None):
             marks2[(k, 6)] = "RED"
         if r["qty"] <= 0:
             marks2[(k, 3)] = "GREY"
-    X.add_sheet(wb, "Articoli", f"Volantino – {p.get('name') or ''}", sub, cols2, rows2, marks=marks2,
+    X.add_sheet(wb, "Articoli", f"{kind} – {p.get('name') or ''}", sub, cols2, rows2, marks=marks2,
                 photo_eans=[r[0] for r in rows2], url=url)
     wb.save(path)
     return path

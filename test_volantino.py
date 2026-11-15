@@ -107,3 +107,30 @@ def test_file_list_dates_prices_and_saved_periods(monkeypatch):
     assert V.month_range(date(2026, 10, 28), date(2026, 11, 10), upto=date(2026, 11, 15)) == \
         (date(2026, 10, 1), date(2026, 11, 15))
     assert V._stores_of("0,1,2,3") == [1, 2, 3] and V._stores_of("") == [1, 2, 3, 4, 5]
+
+
+def test_real_volantino_file_layout_and_christmas_kind():
+    """ELENCO_VOLANTINO_OTTOBRE 那种文件：几页一样的表头（BOZZA 草稿 / ELENCO 定稿），「Codice Articolo」里写的是条码，
+    分组标题行没编号，start / end 每行一个（定稿那页往下拖成了 2027、2028…）"""
+    d = tempfile.mkdtemp()
+    wb = Workbook()
+    head = ["NO.", "PAGINA", "NO. ART.", "FOTO", "Codice Articolo", "Descrizione1- Titolo", "Descrizione2- Brand",
+            "Prezzo Continuo", "Prezzo Offerta", "NOTE", "start", "end"]
+    rows = [(8034116410967, "TERMOVENTILATORE", 9.99), (None, "SVELTO", None), ("5420020007134", "COMBUSTIBILE 9L", 47.99),
+            (8720182982780, "SVELTO PIATTI ACETO", 1.79)]
+    y0 = date.today().year
+    for title, offer, years in (("BOZZA ELENCO.", 0, [y0] * 4), ("ELENCO importo ITO", 1, [y0 + i for i in range(4)])):
+        ws = wb.create_sheet(title)
+        ws.append(head)
+        for (ean, name, price), y in zip(rows, years):
+            ws.append([1, 1, 1, None, ean, name, None, price, price and price - offer, None, f"15/10/{y}", f"01/11/{y}"])
+    del wb["Sheet"]
+    path = os.path.join(d, "ELENCO_VOLANTINO_OTTOBRE.xlsx")
+    wb.save(path)
+    got = V.read_file(path)
+    assert got["sheet"] == "ELENCO importo ITO"
+    assert [x["ean"] for x in got["items"]] == ["8034116410967", "5420020007134", "8720182982780"]
+    assert got["items"][0]["price"] == 8.99 and got["items"][0]["normal"] == 9.99 and got["items"][0]["code"] == ""
+    assert (got["start"], got["end"]) == (date(date.today().year, 10, 15), date(date.today().year, 11, 1))
+    assert V.kind_of({"name": "ELENCO NATALE 2026"}) == "natale" and V.kind_of({"name": "Volantino"}) == "volantino"
+    assert V.kind_of({"name": "Natale", "kind": "volantino"}) == "volantino"
