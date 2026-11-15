@@ -3547,4 +3547,13 @@ TRANSLATIONS = {
     '合并 {0} 行': ('{0} lines merged', '{0} righe unite'),
     '清单里这几行是同一个商品，合成一行（箱数加在一起）：': ('These list lines are the same item, merged into one (boxes added up):',
                                          'Queste righe della lista sono lo stesso articolo, unite in una (colli sommati):'),
+    '上次的审核': ('Last review', 'Ultima verifica'),
+    '找到 {0} 的审核记录（{1}，{2} 个商品定过箱数）。\n这次的门店清单是：': (
+        'Found the review of {0} ({1}, boxes decided for {2} items).\nThese store lists are:',
+        'Trovata la verifica del {0} ({1}, colli decisi per {2} articoli).\nQueste liste dei negozi sono:'),
+    '同一批清单（改过、或者程序更新后重新算）→ 沿用审核，只看新加 / 清单改过的。\n新一周的清单 → 不沿用，全部重新审核（审核记录会删掉）。': (
+        'The same lists (edited, or recalculated after an update) → reuse the review, check only new / changed items.\nNew lists for a new week → do not reuse, review everything again (the record is deleted).',
+        'Le stesse liste (modificate, o ricalcolate dopo un aggiornamento) → riusa la verifica, controlla solo nuovi / cambiati.\nListe nuove della settimana → non riusare, rifai tutta la verifica (il registro viene eliminato).'),
+    '同一批清单（沿用审核）': ('Same lists (reuse review)', 'Stesse liste (riusa verifica)'),
+    '新的清单（重新审核）': ('New lists (review again)', 'Liste nuove (rifai verifica)'),
 }
