@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (QWidget, QLabel, QPushButton, QLineEdit, QComboBo
                                QCheckBox, QFrame, QStackedWidget, QScrollArea, QDialog, QDialogButtonBox,
                                QHeaderView, QButtonGroup, QApplication)
 
+import theme
 from i18n import tr
 from settings import save_settings
 from theme import T, icon, num_font, open_path

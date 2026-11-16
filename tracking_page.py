@@ -78,6 +78,22 @@ def _d(v):
     return d.isoformat() if d else ""
 
 
+def _ago(ts):
+    """「2 分钟前」「3 小时前」「11-14 09:20」"""
+    try:
+        t = datetime.fromisoformat(ts)
+    except (TypeError, ValueError):
+        return ""
+    sec = (datetime.now() - t).total_seconds()
+    if sec < 60:
+        return tr("刚刚")
+    if sec < 3600:
+        return tr("{0} 分钟前", int(sec // 60))
+    if sec < 86400:
+        return tr("{0} 小时前", int(sec // 3600))
+    return f"{t:%m-%d %H:%M}"
+
+
 def _money(v):
     return "" if v is None else f"{float(v):,.2f}"
 
@@ -414,33 +430,67 @@ class TrackingPage:
         w = QWidget()
         w.setObjectName("Content")
         lay = QVBoxLayout(w)
-        lay.setContentsMargins(24, 20, 24, 20)
+        lay.setContentsMargins(28, 18, 0, 0)          # 右边详情栏贴着窗口边（设计稿）；别的几块自己留右边距
         lay.setSpacing(12)
-        head = QHBoxLayout()
-        t = QLabel(tr("采购订单跟踪") + "  ⓘ")
+        t = QLabel(tr("采购订单跟踪") + "  ⓘ")       # 页面名在顶栏写（主窗口藏起这一行，说明进顶栏标题的鼠标提示）
         t.setObjectName("PageTitle")
         t.setToolTip(tr("每张采购单：下单 → 确认 → 到货。数据在共享文件夹里，大家看到的是同一份；谁在什么时候改了什么都有记录。"
                         "预计到货 = 下单日期 + 这家供应商以往到货的天数（中位数），超过了还没到就算超期"))
-        head.addWidget(t)
-        head.addSpacing(12)
-        self.src_lbl = QLabel("")
-        self.src_lbl.setObjectName("Faint")
-        head.addWidget(self.src_lbl, 1)
-        self.btn_sync = QPushButton(tr("同步 Excel"))
-        self.btn_sync.setToolTip(tr("Excel 存过就会自动同步（打开这页时、开着时每 20 秒看一次），一般不用点；想马上同步再点"))
-        self.btn_sync.clicked.connect(lambda: self.sync_excel(manual=True))
-        head.addWidget(self.btn_sync)
-        self.btn_mail = QPushButton(tr("✉ 邮件核对"))
+        lay.addWidget(t)
+        # 2026-11-16 照设计稿：顶栏右边 = Excel 同步状态 · 看板 / 列表 / 供应商 / 预算 · 邮件核对 · ⋯（主窗口按页面放进顶栏）
+        self.top_widget = QWidget()
+        head = QHBoxLayout(self.top_widget)
+        head.setContentsMargins(0, 0, 0, 0)
+        head.setSpacing(10)
+        self.sync_dot = QLabel()
+        self.sync_dot.setFixedSize(7, 7)
+        head.addWidget(self.sync_dot)
+        self.src_lbl = QPushButton("")
+        self.src_lbl.setObjectName("TopCrumb")
+        self.src_lbl.setCursor(Qt.PointingHandCursor)
+        self.src_lbl.setStyleSheet("font-size:12px;")
+        self.src_lbl.clicked.connect(lambda: self.sync_excel(manual=True))
+        head.addWidget(self.src_lbl)
+        head.addSpacing(6)
+        seg = QFrame()
+        seg.setObjectName("Seg")
+        seg.setFixedHeight(36)
+        sh = QHBoxLayout(seg)
+        sh.setContentsMargins(3, 3, 3, 3)
+        sh.setSpacing(2)
+        self.view_group = QButtonGroup(seg)
+        self.view_group.setExclusive(True)
+        for i, (name, tip) in enumerate(((tr("看板"), tr("还没到货的单按进展分五列")),
+                                         (tr("列表"), tr("全部订单的表格：按月份、周、状态筛选，可以排序、导出")),
+                                         (tr("供应商"), tr("每家供应商的单数、金额、平均到货天数")),
+                                         (tr("预算"), tr("每家门店每个月的预算和已下单")))):
+            b = QPushButton(name)
+            b.setObjectName("SegBtn")
+            b.setCheckable(True)
+            b.setChecked(i == 0)
+            b.setCursor(Qt.PointingHandCursor)
+            b.setToolTip(tip)
+            b.clicked.connect(lambda _=False, i=i: self._show_view(i))
+            self.view_group.addButton(b, i)
+            sh.addWidget(b)
+        head.addWidget(seg)
+        self.btn_sync = QPushButton(tr("同步 Excel"))       # 按钮不摆出来：点左边的同步状态 = 马上同步（状态文字照它更新）
+        self.btn_sync.hide()
+        self.btn_mail = QPushButton(tr("邮件核对"))
+        self.btn_mail.setMinimumHeight(36)
         self.btn_mail.setToolTip(tr("读所有邮箱最近 21 天的信头（只读，不读正文、不改已读），看哪些单发了订单 / 供应商确认了 / 发货了，"
                                     "还有重复的待登记、发了订单信但跟踪里没有的。列出来让你勾，确认后才改"))
         self.btn_mail.clicked.connect(self.check_mail)
         head.addWidget(self.btn_mail)
         self.btn_new = QPushButton(tr("+ 新订单"))
-        self.btn_new.setObjectName("Primary")
-        self.btn_new.clicked.connect(self.new_order)
-        head.addWidget(self.btn_new)
-        more = QPushButton(tr("更多") + " ▾")
+        self.btn_new.hide()
+        more = QPushButton("⋯")
+        more.setFixedSize(40, 36)
+        more.setToolTip(tr("更多"))
         m = QMenu(more)
+        m.addAction(tr("+ 新订单…"), self.new_order)
+        m.addAction(tr("马上同步 Excel"), lambda: self.sync_excel(manual=True))
+        m.addSeparator()
         m.addAction(tr("名字相近的供应商…"), self.suggest_merge)
         m.addAction(tr("导出成 PIANO 表（和原表一样）…"), self.export_piano)
         m.addAction(tr("导出 Excel（显示的订单）"), self.export)
@@ -448,8 +498,8 @@ class TrackingPage:
         m.addAction(tr("打开共享文件夹"), self.open_folder)
         m.addAction(tr("设置…"), self.open_settings)
         more.setMenu(m)
+        more.setStyleSheet("QPushButton::menu-indicator { image: none; width: 0; }")
         head.addWidget(more)
-        lay.addLayout(head)
 
         self.stack = QStackedWidget()
         self.empty = EmptyState("tracking", tr("选择共享文件夹"),
@@ -467,47 +517,77 @@ class TrackingPage:
         bv.setSpacing(12)
         # 门店（全部 / 每家店）+ 右边几个要处理的数字；下面「本月」面板；再下面三张表（都跟着门店走）
         sr = QHBoxLayout()
-        sr.setSpacing(8)
+        sr.setContentsMargins(0, 0, 28, 0)
+        sr.setSpacing(6)
         self.store_group = QButtonGroup(body)
         self.store_group.setExclusive(True)
         from PySide6.QtGui import QFontMetrics
         for code, text in [(None, tr("全部门店"))] + list(OT.STORES):
             b = QPushButton(text)
-            b.setObjectName("Chip")
+            b.setObjectName("ShopChip")
             b.setCheckable(True)
             b.setChecked(code is None)
             b.setCursor(Qt.PointingHandCursor)
             b.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
             bf = b.font()
             bf.setBold(True)
-            b.setMinimumWidth(QFontMetrics(bf).horizontalAdvance(text) + 28)
+            b.setMinimumWidth(QFontMetrics(bf).horizontalAdvance(text) + 30)
             b.clicked.connect(lambda _=False, c=code: self.set_store(c))
             self.store_group.addButton(b)
             sr.addWidget(b)
-        sr.addStretch()
-        self.pills = {}
+        sr.addStretch(1)
+        self.pills = {}                              # 以前的「待登记 / 待确认…」小胶囊：看板的五列代替了，对象留着（列表视图的筛选用）
         tips = {"draft": tr("总仓采购 / DETERSIVO采购生成的订单，还没确认发给供应商。发了以后选中，右键「确认已下单」"),
                 "pending": tr("下单 {0} 天以上还没确认的", OT.PENDING_DAYS),
                 "overdue": tr("过了预计到货日还没到（含部分到货）"), "stuck": ""}
         for key, _tok in PILLS:
-            b = QPushButton("")
-            b.setCursor(Qt.PointingHandCursor)
+            b = QPushButton("", body)
+            b.hide()
             if tips[key]:
                 b.setToolTip(tips[key])
             b.clicked.connect(lambda _=False, k=key: self._kpi_clicked(k))
-            sr.addWidget(b)
             self.pills[key] = b
-        bv.addLayout(sr)
-        self.panel = MonthPanel(self.ui)
+        from tracking_board import MonthMini, OrderBoard, OrderDrawer
+        self.panel = MonthMini(self.ui)
+        self.panel.setMinimumWidth(420)
         self.panel.month_step.connect(self._month_step)
         self.panel.week_clicked.connect(self._week_clicked)
         self.panel.budget_clicked.connect(self._budget_clicked)
-        bv.addWidget(self.panel)
+        sr.addWidget(self.panel, 1)
+        bv.addLayout(sr)
         self.tabs = QTabWidget()
         self.tabs.addTab(self._build_orders(), tr("订单"))
         self.tabs.addTab(self._build_sups(), tr("供应商"))
         self.tabs.addTab(self._build_budget(), tr("预算"))
-        bv.addWidget(self.tabs, 1)
+        self.tabs.tabBar().hide()                    # 换视图用顶栏的「看板 / 列表 / 供应商 / 预算」
+        self.tabs.setDocumentMode(True)
+        # 看板 + 右边详情
+        kb = QWidget()
+        kh = QHBoxLayout(kb)
+        kh.setContentsMargins(0, 0, 0, 0)
+        kh.setSpacing(0)
+        self.board = OrderBoard()
+        self.board.selected.connect(self._board_pick)
+        self.board.opened.connect(lambda r: r and self.edit_row(self._index_of(r)))
+        bw = QWidget()
+        bl = QVBoxLayout(bw)
+        bl.setContentsMargins(0, 6, 16, 24)
+        bl.addWidget(self.board)
+        kh.addWidget(bw, 1)
+        self.drawer = OrderDrawer()
+        self.drawer.act.connect(self._board_act)
+        self.drawer.lines.connect(self.show_lines)
+        self.drawer.mails.connect(lambda r: self.edit_row(self._index_of(r), tab="mail"))
+        self.drawer.edit.connect(lambda r: self.edit_row(self._index_of(r)))
+        kh.addWidget(self.drawer)
+        self.views = QStackedWidget()
+        self.views.addWidget(kb)
+        tw = QWidget()
+        tl = QVBoxLayout(tw)
+        tl.setContentsMargins(0, 0, 28, 20)
+        tl.addWidget(self.tabs)
+        self.views.addWidget(tw)
+        bv.addWidget(self.views, 1)
         self.stack.addWidget(body)
         lay.addWidget(self.stack, 1)
 
@@ -735,6 +815,7 @@ class TrackingPage:
         if self.st is not None and not self.syncing and self.st.changed():
             self.load()
         self._auto_sync()                 # 页面开着时别人存了 Excel：20 秒内自动同步过来
+        self._update_src()                # 「n 分钟前」跟着走
 
     def load(self):
         f = self._folder()
@@ -814,6 +895,51 @@ class TrackingPage:
         self.render()
         self.s_ctl.render()
         self.b_ctl.render()
+        self.board.set_rows(srows)
+
+    # ---- 看板 ----
+    def _show_view(self, i):
+        """0 看板 / 1 列表 / 2 供应商 / 3 预算"""
+        if not hasattr(self, "views"):
+            return
+        b = self.view_group.button(i)
+        if b is not None and not b.isChecked():
+            b.setChecked(True)
+        self.views.setCurrentIndex(0 if i == 0 else 1)
+        if i:
+            self.tabs.setCurrentIndex(i - 1)
+
+    def _index_of(self, r):
+        return next((i for i, x in enumerate(self.rows) if x["id"] == r["id"]), None) if r else None
+
+    def _board_pick(self, r):
+        info = self._rec_info(r) if r else None
+        self.drawer.show_row(r, None if self.transit is None or info is None else bool(info.get("file")))
+
+    def _board_act(self, r, action):
+        """详情栏的主按钮：发送订单邮件 / 标记已确认 / 登记发货 / 确认收货（改之前先确认，做完能撤销）"""
+        from tracking_board import changes_for
+        if action == "send":
+            self.send_order(r)
+            return
+        what = {"confirm": tr("标记供应商已确认"), "ship": tr("登记发货"), "arrive": tr("确认收货")}[action]
+        after = {"confirm": tr("这张单移到「已确认」"), "ship": tr("这张单移到「已发货」"),
+                 "arrive": tr("这张单算到货了，不再算在途（建议量不再扣它）")}[action]
+        txt = tr("{0}：{1} · {2} · {3}", what, r["supplier"], r["store_name"], f"€{float(r['amount'] or 0):,.2f}") + "\n\n" + \
+            tr("日期记今天（{0:%d/%m}）。{1}。改了写进共享的订单记录，同事都能看到；Excel 也会同步。", date.today(), after)
+        if QMessageBox.question(self.win, what, txt) != QMessageBox.Yes:
+            return
+        old = self.st.orders.get(r["id"], {})
+        f = changes_for(action, r)
+        before = {k: old.get(k) for k in f}
+        self.st.set(r["id"], f)
+        self.refresh()
+
+        def undo():
+            self.st.set(r["id"], before)
+            self.refresh()
+            self.win.show_toast(tr("已撤销"))
+        self.win.show_toast(tr("✓ {0}：{1} · {2}", what, r["supplier"], r["store_name"]), 8000, action=(tr("撤销"), undo))
 
     def set_store(self, code):
         self.store_sel = code
@@ -833,7 +959,7 @@ class TrackingPage:
     def _week_clicked(self, key):
         self.week_sel = key
         if key:
-            self.tabs.setCurrentIndex(0)
+            self._show_view(1)
         self.update_view()
 
     def _month_combo(self):
@@ -850,7 +976,7 @@ class TrackingPage:
 
     def _budget_clicked(self):
         if not self.store_sel:
-            self.tabs.setCurrentIndex(2)
+            self._show_view(3)
             return
         y, m = self.panel_ym
         ym = f"{y:04d}-{m:02d}"
@@ -863,24 +989,36 @@ class TrackingPage:
             self.refresh()
 
     def _update_src(self):
+        """顶栏的同步状态：● Excel 已同步 · 2 分钟前（绿）/ 同步中…（蓝）/ 等 Excel 关闭后写入（黄）/ 失败（红）"""
         f = self._folder()
         x = self._excel()
-        last = self.cfg.get("synced_at") or ""
-        txt = tr("{0} 张单", len(self.rows)) + (tr(" · Excel 同步于 {0}", last) if last else "")
         n_wait = 0
         if self._write_on() and self.st is not None:
             try:
                 n_wait = len(XS.pending(self.st, self._me(), everyone=True))
             except Exception:
                 n_wait = 0
-        if n_wait:
+        tok = "ok"
+        if not x:
+            txt, tok = tr("没找到 Excel"), "faint"
+        elif self.syncing:
+            txt, tok = tr("Excel 同步中…"), "accent"
+        elif getattr(self, "_sync_err", None):
+            txt, tok = tr("Excel 同步失败 · 点一下再试"), "err"
+        elif n_wait:
             busy = (getattr(self, "_write_state", None) or ("",))[0] == "busy"
-            txt += " · " + (tr("⏳ {0} 处修改等 Excel 关闭后写入", n_wait) if busy else tr("⏳ {0} 处修改待写入 Excel", n_wait))
+            txt = tr("{0} 处修改等 Excel 关闭后写入", n_wait) if busy else tr("{0} 处修改待写入 Excel", n_wait)
+            tok = "warn"
+        else:
+            txt = tr("Excel 已同步") + (" · " + _ago(self.cfg.get("synced_ts")) if self.cfg.get("synced_ts") else
+                                         (" · " + self.cfg["synced_at"] if self.cfg.get("synced_at") else ""))
         self.src_lbl.setText(txt)
-        self.src_lbl.setToolTip(tr("订单记录：{0}\nExcel：{1}", os.path.join(f, OT.DATA_DIR) if f else "—", x or "—"))
+        self.sync_dot.setStyleSheet(f"background:{self.ui.T(tok)}; border-radius:3px;")
+        self.src_lbl.setToolTip(tr("{0} 张单。和 Excel 双向同步：Excel 里的修改读进来，程序里的修改写进 Excel；同一格两边都改了，以最后修改的为准。"
+                                   "一般不用管（自动进行），点一下马上同步", len(self.rows)) +
+                                "\n" + tr("订单记录：{0}\nExcel：{1}", os.path.join(f, OT.DATA_DIR) if f else "—", x or "—"))
+        self.src_lbl.setEnabled(bool(x) and not self.syncing)
         self.btn_sync.setEnabled(bool(x) and not self.syncing)
-        self.btn_sync.setToolTip(tr("和 Excel 双向同步：Excel 里的修改读进来，程序里的修改写进 Excel；同一格两边都改了，以最后修改的为准。"
-                                    "一般不用点（自动进行）\n{0}", x or tr("没找到 Excel")))
 
     # ================================================================ 订单表
     def _hidden(self, i):
@@ -1147,7 +1285,7 @@ class TrackingPage:
         return [self.rows[i] for i in (self.ctl.row_at(k) for k in ks) if i is not None]
 
     def _kpi_clicked(self, key):
-        self.tabs.setCurrentIndex(0)
+        self._show_view(1)
         self.week_sel = None
         self.f_month.blockSignals(True)
         self.f_month.setCurrentIndex(0)
@@ -1257,11 +1395,13 @@ class TrackingPage:
             self.st.set_many(ch)
             self.refresh()
 
-    def edit_row(self, i):
+    def edit_row(self, i, tab=None):
         if i is None or self.st is None:
             return
         r = self.rows[i]
         dlg = OrderDialog(self.win, self, self.st.orders.get(r["id"], {}), r, self.st.hist.get(r["id"]))
+        if tab == "mail" and dlg.mail_tab is not None:
+            dlg.tabs.setCurrentIndex(1)               # 详情栏「邮件（n）」→ 直接打开邮件页
         if dlg.exec() != QDialog.Accepted:
             return
         if dlg.deleted:
@@ -1333,7 +1473,7 @@ class TrackingPage:
     def _show_supplier(self, i):
         if i is None:
             return
-        self.tabs.setCurrentIndex(0)
+        self._show_view(1)
         self.f_view.setCurrentIndex(0)
         self.f_month.setCurrentIndex(0)
         self.search.clear()
@@ -1625,6 +1765,7 @@ class TrackingPage:
         self.syncing = True
         self.btn_sync.setEnabled(False)
         self.btn_sync.setText(tr("同步中…"))
+        self._update_src()
         folder, me, write = self.st.folder, self._me(), self._write_on()
 
         def work():
@@ -1644,6 +1785,8 @@ class TrackingPage:
         res, err, manual = payload
         self.syncing = False
         self.btn_sync.setText(tr("同步 Excel"))
+        self._sync_err = err
+        self._update_src()
         if err:
             self.btn_sync.setEnabled(True)
             if not manual:                # 自动同步失败：这个版本的 Excel 不再自动重试（不然每 20 秒报一次），Excel 再存一次或手动点再试
@@ -1658,6 +1801,7 @@ class TrackingPage:
             return
         self.cfg["excel_mtime"] = res.get("mtime")
         self.cfg["synced_at"] = datetime.now().strftime("%m-%d %H:%M")
+        self.cfg["synced_ts"] = datetime.now().isoformat(timespec="seconds")
         self._save()
         w = res.get("write") or {}
         st_ = w.get("status")
@@ -1796,6 +1940,10 @@ class TrackingPage:
     def restyle(self):
         if hasattr(self, "panel"):
             self.panel.restyle()
+        if hasattr(self, "board"):
+            self.board.restyle()
+            self.drawer.restyle()
+            self._update_src()
         if self.st is not None and self.rows:
             self.refresh()
 
@@ -1962,6 +2110,7 @@ class OrderDialog(QDialog):
             n = len(o.get("mails") or []) + (1 if (o.get("sent") or {}).get("mid") and not o.get("mails") else 0)
             tabs.addTab(self.mail_tab, tr("邮件（{0}）", n) if n else tr("邮件"))
             tabs.currentChanged.connect(lambda i: i == 1 and self.mail_tab.activate())
+            self.tabs = tabs
             v.addWidget(tabs, 1)
         else:
             v.addLayout(body)

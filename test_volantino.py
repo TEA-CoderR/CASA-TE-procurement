@@ -26,13 +26,14 @@ def _db():
     lock = threading.Lock()
     for s in range(1, 6):
         con.execute(f"CREATE TABLE vendite_list_{s} ({COLS})")
-    con.execute("CREATE TABLE prodotti (CodArticolo INT, CodBarre TEXT, Descrizione TEXT)")
+    con.execute("CREATE TABLE prodotti (CodArticolo INT, CodBarre TEXT, Descrizione TEXT, PrezzoVedi1 REAL)")
     con.execute("CREATE TABLE codbarre (CodArticolo INT, CodBarre TEXT)")
-    con.execute("CREATE TABLE promozioni (l INT, Data_a TEXT, Data_f TEXT, negozio TEXT)")
-    con.execute("CREATE TABLE promozioni_list (promozioni_l INT, CodArticolo INT, Prezzo_p REAL, sconto INT, invalid INT)")
+    con.execute("CREATE TABLE promozioni (l INT, Descrizione TEXT, Data_a TEXT, Data_f TEXT, negozio TEXT)")
+    con.execute("CREATE TABLE promozioni_list (promozioni_l INT, CodArticolo INT, Prezzo_a REAL, Prezzo_p REAL, sconto INT, "
+                "invalid INT)")
     con.execute("CREATE TABLE promozioni_volantino (promozioni_id INT, promozioni_title TEXT, promozioni_details TEXT)")
-    for c, n in ((1, "ACE 5L"), (2, "DIXAN 21"), (3, "ALTRO")):
-        con.execute("INSERT INTO prodotti VALUES (?,?,?)", (c, f"80{c}", n))
+    for c, n, pr in ((1, "ACE 5L", 3.66), (2, "DIXAN 21", 4.88), (3, "ALTRO", 2.44)):
+        con.execute("INSERT INTO prodotti VALUES (?,?,?,?)", (c, f"80{c}", n, pr))
     # 门店 1：ACE 在周期里卖 10 件（原价 3.66 → 2.44），周期前卖 2 件；DIXAN 1 件；别的商品当月卖不打折
     _line(con, 1, 1, "2026-11-13", 10, 1.0, 2.44, 3.66)
     _line(con, 1, 1, "2026-11-05", 2, 1.0, 3.66, 3.66)
@@ -41,9 +42,10 @@ def _db():
     _line(con, 1, 3, "2026-10-30", 99, 1.0, 2.44, 2.44)          # 上个月：不算
     # 门店 2：ACE 3 件
     _line(con, 2, 1, "2026-11-20", 3, 1.0, 2.44, 3.66)
-    con.execute("INSERT INTO promozioni VALUES (17, '2026-11-13', '2026-11-26', '1,2')")
-    con.execute("INSERT INTO promozioni VALUES (5, '2025-01-01', '2025-01-10', '')")          # 太旧
-    con.execute("INSERT INTO promozioni_list VALUES (17, 1, 2.44, 0, 0), (17, 2, 0, 0, 0), (17, 3, 1, 0, 1)")
+    con.execute("INSERT INTO promozioni VALUES (17, 'Volantino Natale', '2026-11-13', '2026-11-26', '1,2')")
+    con.execute("INSERT INTO promozioni VALUES (5, '', '2025-01-01', '2025-01-10', '')")          # 太旧
+    # 诊断 44 / 53：Prezzo_a = 促销价、Prezzo_p = 原价、sconto = 折扣 %
+    con.execute("INSERT INTO promozioni_list VALUES (17, 1, 2.44, 3.66, 33, 0), (17, 2, 0, 0, 0, 0), (17, 3, 1, 1, 0, 1)")
     con.execute("INSERT INTO promozioni_volantino VALUES (17, 'Volantino Natale', '')")
     con.commit()
     import pandas as pd
@@ -53,7 +55,7 @@ def _db():
         p = tuple(str(x) if hasattr(x, "strftime") else x for x in (params or ()))
         with lock:
             return orig(q.replace("%s", "?"), con, params=p)
-    return type("DB", (), {"engine": None})(), fake
+    return type("DB", (), {"engine": None, "con": con})(), fake
 
 
 def test_analyze_store_margin_discount_and_month_impact(monkeypatch):
@@ -104,8 +106,10 @@ def test_file_list_dates_prices_and_saved_periods(monkeypatch):
     V.save_periods(d, ps)
     assert [p["id"] for p in V.load_periods(d)] == ["f1"] and V.new_id(ps) == "f2"
     assert "13/11" in V.label(ps[0])
+    # 「当月」= 活动天数最多的那个月：28/10 – 10/11 → 11 月（到销售数据最新那天）；15/10 – 01/11 → 10 月
     assert V.month_range(date(2026, 10, 28), date(2026, 11, 10), upto=date(2026, 11, 15)) == \
-        (date(2026, 10, 1), date(2026, 11, 15))
+        (date(2026, 11, 1), date(2026, 11, 15))
+    assert V.month_range(date(2026, 10, 15), date(2026, 11, 1)) == (date(2026, 10, 1), date(2026, 10, 31))
     assert V._stores_of("0,1,2,3") == [1, 2, 3] and V._stores_of("") == [1, 2, 3, 4, 5]
 
 
@@ -150,3 +154,39 @@ def test_before_period_totals_and_daily_values(monkeypatch):
     assert qty[date(2026, 11, 13)] == 10 and qty[date(2026, 11, 20)] == 3
     assert abs(dict(V.day_values(res, "disc", 1))[date(2026, 11, 13)] - 10) < 1e-6
     assert [r["code"] for r in V.top_items(res)] == ["1", "2"]
+
+
+def test_discount_uses_list_regular_price_and_only_main_month(monkeypatch):
+    """2026-11-15 核对真实数据（诊断 49–53）：收银记录的「原价」不一定是促销单 / 名单的原价（SVELTO 收银写 1.95，名单原价 1.79）
+    → 让利按名单原价 × 件数 − 实收；跨月的活动只算「当月」（活动天数最多的月）里的让利"""
+    import pandas as pd
+    db, fake = _db()
+    monkeypatch.setattr(pd, "read_sql", fake)
+    con_rows = [("2026-10-30", 4), ("2026-11-02", 6)]
+    p = {"id": "f1", "name": "X", "start": "2026-10-30", "end": "2026-11-03", "source": "file", "stores": [3],
+         "items": [{"code": "1", "ean": "801", "name": "ACE", "normal": 3.00}]}
+    con = db.con
+    for day, n in con_rows:
+        gross = 2.44 * n
+        con.execute("INSERT INTO vendite_list_3 VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                    (1, "801", n, 1.0, 2.44, 3.66, 1.0 * n, gross, 0, gross - gross / 1.22, day + " 10:00:00"))
+    res = V.analyze(db, p, today=date(2026, 11, 30), upto=date(2026, 11, 14))
+    s3 = res["store"][3]
+    assert abs(s3["disc"] - (3.00 - 2.44) * 10 / 1.22) < 1e-6              # 名单原价，不是收银的 3.66
+    assert res["month"] == (date(2026, 11, 1), date(2026, 11, 14))         # 5 天里 3 天在 11 月
+    assert abs(s3["disc_month"] - (3.00 - 2.44) * 6 / 1.22) < 1e-6          # 只算 11 月那几天
+    assert res["by_list"] == 1
+
+
+def test_db_period_kind_name_and_overrides(monkeypatch):
+    d = tempfile.mkdtemp()
+    assert V.kind_of({"name": "Promozione 41", "natale_share": 0.38}) == "natale"
+    assert V.kind_of({"name": "Promozione 43", "natale_share": 0.01}) == "volantino"
+    V.save_periods(d, [{"id": "f1", "name": "A", "start": "2026-11-13", "end": "2026-11-26", "source": "file"}])
+    V.save_override(d, "db41", {"name": "Natale 2026", "kind": "natale", "start": "2026-11-03", "junk": 1})
+    ps = V.apply_overrides([{"id": "db41", "name": "Promozione 41", "start": "2026-11-04", "end": "2026-11-22"}],
+                           V.load_overrides(d))
+    assert ps[0]["name"] == "Natale 2026" and ps[0]["start"] == "2026-11-03" and ps[0]["orig"]["start"] == "2026-11-04"
+    assert [p["id"] for p in V.load_periods(d)] == ["f1"]                    # 导入的几期还在
+    V.save_override(d, "db41", None)
+    assert V.load_overrides(d) == {}

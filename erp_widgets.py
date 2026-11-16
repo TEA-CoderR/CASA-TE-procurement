@@ -14,7 +14,8 @@ import threading
 from PySide6.QtCore import Qt, QObject, Signal, QTimer, QRectF, QPointF, QSize
 from PySide6.QtGui import QColor, QPainter, QPen, QFont
 from PySide6.QtWidgets import (QToolTip, QWidget, QFrame, QLabel, QPushButton, QHBoxLayout, QVBoxLayout, QDialog,
-                               QProgressBar, QStyledItemDelegate, QSizePolicy, QMainWindow)
+                               QProgressBar, QStyledItemDelegate, QSizePolicy, QMainWindow, QStyleOptionViewItem,
+                               QStyle, QApplication)
 
 from i18n import tr
 from theme import T, NUM_FONT, icon
@@ -217,6 +218,191 @@ class StepBar(QFrame):
     def restyle(self):
         for i, st in enumerate(self.states):
             self.set_state(i, st)
+
+
+class FlowBar(QWidget):
+    """
+    一页一个流程（设计稿：DETERSIVO 四步）：一格一步，圆点 + 名字 + 一行说明；完成绿 ✓、现在这步蓝底 + 底下蓝线、没到灰。
+    和 StepBar 一样的用法（set_state / set_current / restyle），多一个 clicked(i)：点一格切到那一步。
+    """
+    clicked = Signal(int)
+
+    def __init__(self, steps, parent=None):
+        super().__init__(parent)
+        self.names = [t for t, _s in steps]
+        self.subs = [s for _t, s in steps]
+        self.states = ["todo"] * len(steps)
+        self.shown = 0                     # 现在在看哪一步（底下蓝线）
+        self.hover = -1
+        self.setFixedHeight(68)
+        self.setMouseTracking(True)
+        self.setCursor(Qt.PointingHandCursor)
+
+    def set_state(self, i, state, sub=None):
+        self.states[i] = state
+        if sub is not None:
+            self.subs[i] = sub
+        self.update()
+
+    def set_current(self, i):
+        for k in range(len(self.states)):
+            self.states[k] = "done" if k < i else "now" if k == i else "todo"
+        self.update()
+
+    def set_shown(self, i):
+        self.shown = i
+        self.update()
+
+    def restyle(self):
+        self.update()
+
+    def _col(self, x):
+        n = len(self.names)
+        return max(0, min(n - 1, int(x / max(1, self.width() / n))))
+
+    def mouseMoveEvent(self, e):
+        c = self._col(e.position().x())
+        if c != self.hover:
+            self.hover = c
+            self.update()
+
+    def leaveEvent(self, _e):
+        self.hover = -1
+        self.update()
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.LeftButton:
+            self.clicked.emit(self._col(e.position().x()))
+
+    def paintEvent(self, _e):
+        from PySide6.QtGui import QFontMetrics
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        n = len(self.names)
+        cw = self.width() / n
+        h = self.height()
+        p.fillRect(self.rect(), QColor(T("surface")))
+        for i, name in enumerate(self.names):
+            st = self.states[i]
+            x0 = i * cw
+            on = i == self.shown
+            if on:
+                c = QColor(T("accent"))
+                c.setAlpha(26)
+                p.fillRect(QRectF(x0, 0, cw, h), c)
+                p.fillRect(QRectF(x0, h - 2, cw, 2), QColor(T("accent")))
+            elif i == self.hover:
+                p.fillRect(QRectF(x0, 0, cw, h), QColor(T("hover")))
+            if i < n - 1:
+                p.fillRect(QRectF(x0 + cw - 1, 0, 1, h), QColor(T("line")))
+            r = 15
+            cx, cy = x0 + 24 + r, h / 2
+            if st == "now":
+                g = QColor(T("accent"))
+                g.setAlpha(50)
+                p.setPen(Qt.NoPen)
+                p.setBrush(g)
+                p.drawEllipse(QPointF(cx, cy), r + 5, r + 5)
+            if st == "done":
+                p.setPen(Qt.NoPen)
+                p.setBrush(QColor(T("ok")))
+            elif st == "now":
+                p.setPen(Qt.NoPen)
+                p.setBrush(QColor(T("accent")))
+            else:
+                p.setPen(QPen(QColor(T("border")), 1.2))
+                p.setBrush(Qt.NoBrush)
+            p.drawEllipse(QPointF(cx, cy), r, r)
+            f = QFont(NUM_FONT)
+            f.setPixelSize(13)
+            f.setBold(True)
+            p.setFont(f)
+            p.setPen(QColor(T("on_accent") if st == "now" else ("#04140D" if T("ok") == "#34D399" else "#FFFFFF")
+                            if st == "done" else T("muted")))
+            p.drawText(QRectF(cx - r, cy - r, 2 * r, 2 * r), Qt.AlignCenter, "✓" if st == "done" else str(i + 1))
+            tx = cx + r + 12
+            tw = x0 + cw - tx - 12
+            f2 = self.font()
+            f2.setPixelSize(14)
+            f2.setBold(True)
+            p.setFont(f2)
+            p.setPen(QColor(T("muted") if st == "todo" and not on else T("text")))
+            p.drawText(QRectF(tx, cy - 19, tw, 20), Qt.AlignLeft | Qt.AlignVCenter, name)
+            f3 = self.font()
+            f3.setPixelSize(12)
+            f3.setBold(False)
+            p.setFont(f3)
+            p.setPen(QColor(T("accent") if st == "now" else T("muted")))
+            p.drawText(QRectF(tx, cy + 2, tw, 18), Qt.AlignLeft | Qt.AlignVCenter,
+                       QFontMetrics(f3).elidedText(self.subs[i] or "", Qt.ElideRight, int(tw)))
+        p.fillRect(QRectF(0, h - 1, self.width(), 1), QColor(T("line")))
+        if 0 <= self.shown < n:
+            p.fillRect(QRectF(self.shown * cw, h - 2, cw, 2), QColor(T("accent")))
+        p.end()
+
+
+class PillDelegate(QStyledItemDelegate):
+    """格子里的文字画成彩色小胶囊（设计稿的判断 / 状态标签）：颜色 = 格子的文字颜色，底 = 同色淡一点；没颜色的照原样画"""
+
+    def paint(self, p, opt, idx):
+        from PySide6.QtGui import QFontMetrics
+        text = idx.data(Qt.DisplayRole) or ""
+        fg = idx.data(Qt.ForegroundRole)
+        if not text or fg is None:
+            return super().paint(p, opt, idx)
+        o = QStyleOptionViewItem(opt)
+        self.initStyleOption(o, idx)
+        o.text = ""
+        st = o.widget.style() if o.widget else QApplication.style()
+        st.drawControl(QStyle.CE_ItemViewItem, o, p, o.widget)
+        c = fg.color() if hasattr(fg, "color") else QColor(fg)
+        p.save()
+        p.setRenderHint(QPainter.Antialiasing)
+        f = QFont(opt.font)
+        f.setPixelSize(12)
+        f.setBold(True)
+        fm = QFontMetrics(f)
+        w = min(opt.rect.width() - 12, fm.horizontalAdvance(text) + 20)
+        h = 22
+        r = QRectF(opt.rect.x() + 6, opt.rect.center().y() - h / 2 + 1, w, h)
+        bg = QColor(c)
+        bg.setAlpha(40)
+        p.setPen(Qt.NoPen)
+        p.setBrush(bg)
+        p.drawRoundedRect(r, h / 2, h / 2)
+        p.setFont(f)
+        p.setPen(c)
+        p.drawText(r.adjusted(8, 0, -8, 0), Qt.AlignCenter, fm.elidedText(text, Qt.ElideRight, int(w - 16)))
+        p.restore()
+
+
+class EmbedHost(QWidget):
+    """和 ToolWindow 一样的用法（setCentralWidget / bring_up / setWindowTitle / close），但放在页面里：
+    DETERSIVO 第 2 步「审核清单」（设计稿：不再单独开窗口）。bring_up / close 交给 on_show / on_close"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._lay = QVBoxLayout(self)
+        self._lay.setContentsMargins(0, 0, 0, 0)
+        self._lay.setSpacing(0)
+        self.title = ""
+        self.on_show = None
+        self.on_close = None
+
+    def setCentralWidget(self, w):
+        self._lay.addWidget(w)
+
+    def setWindowTitle(self, t):
+        self.title = t
+
+    def bring_up(self):
+        if self.on_show:
+            self.on_show()
+
+    def close(self):
+        if self.on_close:
+            self.on_close()
+        return True
 
 
 # =====================================================================
@@ -814,7 +1000,7 @@ class MonthGrid(QWidget):
     set_data(values, keys)：values 每月销量（从旧到新），keys 对应的 (年, 月)。
     """
 
-    LABEL_H, BOX_H, GAP, BLOCK_GAP = 20, 34, 5, 10
+    LABEL_H, BOX_H, GAP, BLOCK_GAP = 18, 31, 4, 8
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -898,7 +1084,12 @@ class MonthGrid(QWidget):
         small = QFont(f)
         small.setPointSizeF(max(7.0, f.pointSizeF() - 2))
         num = QFont(f)
-        num.setBold(True)
+        try:
+            from theme import NUM_FONT
+            num.setFamilies([NUM_FONT] + list(f.families()))   # 数字用设计稿的等宽字体
+        except Exception:
+            pass
+        num.setWeight(QFont.DemiBold)
         title = QFont(f)
         title.setBold(True)
         for y, r in titles:
@@ -2990,3 +3181,58 @@ class TransferEditDialog(QDialog):
 def math_ceil(x):
     import math
     return int(math.ceil(float(x) - 1e-9))
+
+
+# =====================================================================
+# 用 Excel（COM）的后台活：放在同一条一直不退出的线程里做
+# =====================================================================
+class _ExcelWorker:
+    """
+    2026-11-16 用户截图：一批门店比价，FOIANO 比完、开始 MARLIA 时整个程序卡死（hang.log：界面线程停在
+    threading.Thread.start() 等新线程起来）。原因：每家店开一条新线程，比完的那条线程用过 Excel（COM），
+    退出时 Windows 要拆掉它的 COM 环境，这一步拿着系统的「加载锁」又在等界面线程；同一时间界面线程开下一家的
+    新线程要同一把锁 → 互相等，死锁。
+    做法：Excel 的活（比价、修改分配、换方案、读报价…）都交给一条一直活着的线程排队做，线程不退出就不会拆 COM，
+    下一家也不用开新线程。
+    """
+
+    def __init__(self):
+        import queue
+        self.q = queue.Queue()
+        self.t = None
+        self.lock = threading.Lock()
+
+    def start(self):
+        with self.lock:
+            if self.t is None:
+                self.t = threading.Thread(target=self._loop, daemon=True, name="excel-worker")
+                self.t.start()
+
+    def submit(self, fn):
+        self.start()
+        self.q.put(fn)
+
+    def busy(self):
+        return not self.q.empty()
+
+    def _loop(self):
+        try:
+            import pythoncom
+            pythoncom.CoInitialize()
+        except Exception:
+            pass
+        while True:
+            fn = self.q.get()
+            try:
+                fn()
+            except Exception:
+                import logging
+                logging.getLogger("procurement").exception("后台 Excel 任务出错")
+
+
+EXCEL_WORKER = _ExcelWorker()
+
+
+def run_excel_job(fn):
+    """把要用 Excel 的后台活排进同一条线程（不阻塞界面，按顺序一件件做）"""
+    EXCEL_WORKER.submit(fn)

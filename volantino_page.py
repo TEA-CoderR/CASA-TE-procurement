@@ -15,7 +15,7 @@ from PySide6.QtCore import Qt, QObject, Signal, QDate
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QLineEdit, QComboBox,
                                QTabWidget, QFileDialog, QStackedWidget, QFrame, QDialog, QCheckBox, QButtonGroup,
-                               QDateEdit, QGridLayout, QMessageBox, QHeaderView)
+                               QDateEdit, QGridLayout, QMessageBox, QHeaderView, QMenu)
 
 from i18n import tr
 
@@ -40,7 +40,7 @@ class _Sig(QObject):
 # 一期 VOLANTINO：名称、开始 / 结束、哪几家店（导入名单 / 修改）
 # =====================================================================
 class PeriodDialog(QDialog):
-    def __init__(self, parent, period, n_items, can_delete=False):
+    def __init__(self, parent, period, n_items, can_delete=False, can_reset=False):
         super().__init__(parent)
         from erp_widgets import tip_label
         self.setWindowTitle(tr("这一期促销"))
@@ -104,6 +104,12 @@ class PeriodDialog(QDialog):
             de.setObjectName("Danger")
             de.clicked.connect(self._delete)
             foot.addWidget(de)
+        self.reset = False
+        if can_reset:
+            rs = QPushButton(tr("恢复数据库原样"))
+            rs.setToolTip(tr("去掉在程序里改的名称 / 类型 / 日期 / 门店，照数据库里促销单的原样"))
+            rs.clicked.connect(self._reset)
+            foot.addWidget(rs)
         foot.addStretch()
         cancel = QPushButton(tr("取消"))
         cancel.clicked.connect(self.reject)
@@ -129,6 +135,10 @@ class PeriodDialog(QDialog):
             self.deleted = True
             self.accept()
 
+    def _reset(self):
+        self.reset = True
+        self.accept()
+
     def values(self):
         to = lambda q: date(q.year(), q.month(), q.day()).isoformat()      # noqa: E731
         return {"name": self.name.text().strip(), "start": to(self.d1.date()), "end": to(self.d2.date()),
@@ -139,25 +149,42 @@ class PeriodDialog(QDialog):
 
 
 class _Spread(QObject):
-    """行很少的表（门店对比）：列宽按比例铺满整个宽度，表格变宽变窄跟着变（用户自己拖过列宽就不管）"""
+    """行很少的表（门店对比）：列宽按比例铺满整个宽度，表格变宽变窄跟着变（用户自己拖过列宽就不管）。
+    2026-11-16：以前「拖过」用设置里有没有存列宽来判断，程序自己铺的宽度也会被存下来 → 第一次铺的时候表格还没显示、
+    宽度很窄，存下来以后就一直窄（截图：门店对比每列只有几十像素）。现在只有用户真的拖了才记 user 标记"""
 
-    def __init__(self, table, weights, enabled):
+    def __init__(self, table, weights, cfg, key):
         super().__init__(table)
-        self.t, self.weights, self.enabled = table, weights, enabled
+        self.t, self.weights, self.cfg, self.key = table, weights, cfg, key
+        self._busy = False
         table.viewport().installEventFilter(self)
+        table.horizontalHeader().sectionResized.connect(self._resized)
+
+    def enabled(self):
+        return not self.cfg.get(self.key)
+
+    def _resized(self, *_):
+        if not self._busy and self.t.isVisible() and self.t.horizontalHeader().underMouse():
+            self.cfg[self.key] = True                 # 用户自己拖了列宽：以后不再自动铺满
 
     def eventFilter(self, obj, ev):
         from PySide6.QtCore import QEvent
-        if ev.type() == QEvent.Resize and self.enabled():
+        if ev.type() in (QEvent.Resize, QEvent.Show) and self.enabled():
             self.spread()
         return False
 
     def spread(self):
         W = self.t.viewport().width()
+        if W < 200:
+            return
         cols = [c for c in range(self.t.columnCount()) if not self.t.isColumnHidden(c)]
         tot = sum(self.weights[c] for c in cols) or 1
-        for c in cols:
-            self.t.setColumnWidth(c, max(56, int(W * self.weights[c] / tot)))
+        self._busy = True
+        try:
+            for c in cols:
+                self.t.setColumnWidth(c, max(56, int(W * self.weights[c] / tot)))
+        finally:
+            self._busy = False
 
 
 # =====================================================================
@@ -182,88 +209,108 @@ class VolantinoPage:
     def build(self):
         w = QWidget()
         lay = QVBoxLayout(w)
-        lay.setContentsMargins(24, 20, 24, 24)
-        lay.setSpacing(12)
-        # 第一行：标题 + 这一期的说明 · 右边操作
+        lay.setContentsMargins(28, 22, 28, 24)
+        lay.setSpacing(18)
+        # 2026-11-16 照设计稿：左边 这一期名称（大字）+ 一行说明；右边 VOLANTINO / 圣诞货 · 换一期 ▾ · 导出报告 · ⋯
+        # 门店不再一排按钮：点下面「门店排名」里的一家 = 整页看这家（名称旁边出现「FOIANO ✕」，点 ✕ 回到全部）
+        import volantino as V
         head = QHBoxLayout()
         head.setSpacing(8)
         tv = QVBoxLayout()
-        tv.setSpacing(2)
+        tv.setSpacing(6)
         t = QLabel(tr("促销分析") + "  ⓘ")
         t.setObjectName("PageTitle")
         t.setToolTip(tr("每一期 VOLANTINO（促销传单）/ 圣诞货的销售情况：各门店卖了多少、毛利多少、毛利率，五家店汇总，"
                         "以及让利把整个月的毛利率拉低了多少。\n名单可以导入 Excel（条码 / 商品编号 + 日期），"
                         "也可以直接选数据库里的促销单。数据库只读"))
         tv.addWidget(t)
+        hr = QHBoxLayout()
+        hr.setSpacing(10)
+        self.h1 = QLabel(tr("促销分析"))
+        self.h1.setObjectName("VpH1")
+        hr.addWidget(self.h1)
+        self.store_chip = QPushButton("")
+        self.store_chip.setObjectName("ShopChip")
+        self.store_chip.setCheckable(True)
+        self.store_chip.setChecked(True)
+        self.store_chip.setCursor(Qt.PointingHandCursor)
+        self.store_chip.setToolTip(tr("现在只看这家店；点一下回到全部门店"))
+        self.store_chip.clicked.connect(lambda: self.set_store(None))
+        self.store_chip.hide()
+        hr.addWidget(self.store_chip, 0, Qt.AlignVCenter)
+        hr.addStretch()
+        tv.addLayout(hr)
         self.status = QLabel("")
-        self.status.setObjectName("PageSub")
+        self.status.setObjectName("VpSub")
         tv.addWidget(self.status)
-        head.addLayout(tv)
-        head.addStretch()
-        self.b_imp = QPushButton(tr("导入名单…"))
-        self.b_imp.setToolTip(tr("选这一期的名单 Excel：有条码或商品编号就行；促销价、日期能认就自动认"))
-        self.b_imp.clicked.connect(self.import_file)
-        self.b_edit = QPushButton(tr("修改…"))
-        self.b_edit.setToolTip(tr("改这一期的名称、日期、门店，或删除（只有导入的名单能改）"))
-        self.b_edit.clicked.connect(self.edit_period)
-        self.b_ref = QPushButton(tr("刷新"))
-        self.b_ref.setToolTip(tr("重新从数据库读销售"))
-        self.b_ref.clicked.connect(self.run)
-        self.b_exp = QPushButton(tr("导出 Excel"))
-        self.b_exp.setObjectName("Primary")
-        self.b_exp.clicked.connect(self.export)
-        for b in (self.b_imp, self.b_edit, self.b_ref, self.b_exp):
-            head.addWidget(b, 0, Qt.AlignVCenter)
-        lay.addLayout(head)
-
-        # 第二行：类型 · 这一期 · 门店
-        import volantino as V
-        from erp_widgets import fit_chip
-        bar = QHBoxLayout()
-        bar.setSpacing(8)
+        head.addLayout(tv, 1)
+        seg = QFrame()
+        seg.setObjectName("Seg")
+        seg.setFixedHeight(36)
+        sh = QHBoxLayout(seg)
+        sh.setContentsMargins(3, 3, 3, 3)
+        sh.setSpacing(2)
         self.kind_group = QButtonGroup(w)
         self.kind_group.setExclusive(True)
         self.kind_btns = {}
         for k, n in V.KINDS:
             b = QPushButton(tr(n))
-            b.setObjectName("Chip")
+            b.setObjectName("SegBtn")
             b.setCheckable(True)
             b.setChecked(k == self.kind)
             b.setCursor(Qt.PointingHandCursor)
-            fit_chip(b, 30)
             b.clicked.connect(lambda _=False, k=k: self.set_kind(k))
             self.kind_group.addButton(b)
             self.kind_btns[k] = b
-            bar.addWidget(b)
-        bar.addSpacing(4)
-        self.period = QComboBox()
-        self.period.setMinimumWidth(300)
-        self.period.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
-        self.period.setToolTip(tr("哪一期：上面是导入的名单，下面是数据库里的促销单"))
+            sh.addWidget(b)
+        head.addWidget(seg, 0, Qt.AlignBottom)
+        self.period = QComboBox(w)                    # 几期的数据还放在这个下拉里（不摆出来），「换一期 ▾」按它列菜单
+        self.period.hide()
         self.period.currentIndexChanged.connect(self._period_changed)
-        bar.addWidget(self.period, 1)
-        bar.addSpacing(12)
-        sep = QFrame()
-        sep.setFixedSize(1, 22)
-        sep.setObjectName("VpSep")
-        bar.addWidget(sep)
-        bar.addSpacing(4)
-        self.store_group = QButtonGroup(w)
-        self.store_group.setExclusive(True)
+        self.b_pick = QPushButton(tr("换一期") + " ▾")
+        self.b_pick.setMinimumHeight(36)
+        self.b_pick.setToolTip(tr("哪一期：上面是导入的名单，下面是数据库里的促销单"))
+        self.pick_menu = QMenu(self.b_pick)
+        self.pick_menu.aboutToShow.connect(self._fill_pick_menu)
+        self.b_pick.setMenu(self.pick_menu)
+        self.b_pick.setStyleSheet("QPushButton::menu-indicator { image: none; width: 0; }")
+        head.addWidget(self.b_pick, 0, Qt.AlignBottom)
+        self.b_exp = QPushButton(tr("导出报告"))
+        self.b_exp.setObjectName("Primary")
+        self.b_exp.setMinimumHeight(36)
+        self.b_exp.setToolTip(tr("导出 Excel：门店对比和商品明细两页（意大利文）"))
+        self.b_exp.clicked.connect(self.export)
+        head.addWidget(self.b_exp, 0, Qt.AlignBottom)
+        # 不常用的放进「⋯」（按钮对象留着：别的代码按它们开关）
+        self.b_imp = QPushButton(tr("导入名单…"))
+        self.b_imp.setToolTip(tr("选这一期的名单 Excel：有条码或商品编号就行；促销价、日期能认就自动认"))
+        self.b_imp.clicked.connect(self.import_file)
+        self.b_edit = QPushButton(tr("修改…"))
+        self.b_edit.setToolTip(tr("改这一期的名称、类型、日期、门店；导入的名单还能删除。数据库里的促销单只在程序里改，数据库不动"))
+        self.b_edit.clicked.connect(self.edit_period)
+        self.b_ref = QPushButton(tr("刷新"))
+        self.b_ref.setToolTip(tr("重新从数据库读销售"))
+        self.b_ref.clicked.connect(self.run)
+        for b in (self.b_imp, self.b_edit, self.b_ref):
+            b.setParent(w)
+            b.hide()
+        more = QPushButton("⋯")
+        more.setFixedSize(40, 36)
+        more.setToolTip(tr("更多"))
+        mm = QMenu(more)
+        acts = [(mm.addAction(tr("导入名单…")), self.b_imp), (mm.addAction(tr("修改这一期…")), self.b_edit),
+                (mm.addAction(tr("重新读销售数据")), self.b_ref)]
+        for a, b in acts:
+            a.setToolTip(b.toolTip())
+            a.triggered.connect(b.click)
+        mm.setToolTipsVisible(True)
+        mm.aboutToShow.connect(lambda: [a.setEnabled(b.isEnabled()) for a, b in acts])
+        more.setMenu(mm)
+        more.setStyleSheet("QPushButton::menu-indicator { image: none; width: 0; }")
+        head.addWidget(more, 0, Qt.AlignBottom)
+        lay.addLayout(head)
         self.store_btns = {}
-        for code, text in [(None, tr("全部门店"))] + STORES:
-            b = QPushButton(text)
-            b.setObjectName("Chip")
-            b.setCheckable(True)
-            b.setChecked(code is None)
-            b.setCursor(Qt.PointingHandCursor)
-            fit_chip(b, 28)
-            b.clicked.connect(lambda _=False, c=code: self.set_store(c))
-            self.store_group.addButton(b)
-            self.store_btns[code] = b
-            bar.addWidget(b)
-        lay.addLayout(bar)
-        self._seps = [sep]
+        self._seps = []
 
         self.stack = QStackedWidget()
         from erp_widgets import EmptyState
@@ -329,8 +376,7 @@ class VolantinoPage:
         hh = self.t_st.horizontalHeader()
         hh.setSectionResizeMode(QHeaderView.Interactive)
         hh.setStretchLastSection(False)
-        self._st_spread = _Spread(self.t_st, (1.5, 0.8, 1.2, 1.1, 0.9, 1.1, 0.9, 1.1, 1.0, 1.0, 0.9),
-                                  lambda: not (self.cfg.get("stores_cols_widths") or {}))
+        self._st_spread = _Spread(self.t_st, (1.5, 0.8, 1.2, 1.1, 0.9, 1.1, 0.9, 1.1, 1.0, 1.0, 0.9), self.cfg, "stores_cols_user")
         v.addWidget(self.t_st, 1)
         self.st_rows = []
         self.ctl_st = TableSortFilter(self.t_st, lambda: len(self.st_rows), lambda i, c: self.st_rows[i][1][c],
@@ -377,7 +423,7 @@ class VolantinoPage:
         if thumb:
             self.t_it.setItemDelegateForColumn(1, PI.ThumbDelegate(self.t_it, 0, None, self.settings))
             self.t_it.verticalHeader().setDefaultSectionSize(PI.row_height(self.settings))
-        tips = {7: tr("(原价 − 实际售价) × 数量，不含税"), 8: tr("活动开始前同样天数里的销量"),
+        tips = {7: tr("让利 = (原价 − 实际售价) × 数量，不含税。原价用名单里写的原价（Prezzo Continuo / 促销单原价），名单没写的用收银记录里的原价"), 8: tr("活动开始前同样天数里的销量"),
                 9: tr("活动期间销量比活动前多 / 少几成")}
         for c, tp in tips.items():
             self.t_it.horizontalHeaderItem(c).setToolTip(tp)
@@ -398,7 +444,7 @@ class VolantinoPage:
         import volantino as V
         k = V.kind_label(self.kind)
         k = tr(k)
-        tips = {4: tr("{0} 商品的毛利率", k), 5: tr("(原价 − 实际售价) × 数量，不含税"),
+        tips = {4: tr("{0} 商品的毛利率", k), 5: tr("让利 = (原价 − 实际售价) × 数量，不含税。原价用名单里写的原价（Prezzo Continuo / 促销单原价），名单没写的用收银记录里的原价"),
                 7: tr("{0} 商品销售额 ÷ 这家店当月全部销售额", k), 8: tr("这家店当月所有商品的毛利率"),
                 9: tr("假设 {0} 商品按原价卖时当月的毛利率", k), 10: tr("实际 − 没有让利，单位百分点；负数 = 让利拉低了毛利率")}
         for c, tp in tips.items():
@@ -430,6 +476,9 @@ class VolantinoPage:
         T = self.ui.T
         for sp in getattr(self, "_seps", []):
             sp.setStyleSheet(f"background:{T('line')};")
+        from theme import NUM_FONT
+        self.h1.setStyleSheet(f"font-size:26px; font-weight:700; color:{T('text')};")
+        self.status.setStyleSheet(f"color:{T('head')};")
         self.scroll.setStyleSheet("QScrollArea { background: transparent; }")
         self.scroll.widget().setStyleSheet("#VpBody { background: transparent; }")
 
@@ -478,12 +527,32 @@ class VolantinoPage:
             i = 0
         self.period.setCurrentIndex(i)
         self.period.blockSignals(False)
-        self.b_edit.setEnabled(bool(self.current() and self.current().get("source") == "file"))
+        self.b_edit.setEnabled(bool(self.current()))
         has = self.period.count() > 0
         for b in (self.b_ref, self.b_exp):
             b.setEnabled(has)
         if not has:
             self.stack.setCurrentIndex(0)
+            self.h1.setText(tr("促销分析"))
+            self.status.setText("")
+
+    def _fill_pick_menu(self):
+        m = self.pick_menu
+        m.clear()
+        cur = self.period.currentIndex()
+        if not self.period.count():
+            a = m.addAction(tr("这一类还没有名单"))
+            a.setEnabled(False)
+        for i in range(self.period.count()):
+            if i < len(self._plist) and self._plist[i] is None:
+                m.addSeparator()
+                continue
+            a = m.addAction(self.period.itemText(i))
+            a.setCheckable(True)
+            a.setChecked(i == cur)
+            a.triggered.connect(lambda _=False, i=i: self.period.setCurrentIndex(i))
+        m.addSeparator()
+        m.addAction(tr("导入名单…"), self.import_file)
 
     def current(self):
         i = self.period.currentIndex()
@@ -516,7 +585,9 @@ class VolantinoPage:
 
     def _db_periods_arrived(self, ps):
         had = self.current()
-        self._db_list = ps
+        import volantino as V
+        self._db_raw = ps
+        self._db_list = V.apply_overrides(ps, V.load_overrides(self._base()))
         self._fill_periods(had["id"] if had else None)
         if not had and self.current():
             self.run()
@@ -528,7 +599,7 @@ class VolantinoPage:
         self.cfg["last"] = p["id"]
         import settings as ST
         ST.save_settings(self.settings)
-        self.b_edit.setEnabled(p.get("source") == "file")
+        self.b_edit.setEnabled(True)
         self.run()
 
     def import_file(self):
@@ -579,7 +650,21 @@ class VolantinoPage:
     def edit_period(self):
         import volantino as V
         cur = self.current()
-        if not cur or cur.get("source") != "file":
+        if not cur:
+            return
+        if cur.get("source") == "db":
+            dlg = PeriodDialog(self.win, cur, cur.get("n") or len(cur.get("items") or []), can_reset=bool(cur.get("orig")))
+            if not dlg.exec():
+                return
+            V.save_override(self._base(), cur["id"], None if dlg.reset else dlg.values())
+            self._db_list = V.apply_overrides(getattr(self, "_db_raw", []), V.load_overrides(self._base()))
+            new = next((p for p in self._db_list if p["id"] == cur["id"]), cur)
+            self.cfg["last"] = cur["id"]
+            if V.kind_of(new) != self.kind:
+                self.set_kind(V.kind_of(new))
+                return
+            self._fill_periods(cur["id"])
+            self.run()
             return
         dlg = PeriodDialog(self.win, cur, len(cur.get("items") or []), can_delete=True)
         if not dlg.exec():
@@ -654,9 +739,9 @@ class VolantinoPage:
 
     def set_store(self, code):
         self.store = code
-        b = self.store_btns.get(code)
-        if b is not None:
-            b.setChecked(True)
+        self.store_chip.setText(f"{NAMES.get(code, code)}  ✕" if code is not None else "")
+        self.store_chip.setChecked(True)
+        self.store_chip.setVisible(code is not None)
         if self.res is not None:
             self.update_view()
 
@@ -671,9 +756,10 @@ class VolantinoPage:
         kname = tr(V.kind_label(V.kind_of(res["period"])))
         self.report.show(res, self.store, kname, NAMES)
         upto = res.get("upto")
-        bits = [res["period"].get("name") or kname,
-                tr("{0:%d/%m} – {1:%d/%m/%Y} · {2} 天", res["start"], res["end"], (res["end"] - res["start"]).days + 1),
-                tr("{0} 家门店", len(res["stores"])) if self.store is None else NAMES.get(self.store, "")]
+        self.h1.setText(res["period"].get("name") or kname)
+        bits = [tr("{0:%d/%m} – {1:%d/%m} · {2} 天", res["start"], res["end"], (res["end"] - res["start"]).days + 1),
+                tr("{0} 家门店", len(res["stores"])) if self.store is None else NAMES.get(self.store, ""),
+                tr("{0} 个商品", res["total"]["items"])]
         if upto:
             bits.append(tr("销售数据到 {0:%d/%m}", upto))
         if res["matched"] < res["total"]["items"]:
@@ -702,6 +788,8 @@ class VolantinoPage:
         self.ctl_st.render()
         if self._st_spread.enabled():
             self._st_spread.spread()
+            from PySide6.QtCore import QTimer           # 刚从「正在读…」换过来时表格还没排好宽度：排好后再铺一次
+            QTimer.singleShot(0, lambda: self._st_spread.enabled() and self._st_spread.spread())
 
     def _fill_st(self, i, k):
         T = self.ui.T
