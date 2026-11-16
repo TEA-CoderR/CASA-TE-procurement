@@ -20,6 +20,7 @@ MODULE = "company_defaults.py"
 SKIP_TOP = {"last_folder", "theme", "ui_dark_v2", "language", "db", "wholesale_root", "wholesale_batch", "user_name", "user_site",
             "company_defaults_ver", "use_web", "window", "geometry", "last_dir",
             "mail",   # 邮箱是每个人自己的（2026-11-06）
+            "accent", "density", "theme_follow",   # 外观：每个人自己的（2026-11-16）
             "agent"}  # 采购助手的服务商 / 模型每台电脑自己选（密钥本来就只在本机，2026-11-13）
 # 某一块里面不同步的
 SKIP_IN = {"store_orders": {"folder", "day", "skip", "moq_override", "stores", "last_dir"},
@@ -27,9 +28,9 @@ SKIP_IN = {"store_orders": {"folder", "day", "skip", "moq_override", "stores", "
            "distribution": {"folder", "last_dir", "last_file"},
            "import_page": {"folder", "last_dir", "last_file"},
            # 采购订单跟踪：共享文件夹、Excel、我的名字、上次同步是每台电脑自己的（列顺序 / 宽度照常统一）
-           "tracking": {"folder", "excel", "me", "excel_mtime", "synced_at", "last_buyer", "record", "excel_original"},
+           "tracking": {"folder", "excel", "me", "excel_mtime", "synced_at", "synced_ts", "last_buyer", "record", "excel_original"},
            # VOLANTINO 分析：上次看的哪一期、选文件的文件夹（列顺序 / 宽度照常统一）
-           "volantino": {"last", "last_dir"}}
+           "volantino": {"last", "last_dir", "stores_cols_user"}}
 _SECRET = re.compile(r"pass|pwd|token|secret|api_?key|credential", re.I)
 _PATHLIKE = re.compile(r"^[A-Za-z]:[\\/]|^\\\\|^/(home|Users|mnt|tmp)/")
 

@@ -1000,7 +1000,7 @@ class MonthGrid(QWidget):
     set_data(values, keys)：values 每月销量（从旧到新），keys 对应的 (年, 月)。
     """
 
-    LABEL_H, BOX_H, GAP, BLOCK_GAP = 20, 34, 5, 10
+    LABEL_H, BOX_H, GAP, BLOCK_GAP = 18, 31, 4, 8
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1084,7 +1084,12 @@ class MonthGrid(QWidget):
         small = QFont(f)
         small.setPointSizeF(max(7.0, f.pointSizeF() - 2))
         num = QFont(f)
-        num.setBold(True)
+        try:
+            from theme import NUM_FONT
+            num.setFamilies([NUM_FONT] + list(f.families()))   # 数字用设计稿的等宽字体
+        except Exception:
+            pass
+        num.setWeight(QFont.DemiBold)
         title = QFont(f)
         title.setBold(True)
         for y, r in titles:

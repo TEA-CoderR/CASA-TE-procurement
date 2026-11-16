@@ -38,7 +38,7 @@ def _skip_pyside_source_scan():
 
 _skip_pyside_source_scan()
 from PySide6.QtGui import (QColor, QPainter, QPen, QBrush, QFont, QIcon, QPixmap, QFontDatabase,
-                           QTextCursor, QPainterPath, QKeySequence, QShortcut)
+                           QTextCursor, QPainterPath, QKeySequence, QShortcut, QGuiApplication)
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (QAbstractSpinBox, QToolButton, 
     QApplication, QMainWindow, QWidget, QFrame, QLabel, QPushButton, QLineEdit, QCheckBox,
@@ -111,6 +111,39 @@ if not settings.get("ui_dark_v2"):          # 2026-11-15 用户：新界面先�
     except Exception:
         pass
 theme.set_theme(settings.get("theme", "dark"))
+theme.set_accent(settings.get("accent") or "blue")
+theme.set_density(settings.get("density") or "normal")
+
+
+def _scale_row_heights():
+    """表格密度：所有表格的默认行高按「紧凑 / 标准 / 舒适」放大缩小（原来的行高记在表头上，换密度时重新算）"""
+    from PySide6.QtWidgets import QHeaderView
+    if getattr(QHeaderView, "_casate_scaled", False):
+        return
+    orig = QHeaderView.setDefaultSectionSize
+
+    def scaled(self, n):
+        if self.orientation() == Qt.Vertical:
+            self.setProperty("base_row", int(n))
+            n = theme.row_px(n)
+        orig(self, n)
+    QHeaderView.setDefaultSectionSize = scaled
+    QHeaderView._casate_orig_dss = orig
+    QHeaderView._casate_scaled = True
+
+
+def apply_density_now():
+    """换了密度：已经打开的表格马上按新行高"""
+    from PySide6.QtWidgets import QHeaderView
+    orig = getattr(QHeaderView, "_casate_orig_dss", None)
+    if orig is None:
+        return
+    for w in QApplication.allWidgets():
+        if isinstance(w, QHeaderView) and w.orientation() == Qt.Vertical and w.property("base_row"):
+            orig(w, theme.row_px(int(w.property("base_row"))))
+
+
+_scale_row_heights()
 
 
 # =====================================================================
@@ -2795,13 +2828,25 @@ def _all_pages(side, sub_pages):
 
 
 class _SearchBox(QLineEdit):
-    """顶栏搜索框：右边一个「Ctrl K」小标"""
+    """顶栏搜索框：右边一个「Ctrl K」小标；点一下 / 打字 = 打开 Ctrl K 指令面板（2026-11-16 设计稿）"""
+    opened = Signal(str)
 
     def __init__(self):
         super().__init__()
         self.hint = QLabel("Ctrl K", self)
         self.hint.setObjectName("KeyHint")
         self.hint.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self.setCursor(Qt.PointingHandCursor)
+
+    def mousePressEvent(self, e):
+        self.opened.emit("")
+
+    def keyPressEvent(self, e):
+        t = e.text()
+        if t and t.isprintable() and not (e.modifiers() & (Qt.ControlModifier | Qt.AltModifier)):
+            self.opened.emit(t)
+            return
+        super().keyPressEvent(e)
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
@@ -2934,6 +2979,12 @@ class MainWindow(QMainWindow):
         self._startup_done = False
         for _ in self.NAV:
             self.stack.addWidget(QWidget())                 # 先占位
+        if settings.get("theme_follow"):                  # 外观「跟随系统」：打开时按 Windows 现在的深浅色
+            settings["theme"] = self._system_scheme()
+        try:
+            QGuiApplication.styleHints().colorSchemeChanged.connect(self._scheme_changed)
+        except Exception:
+            pass
         theme.set_theme(settings.get("theme", "dark"))     # 主题先套上：第一页出来就是对的样子
         QApplication.instance().setStyleSheet(build_qss())
         self._qss_theme = settings.get("theme", "dark")
@@ -3291,7 +3342,8 @@ class MainWindow(QMainWindow):
         self.search.setCompleter(comp)
         self.search.returnPressed.connect(lambda: self._search_go(self.search.text()))
         h.addWidget(self.search, 1)
-        QShortcut(QKeySequence("Ctrl+K"), self, activated=lambda: (self.search.setFocus(), self.search.selectAll()))
+        self.search.opened.connect(self.open_palette)
+        QShortcut(QKeySequence("Ctrl+K"), self, activated=lambda: self.open_palette(""))
         h.addStretch()
         from erp_widgets import BgTaskPill
         self.bg_pill = BgTaskPill(bar)          # 后台运行中的任务：进度 + 点一下看详情（没有时藏起来）
@@ -3313,6 +3365,12 @@ class MainWindow(QMainWindow):
         self.db_sub.hide()
         dp.addWidget(self.db_dot)
         dp.addWidget(self.db_title)
+        self.top_slot = QWidget()                # 页面自己放进顶栏的东西（订单跟踪：同步状态 · 视图切换 · 邮件核对 · ⋯）
+        self.top_slot_lay = QHBoxLayout(self.top_slot)
+        self.top_slot_lay.setContentsMargins(0, 0, 0, 0)
+        self.top_slot_lay.setSpacing(10)
+        self.top_slot.hide()
+        h.addWidget(self.top_slot)
         h.addWidget(self.db_pill)
         self.agent_btn = QPushButton(tr("✦ 助手"))
         self.agent_btn.setObjectName("AgentBtn")
@@ -3359,6 +3417,79 @@ class MainWindow(QMainWindow):
         self.toggle_agent(True)
         if self.agent_panel is not None and raw:
             self.agent_panel.send(raw)
+
+    # ---------- Ctrl K 指令面板 ----------
+    def _palette_actions(self):
+        return [("mail_check", tr("邮件核对"), tr("读邮箱最近 21 天，看哪些单发了 / 确认了 / 发货了"), "邮件 email mail 核对 确认 发货"),
+                ("sync", tr("同步 Excel"), tr("订单跟踪 ↔ PIANO 表，马上同步一次"), "excel piano 同步 sync"),
+                ("new_order", tr("登记新订单…"), tr("在订单跟踪里登记一张单"), "新 订单 登记 order"),
+                ("start_check", tr("开始本周 DETERSIVO 采购"), tr("收集文件 → 审核清单 → 比价分配 → 下单发送"), "detersivo 检查 清单 比价"),
+                ("store_orders", tr("计算总仓采购"), tr("读 SCHEDA 和销量，算每家供应商的订货量"), "总仓 计算 scheda lucas"),
+                ("theme", tr("换深色 / 浅色"), "", "主题 深色 浅色 theme dark light"),
+                ("db", tr("测试数据库连接"), "", "数据库 db 连接"),
+                ("agent_open", tr("打开采购助手"), tr("会改数据的每一步都先问你"), "助手 agent ai")]
+
+    def _palette_rows(self):
+        tp = getattr(self, "tracking", None)
+        if tp is None or getattr(tp, "st", None) is None:
+            return []
+        if tp.rows:
+            return tp.rows
+        import order_tracking as OT
+        return OT.rows(tp.st)
+
+    def open_palette(self, text=""):
+        from command_palette import CommandPalette
+        rail = {r: t for r, t, _i, _p in self.RAIL}
+        pages = [(k, t, rail.get(self._rail_of(k), "")) for k, t in self.NAV]
+        dlg = CommandPalette(self, pages, self._palette_rows, self._palette_actions(), self._palette_run,
+                             self._palette_ask, text)
+        dlg.exec()
+
+    def _palette_ask(self, text):
+        self.toggle_agent(True)
+        if self.agent_panel is not None and text:
+            self.agent_panel.send(text)
+
+    def _palette_run(self, it):
+        key, data = it["key"], it.get("data")
+        self._ensure_all()
+        tp = getattr(self, "tracking", None)
+        if key == "page":
+            self.go_page(data)
+        elif key == "agent":
+            self._palette_ask(data)
+        elif key == "agent_open":
+            self.toggle_agent(True)
+        elif key == "theme":
+            self.toggle_theme()
+        elif key == "db":
+            self.check_db()
+            self.show_toast(tr("正在测试数据库连接…"))
+        elif key == "start_check":
+            self.go_page("order")
+            if hasattr(self, "_cmp_show"):
+                self._cmp_show(0)
+        elif key == "store_orders":
+            self.go_page("store_orders")
+        elif tp is not None:
+            self.go_page("tracking")
+            if key == "send" and data:
+                tp.send_order(data)
+            elif key in ("transit", "supplier"):
+                tp._show_view(1)
+                tp.week_sel = None
+                tp.f_month.setCurrentIndex(0)
+                tp.search.setText(data or "")
+                i = tp.f_view.findData("open" if key == "transit" else "all")
+                if i >= 0:
+                    tp.f_view.setCurrentIndex(i)
+            elif key == "mail_check":
+                tp.check_mail()
+            elif key == "sync":
+                tp.sync_excel(manual=True)
+            elif key == "new_order":
+                tp.new_order()
 
     def _show_notes(self):
         m = self.bell_menu
@@ -3521,9 +3652,19 @@ class MainWindow(QMainWindow):
         title = tr("本周 DETERSIVO 采购 · {0:%d/%m}", datetime.now()) if key == "order" else self._tab_label(key)
         self.top_title.setText(title + ("  ⓘ" if getattr(self, "_page_tips", {}).get(key) else ""))
         own = key == "order"                       # 设计稿：DETERSIVO 页顶栏右边只有「设置」
+        tw = getattr(getattr(self, "tracking", None), "top_widget", None) if key == "tracking" else None
+        for k in range(self.top_slot_lay.count()):
+            wdg = self.top_slot_lay.itemAt(k).widget()
+            if wdg is not None and wdg is not tw:
+                wdg.hide()
+        if tw is not None:
+            if tw.parent() is not self.top_slot:
+                self.top_slot_lay.addWidget(tw)
+            tw.show()
+        self.top_slot.setVisible(tw is not None)
         self.top_set_btn.setVisible(own)
-        self.db_pill.setVisible(not own)
-        self.agent_btn.setVisible(not own)
+        self.db_pill.setVisible(not own and tw is None)     # 设计稿：订单页顶栏右边是 Excel 同步状态 + 邮件核对
+        self.agent_btn.setVisible(not own and tw is None)
         self.top_title.setToolTip(getattr(self, "_page_tips", {}).get(key, ""))
         self._last_sub[rid] = key
         self._paint_rail()
@@ -3600,17 +3741,66 @@ class MainWindow(QMainWindow):
 
     def toggle_theme(self):
         settings["theme"] = "light" if settings.get("theme") == "dark" else "dark"
+        settings["theme_follow"] = False
         save_settings(settings)
         self.apply_theme()
 
-    def show_toast(self, text, ms=2600):
+    def set_theme_mode(self, mode):
+        """系统设置 → 外观：深色 / 浅色 / 跟随系统（Windows 换深浅色时跟着换）"""
+        settings["theme_follow"] = mode == "system"
+        settings["theme"] = self._system_scheme() if mode == "system" else mode
+        save_settings(settings)
+        self.apply_theme()
+
+    def _system_scheme(self):
+        try:
+            cs = QGuiApplication.styleHints().colorScheme()
+            if cs == Qt.ColorScheme.Dark:
+                return "dark"
+            if cs == Qt.ColorScheme.Light:
+                return "light"
+        except Exception:
+            pass
+        return settings.get("theme") or "dark"
+
+    def _scheme_changed(self, *_):
+        if settings.get("theme_follow"):
+            want = self._system_scheme()
+            if want != settings.get("theme"):
+                settings["theme"] = want
+                save_settings(settings)
+                self.apply_theme()
+
+    def apply_density(self):
+        apply_density_now()
+
+    def show_toast(self, text, ms=2600, action=None):
+        """右下角提示；action = (按钮文字, 点了做什么)，例如 (「撤销」, undo)"""
         self.notify(text)
-        self.toast.setText(text)
+        self._toast_action = action[1] if action else None
+        if action:
+            import html as _html
+            self.toast.setTextFormat(Qt.RichText)
+            self.toast.setTextInteractionFlags(Qt.LinksAccessibleByMouse)
+            self.toast.setText(f"{_html.escape(text)}&nbsp;&nbsp;<a href='act' style='color:{T('accent')}; font-weight:600;"
+                               f" text-decoration:none;'>{_html.escape(action[0])}</a>")
+            if not getattr(self, "_toast_linked", False):
+                self.toast.linkActivated.connect(self._toast_clicked)
+                self._toast_linked = True
+        else:
+            self.toast.setTextFormat(Qt.PlainText)
+            self.toast.setText(text)
         self.toast.adjustSize()
         self.toast.move(self.width() - self.toast.width() - 24, self.height() - self.toast.height() - 76)
         self.toast.raise_()
         self.toast.show()
         self.toast_timer.start(ms)
+
+    def _toast_clicked(self, _link):
+        fn, self._toast_action = getattr(self, "_toast_action", None), None
+        self.toast.hide()
+        if fn:
+            fn()
 
     # ---------- 页面：订单处理 ----------
     def _page_order(self):

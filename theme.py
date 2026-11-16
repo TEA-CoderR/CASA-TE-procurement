@@ -12,8 +12,9 @@ from PySide6.QtGui import QColor, QPainter, QPen, QIcon, QPixmap, QLinearGradien
 from PySide6.QtSvg import QSvgRenderer
 
 APP_VERSION = "v3.3.22"
-UI_FONT = "Microsoft YaHei UI"
 FONT_DIR = os.path.join(getattr(sys, "_MEIPASS", None) or os.path.dirname(os.path.abspath(__file__)), "fonts")
+# 2026-11-16（用户：用设计稿的字体）：中文 Noto Sans SC（程序自带 Regular / Medium / Bold，OFL），找不到文件退回微软雅黑
+UI_FONT = "Noto Sans SC" if os.path.exists(os.path.join(FONT_DIR, "NotoSansSC-Regular.ttf")) else "Microsoft YaHei UI"
 # 2026-11-15 第 3 轮（用户：要和设计稿一模一样）：程序自带设计稿的字体——英文 / 数字 Inter，数字列 JetBrains Mono（等宽，表格对得齐）；
 # 中文没有自带，照旧微软雅黑（Inter 里没有的字 Qt 自动用后面的字体）
 LATIN_FONT = "Inter" if os.path.exists(os.path.join(FONT_DIR, "Inter-Regular.ttf")) else UI_FONT
@@ -81,7 +82,62 @@ LEGACY_DARK = {
         "side2": "#0B1426", "side_line": "#18243A", "accent_ring": "#2B4A85",
 }
 
-_state = {"theme": "dark"}
+_state = {"theme": "dark", "accent": "blue", "density": "normal"}
+
+# 2026-11-16 设计稿「系统设置 → 外观」：主色五选一（蓝 / 青 / 紫 / 绿 / 橙），每种深浅两套
+ACCENTS = (("blue", "蓝"), ("cyan", "青"), ("violet", "紫"), ("green", "绿"), ("orange", "橙"))
+_ACCENT_RGB = {"dark": {"blue": "#4F8CFF", "cyan": "#22D3EE", "violet": "#A78BFA", "green": "#34D399", "orange": "#FB923C"},
+               "light": {"blue": "#1D5BD8", "cyan": "#0E7490", "violet": "#6D28D9", "green": "#0B7D5F", "orange": "#C2410C"}}
+_ACCENT_KEYS = ("accent", "accent_hover", "accent_soft", "on_accent", "info", "info_soft", "side_bar", "accent_ring")
+_BASE = {k: {x: v[x] for x in _ACCENT_KEYS} for k, v in THEMES.items()}     # 蓝色（原来的）留一份
+
+
+def _mix(a, b, t):
+    """a 和 b 两种颜色按 t（0–1，b 的比例）混合"""
+    a, b = a.lstrip("#"), b.lstrip("#")
+    ca = [int(a[i:i + 2], 16) for i in (0, 2, 4)]
+    cb = [int(b[i:i + 2], 16) for i in (0, 2, 4)]
+    return "#" + "".join(f"{round(x + (y - x) * t):02X}" for x, y in zip(ca, cb))
+
+
+def set_accent(name):
+    """换主色：改 THEMES 里跟主色有关的几种颜色（蓝色 = 原样）"""
+    name = name if name in _ACCENT_RGB["dark"] else "blue"
+    _state["accent"] = name
+    for mode, tok in THEMES.items():
+        if name == "blue":
+            tok.update(_BASE[mode])
+            continue
+        c = _ACCENT_RGB[mode][name]
+        if mode == "dark":
+            tok.update({"accent": c, "accent_hover": _mix(c, "#FFFFFF", 0.18), "accent_soft": _mix("#070B14", c, 0.16),
+                        "on_accent": "#04101F", "info": c, "info_soft": _mix("#070B14", c, 0.16), "side_bar": c,
+                        "accent_ring": _mix("#070B14", c, 0.38)})
+        else:
+            tok.update({"accent": c, "accent_hover": _mix(c, "#000000", 0.18), "accent_soft": _mix("#FFFFFF", c, 0.09),
+                        "on_accent": "#FFFFFF", "info": c, "info_soft": _mix("#FFFFFF", c, 0.09), "side_bar": c,
+                        "accent_ring": _mix("#FFFFFF", c, 0.28)})
+
+
+def accent():
+    return _state["accent"]
+
+
+# 表格密度：紧凑 / 标准 / 舒适 = 行高 × 0.85 / 1 / 1.18（QHeaderView.setDefaultSectionSize 在 main 里统一按它放大缩小）
+DENSITIES = (("compact", "紧凑", 0.85), ("normal", "标准", 1.0), ("comfy", "舒适", 1.18))
+
+
+def set_density(name):
+    _state["density"] = name if name in {k for k, _n, _f in DENSITIES} else "normal"
+
+
+def density():
+    return _state["density"]
+
+
+def row_px(n):
+    f = next((f for k, _n, f in DENSITIES if k == _state["density"]), 1.0)
+    return max(18, round(n * f))
 
 
 def set_theme(name):
@@ -529,6 +585,15 @@ def build_qss():
                             font-size: 12px; color: {t['muted']}; font-weight: 500; }}
     QPushButton#ViewChip:hover {{ border-color: {t['accent_ring']}; color: {t['text']}; background: transparent; }}
     QPushButton#ViewChip:checked {{ border-color: {t['accent']}; background: {t['accent_soft']}; color: {t['accent'] if not dark else '#CFE0FF'}; font-weight: 600; }}
+    QPushButton#ShopChip {{ background: transparent; border: 1px solid {t['border']}; border-radius: 17px; padding: 0 14px;
+                            min-height: 32px; max-height: 34px; font-size: 12px; color: {t['head']}; font-weight: 500; }}
+    QPushButton#ShopChip:hover {{ border-color: {t['accent_ring']}; color: {t['text']}; background: transparent; }}
+    QPushButton#ShopChip:checked {{ border-color: {t['accent']}; background: {t['accent_soft']}; color: {t['accent'] if not dark else '#CFE0FF'}; font-weight: 600; }}
+    #Seg {{ background: {t['surface2']}; border: 1px solid {t['border']}; border-radius: 10px; }}
+    QPushButton#SegBtn {{ background: transparent; border: none; border-radius: 7px; padding: 0 12px; min-height: 28px; max-height: 28px;
+                          font-size: 12px; color: {t['muted']}; font-weight: 500; }}
+    QPushButton#SegBtn:hover {{ color: {t['text']}; background: transparent; }}
+    QPushButton#SegBtn:checked {{ background: {t['accent_soft']}; color: {t['accent'] if not dark else '#CFE0FF'}; font-weight: 600; }}
     #StatusText {{ color: {t['muted']}; font-size: 12px; }}
     #Drawer {{ background: {t['surface2']}; border-left: 1px solid {t['line']}; }}
     #MiniCard {{ background: {t['surface']}; border: 1px solid {t['line']}; border-radius: 10px; }}

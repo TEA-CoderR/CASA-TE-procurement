@@ -55,6 +55,11 @@ def eur_short(v):
     return f"€ {v:.0f}"
 
 
+def eur0(v):
+    """设计稿写法：€183,920"""
+    return f"€{v:,.0f}" if v is not None else "—"
+
+
 def pct(v, dec=1):
     return f"{v * 100:.{dec}f}%" if v is not None else "—"
 
@@ -91,8 +96,8 @@ class Card(QFrame):
         super().__init__()
         self.setObjectName("RpCard")
         self.v = QVBoxLayout(self)
-        self.v.setContentsMargins(18, 14, 18, 14)
-        self.v.setSpacing(10)
+        self.v.setContentsMargins(18, 16, 18, 16)
+        self.v.setSpacing(14)
         self.head = QHBoxLayout()
         self.head.setSpacing(8)
         self.title = QLabel(title + ("  ⓘ" if tip else ""))
@@ -112,10 +117,11 @@ class Card(QFrame):
 # KPI 卡：标题 · 大数字 · 比活动前 · 小走势线
 # =====================================================================
 class _Spark(QWidget):
+    """每天一根小柱子（设计稿：KPI 卡最下面一排）"""
     def __init__(self):
         super().__init__()
         self.vals, self.tone = [], "accent"
-        self.setFixedHeight(30)
+        self.setFixedHeight(22)
 
     def set(self, vals, tone="accent"):
         self.vals, self.tone = list(vals), tone
@@ -123,43 +129,31 @@ class _Spark(QWidget):
 
     def paintEvent(self, _e):
         n = len(self.vals)
-        if n < 2:
+        if not n:
             return
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
-        W, H = self.width(), self.height() - 3
-        lo, hi = min(self.vals), max(self.vals)
-        rng = (hi - lo) or 1
-        pts = [QPointF(i * (W - 2) / (n - 1) + 1, 2 + (H - 2) * (1 - (v - lo) / rng)) for i, v in enumerate(self.vals)]
-        path = QPainterPath(pts[0])
-        for q in pts[1:]:
-            path.lineTo(q)
-        fill = QPainterPath(path)
-        fill.lineTo(pts[-1].x(), H + 2)
-        fill.lineTo(pts[0].x(), H + 2)
-        fill.closeSubpath()
+        W, H = self.width(), self.height()
+        hi = max(max(self.vals), 0) or 1
+        gap = 2.0
+        bw = max(1.0, (W - gap * (n - 1)) / n)
         p.setPen(Qt.NoPen)
-        p.setBrush(_alpha(self.tone, 34))
-        p.drawPath(fill)
-        pen = QPen(QColor(T(self.tone)), 1.6)
-        pen.setJoinStyle(Qt.RoundJoin)
-        pen.setCapStyle(Qt.RoundCap)
-        p.setPen(pen)
-        p.setBrush(Qt.NoBrush)
-        p.drawPath(path)
         p.setBrush(QColor(T(self.tone)))
-        p.drawEllipse(pts[-1], 2.4, 2.4)
+        for i, v in enumerate(self.vals):
+            h = max(1.5, H * max(v, 0) / hi)
+            p.drawRoundedRect(QRectF(i * (bw + gap), H - h, bw, h), 1, 1)
         p.end()
 
 
 class Kpi(QFrame):
-    def __init__(self, title, tip=""):
+    def __init__(self, title, tip="", inline_sub=False):
         super().__init__()
+        self.inline_sub = inline_sub              # 第一张卡：「▲ 33% 比活动前 19 天」写在一个标签里（设计稿）
         self.setObjectName("RpCard")
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         v = QVBoxLayout(self)
-        v.setContentsMargins(16, 13, 16, 10)
-        v.setSpacing(3)
+        v.setContentsMargins(16, 16, 16, 16)
+        v.setSpacing(8)
         self.cap = QLabel(title + ("  ⓘ" if tip else ""))
         self.cap.setObjectName("RpKpiCap")
         self.cap.setToolTip(tip)
@@ -171,25 +165,23 @@ class Kpi(QFrame):
         row.setSpacing(6)
         self.delta = QLabel("")
         self.delta.setObjectName("RpDelta")
-        self.sub = QLabel("")
-        self.sub.setObjectName("RpFaint")
+        self.sub = QLabel("")                      # 设计稿：小标签里一句话写完，这行不摆出来（文字进标签的鼠标提示）
+        self.sub.hide()
         row.addWidget(self.delta)
-        row.addWidget(self.sub)
         row.addStretch()
         v.addLayout(row)
-        v.addSpacing(4)
         self.spark = _Spark()
         v.addWidget(self.spark)
 
     def set(self, value, delta_text="", tone="muted", sub="", spark=(), spark_tone="accent", delta_tip=""):
         self.val.setText(value)
-        self.delta.setText(delta_text)
+        self.delta.setText(delta_text + (f" {sub}" if (sub and self.inline_sub) else ""))
         self.delta.setVisible(bool(delta_text))
-        self.delta.setToolTip(delta_tip)
+        self.delta.setToolTip("\n".join(x for x in (sub if not self.inline_sub else "", delta_tip) if x))
         fg = T(tone) if tone != "muted" else T("muted")
         bg = T(tone + "_soft") if tone in ("ok", "err", "warn") else T("track")
-        self.delta.setStyleSheet(f"color:{fg}; background:{bg}; border-radius:9px; padding:1px 7px; "
-                                 f"font-size:11px; font-weight:600;")
+        self.delta.setStyleSheet(f"color:{fg}; background:{bg}; border-radius:10px; padding:2px 8px; "
+                                 f"font-size:11px; font-weight:500;")
         self.sub.setText(sub)
         self.spark.set(spark, spark_tone)
 
@@ -209,7 +201,7 @@ class TrendChart(QWidget):
         self.days, self.ref = days, ref
         self.update()
 
-    LEFT, RIGHT, TOP, BOTTOM = 52, 40, 10, 24
+    LEFT, RIGHT, TOP, BOTTOM = 0, 0, 8, 22
 
     def _plot(self):
         return QRectF(self.LEFT, self.TOP, self.width() - self.LEFT - self.RIGHT, self.height() - self.TOP - self.BOTTOM)
@@ -229,86 +221,79 @@ class TrendChart(QWidget):
             self.update()
         if i >= 0:
             d, rev, pr = self.days[i]
-            self.setToolTip(tr("{0:%a %d/%m}：销售额 € {1:,.2f} · 毛利 € {2:,.2f}（{3}）", d, rev, pr,
-                               pct(pr / rev if rev else None)))
+            tip = tr("{0:%a %d/%m}：销售额 € {1:,.2f} · 毛利 € {2:,.2f}（{3}）", d, rev, pr, pct(pr / rev if rev else None))
+            if self.ref:
+                tip += "\n" + tr("活动前日均 € {0:,.2f}", self.ref)
+            self.setToolTip(tip)
 
     def leaveEvent(self, _e):
         self.hover = -1
         self.update()
 
     def paintEvent(self, _e):
+        """设计稿：每天一根柱子 = 销售额（深蓝），里面亮蓝 = 毛利；黄色虚线 = 活动前日均；下面只写几个日期"""
         n = len(self.days)
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         r = self._plot()
-        top = _nice_top(max([rv for _, rv, _ in self.days] + [self.ref or 0, 1]) * 1.08)
-        mtop = 0.6
-        margins = [(pr / rv if rv > 0 else None) for _, rv, pr in self.days]
-        mvals = [m for m in margins if m is not None]
-        if mvals:
-            mtop = max(0.1, min(1.0, _nice_top(max(mvals) * 1.15)))
-        # 横格线 + 左边金额 / 右边毛利率
-        p.setFont(_num_font(10))
-        for k in range(5):
-            y = r.bottom() - r.height() * k / 4
-            p.setPen(QPen(QColor(T("line")), 1, Qt.SolidLine if k == 0 else Qt.DotLine))
-            p.drawLine(QPointF(r.left(), y), QPointF(r.right(), y))
-            p.setPen(QColor(T("faint")))
-            p.drawText(QRectF(0, y - 8, self.LEFT - 8, 16), Qt.AlignRight | Qt.AlignVCenter, eur_short(top * k / 4))
-            p.setPen(_alpha("near", 230))
-            p.drawText(QRectF(r.right() + 6, y - 8, self.RIGHT - 6, 16), Qt.AlignLeft | Qt.AlignVCenter,
-                       f"{mtop * k / 4 * 100:.0f}%")
+        top = max([rv for _, rv, _ in self.days] + [self.ref or 0, 1]) * 1.04
+        p.setPen(QPen(QColor(T("border")), 1))
+        p.drawLine(QPointF(r.left(), r.bottom() + 0.5), QPointF(r.right(), r.bottom() + 0.5))
         if not n:
             p.end()
             return
-        cw = r.width() / n
-        bw = max(3.0, min(28.0, cw * 0.64))
+        gap = 6.0 if n <= 31 else 2.0
+        bw = max(2.0, (r.width() - gap * (n - 1)) / n)
         today = date.today()
-        step = max(1, int(30 // max(cw, 1)) + 1)
-        pts = []
+        dark = QColor(T("accent_ring")) if _is_dark() else _alpha("accent", 60)
         for i, (d, rv, pr) in enumerate(self.days):
-            cx = r.left() + i * cw + cw / 2
-            if i == self.hover:
-                p.setPen(Qt.NoPen)
-                p.setBrush(_alpha("accent", 18))
-                p.drawRoundedRect(QRectF(r.left() + i * cw, r.top(), cw, r.height()), 4, 4)
+            x = r.left() + i * (bw + gap)
             if d > today:
-                p.setPen(QPen(QColor(T("line")), 1, Qt.DashLine))
+                p.setPen(QPen(QColor(T("border")), 1, Qt.DashLine))
                 p.setBrush(Qt.NoBrush)
-                p.drawRoundedRect(QRectF(cx - bw / 2, r.bottom() - 16, bw, 16), 3, 3)
-            elif rv > 0:
-                h = r.height() * rv / top
-                p.setPen(Qt.NoPen)
-                p.setBrush(_alpha("accent", 70 if i != self.hover else 110))
-                p.drawRoundedRect(QRectF(cx - bw / 2, r.bottom() - h, bw, h), 3, 3)
-                hp = r.height() * max(pr, 0) / top
+                p.drawRoundedRect(QRectF(x + 0.5, r.bottom() - 18, bw - 1, 18), 4, 4)
+                continue
+            if rv <= 0:
+                continue
+            h = r.height() * rv / top
+            col = QColor(dark)
+            if i == self.hover:
+                col = col.lighter(125)
+            p.setPen(Qt.NoPen)
+            p.setBrush(col)
+            path = QPainterPath()
+            path.addRoundedRect(QRectF(x, r.bottom() - h, bw, h + 5), 5, 5)
+            p.setClipRect(QRectF(x - 1, r.top() - 2, bw + 2, r.height() + 2))
+            p.drawPath(path)
+            hp = r.height() * max(pr, 0) / top
+            if hp > 0:
                 p.setBrush(QColor(T("accent")))
-                p.drawRoundedRect(QRectF(cx - bw / 2, r.bottom() - hp, bw, hp), 3, 3)
-            m = margins[i]
-            if m is not None and d <= today:
-                pts.append(QPointF(cx, r.bottom() - r.height() * max(0.0, min(m, mtop)) / mtop))
-            if i % step == 0 or i == n - 1:
-                p.setPen(QColor(T("accent") if d == today else T("faint")))
-                p.setFont(_num_font(10, d == today))
-                p.drawText(QRectF(cx - 20, r.bottom() + 4, 40, 16), Qt.AlignCenter, f"{d:%d/%m}")
+                inner = QPainterPath()
+                inner.addRoundedRect(QRectF(x, r.bottom() - hp, bw, hp + 4), 4, 4)
+                p.drawPath(inner)
+            p.setClipping(False)
         if self.ref:
             y = r.bottom() - r.height() * self.ref / top
-            p.setPen(QPen(QColor(T("muted")), 1.2, Qt.DashLine))
-            p.drawLine(QPointF(r.left(), y), QPointF(r.right(), y))
-        if len(pts) > 1:
-            path = QPainterPath(pts[0])
-            for q in pts[1:]:
-                path.lineTo(q)
-            pen = QPen(QColor(T("near")), 2.2)
-            pen.setJoinStyle(Qt.RoundJoin)
+            pen = QPen(QColor(T("warn")), 1.5, Qt.DashLine)
             p.setPen(pen)
-            p.setBrush(Qt.NoBrush)
-            p.drawPath(path)
-        p.setPen(QPen(QColor(T("surface")), 1.5))
-        p.setBrush(QColor(T("near")))
-        for q in pts:
-            p.drawEllipse(q, 3, 3)
+            p.drawLine(QPointF(r.left(), y), QPointF(r.right(), y))
+        # 下面几个日期：第一天、两个中间、最后一天
+        p.setFont(_num_font(11))
+        p.setPen(QColor(T("faint")))
+        marks = sorted({0, n // 3, (2 * n) // 3, n - 1}) if n > 3 else list(range(n))
+        for k, i in enumerate(marks):
+            d = self.days[i][0]
+            x = r.left() + i * (bw + gap) + bw / 2
+            al = Qt.AlignLeft if k == 0 else Qt.AlignRight if k == len(marks) - 1 else Qt.AlignHCenter
+            box = QRectF(x - bw / 2, r.bottom() + 5, 60, 16) if k == 0 else \
+                QRectF(x + bw / 2 - 60, r.bottom() + 5, 60, 16) if k == len(marks) - 1 else QRectF(x - 30, r.bottom() + 5, 60, 16)
+            p.drawText(box, al | Qt.AlignVCenter, f"{d:%d/%m}")
         p.end()
+
+
+def _is_dark():
+    from theme import current
+    return current() == "dark"
 
 
 class Legend(QWidget):
@@ -374,9 +359,9 @@ class Bridge(QWidget):
         span = (hi - lo) or 1
         y_of = lambda v: base - (base - val_h - 4) * (v - lo) / span          # noqa: E731
         cw = W / 3
-        bw = min(64, cw * 0.56)
-        bars = [(self.wo, lo, _alpha("faint", 120), pct(self.wo)),
-                (self.wo, self.act, QColor(T("err")), f"{(self.act - self.wo) * 100:+.2f} pt"),
+        bw = cw * 0.78
+        bars = [(self.wo, lo, QColor(T("accent_ring")) if _is_dark() else _alpha("accent", 60), pct(self.wo)),
+                (self.wo, self.act, QColor(T("err")), f"{(self.act - self.wo) * 100:+.1f} pt".replace("-", "−")),
                 (self.act, lo, QColor(T("accent")), pct(self.act))]
         prev_top = None
         for i, (a, b, col, txt) in enumerate(bars):
@@ -388,8 +373,8 @@ class Bridge(QWidget):
             p.setPen(Qt.NoPen)
             p.setBrush(col)
             p.drawRoundedRect(QRectF(cx - bw / 2, y1, bw, y2 - y1), 4, 4)
-            p.setFont(_num_font(12, True))
-            p.setPen(QColor(T("err") if i == 1 else T("text")))
+            p.setFont(_num_font(12))
+            p.setPen(QColor(T("err") if i == 1 else T("head")))
             p.drawText(QRectF(cx - cw / 2, y1 - val_h - 2, cw, val_h), Qt.AlignCenter, txt)
             p.setFont(_ui_font(11))
             p.setPen(QColor(T("muted")))
@@ -459,7 +444,7 @@ class StoreRank(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         W = self.width()
-        name_w, right_w = 104, 150
+        name_w, right_w = 124, 172
         bar_x, bar_w = name_w, max(40, W - name_w - right_w - 12)
         top = max(r[2] for r in self.rows) or 1
         for i, (sid, name, rv, m, ch, imp) in enumerate(self.rows):
@@ -467,36 +452,39 @@ class StoreRank(QWidget):
             y = i * rh
             sel = sid == self.sel
             if sel or i == self.hover:
-                p.setPen(Qt.NoPen)
+                p.setPen(QPen(QColor(T("accent_ring")), 1) if sel else Qt.NoPen)
                 p.setBrush(_alpha("accent", 26 if sel else 12))
-                p.drawRoundedRect(QRectF(0, y + 2, W, rh - 4), 8, 8)
-            p.setFont(_ui_font(12, True))
-            p.setPen(QColor(T("accent") if sel else T("text")))
+                p.drawRoundedRect(QRectF(0.5, y + 2.5, W - 1, rh - 5), 10, 10)
+            p.setFont(_ui_font(13))
+            p.setPen(QColor(T("text")))
             p.drawText(QRectF(10, y, name_w - 14, rh), Qt.AlignVCenter | Qt.AlignLeft,
                        QFontMetrics(p.font()).elidedText(name, Qt.ElideRight, name_w - 14))
-            bh = 12
+            bh = 10
             by = y + (rh - bh) / 2
             p.setPen(Qt.NoPen)
             p.setBrush(QColor(T("track")))
             p.drawRoundedRect(QRectF(bar_x, by, bar_w, bh), bh / 2, bh / 2)
             w = bar_w * rv / top
-            p.setBrush(QColor(T("accent")) if (sel or self.sel is None) else _alpha("accent", 120))
+            p.setBrush(QColor(T("cyan")) if sel else QColor(T("accent")) if self.sel is None else _alpha("accent", 120))
             if w > 0:
                 p.drawRoundedRect(QRectF(bar_x, by, max(bh, w), bh), bh / 2, bh / 2)
             # 右边：金额 · 毛利率 · 比活动前
             rx = W - right_w
-            p.setFont(_num_font(12, True))
+            p.setFont(_num_font(12))
             p.setPen(QColor(T("text")))
-            p.drawText(QRectF(rx, y, 70, rh), Qt.AlignVCenter | Qt.AlignRight, eur_short(rv))
-            p.setFont(_num_font(11))
-            p.setPen(QColor(T("err") if (m or 0) < 0 else T("muted")))
-            p.drawText(QRectF(rx + 72, y, 36, rh), Qt.AlignVCenter | Qt.AlignRight, pct(m, 0))
+            p.drawText(QRectF(rx, y, 70, rh), Qt.AlignVCenter | Qt.AlignRight,
+                       f"€{rv / 1000:.1f}k" if abs(rv) >= 1000 else f"€{rv:,.0f}")
+            p.setFont(_num_font(12))
+            p.setPen(QColor(T("err") if (m or 0) < 0 else T("head")))
+            p.drawText(QRectF(rx + 70, y, 54, rh), Qt.AlignVCenter | Qt.AlignRight, pct(m))
             if ch is not None:
                 tone = _delta_tone(ch)
                 p.setPen(QColor(T(tone)))
-                arrow = "▲" if ch > 0 else "▼" if ch < 0 else ""
-                p.drawText(QRectF(rx + 108, y, 42, rh), Qt.AlignVCenter | Qt.AlignRight,
-                           f"{arrow}{abs(ch):.0%}" if abs(ch) < 10 else f"{arrow}>999%")
+                p.drawText(QRectF(rx + 124, y, 48, rh), Qt.AlignVCenter | Qt.AlignRight,
+                           f"{ch:+.0%}".replace("-", "−") if abs(ch) < 10 else ">999%")
+            else:
+                p.setPen(QColor(T("accent")))
+                p.drawText(QRectF(rx + 124, y, 48, rh), Qt.AlignVCenter | Qt.AlignRight, tr("新店"))
         p.end()
 
 
@@ -506,7 +494,7 @@ class StoreRank(QWidget):
 class TopItems(QWidget):
     picked = Signal(str)               # 双击一行：条码（跳到商品明细搜这个）
 
-    ROW = 30
+    ROW = 34
 
     def __init__(self):
         super().__init__()
@@ -539,41 +527,37 @@ class TopItems(QWidget):
             self.picked.emit(self.rows[i][0] or self.rows[i][1])
 
     def paintEvent(self, _e):
+        """设计稿：序号 · 名称 · 销售额 · 毛利率，每行下面一条细线"""
         if not self.rows:
             return
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         W = self.width()
-        top = max(r[2] for r in self.rows) or 1
-        right_w = 118
-        name_w = max(80, int((W - 26 - right_w) * 0.62))
-        bar_x = 26 + name_w + 8
-        bar_w = max(20, W - bar_x - right_w - 6)
+        val_w, mar_w, gap = 74, 58, 10
+        name_x = 22 + gap
+        name_w = max(60, W - name_x - val_w - mar_w - 2 * gap)
         for i, (ean, name, rv, m, q) in enumerate(self.rows):
             y = i * self.ROW
             if i == self.hover:
                 p.setPen(Qt.NoPen)
                 p.setBrush(_alpha("accent", 12))
                 p.drawRoundedRect(QRectF(0, y + 1, W, self.ROW - 2), 6, 6)
-            p.setFont(_num_font(11, True))
-            p.setPen(QColor(T("accent") if i < 3 else T("faint")))
-            p.drawText(QRectF(2, y, 20, self.ROW), Qt.AlignCenter, str(i + 1))
-            p.setFont(_ui_font(12))
+            p.setFont(_num_font(12))
+            p.setPen(QColor(T("faint")))
+            p.drawText(QRectF(0, y, 22, self.ROW), Qt.AlignVCenter | Qt.AlignLeft, str(i + 1))
+            p.setFont(_ui_font(13))
             p.setPen(QColor(T("text")))
-            p.drawText(QRectF(26, y, name_w, self.ROW), Qt.AlignVCenter | Qt.AlignLeft,
-                       QFontMetrics(p.font()).elidedText(name or ean, Qt.ElideRight, name_w))
-            bh = 6
-            p.setPen(Qt.NoPen)
-            p.setBrush(QColor(T("track")))
-            p.drawRoundedRect(QRectF(bar_x, y + (self.ROW - bh) / 2, bar_w, bh), 3, 3)
-            p.setBrush(_alpha("accent", 200))
-            p.drawRoundedRect(QRectF(bar_x, y + (self.ROW - bh) / 2, max(bh, bar_w * rv / top), bh), 3, 3)
-            p.setFont(_num_font(12, True))
-            p.setPen(QColor(T("text")))
-            p.drawText(QRectF(W - right_w, y, 70, self.ROW), Qt.AlignVCenter | Qt.AlignRight, eur(rv))
-            p.setFont(_num_font(11))
-            p.setPen(QColor(T("err") if (m or 0) < 0 else T("muted")))
-            p.drawText(QRectF(W - 46, y, 44, self.ROW), Qt.AlignVCenter | Qt.AlignRight, pct(m, 0))
+            p.drawText(QRectF(name_x, y, name_w, self.ROW), Qt.AlignVCenter | Qt.AlignLeft,
+                       QFontMetrics(p.font()).elidedText(name or ean, Qt.ElideRight, int(name_w)))
+            p.setFont(_num_font(12))
+            p.drawText(QRectF(W - mar_w - gap - val_w, y, val_w, self.ROW), Qt.AlignVCenter | Qt.AlignRight,
+                       f"€{rv:,.0f}")
+            p.setPen(QColor(T("err") if (m or 0) < 0 else T("head")))
+            p.drawText(QRectF(W - mar_w, y, mar_w, self.ROW), Qt.AlignVCenter | Qt.AlignRight,
+                       pct(m).replace("-", "−"))
+            if i < len(self.rows) - 1:
+                p.setPen(QPen(QColor(T("line")), 1))
+                p.drawLine(QPointF(0, y + self.ROW - 0.5), QPointF(W, y + self.ROW - 0.5))
         p.end()
 
 
@@ -589,8 +573,8 @@ class StatPill(QLabel):
         self.setText(text)
         fg = T(tone) if tone != "muted" else T("muted")
         bg = T(tone + "_soft") if tone in ("ok", "err", "warn", "accent") else T("track")
-        self.setStyleSheet(f"color:{fg}; background:{bg}; border-radius:11px; padding:2px 10px; font-size:12px; "
-                           f"font-weight:600;")
+        self.setStyleSheet(f"color:{fg}; background:{bg}; border-radius:10px; padding:2px 8px; font-size:11px; "
+                           f"font-weight:500;")
 
     def mousePressEvent(self, _e):
         self.clicked.emit()
@@ -611,7 +595,7 @@ class Report(QWidget):
         # KPI
         kr = QHBoxLayout()
         kr.setSpacing(12)
-        self.k_rev = Kpi(tr("销售额"), tr("名单里的商品在活动日期里的销售额（不含税）"))
+        self.k_rev = Kpi(tr("销售额"), tr("名单里的商品在活动日期里的销售额（不含税）"), inline_sub=True)
         self.k_pro = Kpi(tr("毛利"), tr("销售额 − 进价"))
         self.k_mar = Kpi(tr("毛利率"), tr("毛利 ÷ 销售额"))
         self.k_qty = Kpi(tr("销量"), tr("卖了多少件"))
@@ -619,64 +603,60 @@ class Report(QWidget):
         for k in (self.k_rev, self.k_pro, self.k_mar, self.k_qty, self.k_dis):
             kr.addWidget(k)
         v.addLayout(kr)
-        # 第二排
+        # 第二排：每天销售额和毛利 · 让利对当月毛利率的影响
         r2 = QHBoxLayout()
         r2.setSpacing(12)
-        self.c_trend = Card(tr("每天销售额与毛利率"))
+        self.c_trend = Card(tr("每天销售额和毛利"))
         self.legend = Legend([])
         self.c_trend.head.addWidget(self.legend)
         self.trend = TrendChart()
+        self.trend.setMinimumHeight(250)
         self.c_trend.v.addWidget(self.trend, 1)
-        r2.addWidget(self.c_trend, 5)
-        self.c_imp = Card(tr("对当月毛利率的影响"))
-        ib = QHBoxLayout()
-        ib.setSpacing(10)
-        self.imp_big = QLabel("—")
-        self.imp_big.setObjectName("RpBig")
-        ib.addWidget(self.imp_big, 0, Qt.AlignBottom)
-        self.imp_unit = QLabel(tr("个百分点"))
-        self.imp_unit.setObjectName("RpFaint")
-        ib.addWidget(self.imp_unit, 0, Qt.AlignBottom)
-        ib.addStretch()
-        self.c_imp.v.addLayout(ib)
-        self.imp_sub = QLabel("")
-        self.imp_sub.setObjectName("RpMuted")
-        self.imp_sub.setWordWrap(True)
-        self.c_imp.v.addWidget(self.imp_sub)
+        r2.addWidget(self.c_trend, 2)
+        self.c_imp = Card(tr("让利对当月毛利率的影响"))
         self.bridge = Bridge()
         self.c_imp.v.addWidget(self.bridge, 1)
+        self.imp_box = QFrame()
+        self.imp_box.setObjectName("RpImpBox")
+        ibv = QVBoxLayout(self.imp_box)
+        ibv.setContentsMargins(12, 10, 12, 10)
+        ibv.setSpacing(4)
+        self.imp_big = QLabel("—")
+        self.imp_big.setObjectName("RpBig")
+        ibv.addWidget(self.imp_big)
+        self.imp_sub = QLabel("")
+        self.imp_sub.setObjectName("RpImpSub")
+        self.imp_sub.setWordWrap(True)
+        ibv.addWidget(self.imp_sub)
+        self.c_imp.v.addWidget(self.imp_box)
+        self.imp_unit = QLabel("")                       # 老名字留着（别的地方可能用）
         self.imp_foot = QLabel("")
-        self.imp_foot.setObjectName("RpFaint")
-        self.c_imp.v.addWidget(self.imp_foot)
-        r2.addWidget(self.c_imp, 3)
+        r2.addWidget(self.c_imp, 1)
         v.addLayout(r2)
-        # 第三排
+        # 第三排：门店排名 · 卖得最好的商品
         r3 = QHBoxLayout()
         r3.setSpacing(12)
-        self.c_rank = Card(tr("门店排名 · 按销售额"))
-        self.rank_hint = QLabel(tr("毛利率 · 比活动前"))
-        self.rank_hint.setObjectName("RpFaint")
+        self.c_rank = Card(tr("门店排名"))
+        self.rank_hint = QLabel(tr("点一家 = 整页看这家"))
+        self.rank_hint.setObjectName("RpMuted")
+        self.rank_hint.setToolTip(tr("右边三列：销售额 · 毛利率 · 比活动前"))
         self.c_rank.head.addWidget(self.rank_hint)
         self.rank = StoreRank()
         self.rank.picked.connect(self.store_picked)
         self.c_rank.v.addWidget(self.rank, 1)
         r3.addWidget(self.c_rank, 1)
-        self.c_top = Card(tr("销售额前 8 名商品"), tr("双击一个商品：在下面的商品明细里看它"))
-        self.top = TopItems()
-        self.top.picked.connect(self.show_items)
-        self.c_top.v.addWidget(self.top)
-        self.c_top.v.addStretch()
-        pr = QHBoxLayout()
-        pr.setSpacing(8)
+        self.c_top = Card(tr("卖得最好的商品"), tr("按销售额；双击一个商品：在下面的商品明细里看它"))
         self.p_sold, self.p_unsold, self.p_loss = StatPill(), StatPill(), StatPill()
         for w, key, tip in ((self.p_sold, "sold", tr("点一下：商品明细只看卖出的")),
                             (self.p_unsold, "unsold", tr("点一下：商品明细只看没卖出的")),
                             (self.p_loss, "loss", tr("点一下：商品明细只看毛利为负的"))):
             w.setToolTip(tip)
             w.clicked.connect(lambda k=key: self.show_items.emit(k))
-            pr.addWidget(w)
-        pr.addStretch()
-        self.c_top.v.addLayout(pr)
+            self.c_top.head.addWidget(w)
+        self.top = TopItems()
+        self.top.picked.connect(self.show_items)
+        self.c_top.v.addWidget(self.top)
+        self.c_top.v.addStretch()
         r3.addWidget(self.c_top, 1)
         v.addLayout(r3)
         self.restyle()
@@ -699,45 +679,46 @@ class Report(QWidget):
             k.set(fmt_val, txt, _delta_tone(ch, good_up), sub or (before_lbl if txt else tr("活动前没有销售")),
                   spark, spark_tone, before_tip)
 
-        dset(self.k_rev, a.get("rev", 0), prev.get("rev", 0), eur(a.get("rev", 0)), [x[1] for x in past])
-        dset(self.k_pro, a.get("profit", 0), prev.get("profit", 0), eur(a.get("profit", 0)), [x[2] for x in past], "ok")
+        dset(self.k_rev, a.get("rev", 0), prev.get("rev", 0), eur0(a.get("rev", 0)), [x[1] for x in past])
+        dset(self.k_pro, a.get("profit", 0), prev.get("profit", 0), eur0(a.get("profit", 0)), [x[2] for x in past], "cyan")
         m, pm = a.get("margin"), prev.get("margin")
         md = None if m is None or pm is None else (m - pm) * 100
         self.k_mar.set(pct(m), "" if md is None else f"{'▲' if md >= 0 else '▼'} {abs(md):.1f} pt",
                        _delta_tone(md / 100 if md is not None else None), before_lbl if md is not None else "",
-                       [(pr / rv if rv else 0) for _, rv, pr in past], "near", before_tip)
+                       [(pr / rv if rv else 0) for _, rv, pr in past], "violet", before_tip)
         qty_days = [v for d, v in V.day_values(res, "qty", store) if d <= today]
         disc_days = [v for d, v in V.day_values(res, "disc", store) if d <= today]
-        dset(self.k_qty, a.get("qty", 0), prev.get("qty", 0), f"{a.get('qty', 0):,.0f}", qty_days)
+        dset(self.k_qty, a.get("qty", 0), prev.get("qty", 0), tr("{0:,.0f} 件", a.get('qty', 0)), qty_days, "ok")
         disc_rate = a.get("disc", 0) / (a.get("rev", 0) + a.get("disc", 0)) if (a.get("rev", 0) + a.get("disc", 0)) else None
-        self.k_dis.set(eur(a.get("disc", 0)), tr("平均折扣 {0}", pct(disc_rate, 0)) if disc_rate else "", "warn",
-                       "", disc_days, "warn", tr("让利 ÷ (销售额 + 让利)：顾客平均少付了几成"))
-        self.k_dis.sub.setText(tr("占当月销售额 {0}", pct(a.get("share"))))
+        self.k_dis.set(eur0(a.get("disc", 0)), tr("平均 {0} 折扣", pct(disc_rate)) if disc_rate else "", "err",
+                       tr("占当月销售额 {0}", pct(a.get("share"))), disc_days, "err", tr("让利 ÷ (销售额 + 让利)：顾客平均少付了几成"))
         # 走势
         ref = prev.get("rev", 0) / nd if prev.get("rev") else None
         self.trend.set(days, ref)
-        items = [("accent", "bar", tr("毛利")), (("accent", 70), "bar", tr("销售额")), ("near", "line", tr("毛利率"))]
+        items = [("accent_ring" if _is_dark() else ("accent", 60), "bar", tr("销售额")), ("accent", "bar", tr("毛利"))]
         if ref:
-            items.append(("muted", "dash", tr("活动前日均")))
+            items.append(("warn", "dash", tr("活动前日均")))
         self.legend.set_items(items)
         self.legend.setMinimumWidth(QFontMetrics(_ui_font(11)).horizontalAdvance("".join(t for *_x, t in items)) +
                                     32 * len(items))
         # 影响
         im = a.get("impact") or {}
         imp = im.get("impact")
-        self.imp_big.setText("—" if imp is None else f"{imp:+.2f}")
-        self.imp_big.setStyleSheet(f"color:{T('err') if (imp or 0) <= -0.5 else T('warn') if (imp or 0) < 0 else T('ok')};")
+        bad = (imp or 0) < 0
+        self.imp_big.setText("—" if imp is None else tr("{0} 个百分点", f"{imp:+.1f}".replace("-", "−")))
         mrng = res["month"]
         months = (mrng[1].year - mrng[0].year) * 12 + mrng[1].month - mrng[0].month + 1
-        self.c_imp.set_title(tr("对当月毛利率的影响") if months <= 1 else tr("对活动这几个月毛利率的影响"),
+        self.c_imp.set_title(tr("让利对当月毛利率的影响") if months <= 1 else tr("让利对这几个月毛利率的影响"),
                              tr("这几家店所有商品（不只是 {0}）在「当月」的毛利率；当月 = 活动天数最多的那个月"
                                 "（{1:%d/%m} – {2:%d/%m}，最多到销售数据最新那天）。\n没有让利 = 假设 {0} 商品按原价卖："
                                 "(当月毛利 + 当月里的让利) ÷ (当月销售额 + 当月里的让利)，活动落在别的月的那几天不算\n"
                                 "影响 = 实际 − 没有让利，单位是百分点", kname, mrng[0], mrng[1]))
-        self.imp_sub.setText(tr("{0} 让利把全店毛利率从 {1} 拉到 {2}", kname, pct(im.get("margin_wo")), pct(im.get("margin"))))
+        self.imp_sub.setText(tr("让利 {0} · 占 {1} 月销售额 {2}", eur0(a.get("disc_month", a.get("disc", 0))),
+                                mrng[0].month, pct(a.get("share"))))
+        self.imp_box.setToolTip(tr("{0} 让利把全店毛利率从 {1} 拉到 {2}", kname, pct(im.get("margin_wo")), pct(im.get("margin"))))
+        self.imp_box.setProperty("bad", bad)
         self.bridge.set(im.get("margin_wo"), im.get("margin"), (tr("没有让利"), tr("让利"), tr("实际")))
-        self.imp_foot.setText(tr("{0} 占当月销售额 {1} · 当月 {2:%d/%m} – {3:%d/%m}", kname, pct(a.get("share")),
-                                 mrng[0], mrng[1]))
+        self.restyle_imp()
         # 门店排名
         rows = []
         for sid in res["stores"]:
@@ -747,25 +728,39 @@ class Report(QWidget):
         rows.sort(key=lambda r: r[2], reverse=True)
         self.rank.set(rows, store)
         # 商品
-        tops = V.top_items(res, store, 8)
+        tops = V.top_items(res, store, 6)
         self.top.set([(r["ean"], r["name"], r["rev"], r.get("margin"), r["qty"]) for r in tops])
         all_rows = V.item_rows(res, store)
         sold = sum(1 for r in all_rows if r["qty"] > 0)
         loss = sum(1 for r in all_rows if r.get("margin") is not None and r["margin"] < 0)
-        self.p_sold.set(tr("卖出 {0} / {1}", sold, len(all_rows)), "accent")
-        self.p_unsold.set(tr("没卖出 {0}", len(all_rows) - sold), "warn" if len(all_rows) - sold else "muted")
+        self.p_sold.set(tr("卖出 {0}", sold), "ok")
+        self.p_unsold.set(tr("没卖出 {0}", len(all_rows) - sold), "muted")
         self.p_loss.set(tr("毛利为负 {0}", loss), "err" if loss else "muted")
         self.k_rev.cap.setToolTip(tr("{0} 名单里的商品在活动日期里的销售额（不含税）", kname))
+
+    def restyle_imp(self):
+        bad = bool(self.imp_box.property("bad"))
+        tone = "err" if bad else "ok"
+        c = QColor(T(tone))
+        bg = QColor(T(tone + "_soft"))
+        edge = QColor(c)
+        edge.setAlpha(70)
+        rgba = f"rgba({edge.red()},{edge.green()},{edge.blue()},{edge.alpha()})"
+        from theme import NUM_FONT
+        self.imp_box.setStyleSheet(f"#RpImpBox {{ background:{bg.name()}; border:1px solid {rgba}; border-radius:10px; }}"
+                                   f"#RpBig {{ font-family:\"{NUM_FONT}\"; font-size:22px; font-weight:600; color:{c.name()}; }}"
+                                   f"#RpImpSub {{ font-size:12px; color:{T('head')}; }}")
 
     def restyle(self):
         from theme import NUM_FONT
         self.setStyleSheet(
-            f"#RpCard {{ background:{T('surface')}; border:1px solid {T('line')}; border-radius:12px; }}"
-            f"#RpTitle {{ font-size:14px; font-weight:600; color:{T('text')}; }}"
-            f"#RpKpiCap {{ font-size:12px; color:{T('muted')}; font-weight:600; }}"
-            f"#RpKpiVal {{ font-family:\"{NUM_FONT}\"; font-size:26px; font-weight:600; color:{T('text')}; }}"
-            f"#RpBig {{ font-family:\"{NUM_FONT}\"; font-size:34px; font-weight:600; }}"
+            f"#RpCard {{ background:{T('surface')}; border:1px solid {T('line')}; border-radius:14px; }}"
+            f"#RpTitle {{ font-size:15px; font-weight:600; color:{T('text')}; }}"
+            f"#RpKpiCap {{ font-size:12px; color:{T('muted')}; }}"
+            f"#RpKpiVal {{ font-family:\"{NUM_FONT}\"; font-size:24px; font-weight:600; color:{T('text')}; }}"
             f"#RpMuted {{ color:{T('muted')}; font-size:12px; }}"
             f"#RpFaint {{ color:{T('faint')}; font-size:11px; }}")
+        if hasattr(self, "imp_box"):
+            self.restyle_imp()
         for w in self.findChildren(QWidget):
             w.update()
