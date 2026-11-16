@@ -380,7 +380,7 @@ def build(raw):
             a = ca.setdefault(c, [0.0, 0.0])
             a[0] += v
             a[1] += qp
-    other, pdays = {}, {}
+    other, pdays, days_by = {}, {}, {}           # days_by：{地点: {日期: [销量, 销售额, 进货量, 进货额]}}（切门店时用）
 
     def unit(c):
         if c in ca and ca[c][1]:
@@ -408,6 +408,9 @@ def build(raw):
         a = pdays.setdefault(d, [0.0, 0.0])
         a[0] += q
         a[1] += val
+        b = days_by.setdefault(s, {}).setdefault(d, [0.0, 0.0, 0.0, 0.0])
+        b[2] += q
+        b[3] += val
     # 库存
     for c, g in raw["stock"].items():
         if any(g.get(s) for s in scope) or c in rows:
@@ -428,11 +431,14 @@ def build(raw):
         out.append(r)
     out.sort(key=lambda r: -r["sv"])
     sdays = {}
-    for res in raw["sales"].values():
+    for sid, res in raw["sales"].items():
         for d, (q, rev) in res["days"].items():
             a = sdays.setdefault(d, [0.0, 0.0])
             a[0] += q
             a[1] += rev
+            b = days_by.setdefault(sid, {}).setdefault(d, [0.0, 0.0, 0.0, 0.0])
+            b[0] += q
+            b[1] += rev
     days = []
     d = raw["start"]
     while d <= raw["end"]:
@@ -441,8 +447,48 @@ def build(raw):
         pq, pv = pdays.get(k, (0.0, 0.0))
         days.append((d, sq, sv, pq, pv))
         d += timedelta(days=1)
-    return {"rows": out, "days": days, "other_types": other, "start": raw["start"], "end": raw["end"],
-            "scope": raw["scope"], "filters": raw.get("filters") or {}}
+    return {"rows": out, "days": days, "days_by": days_by, "other_types": other, "start": raw["start"],
+            "end": raw["end"], "scope": raw["scope"], "filters": raw.get("filters") or {}}
+
+
+ITEM_KEYS = ("code", "ean", "name", "sup", "sup_name", "cat", "sub", "cat_name", "mid", "small", "forn")
+
+
+def view(res, stores):
+    """
+    查一次「全部」以后，切到几家门店看（2026-11-16 用户：点门店直接切换，不再重新读数据库）：
+    每个商品只加这几家的数字（res 里每行的 per[门店]），重新算平均价 / 销售率 / 剩余，每天的走势也只加这几家。
+    这几家里没进没卖没库存的商品不列。stores 空 = 全部（原样返回）。
+    和直接按这几家查数据库结果一样（调货一进一出照样在这几家之间抵掉）。
+    """
+    want = tuple(s for s in res["scope"] if s in set(stores or ()))
+    if not want or want == tuple(res["scope"]):
+        return res
+    rows = []
+    for r in res["rows"]:
+        per = {s: r["per"][s] for s in want if s in r["per"]}
+        if not per or not any(x.get(k) for x in per.values() for k in ("stock", "pq", "sq")):
+            continue
+        d = {k: r.get(k) for k in ITEM_KEYS}
+        for k in ("stock", "pq", "pv", "sq", "sv", "cost"):
+            d[k] = sum(x[k] for x in per.values())
+        d["per"] = per
+        metrics(d)
+        d["bucket"] = bucket(d)
+        rows.append(d)
+    rows.sort(key=lambda r: -r["sv"])
+    by = res.get("days_by") or {}
+    days = []
+    for day, *_rest in res["days"]:
+        k = day.isoformat()
+        a = [0.0, 0.0, 0.0, 0.0]
+        for s in want:
+            b = (by.get(s) or {}).get(k)
+            if b:
+                for i in range(4):
+                    a[i] += b[i]
+        days.append((day, a[0], a[1], a[2], a[3]))
+    return dict(res, rows=rows, days=days, scope=want)
 
 
 def total(rows):

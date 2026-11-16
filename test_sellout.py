@@ -198,3 +198,18 @@ def test_preset_ranges():
     assert S.preset_range("last_month", t) == (date(2026, 10, 1), date(2026, 10, 31))
     assert S.preset_range("d30", t)[0] == date(2026, 10, 18)
     assert S.preset_range("custom", t) is None
+
+
+def test_switching_store_view_equals_querying_that_store(monkeypatch):
+    """查一次全部，点门店切换（不再读数据库）= 直接按那几家门店查的结果"""
+    full = _run(monkeypatch)
+    for stores in ([1], [2], [1, 2], [0, 1]):
+        v = S.view(full, stores)
+        q = _run(monkeypatch, stores=stores)
+        key = lambda rows: {r["code"]: (r["stock"], r["pq"], round(r["pv"], 6), r["sq"], round(r["sv"], 6),
+                                        round(r["cost"], 6), r["bucket"]) for r in rows}
+        assert key(v["rows"]) == key(q["rows"]), stores
+        assert [(d, round(a, 6), round(b, 6), round(c, 6), round(e, 6)) for d, a, b, c, e in v["days"]] == \
+               [(d, round(a, 6), round(b, 6), round(c, 6), round(e, 6)) for d, a, b, c, e in q["days"]], stores
+        assert v["scope"] == q["scope"]
+    assert S.view(full, []) is full and S.view(full, list(S.ALL_SCOPE)) is full
