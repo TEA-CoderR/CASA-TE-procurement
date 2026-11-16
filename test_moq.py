@@ -162,7 +162,9 @@ def test_extra_fields_like_original():
          "gia_all": [0, 38, 24, 55, 11, 48]}
     v = S.extra_fields(x, 2, [30, 60, 90, 180])
     # 模板 SCHEDA ESSECI MARLIA 第 6 行：24 27 52 75 145 24.2 48 2 50 A 0 38 24 55 11 48 -51 75
-    assert v == [24, 27, 52, 75, 145, 24.2, 48, 2, 50, "A", 0, 38, 24, 55, 11, 48, -51, 75]
+    assert v == [24, 27, 52, 75, 145, 24.2, 48, 2, 50, "A", 0, 38, 24, 55, 11, 48, -51, 75, None, None, None]
+    v = S.extra_fields(dict(x, last_in="03/11/2026", last_in_qty=24.0, last_sale="15/11/2026"), 2)
+    assert v[-3:] == ["03/11/2026", 24.0, "15/11/2026"]
     assert S.extra_fields(dict(x, inv_raw=-5), 2)[16] == -75          # GIA-period：负库存按 0
     assert S.extra_fields(None, 0) is None
     assert S.extra_headers()[:6] == ["GIA", "ROT.30d", "ROT.60d", "ROT.90d", "ROT.180d", "月均"]
@@ -188,7 +190,7 @@ def test_write_extra_columns(tmp_path):
     out = tmp_path / "o.xlsx"
     S.write_order_file(sc, {2: {2: 1}}, str(out), S.extra_data(sc, dem, {}, None), S.extra_headers())
     ws = load_workbook(out)["MARLIA"]
-    assert ws.cell(1, 9).value == "GIA" and ws.cell(1, 26).value == "period_sales"
+    assert ws.cell(1, 9).value == "GIA" and ws.cell(1, 26).value == "period_sales" and ws.cell(1, 29).value == "最后销售"
     assert ws.cell(2, 6).value == 1                                        # Colli 照样写
     assert [ws.cell(2, c).value for c in range(9, 27)] == [1, 3, 6, 9, 18, 3, 12, 0, 3, "B", 5, 1, 2, 3, 4, 0, -8, 9]
     assert ws.cell(3, 9).value is None                                     # 数据库没有的商品留空
@@ -232,3 +234,25 @@ def test_allocate_uses_bms_picks(tmp_path, monkeypatch):
     plan = res["results"][0][2]
     assert plan["bms"]["stores"] == [2] and plan["stores"][2]["status"] == "pulled"
     assert plan["stores"][1]["status"] == "direct"
+
+
+def test_last_arrival_and_last_sale_per_store(monkeypatch):
+    """订单文件的 ULT. ARRIVO / QTA ULT. ARR. / ULT. VENDITA：只看这家店，CA + CI，同一天几次加起来"""
+    import sqlite3
+    import pandas as pd
+    con = sqlite3.connect(":memory:")
+    con.execute("CREATE TABLE caricolistalist (CodArticolo INT, Cdata TEXT, Quantita REAL, Tipo TEXT, Negozio INT)")
+    con.execute("CREATE TABLE vendite_list_2 (CodArticolo INT, Qta REAL, Data TEXT)")
+    con.executemany("INSERT INTO caricolistalist VALUES (?,?,?,?,?)", [
+        (101, "2026-10-01", 24, "CA", 2), (101, "2026-11-03", 12, "CA", 2), (101, "2026-11-03", 6, "CI", 2),
+        (101, "2026-11-10", 48, "CA", 1),                 # 别的店
+        (101, "2026-11-12", -6, "UI", 2),                 # 调出不算
+        (102, "2026-11-05", 10, "UI-N", 2)])              # 别的类型不算
+    con.executemany("INSERT INTO vendite_list_2 VALUES (?,?,?)", [
+        (101, 2, "2026-11-14 10:00:00"), (101, -1, "2026-11-15 09:00:00"), (102, 1, "2026-09-30 18:00:00")])
+    orig = pd.read_sql
+    monkeypatch.setattr(pd, "read_sql", lambda q, e, params=None: orig(q.replace("%s", "?"), con, params=params))
+    m = S.last_moves(type("DB", (), {"engine": None})(), 2, [101, 102, 103])
+    assert m["101"] == ("03/11/2026", 18.0, "14/11/2026")
+    assert m["102"] == (None, None, "30/09/2026")
+    assert "103" not in m

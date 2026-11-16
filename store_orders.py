@@ -845,6 +845,15 @@ def demand_by_store(db, schede, stores, days_list, reorder_cycle, use_supplier_c
                        "slow_from": R._val(r, "slow_from"),      # 规则 A：最近卖慢了，原来的加权日均
                        "db_pack": R._val(r, "qtasmallbox"),          # 数据库箱规（和 SCHEDA 每箱件数对照用）
                        "gia_all": [R._val(r, f"Negozio{i}_Giacenza", 0) or 0 for i in range(6)]}   # GIA.0（BMS）~ GIA.5
+        # 订单文件里的「最后到货日期 / 数量、最后销售日期」（2026-11-16 用户）：查不了不影响建议量
+        try:
+            mv = last_moves(db, sid, [int(c) for c in d])
+        except Exception:
+            mv = {}
+        for code, x in d.items():
+            m = mv.get(code)
+            if m:
+                x["last_in"], x["last_in_qty"], x["last_sale"] = m
         return d
     out.update(R.per_store(stores, one, on_store))      # 几家门店同时查（结果和一家家查一样）
     return out
@@ -1585,7 +1594,51 @@ def _set_cells(xml, col_letter, values, plain_col=None):
 def extra_headers(days=None):
     d = list(days or [30, 60, 90, 180])
     return (["GIA"] + [f"ROT.{x}d" for x in d[:4]] + ["月均", "采购量", "箱数", "需求", "Livello"] +
-            [f"GIA.{i}" for i in range(6)] + ["GIA-period", "period_sales"])
+            [f"GIA.{i}" for i in range(6)] + ["GIA-period", "period_sales", "最后到货", "到货数量", "最后销售"])
+
+
+ARRIVAL_TYPES = ("CA", "CI")       # 到货 = 供应商送到这家店（CA）或从仓库 / 别的店调进来（CI）
+
+
+def _date_dmy(v):
+    if v is None or v != v or v == "":
+        return None
+    try:
+        if hasattr(v, "strftime"):
+            return v.strftime("%d/%m/%Y")
+        t = str(v)[:10]
+        return f"{t[8:10]}/{t[5:7]}/{t[0:4]}" if re.match(r"\d{4}-\d{2}-\d{2}", t) else t
+    except Exception:
+        return None
+
+
+def last_moves(db, sid, codes):
+    """
+    一家店每个商品：(最后到货日期 dd/mm/yyyy, 那天到了几件, 最后销售日期) → {"编号": (…)}
+      到货 = caricolistalist 里这家店 Quantita > 0 的 CA / CI，最后那天的件数加起来（一天到几次合在一起）
+      最后销售 = vendite_list_<店> 里这个商品最后一次卖出的日期
+    """
+    import pandas as pd
+    out = {}
+    codes = sorted({int(c) for c in codes})
+    tp = ", ".join(f"'{t}'" for t in ARRIVAL_TYPES)
+    for i in range(0, len(codes), 1500):
+        ch = codes[i:i + 1500]
+        ph = ", ".join(["%s"] * len(ch))
+        arr = pd.read_sql(
+            "SELECT l.CodArticolo AS c, l.Cdata AS d, SUM(l.Quantita) AS q FROM caricolistalist l JOIN ("
+            f"SELECT CodArticolo, MAX(Cdata) AS md FROM caricolistalist WHERE CodArticolo IN ({ph}) AND Negozio = %s "
+            f"AND Quantita > 0 AND Tipo IN ({tp}) GROUP BY CodArticolo) m ON m.CodArticolo = l.CodArticolo "
+            f"AND m.md = l.Cdata WHERE l.Negozio = %s AND l.Quantita > 0 AND l.Tipo IN ({tp}) "
+            "GROUP BY l.CodArticolo, l.Cdata", db.engine, params=tuple(ch) + (int(sid), int(sid)))
+        sold = pd.read_sql(f"SELECT CodArticolo AS c, MAX(Data) AS d FROM vendite_list_{int(sid)} "
+                           f"WHERE CodArticolo IN ({ph}) AND Qta > 0 GROUP BY CodArticolo", db.engine, params=tuple(ch))
+        a = {str(int(r["c"])): (_date_dmy(r["d"]), float(r["q"] or 0)) for r in arr.to_dict("records")}
+        b = {str(int(r["c"])): _date_dmy(r["d"]) for r in sold.to_dict("records")}
+        for c in set(a) | set(b):
+            d_, q = a.get(c, (None, None))
+            out[c] = (d_, q, b.get(c))
+    return out
 
 
 def monthly_and_need(x, days=None, sales=None):
@@ -1624,7 +1677,9 @@ def extra_fields(x, sugg_colli, days=None):
     gia = [float(v or 0) for v in (x.get("gia_all") or [0] * 6)][:6]
     gia += [0.0] * (6 - len(gia))
     return ([inv] + sales + [monthly, float(x.get("sugg") or 0), float(sugg_colli or 0),
-                             float(demand), x.get("tier") or ""] + gia + [max(0.0, inv) - period, period])
+                             float(demand), x.get("tier") or ""] + gia + [max(0.0, inv) - period, period,
+                                                                          x.get("last_in"), x.get("last_in_qty"),
+                                                                          x.get("last_sale")])
 
 
 def extra_data(sc, demand, base, days=None):
@@ -1708,12 +1763,15 @@ def _set_row_cells(xml, values, styles=None):
 # 程序内部用，不写进订单文件
 FILE_SKIP_HEADS = ("采购量", "箱数", "需求")
 # 2026-11-07 用户：月均要写进订单文件，表头用意大利文，放在 GIA 后面、ROT.30d 前面
-FILE_RENAME = {"月均": "MEDIA MESE"}
-FILE_AFTER = {"月均": "GIA"}
+# 2026-11-16 用户：GIA 后面、月均前面再加 最后到货日期 · 最后到货数量 · 最后销售日期（意大利文缩写）；
+#   月均改成更准确的 MEDIA MENS.（media mensile）
+FILE_RENAME = {"月均": "MEDIA MENS.", "最后到货": "ULT. ARRIVO", "到货数量": "QTA ULT. ARR.", "最后销售": "ULT. VENDITA"}
+FILE_AFTER = {"最后到货": "GIA", "到货数量": "最后到货", "最后销售": "到货数量", "月均": "最后销售"}   # 按这个顺序一个个挪
 
 
 def file_extra(extra, heads):
-    """写进订单文件的附加列：去掉内部列（采购量 / 箱数 / 需求），月均改名 MEDIA MESE 挪到 GIA 后面。返回 (extra, heads)"""
+    """写进订单文件的附加列：去掉内部列（采购量 / 箱数 / 需求），GIA 后面依次放 最后到货 · 到货数量 · 最后销售 · 月均，
+    表头换成意大利文（FILE_RENAME）。返回 (extra, heads)"""
     if not extra or not heads:
         return extra, heads
     keep = [i for i, h in enumerate(heads) if h not in FILE_SKIP_HEADS]
