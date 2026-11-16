@@ -1111,6 +1111,15 @@ class SelloutPage:
         threading.Thread(target=work, daemon=True).start()
 
     def _done(self, payload):
+        try:
+            self._done_inner(payload)
+        except Exception as e:                  # 显示出错也不能一直停在「正在读数据库…」
+            import traceback
+            self.win.log(tr("❌ SELL OUT 分析失败：{0}", f"{e}\n{traceback.format_exc()}"))
+            self.win.show_toast(tr("SELL OUT 分析失败：{0}", e))
+            self.stack.setCurrentIndex(0 if self.res is None else 1)
+
+    def _done_inner(self, payload):
         import sellout as SO
         res, err = payload
         self.running = False
