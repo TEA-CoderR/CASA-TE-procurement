@@ -515,72 +515,144 @@ def scope_label(scope):
 
 # ---------------------------------------------------------------- 导出（照 SELLOUT_HALLOWEEN.xlsx）
 HEAD2 = ("No", "FOTO", "Codice", "Ean", "Descrizione", "现有库存", "采购量", "平均进价", "采购额", "销售量", "平均售价",
-         "销售额", "Qt", "Valore", "差额率", "销售-采购", "毛利率", "毛利额", "剩余量", "剩余额", "商家", "大类", "中类", "小类")
+         "销售额", "Qt", "Valore", "差额率", "销售-采购", "毛利率", "毛利额", "剩余量", "剩余额", "商家", "大类", "中类", "小类",
+         "卖得怎样")
 BANDS = ((7, 9, "采购"), (10, 12, "销售量"), (13, 14, "销售率"), (15, 16, "销采率"), (17, 18, "毛利"), (19, 20, "剩余库存"),
-         (21, 24, "分类"))
-HINTS = {15: "(销售-采购）/销售", 16: "销售-采购", 17: "（单品毛利*件数）/总销售额", 18: "单品毛利额*销售件数",
-         19: "采购量-销售量", 20: "剩余量*平均进价"}
-WIDTHS = (6, 9, 13, 16, 44, 10, 9, 9, 11, 9, 9, 11, 8, 8, 9, 11, 9, 11, 9, 11, 26, 22, 24, 30)
-BAND_FILL = {"采购": "EDE9FE", "销售量": "DBEAFE", "销售率": "CFFAFE", "销采率": "FEF3C7", "毛利": "DCFCE7",
-             "剩余库存": "FFE4E6", "分类": "F3F4F6"}
+         (21, 25, "分类"))
+HINTS = {13: "销售量/采购量", 14: "销售额/采购额", 15: "(销售-采购）/销售", 16: "销售-采购",
+         17: "（单品毛利*件数）/总销售额", 18: "单品毛利额*销售件数", 19: "采购量-销售量", 20: "剩余量*平均进价"}
+WIDTHS = (6, 9, 14, 16, 44, 10, 10, 10, 12, 10, 10, 12, 9, 9, 10, 12, 10, 12, 10, 12, 28, 26, 22, 32, 11)
+# 颜色（导出用，和界面一样一组一种颜色）
+NAVY, INK, MUTED, LINE, ZEBRA = "1F3A5F", "1F2937", "6B7280", "D9DEE7", "F7F9FC"
+BAND_FILL = {"采购": ("EDE9FE", "5B21B6"), "销售量": ("DBEAFE", "1D4ED8"), "销售率": ("CFFAFE", "0E7490"),
+             "销采率": ("FEF3C7", "A16207"), "毛利": ("DCFCE7", "15803D"), "剩余库存": ("FFE4E6", "BE123C"),
+             "分类": ("F3F4F6", "374151")}
+BUCKET_FILL = {"out": ("DCFCE7", "15803D"), "good": ("CFFAFE", "0E7490"), "mid": ("DBEAFE", "1D4ED8"),
+               "slow": ("FEF3C7", "A16207"), "none": ("FEE2E2", "B91C1C"), "nobuy": ("EDE9FE", "6D28D9"),
+               "stock": ("F3F4F6", "6B7280")}
+F_QTY = '#,##0;[Red]-#,##0;"–"'
+F_EUR = '€ #,##0.00;[Red]-€ #,##0.00;"–"'
+F_PCT = '0.0%;[Red]-0.0%;"–"'
+FMTS = {6: F_QTY, 7: F_QTY, 8: F_EUR, 9: F_EUR, 10: F_QTY, 11: F_EUR, 12: F_EUR, 13: F_PCT, 14: F_PCT, 15: F_PCT,
+        16: F_EUR, 17: F_PCT, 18: F_EUR, 19: F_QTY, 20: F_EUR}
+TOP = 6                          # 表头第 6 行（1 标题 · 2 说明 · 3 指标 · 4 空 · 5 分组 · 6 列名 · 7 公式说明）
+FIRST = 8
 
 
-def export(res, rows, path, title="", url=None, by="item"):
-    """写 Excel：第 1 行分组表头、第 2 行列名、第 3 行公式说明、第 4 行起数据、最后一行合计（SUM 公式）"""
-    from openpyxl import Workbook
-    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
-    from openpyxl.utils import get_column_letter as L
+def store_rows(rows, sid):
+    """商品行 → 这一家店的数字（每行的 per[门店]）；这家店没进没卖没库存的不要"""
+    out = []
+    for r in rows:
+        x = (r.get("per") or {}).get(sid)
+        if not x or not any(x.get(k) for k in ("stock", "pq", "sq")):
+            continue
+        d = {k: r.get(k) for k in ("code", "ean", "name", "sup", "sup_name", "cat", "sub", "cat_name", "mid", "small")}
+        for k in ("stock", "pq", "pv", "sq", "sv", "cost", "rem_v"):
+            d[k] = x.get(k) or 0.0
+        metrics(d)
+        d["bucket"] = bucket(d)
+        d["per"] = {sid: x}
+        out.append(d)
+    out.sort(key=lambda r: -r["sv"])
+    return out
+
+
+def _font(**k):
+    from openpyxl.styles import Font
     import xlsx_report as X
-    wb = Workbook()
-    ws = wb.active
-    ws.title = (scope_label(res["scope"]) if by != "store" else "PDV")[:31].replace("/", "-")
-    thin = Side(style="thin", color="D0D5DD")
-    box = Border(left=thin, right=thin, top=thin, bottom=thin)
-    font = lambda **k: Font(name=X.XL_FONT, size=k.pop("size", 10), **k)        # noqa: E731
-    center = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    return Font(name=X.XL_FONT, size=k.pop("size", 10), **k)
+
+
+def _kpi_line(t):
+    def e(v):
+        return "–" if v is None else f"€ {v:,.0f}"
+
+    def pc(v):
+        return "–" if v is None else f"{v * 100:.1f}%"
+    return (f"Acquisti {e(t['pv'])} ({t['pq']:,.0f} pz)   ·   Vendite {e(t['sv'])} ({t['sq']:,.0f} pz)   ·   "
+            f"Sell-through {pc(t['rate_q'])} pz / {pc(t['rate_v'])} €   ·   Margine {e(t['profit'])} ({pc(t['margin'])})   ·   "
+            f"Rimanenza {e(t['rem_v'])} ({t['rem_q']:,.0f} pz)")
+
+
+def _head(ws, title, sub, t, ncol):
+    """第 1–3 行：深蓝标题条 · 灰色说明 · 一行指标"""
+    from openpyxl.styles import Alignment, PatternFill
+    from openpyxl.utils import get_column_letter as L
+    ws.row_dimensions[1].height = 30
+    ws.row_dimensions[2].height = 18
+    ws.row_dimensions[3].height = 24
+    ws.row_dimensions[4].height = 6
+    for c in range(1, ncol + 1):
+        ws.cell(1, c).fill = PatternFill("solid", fgColor=NAVY)
+        ws.cell(3, c).fill = PatternFill("solid", fgColor="EEF2F7")
+    ws.cell(1, 1, title).font = _font(size=15, bold=True, color="FFFFFF")
+    ws.cell(1, 1).alignment = Alignment(vertical="center", indent=1)
+    ws.cell(2, 1, sub).font = _font(size=9, color=MUTED)
+    ws.cell(2, 1).alignment = Alignment(vertical="center", indent=1)
+    ws.cell(3, 1, _kpi_line(t)).font = _font(size=10, bold=True, color=NAVY)
+    ws.cell(3, 1).alignment = Alignment(vertical="center", indent=1)
+    for r in (1, 2, 3):
+        ws.merge_cells(f"A{r}:{L(ncol)}{r}")
+
+
+def _item_sheet(wb, name, title, sub, rows, by, url):
+    """一张进销存表（照 SELLOUT 模板的列）"""
+    from openpyxl.styles import Alignment, Border, PatternFill, Side
+    from openpyxl.utils import get_column_letter as L
+    from openpyxl.formatting.rule import DataBarRule
+    ws = wb.create_sheet(_sheet_name(wb, name))
     item = by == "item"
-    for c in range(1, 25):
+    ncol = len(HEAD2) if item else 24
+    thin = Side(style="thin", color=LINE)
+    box = Border(left=thin, right=thin, top=thin, bottom=thin)
+    center = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    t = total(rows)
+    _head(ws, title, sub, t, ncol)
+    for c in range(1, ncol + 1):
         ws.column_dimensions[L(c)].width = WIDTHS[c - 1]
-    ws.row_dimensions[1].height = 22
-    ws.row_dimensions[2].height = 22
-    ws.row_dimensions[3].height = 30
-    # 第 1 行左边：标题
-    ws.cell(1, 1, title or f"SELL OUT · {res['start']:%d/%m/%Y} – {res['end']:%d/%m/%Y}")
-    ws.cell(1, 1).font = font(size=12, bold=True, color="1F3A5F")
-    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=6)
-    for a, b, text in BANDS:
-        ws.merge_cells(start_row=1, start_column=a, end_row=1, end_column=b)
-        cell = ws.cell(1, a, text)
-        for c in range(a, b + 1):
-            ws.cell(1, c).fill = PatternFill("solid", fgColor=BAND_FILL[text])
-            ws.cell(1, c).border = box
-        cell.font = font(bold=True, color="1F2937")
-        cell.alignment = center
-    heads = list(HEAD2)
     if not item:
-        heads[2], heads[3], heads[4] = "", "N. articoli", GROUP_LABEL.get(by, "")
+        ws.column_dimensions["B"].width = 3
+        ws.column_dimensions["C"].width = 3
+        ws.column_dimensions["D"].width = 11
+    ws.row_dimensions[TOP - 1].height = 20
+    ws.row_dimensions[TOP].height = 30
+    ws.row_dimensions[TOP + 1].height = 24
+    # 分组表头 + 列名
+    for a, b, text in BANDS:
+        b = min(b, ncol)
+        bg, fg = BAND_FILL[text]
+        ws.merge_cells(start_row=TOP - 1, start_column=a, end_row=TOP - 1, end_column=b)
+        ws.cell(TOP - 1, a, text)
+        for c in range(a, b + 1):
+            ws.cell(TOP - 1, c).fill = PatternFill("solid", fgColor=fg)
+            ws.cell(TOP - 1, c).border = box
+        ws.cell(TOP - 1, a).font = _font(bold=True, color="FFFFFF")
+        ws.cell(TOP - 1, a).alignment = center
+    heads = list(HEAD2[:ncol])
+    if not item:
+        heads[1], heads[2], heads[3], heads[4] = "", "", "N. articoli", GROUP_LABEL.get(by, "")
     for c, h in enumerate(heads, 1):
-        cell = ws.cell(2, c, h)
-        band = next((t for a, b, t in BANDS if a <= c <= b), None)
-        cell.fill = PatternFill("solid", fgColor=BAND_FILL[band] if band else "F3F4F6")
-        cell.font = font(bold=True, color="1F2937")
+        band = next((tx for a, b, tx in BANDS if a <= c <= b), None)
+        bg, fg = BAND_FILL[band] if band else ("E5E7EB", INK)
+        cell = ws.cell(TOP, c, h)
+        cell.fill = PatternFill("solid", fgColor=bg)
+        cell.font = _font(bold=True, color=fg if band else INK)
         cell.alignment = center
         cell.border = box
     for c, h in HINTS.items():
-        cell = ws.cell(3, c, h)
-        cell.font = font(size=8, color="6B7280")
+        cell = ws.cell(TOP + 1, c, h)
+        cell.font = _font(size=7, color="9CA3AF")
         cell.alignment = center
-    first = 4
-    neg = Font(name=X.XL_FONT, size=10, color="B42318")
-    fmts = {6: "#,##0", 7: "#,##0", 8: "#,##0.00", 9: "#,##0.00", 10: "#,##0", 11: "#,##0.00", 12: "#,##0.00",
-            13: "0.0%", 14: "0.0%", 15: "0.0%", 16: "#,##0.00", 17: "0.0%", 18: "#,##0.00", 19: "#,##0", 20: "#,##0.00"}
+    # 数据
     for i, r in enumerate(rows):
-        y = first + i
+        y = FIRST + i
+        zebra = PatternFill("solid", fgColor=ZEBRA) if i % 2 else None
         if item:
-            img = f'=IFERROR(_xlfn.IMAGE("{(url or _img_url()).format(ean=r["ean"])}","",3,48,48),"")' if r["ean"] else ""
-            ids = [i + 1, img, r["code"], int(r["ean"]) if r["ean"].isdigit() and len(r["ean"]) < 16 else r["ean"],
-                   r["name"]]
-            tail = [r.get("sup_name") or "", r.get("cat_name") or "", r.get("mid") or "", r.get("small") or ""]
+            img = f'=IFERROR(_xlfn.IMAGE("{(url or _img_url()).format(ean=r["ean"])}","",3,40,40),"")' if r["ean"] else ""
+            ean = int(r["ean"]) if r["ean"].isdigit() and len(r["ean"]) < 16 else r["ean"]
+            ids = [i + 1, img, r["code"], ean, r["name"]]
+            tail = [r.get("sup_name") or "", r.get("cat_name") or "", r.get("mid") or "", r.get("small") or "",
+                    dict((k, n) for k, n, _t in BUCKETS).get(r.get("bucket"), "")]
         else:
             ids = [i + 1, "", "", r["n"], r["name"]]
             tail = ["", r.get("cat_name") or "", r.get("mid") or "", r.get("small") or ""]
@@ -591,12 +663,12 @@ def export(res, rows, path, title="", url=None, by="item"):
                 v = round(v, 4)
             cell = ws.cell(y, c, v)
             cell.border = box
-            cell.font = font()
-            if c in fmts:
-                cell.number_format = fmts[c]
+            cell.font = _font(color=INK)
+            if zebra is not None:
+                cell.fill = zebra
+            if c in FMTS:
+                cell.number_format = FMTS[c]
                 cell.alignment = Alignment(horizontal="right", vertical="center")
-                if isinstance(v, (int, float)) and v < 0:
-                    cell.font = neg
             elif c == 4:
                 cell.number_format = "0"
                 cell.alignment = Alignment(horizontal="center", vertical="center")
@@ -604,31 +676,177 @@ def export(res, rows, path, title="", url=None, by="item"):
                 cell.alignment = Alignment(horizontal="center", vertical="center")
             else:
                 cell.alignment = Alignment(vertical="center", wrap_text=c == 5)
-        ws.row_dimensions[y].height = 40 if item else 20
+        if not item:
+            ws.cell(y, 5).font = _font(color=INK, bold=True)
+        if item:
+            bg, fg = BUCKET_FILL.get(r.get("bucket"), ("FFFFFF", INK))
+            cb = ws.cell(y, 25)
+            cb.fill = PatternFill("solid", fgColor=bg)
+            cb.font = _font(bold=True, color=fg, size=9)
+            cb.alignment = Alignment(horizontal="center", vertical="center")
+        ws.row_dimensions[y].height = 34 if item else 20
     # 合计
-    y = first + len(rows)
-    last = y - 1
-    S = lambda c: f"=SUM({L(c)}{first}:{L(c)}{last})"           # noqa: E731
-    tot = {5: "TOTALE", 6: S(6), 7: S(7), 8: f"=IFERROR(I{y}/G{y},\"\")", 9: S(9), 10: S(10),
-           11: f"=IFERROR(L{y}/J{y},\"\")", 12: S(12), 13: f"=IFERROR(J{y}/G{y},\"\")", 14: f"=IFERROR(L{y}/I{y},\"\")",
-           15: f"=IFERROR((L{y}-I{y})/L{y},\"\")", 16: f"=L{y}-I{y}", 17: f"=IFERROR(R{y}/L{y},\"\")", 18: S(18),
+    y = FIRST + len(rows)
+    last = max(y - 1, FIRST)
+    S = lambda c: f"=SUM({L(c)}{FIRST}:{L(c)}{last})"           # noqa: E731
+    tot = {5: "TOTALE", 6: S(6), 7: S(7), 8: f"=IFERROR(I{y}/G{y},0)", 9: S(9), 10: S(10),
+           11: f"=IFERROR(L{y}/J{y},0)", 12: S(12), 13: f"=IFERROR(J{y}/G{y},0)", 14: f"=IFERROR(L{y}/I{y},0)",
+           15: f"=IFERROR((L{y}-I{y})/L{y},0)", 16: f"=L{y}-I{y}", 17: f"=IFERROR(R{y}/L{y},0)", 18: S(18),
            19: S(19), 20: S(20)}
-    for c in range(1, 25):
+    if not item:
+        tot[4] = S(4)
+    for c in range(1, ncol + 1):
         cell = ws.cell(y, c, tot.get(c))
-        cell.fill = PatternFill("solid", fgColor="1F3A5F")
-        cell.font = font(bold=True, color="FFFFFF")
+        cell.fill = PatternFill("solid", fgColor=NAVY)
+        cell.font = _font(bold=True, color="FFFFFF")
         cell.border = box
-        if c in fmts:
-            cell.number_format = fmts[c]
+        if c in FMTS:
+            cell.number_format = FMTS[c].replace("[Red]", "")
             cell.alignment = Alignment(horizontal="right", vertical="center")
-    ws.row_dimensions[y].height = 22
-    ws.freeze_panes = "F4"
-    ws.auto_filter.ref = f"C2:X{max(last, 2)}"
+    ws.row_dimensions[y].height = 24
+    # 销售率两列：绿色数据条（一眼看出卖得快慢）
+    if rows:
+        for col, color in (("M", "34D399"), ("N", "60A5FA")):
+            ws.conditional_formatting.add(f"{col}{FIRST}:{col}{last}",
+                                          DataBarRule(start_type="num", start_value=0, end_type="num", end_value=1.5,
+                                                      color=color, showValue=True))
+    ws.freeze_panes = f"F{FIRST}"
+    ws.auto_filter.ref = f"C{TOP}:{L(ncol)}{last}"
     ws.sheet_view.zoomScale = 90
+    ws.sheet_view.showGridLines = False
     ws.page_setup.orientation = "landscape"
     ws.page_setup.fitToWidth = 1
     ws.page_setup.fitToHeight = 0
     ws.sheet_properties.pageSetUpPr.fitToPage = True
+    ws.print_title_rows = f"{TOP - 1}:{TOP}"
+    return ws
+
+
+STORE_HEAD = (("Negozio", 18, None), ("现有库存", 11, F_QTY), ("采购量", 11, F_QTY), ("采购额", 14, F_EUR),
+              ("销售量", 11, F_QTY), ("销售额", 14, F_EUR), ("销售率 Qt", 11, F_PCT), ("销售率 Valore", 12, F_PCT),
+              ("毛利额", 14, F_EUR), ("毛利率", 10, F_PCT), ("剩余量", 11, F_QTY), ("剩余额", 14, F_EUR),
+              ("N. articoli", 11, F_QTY))
+
+
+def _store_sheet(wb, title, sub, items, scope):
+    """门店对比：一家店一行 + 合计（门店名可以点，跳到这家店那一页）"""
+    from openpyxl.styles import Alignment, Border, PatternFill, Side
+    from openpyxl.utils import get_column_letter as L
+    from openpyxl.formatting.rule import DataBarRule
+    ws = wb.create_sheet(_sheet_name(wb, "NEGOZI"), 0)
+    ncol = len(STORE_HEAD)
+    thin = Side(style="thin", color=LINE)
+    box = Border(left=thin, right=thin, top=thin, bottom=thin)
+    _head(ws, title, sub, total(items), ncol)
+    for c, (h, w, _f) in enumerate(STORE_HEAD, 1):
+        ws.column_dimensions[L(c)].width = w
+        cell = ws.cell(TOP, c, h)
+        cell.fill = PatternFill("solid", fgColor=NAVY if c == 1 else "E5E7EB")
+        cell.font = _font(bold=True, color="FFFFFF" if c == 1 else INK)
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        cell.border = box
+    ws.row_dimensions[TOP].height = 30
+    g = {x["key"]: x for x in group(items, "store")}
+    order = [s for s in scope if s in g]
+    y = TOP + 1
+    for i, s in enumerate(order):
+        r = g[s]
+        vals = [NAMES.get(s, str(s)), r["stock"], r["pq"], r["pv"], r["sq"], r["sv"], r["rate_q"], r["rate_v"],
+                r["profit"], r["margin"], r["rem_q"], r["rem_v"], r["n"]]
+        for c, v in enumerate(vals, 1):
+            cell = ws.cell(y, c, round(v, 4) if isinstance(v, float) else v)
+            cell.border = box
+            cell.font = _font(color=INK, bold=c == 1)
+            if i % 2:
+                cell.fill = PatternFill("solid", fgColor=ZEBRA)
+            if STORE_HEAD[c - 1][2]:
+                cell.number_format = STORE_HEAD[c - 1][2]
+                cell.alignment = Alignment(horizontal="right", vertical="center")
+            else:
+                cell.alignment = Alignment(vertical="center", indent=1)
+        link = _sheet_title(wb, NAMES.get(s, str(s)))
+        if link:
+            from openpyxl.worksheet.hyperlink import Hyperlink
+            ws.cell(y, 1).hyperlink = Hyperlink(ref=ws.cell(y, 1).coordinate, location=f"'{link}'!A1")
+            ws.cell(y, 1).font = _font(color="1D4ED8", bold=True, underline="single")
+        ws.row_dimensions[y].height = 24
+        y += 1
+    last = y - 1
+    S = lambda c: f"=SUM({L(c)}{TOP + 1}:{L(c)}{last})"           # noqa: E731
+    tot = {1: "TOTALE", 2: S(2), 3: S(3), 4: S(4), 5: S(5), 6: S(6), 7: f"=IFERROR(E{y}/C{y},0)",
+           8: f"=IFERROR(F{y}/D{y},0)", 9: S(9), 10: f"=IFERROR(I{y}/F{y},0)", 11: S(11), 12: S(12),
+           13: total(items)["n"]}
+    for c in range(1, ncol + 1):
+        cell = ws.cell(y, c, tot.get(c))
+        cell.fill = PatternFill("solid", fgColor=NAVY)
+        cell.font = _font(bold=True, color="FFFFFF")
+        cell.border = box
+        if STORE_HEAD[c - 1][2]:
+            cell.number_format = STORE_HEAD[c - 1][2].replace("[Red]", "")
+            cell.alignment = Alignment(horizontal="right", vertical="center")
+        else:
+            cell.alignment = Alignment(vertical="center", indent=1)
+    ws.row_dimensions[y].height = 26
+    if order:
+        ws.conditional_formatting.add(f"F{TOP + 1}:F{last}", DataBarRule(start_type="num", start_value=0,
+                                                                         end_type="max", color="60A5FA", showValue=True))
+        ws.conditional_formatting.add(f"G{TOP + 1}:G{last}", DataBarRule(start_type="num", start_value=0, end_type="num",
+                                                                         end_value=1.5, color="34D399", showValue=True))
+    ws.freeze_panes = f"B{TOP + 1}"
+    ws.sheet_view.showGridLines = False
+    ws.page_setup.orientation = "landscape"
+    ws.page_setup.fitToWidth = 1
+    ws.sheet_properties.pageSetUpPr.fitToPage = True
+    return ws
+
+
+def _sheet_name(wb, name):
+    n = re.sub(r"[\\/*?:\[\]]", "-", str(name))[:31] or "Foglio"
+    base, k = n, 2
+    while n in wb.sheetnames:
+        n = f"{base[:28]} {k}"
+        k += 1
+    return n
+
+
+def _sheet_title(wb, name):
+    n = re.sub(r"[\\/*?:\[\]]", "-", str(name))[:31]
+    return n if n in wb.sheetnames else None
+
+
+def export(res, rows, path, title="", url=None, by="item", items=None, filters_text=""):
+    """
+    写 Excel：
+      NEGOZI     门店对比（几家店才有）：一家店一行 + 合计，店名点了跳到那一页
+      TUTTI PDV  汇总（选的门店合在一起，就是 rows = 现在表格里看到的行）
+      每家门店一页（同样的列，数字只算这家店）
+    每页：深蓝标题条 · 说明 · 一行指标 · 分组表头（颜色和界面一样）· 斑马纹 · 销售率数据条 · 负数红字 · 最后一行合计公式。
+    items = 商品行（按供应商 / 分类看时，各店那几页从商品行重新合计；不给就用 res["rows"]）
+    """
+    from openpyxl import Workbook
+    wb = Workbook()
+    wb.remove(wb.active)
+    scope = list(res["scope"])
+    shops = [x for x in scope if x != WAREHOUSE] + [x for x in scope if x == WAREHOUSE]      # 仓库放最后
+    items = list(items if items is not None else (rows if by == "item" else res["rows"]))
+    period = f"{res['start']:%d/%m/%Y} – {res['end']:%d/%m/%Y}"
+    sub = " · ".join(x for x in (period, filters_text, f"generato il {date.today():%d/%m/%Y}") if x)
+    lab = scope_label(scope)
+    multi = len(shops) > 1
+    # 汇总
+    _item_sheet(wb, "TUTTI PDV" if scope == list(ALL_SCOPE) else lab, title or f"SELL OUT · {lab}",
+                sub + f" · {len(rows):,} righe", rows, by, url)
+    # 每家门店
+    if multi:
+        for s in (shops if by != "store" else []):
+            sr = store_rows(items, s)
+            if not sr:
+                continue
+            data = sr if by == "item" else group(sr, by)
+            _item_sheet(wb, NAMES.get(s, str(s)), f"SELL OUT · {NAMES.get(s, str(s))}",
+                        sub + f" · {len(data):,} righe", data, by, url)
+        _store_sheet(wb, f"SELL OUT · {lab} · confronto negozi", sub, items, shops)
+        wb.active = 0
     wb.save(path)
     return path
 

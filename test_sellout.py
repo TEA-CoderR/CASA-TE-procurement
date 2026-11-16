@@ -150,19 +150,46 @@ def test_tree_lists_and_group_totals(monkeypatch):
     assert counts["out"] == 1 and counts["mid"] == 2
 
 
-def test_export_layout_like_template(monkeypatch):
+def test_export_summary_store_comparison_and_one_sheet_per_store(monkeypatch):
     res = _run(monkeypatch)
     path = os.path.join(tempfile.mkdtemp(), "s.xlsx")
     S.export(res, res["rows"], path, url="https://x/{ean}.webp")
-    ws = load_workbook(path).active
-    assert ws.title == "TUTTI PDV"
-    assert ws["G1"].value == "采购" and ws["J1"].value == "销售量" and ws["S1"].value == "剩余库存"
-    assert [ws.cell(2, c).value for c in (6, 7, 13, 14, 15, 16, 19, 20)] == \
+    wb = load_workbook(path)
+    assert wb.sheetnames == ["NEGOZI", "TUTTI PDV", "FOIANO", "MARLIA", "BMS"]
+    ws = wb["TUTTI PDV"]
+    T, F = S.TOP, S.FIRST
+    assert ws.cell(T - 1, 7).value == "采购" and ws.cell(T - 1, 10).value == "销售量" and ws.cell(T - 1, 19).value == "剩余库存"
+    assert [ws.cell(T, c).value for c in (6, 7, 13, 14, 15, 16, 19, 20)] == \
            ["现有库存", "采购量", "Qt", "Valore", "差额率", "销售-采购", "剩余量", "剩余额"]
-    assert "IMAGE" in ws["B4"].value and "8053482147512" in ws["B4"].value or "8053482350004" in ws["B4"].value
-    last = 4 + len(res["rows"])
-    assert ws.cell(last, 7).value == f"=SUM(G4:G{last - 1})" and ws.cell(last, 5).value == "TOTALE"
-    assert ws.freeze_panes == "F4"
+    assert "IMAGE" in ws.cell(F, 2).value
+    last = F + len(res["rows"])
+    assert ws.cell(last, 7).value == f"=SUM(G{F}:G{last - 1})" and ws.cell(last, 5).value == "TOTALE"
+    assert ws.freeze_panes == f"F{F}" and "Vendite" in ws["A3"].value
+    # 门店那一页只算这家店：FOIANO 商品 1 进 40（调入）卖 30
+    fo = wb["FOIANO"]
+    row = next(r for r in range(F, fo.max_row) if fo.cell(r, 3).value == 1)
+    assert fo.cell(row, 7).value == 40 and fo.cell(row, 10).value == 30 and fo.cell(row, 6).value == 10
+    # 门店对比：一家店一行，店名能点到那一页
+    ng = wb["NEGOZI"]
+    names = [ng.cell(r, 1).value for r in range(T + 1, T + 4)]
+    assert names == ["FOIANO", "MARLIA", "BMS"] and "FOIANO" in ng.cell(T + 1, 1).hyperlink.location
+    assert ng.cell(T + 4, 1).value == "TOTALE"
+
+
+def test_export_one_store_has_one_sheet(monkeypatch):
+    res = _run(monkeypatch, stores=[1])
+    path = os.path.join(tempfile.mkdtemp(), "s.xlsx")
+    S.export(res, res["rows"], path)
+    assert load_workbook(path).sheetnames == ["FOIANO"]
+
+
+def test_store_rows_use_store_numbers(monkeypatch):
+    res = _run(monkeypatch)
+    sr = {r["code"]: r for r in S.store_rows(res["rows"], 1)}
+    assert sr[1]["pq"] == 40 and sr[1]["sq"] == 30 and sr[1]["stock"] == 10 and sr[1]["rem_q"] == 10
+    assert 3 not in sr
+    g = S.group(S.store_rows(res["rows"], 1), "sup")
+    assert g[0]["n"] == 2
 
 
 def test_preset_ranges():

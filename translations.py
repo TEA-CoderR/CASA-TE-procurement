@@ -4121,4 +4121,5 @@ TRANSLATIONS = {
     '销售额 ÷ 销售量（不含税）': ('Sales ÷ units sold (excluding VAT)', 'Vendite ÷ pezzi venduti (IVA esclusa)'),
     '销售额 − 采购额': ('Sales − purchase value', 'Vendite − valore acquisti'),
     '销采率': ('Sales vs purchases', 'Vendite / acquisti'),
+    '照 SELLOUT 模板导出：门店对比 · 几家店汇总 · 每家门店一页（按现在的看法、排序、筛选）': ('Export with the SELLOUT template: store comparison · all stores together · one sheet per store (current view, sorting and filters)', 'Esporta con il modello SELLOUT: confronto negozi · totale negozi · un foglio per negozio (vista, ordinamento e filtri attuali)'),
 }

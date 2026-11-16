@@ -567,7 +567,7 @@ class SelloutPage:
         self.b_exp = QPushButton(tr("导出 Excel"))
         self.b_exp.setObjectName("Primary")
         self.b_exp.setMinimumHeight(36)
-        self.b_exp.setToolTip(tr("照 SELLOUT 模板导出现在表格里的行（按现在的看法、排序、筛选）"))
+        self.b_exp.setToolTip(tr("照 SELLOUT 模板导出：门店对比 · 几家店汇总 · 每家门店一页（按现在的看法、排序、筛选）"))
         self.b_exp.clicked.connect(self.export)
         self.b_exp.setEnabled(False)
         head.addWidget(self.b_exp, 0, Qt.AlignBottom)
@@ -1366,10 +1366,23 @@ class SelloutPage:
         self.cfg["exp_dir"] = os.path.dirname(path)
         from erp_widgets import BusyDialog, open_file
         url = self.settings.get("image_url") or None
-        title = f"SELL OUT · {SO.scope_label(res['scope'])} · {res['start']:%d/%m/%Y} – {res['end']:%d/%m/%Y}"
+        title = f"SELL OUT · {SO.scope_label(res['scope'])}"
         view = self.view
+        # 各店那几页：按商品看时用现在看得见的商品（搜索 / 卖得怎样的筛选一样），按组看时用全部商品重新合计
+        items = rows if view == "item" else res["rows"]
+        parts = []
+        for p_, lab in ((self.p_sup, "Fornitore"), (self.p_cat, "Categoria"), (self.p_mid, "Cat. media"),
+                        (self.p_sub, "Sottocategoria")):
+            names = dict(p_.items)
+            if p_.picked:
+                v = [names.get(k, "?").split("  ·")[0] for k in p_.picked]
+                parts.append(f"{lab}: " + (", ".join(v[:3]) + (f" +{len(v) - 3}" if len(v) > 3 else "")))
+        if self.codes_name and res["filters"].get("codes"):
+            parts.append(f"Elenco: {self.codes_name}")
+        ftxt = " · ".join(parts)
         _, err = BusyDialog.run(self.win, tr("导出 Excel"), tr("正在写…"),
-                                lambda: SO.export(res, rows, path, title=title, url=url, by=view))
+                                lambda: SO.export(res, rows, path, title=title, url=url, by=view, items=items,
+                                                  filters_text=ftxt))
         if err:
             QMessageBox.warning(self.win, tr("导出 Excel"), tr("导出失败：{0}", err))
             return
