@@ -652,6 +652,7 @@ ICONS = {
     "refresh": '<path d="M20 11a8 8 0 0 0-14-4.5L4 9M4 4v5h5M4 13a8 8 0 0 0 14 4.5l2-2.5M20 20v-5h-5"/>',
     "play": '<path d="M7 5l12 7-12 7z"/>',
     "box": '<path d="M3 8l9-5 9 5v8l-9 5-9-5z"/><path d="M3 8l9 5 9-5M12 13v8"/>',
+    "sellout": '<path d="M3 17l6-6 4 4 8-8"/><path d="M15 7h6v6"/>',
     "volantino": '<path d="M3 10v4h3l7 4V6L6 10z"/><path d="M16.5 9a4 4 0 0 1 0 6M19 6.5a7.5 7.5 0 0 1 0 11"/>',
     "griglia": '<rect x="4" y="4" width="16" height="16" rx="2"/><path d="M4 10h16M4 15h16M10 4v16"/>',
     "store_pdv": '<path d="M4 10l1.5-5h13L20 10"/><path d="M4 10v9h16v-9"/><path d="M9 19v-5h6v5"/>',

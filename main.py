@@ -2860,7 +2860,7 @@ class MainWindow(QMainWindow):
         (tr("概览"), [("home", tr("驾驶舱"))]),
         (tr("采购管理"), [("store_orders", tr("LUCAS定制采购")), ("order", tr("DETERSIVO采购")),
                         ("tracking", tr("采购订单跟踪"))]),
-        (tr("销售分析"), [("volantino", tr("促销分析"))]),
+        (tr("销售分析"), [("volantino", tr("促销分析")), ("sellout", tr("SELL OUT 分析"))]),
         (tr("分货管理"), [("distribution", tr("分货数据处理")), ("import", tr("导入 / 导出"))]),
         (tr("系统"), [("settings", tr("系统设置")), ("log", tr("运行日志"))]),
     ]
@@ -2882,7 +2882,7 @@ class MainWindow(QMainWindow):
             ("buy", tr("采购"), "cart",
              ["store_orders", "store_pdv", "order", "result", "history", "rules", "search"]),
             ("tracking", tr("订单"), "truck", ["tracking"]),
-            ("analysis", tr("分析"), "result", ["volantino", "griglia"]),
+            ("analysis", tr("分析"), "result", ["sellout", "volantino", "griglia"]),
             ("data", tr("数据"), "db", ["distribution", "import"]),
             ("settings", tr("设置"), "rules", ["settings", "log"])]
     # 2026-11-16 用户：点图标栏弹出的小菜单只放这一级的页面——比价结果 / 历史记录 / 起订规则 / 缺失查找是 DETERSIVO采购
@@ -2957,6 +2957,8 @@ class MainWindow(QMainWindow):
         self.tracking = TrackingPage(self, settings, _UI)
         from volantino_page import VolantinoPage
         self.volantino = VolantinoPage(self, settings, _UI)
+        from sellout_page import SelloutPage
+        self.sellout = SelloutPage(self, settings, _UI)
         builders = {
             "distribution": lambda: (self._make_distribution().build(), True),
             "import": lambda: (self._make_import().build(), True),
@@ -2971,6 +2973,7 @@ class MainWindow(QMainWindow):
             "griglia": lambda: (self.griglia_page.build(), False),
             "tracking": lambda: (self.tracking.build(), False),
             "volantino": lambda: (self.volantino.build(), False),
+            "sellout": lambda: (self.sellout.build(), False),
             "settings": lambda: (self.settings_page.build(), True),
             "log": lambda: (self._page_log(), True),
         }
@@ -3738,7 +3741,7 @@ class MainWindow(QMainWindow):
                    getattr(self, "settings_page", None), getattr(self, "order_check", None),
                    getattr(self, "distribution", None), getattr(self, "import_page", None),
                    getattr(self, "griglia_page", None), getattr(self, "tracking", None), getattr(self, "agent_panel", None),
-                   getattr(self, "volantino", None)):
+                   getattr(self, "volantino", None), getattr(self, "sellout", None)):
             if pg is not None and hasattr(pg, "restyle"):
                 pg.restyle()
         for b in (self.banner_folder, self.banner_result, self.banner_rules):
