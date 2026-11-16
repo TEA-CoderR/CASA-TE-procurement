@@ -665,13 +665,14 @@ class Bridge(QObject):
 # 起订规则编辑
 # =====================================================================
 class RuleDialog(QDialog):
-    def __init__(self, parent, rule, supplier_files):
+    def __init__(self, parent, rule, supplier_files, compact=False):
         super().__init__(parent)
         self.setWindowTitle(tr("起订规则"))
-        self.setMinimumWidth(500)
+        if not compact:
+            self.setMinimumWidth(500)
         self.result_rule = None
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(24, 22, 24, 18)
+        lay.setContentsMargins(*((20, 16, 20, 8) if compact else (24, 22, 24, 18)))
         lay.setSpacing(14)
 
         title = QLabel(tr("编辑起订规则") if rule.get("keyword") else tr("新增起订规则"))
@@ -722,16 +723,16 @@ class RuleDialog(QDialog):
 
         # 条件：达到起订箱数 / 达到起订金额 / 都要达到
         mode_box = QHBoxLayout()
-        self.m_colli = QRadioButton(tr("达到起订箱数"))
-        self.m_amount = QRadioButton(tr("达到起订金额"))
+        self.m_colli = QRadioButton(tr("箱数") if compact else tr("达到起订箱数"))
+        self.m_amount = QRadioButton(tr("金额") if compact else tr("达到起订金额"))
         self.m_all = QRadioButton(tr("都要达到"))
         self.mode_group = QButtonGroup(self)
         for b in (self.m_colli, self.m_amount, self.m_all):
             self.mode_group.addButton(b)
         old_mode = rule.get("mode", "all")
         {"colli": self.m_colli, "amount": self.m_amount, "all": self.m_all}.get(old_mode, self.m_all).setChecked(True)
-        mode_box.addWidget(QLabel(tr("条件")))
-        mode_box.addSpacing(30)
+        mode_box.addWidget(QLabel(tr("起订按") if compact else tr("条件")))
+        mode_box.addSpacing(12 if compact else 30)
         mode_box.addWidget(self.m_colli)
         mode_box.addWidget(self.m_amount)
         mode_box.addWidget(self.m_all)
@@ -3606,6 +3607,8 @@ class MainWindow(QMainWindow):
                 self.show_toast(tr("⚠ 数据库数据只到 {0}（{1} 天没同步）", upto.strftime("%d/%m"), late))
             except Exception:
                 pass
+        if hasattr(self, "_log_health"):
+            __import__("log_page")._health(self)
         if hasattr(self, "dashboard"):
             self.dashboard.set_db(ok)
         if hasattr(self, "settings_page"):
@@ -3676,6 +3679,8 @@ class MainWindow(QMainWindow):
             self._build_page(i)
         self.stack.setCurrentIndex(i)
         key, text = self.NAV[i]
+        if key == "log" and getattr(self, "_log_dirty", False):
+            QTimer.singleShot(0, self._render_log)
         rid = self._rail_of(key)
         rail = {r: (t, p) for r, t, _i, p in self.RAIL}
         self.rail_btns[rid].setChecked(True)
@@ -3752,6 +3757,13 @@ class MainWindow(QMainWindow):
             st.restyle()
         self.btn_folder.setIcon(icon("folder", T("text")))
         self.gauge.update()
+        for attr, mod in (("_res_qss_page", "result_page"), ("_hist_page", "history_page"),
+                          ("_miss_page", "missing_page"), ("_log_page", "log_page")):
+            pg = getattr(self, attr, None)
+            if pg is not None:
+                pg.setStyleSheet(__import__(mod).qss())
+        if hasattr(self, "_miss_items"):
+            __import__("missing_page")._render_list(self)
         self._render_log()
         self._dark_titlebar()
         if self.last_summary:
@@ -4110,51 +4122,34 @@ class MainWindow(QMainWindow):
 
     # ---------- 页面：分配结果 ----------
     def _page_result(self):
-        """比价结果（2026-11-16 照设计稿的样子重排）：页头（门店 · 日期 + 主订单 / 用时）+ 右边按钮 ·
-        四张指标卡 · 提示条 · 方案对比 · 起订量 · 各供应商采购量 · 改了供应商的商品"""
-        from page_kit import Hero, Stat, Card, button, more_menu, kpi_row
+        """比价结果（2026-11-16 照设计稿「⑩ 比价结果」重做，版面在 result_page.py）。
+        老的指标卡 / 方案表 / 起订量条 / 各供应商采购量表照旧建，放在藏起来的 _res_hold 里，别的代码照用"""
+        from page_kit import Stat, Card, button
         from erp_widgets import RowSorter, HeaderFilter
+        import result_page as RP
         w, lay = self._page(tr("分配结果"), tr("最近一次处理的结果；以前的结果在「历史记录」里打开。起订量调整的每一行明细写在主订单的 AC 列。"))
-        self.res_hero = Hero(tr("还没有比价结果"), tr("比完一家门店，这里显示分配结果"),
-                             tip=tr("最近一次处理的结果；以前的结果在「历史记录」里打开。起订量调整的每一行明细写在主订单的 AC 列。"))
+        hold = QWidget(w)
+        hold.hide()
+        self._res_hold = hold
+        hl = QVBoxLayout(hold)
         self.btn_missing = button(tr("缺失商品"), self.show_missing)
-        self.btn_transfers = button(tr("调货单"), self.show_transfers,
-                                    tip=tr("从其他门店调货的商品（要的件数远小于一箱时，调别的门店多出来的货，少订一箱）"))
-        self.btn_transfers.hide()
+        self.btn_transfers = button(tr("调货单"), self.show_transfers)
         self.btn_edit = button(tr("修改分配…"), self.edit_allocation,
                                tip=tr("已经写入以后，还可以改商品的供应商并重新写回文件"))
         self.btn_edit.setEnabled(False)
-        b_main = button(tr("打开主订单"), self.open_main_order, primary=True)
-        self.res_more, acts = more_menu([
-            (tr("打开供应商文件夹"), self.open_supplier_folder, tr("这次采购了的供应商订单（Ordini 文件夹）")),
-            (tr("门店报告"), self.open_store_report,
-             tr("发给门店的意大利文报告（非 Griglia 商品，下次别加）：检查清单确认时生成在这家店的比价文件夹里")),
-            (tr("打开备份"), lambda: self.last_summary and open_path(self.last_summary.get("backup_dir")),
-             tr("比价前所有文件的备份")),
-            None,
-            (tr("导出改动明细"), self.export_changes, tr("改了供应商的商品 + 各供应商采购量，导出成 Excel")),
-        ])
-        self._a_backup = acts[tr("打开备份")]
-        self._a_backup.setEnabled(False)
-        self.btn_backup = self._a_backup              # 老代码 setEnabled 照用
-        for b in (self.btn_missing, self.btn_transfers, self.btn_edit, b_main, self.res_more):
-            self.res_hero.add(b)
-        lay.addWidget(self.res_hero)
 
-        self.k_rows = Stat(tr("商品行"), "table", "accent", tr("主订单里要订的商品行数"))
-        self.k_priced = Stat(tr("有报价"), "check", "ok", tr("至少一家批发商有报价、分到了供应商的商品"))
-        self.k_missing = Stat(tr("没有报价"), "search", "warn", tr("点开看缺了哪些商品（可以排序、筛选、导出）"),
-                              clickable=True)
-        self.k_missing.clicked.connect(self.show_missing)
-        self.k_changes = Stat(tr("改了供应商"), "refresh", "violet",
-                              tr("为了起订量 / 你的决定 / 手动调整，没有用最低价那家的商品"))
-        self.k_amount = Stat(tr("采购金额"), "cart", "cyan", tr("最终写进各供应商文件的金额合计（不含税）"))
-        self.k_cost = Stat(tr("比只按最低价多花"))          # 不显示了（用户说没意义），留着不出错
-        self.k_time = Stat(tr("用时"))                    # 用时写在页头那一行
-        lay.addLayout(kpi_row(self.k_rows, self.k_priced, self.k_missing, self.k_changes, self.k_amount))
-
+        class _Act:                                   # 老代码 btn_backup.setEnabled 照用
+            def setEnabled(self, _v):
+                pass
+        self.btn_backup = _Act()
+        self.k_rows, self.k_priced, self.k_missing = Stat(tr("商品行")), Stat(tr("有报价")), Stat(tr("没有报价"))
+        self.k_changes, self.k_amount, self.k_cost, self.k_time = (Stat(tr("改了供应商")), Stat(tr("采购金额")),
+                                                                   Stat(tr("比只按最低价多花")), Stat(tr("用时")))
+        self.res_hero = __import__("page_kit").Hero("")
         self.banner_result = Banner()
-        lay.addWidget(self.banner_result)
+        for x in (self.btn_missing, self.btn_transfers, self.k_rows, self.k_priced, self.k_missing, self.k_changes,
+                  self.k_amount, self.k_cost, self.k_time, self.res_hero, self.banner_result):
+            hl.addWidget(x)
 
         self.scen_panel = Card(tr("方案对比"), tr("✔ 是选用的方案。点「缺失商品」的数字看缺了哪些商品；鼠标停在左边的项目上看说明。"))
         self.scen_table = make_table([""], stretch_col=None)
@@ -4163,54 +4158,36 @@ class MainWindow(QMainWindow):
         self.scen_table.setMinimumHeight(200)
         self.scen_table.cellClicked.connect(self._scen_clicked)
         self.scen_panel.v.addWidget(self.scen_table)
-        # 换方案：不重算，直接改用当时算好的另一个方案
         self.scen_switch = QWidget()
         self.scen_switch_lay = QHBoxLayout(self.scen_switch)
         self.scen_switch_lay.setContentsMargins(0, 4, 0, 0)
         self.scen_switch_lay.setSpacing(8)
         self.scen_panel.v.addWidget(self.scen_switch)
-        lay.addWidget(self.scen_panel)
-        self.scen_panel.hide()
-
-        pg = Card(tr("起订量"), tr("浅色条：只按最低价时的量　实色条：最终下单量　竖线：起订线"))
+        hl.addWidget(self.scen_panel)
         self.gauge = MinOrderGauge()
-        self.gauge.setToolTip(tr("浅色条：只按最低价时的量　实色条：最终下单量　竖线：起订线"))
-        pg.v.addWidget(self.gauge)
-        lay.addWidget(pg)
-
-        pt = Card(tr("各供应商采购量"),
-                  tr("「最低价」是只按最低价分配时的量，「最终」是凑单 / 你的决定 / 手动调整之后实际写入的量。"))
+        hl.addWidget(self.gauge)
         self.sum_table = make_table([tr("供应商文件"), tr("商品数"), tr("最低价箱数"), tr("最终箱数"), tr("箱数变化"),
                                      tr("最低价金额 €"), tr("最终金额 €"), tr("金额变化 €"), tr("起订条件"), tr("状态")],
                                     stretch_col=None, numeric_cols=(1, 2, 3, 4, 5, 6, 7))
-        self.sum_table.horizontalHeader().setStretchLastSection(True)
         self.sum_table.setItemDelegateForColumn(9, StatusDelegate(self.sum_table))
-        self.sum_table.setMinimumHeight(240)
-        self.sum_sorter = RowSorter(self.sum_table, pin_last=True)          # 合计行永远在最后
-        pt.v.addWidget(self.sum_table)
-        lay.addWidget(pt)
+        self.sum_sorter = RowSorter(self.sum_table, pin_last=True)
+        hl.addWidget(self.sum_table)
 
-        pc = Card(tr("改了供应商的商品"))
-        self.chg_title = pc.title
         self.chg_filter = QLineEdit()
         self.chg_filter.setPlaceholderText(tr("筛选 EAN、品名或供应商"))
         self.chg_filter.setFixedWidth(240)
         self.chg_filter.setClearButtonEnabled(True)
         self.chg_filter.textChanged.connect(self._filter_changes)
-        pc.add_head(self.chg_filter)
-        pc.add_head(button(tr("导出 Excel"), self.export_changes))
         self.chg_table = make_table([tr("行"), "EAN", "ARTICOLO", tr("箱数"), tr("原供应商"), tr("原件价"), tr("新供应商"), tr("新件价"),
                                      tr("多花 €"), tr("原因")], stretch_col=2, numeric_cols=(0, 3, 5, 7, 8))
         self.chg_table.setItemDelegateForColumn(9, StatusDelegate(self.chg_table))
-        self.chg_table.setMinimumHeight(320)
+        self.chg_table.setMinimumHeight(260)
         self.chg_sorter = RowSorter(self.chg_table)
         self.chg_hf = HeaderFilter(self.chg_table, apply=lambda: self._filter_changes(self.chg_filter.text()),
                                    sorter=self.chg_sorter, base_hidden=lambda r: self._chg_base(r))
-        pc.v.addWidget(self.chg_table)
-        self.chg_empty = QLabel(tr("没有改动"))
+        self.chg_empty = QLabel(tr("全部按最低价，没有换供应商的商品"))
         self.chg_empty.setObjectName("Muted")
-        pc.v.addWidget(self.chg_empty)
-        lay.addWidget(pc)
+        RP.build(self, lay, hold)
         lay.addStretch()
         return w
 
@@ -4262,63 +4239,35 @@ class MainWindow(QMainWindow):
 
     # ---------- 页面：历史记录 ----------
     def _page_history(self):
-        """历史记录（2026-11-16 重排）：页头（几条 · 占用 · 保留多久）+ 右边 搜索 · 保留 · 打开查看 · ⋯；一张卡片放记录"""
-        from page_kit import Hero, Card, button, more_menu
+        """历史记录（2026-11-16 照设计稿「⑫ 历史记录」重做，版面在 history_page.py）。
+        老的 hist_tree（藏着）照旧填，view_history / delete_history 用 history_page 选中的那条（_hist_sel）"""
+        from page_kit import Hero
+        import history_page as HP
         w, lay = self._page(tr("历史记录"), tr("每次处理和修改分配后自动保存一份结果，关掉程序以后也能随时打开查看。双击一行打开。"))
-        hero = Hero(tr("历史记录"), " ",
-                    tip=tr("每次处理和修改分配后自动保存一份结果，关掉程序以后也能随时打开查看。双击一行打开。"))
-        self.hist_hero = hero
+        hold = QWidget(w)
+        hold.hide()
+        hl = QVBoxLayout(hold)
+        self.hist_hero = Hero("")
+        hl.addWidget(self.hist_hero)
         self.hist_filter = QLineEdit()
-        self.hist_filter.setPlaceholderText(tr("搜索门店、文件夹或主订单"))
-        self.hist_filter.setFixedWidth(230)
-        self.hist_filter.setMinimumHeight(36)
+        self.hist_filter.setPlaceholderText(tr("搜门店、主订单、供应商"))
         self.hist_filter.setClearButtonEnabled(True)
-        self.hist_filter.textChanged.connect(self._filter_history)
-        hero.add(self.hist_filter)
+        self.hist_filter.setMinimumHeight(36)
         self.keep_box = QComboBox()
-        self.keep_box.setMinimumWidth(130)
-        self.keep_box.setMinimumHeight(36)
         self.keep_box.setToolTip(tr("历史记录保留多久：更早的自动删除（只删记录，不动订单和供应商文件）"))
         for days, label in history.KEEP_OPTIONS:
             self.keep_box.addItem(tr("保留 {0}", tr(label)) if days else tr(label), days)
         idx = self.keep_box.findData(int(settings.get("history_keep_days", history.DEFAULT_KEEP_DAYS)))
         self.keep_box.setCurrentIndex(max(0, idx))
         self.keep_box.currentIndexChanged.connect(self._set_keep)
-        hero.add(self.keep_box)
-        hero.add(button(tr("打开查看"), self.view_history, primary=True))
-        more, _a = more_menu([
-            (tr("打开这次的文件夹"), self.open_history_folder, None),
-            None,
-            (tr("删除选中"), self.delete_history, tr("按住 Ctrl 或 Shift 可以一次选多条；只删记录，不动订单和供应商文件")),
-            (tr("清空全部"), self.clear_history, tr("删除全部历史记录；只删记录，不动订单和供应商文件")),
-        ])
-        hero.add(more)
-        lay.addWidget(hero)
-
-        p = Card(margins=(6, 6, 6, 6))
-        # 按「日期 · 门店」一条一条列出；有多方案对比的，下面一行一个方案，✔ 是选用的方案
         from PySide6.QtWidgets import QTreeWidget
         self.hist_tree = QTreeWidget()
         self.hist_tree.setColumnCount(len(HIST_COLS))
-        self.hist_tree.setHeaderLabels([tr(c) for c in HIST_COLS])
-        self.hist_tree.setRootIsDecorated(True)
-        self.hist_tree.setUniformRowHeights(True)
-        self.hist_tree.setAllColumnsShowFocus(True)
-        self.hist_tree.setSelectionMode(QAbstractItemView.ExtendedSelection)
-        self.hist_tree.setMinimumHeight(460)
-        self.hist_tree.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.hist_tree.customContextMenuRequested.connect(self._hist_menu)
-        hh = self.hist_tree.header()
-        hh.setSectionResizeMode(QHeaderView.ResizeToContents)
-        hh.setSectionResizeMode(len(HIST_COLS) - 1, QHeaderView.Stretch)
-        hh.setStretchLastSection(True)
-        self.hist_tree.itemDoubleClicked.connect(lambda *_: self.view_history())
-        p.v.addWidget(self.hist_tree, 1)
+        hl.addWidget(self.hist_tree)
         from erp_widgets import EmptyState
         self.hist_empty = EmptyState("history", tr("还没有记录"), tr("每次比价、修改分配后自动存一份"))
-        p.v.addWidget(self.hist_empty, 1)
-        self.hist_info = QLabel()                     # 老代码照写；显示在页头
-        lay.addWidget(p, 1)
+        self.hist_info = QLabel()
+        HP.build(self, lay)
         return w
 
     def _hist_menu(self, pos):
@@ -4414,6 +4363,7 @@ class MainWindow(QMainWindow):
                                   tr("超过 {0} 天的自动删除", keep) if keep else tr("永久保留")))
         self._filter_history(self.hist_filter.text())
         self._mark_shown_history()
+        __import__("history_page").render(self)
 
     def _mark_shown_history(self):
         """历史里把结果页正在显示的那条标出来（底色）"""
@@ -4438,6 +4388,9 @@ class MainWindow(QMainWindow):
 
     def _picked_history(self):
         runs = getattr(self, "hist_runs", [])
+        sel = getattr(self, "_hist_sel", None)              # 新版历史页：右边详情那一条
+        if sel is not None:
+            return [e for e in runs if e.get("id") == sel][:1]
         out, seen = [], set()
         for it in self.hist_tree.selectedItems():
             idx = it.data(0, Qt.UserRole)
@@ -4541,11 +4494,9 @@ class MainWindow(QMainWindow):
         self.miss_status = hero.sub
         self.btn_find = button(tr("开始查找"), self.run_missing, primary=True)
         self.btn_web = button(tr("网络搜索选中行"), self.run_web, tip=tr("只搜表里选中的几行（网络搜索比较慢）"))
-        hero.add(self.btn_web)
-        hero.add(self.btn_find)
-        more, _a = more_menu([(tr("导出 Excel"), self.export_missing, None)])
-        hero.add(more)
-        lay.addWidget(hero)
+        hold = QWidget(w)
+        hold.hide()
+        hero.setParent(hold)
 
         p = Card(tr("没有报价的商品"))
         self.miss_filter = QLineEdit()
@@ -4583,7 +4534,8 @@ class MainWindow(QMainWindow):
         self.miss_empty.buttons.addWidget(b)
         p.v.addWidget(self.miss_empty, 1)
         self.miss_table.hide()
-        lay.addWidget(p, 1)
+        p.setParent(hold)
+        __import__("missing_page").build(self, lay, hold)
         return w
 
     # ---------- 页面：起订量 ----------
@@ -4594,46 +4546,26 @@ class MainWindow(QMainWindow):
         tip = tr("按最低价分到的货不够某家起订量时，程序自动算出最省钱的凑单方案。凑单多花超过「手动调整线」会打开手动调整窗口；超过「放弃供应商线」、或者凑单比放弃这家还贵时，会弹窗问你继续凑单还是放弃。修改后自动保存。")
         w, lay = self._page(tr("起订量"), tip)
         self.rules_hero = Hero(tr("起订规则"), " ", tip=tip)
-        self.rules_hero.add(button(tr("新增供应商规则"), self.add_rule, primary=True))
-        lay.addWidget(self.rules_hero)
         self.banner_rules = Banner()
-        lay.addWidget(self.banner_rules)
 
-        sw = Card(tr("凑单"))
-        row = QHBoxLayout()
-        row.setSpacing(32)
+        hold = QWidget(w)
+        hold.hide()
+        self.rules_hero.setParent(hold)
         self.t_min2 = Toggle(tr("起订量凑单"), settings.get("min_order_enabled", True))
         self.t_min2.setToolTip(tr("关闭后只按最低价选供应商，不管起订量"))
         self.t_min2.toggled.connect(lambda on: self.t_min.setChecked(on))
-        row.addWidget(self.t_min2)
+        self.t_min2.toggled.connect(lambda _on: self.refresh_rules_table())
         self.t_partial = Toggle(tr("允许部分商品不采购"), settings.get("allow_partial_purchase", False))
         self.t_partial.setToolTip(tr("关闭（默认）：所有商品都必须订到，只有某家有货的商品，不能因为放弃这家而不买。\n打开：可以放弃起订供应商，只有它有货的商品这次就不采购。"))
         self.t_partial.toggled.connect(lambda on: (settings.__setitem__("allow_partial_purchase", on),
                                                    save_settings(settings),
                                                    self.show_toast(tr("已允许部分商品不采购") if on else tr("所有商品都必须采购"))))
-        row.addWidget(self.t_partial)
-        row.addStretch()
-        sw.v.addLayout(row)
-        lay.addWidget(sw)
-
-        p = Card(tr("供应商规则"), tr("双击一行也可以编辑。设置文件：{0}", SETTINGS_PATH))
-        for text, fn, name in [(tr("编辑"), self.edit_rule, None), (tr("启用 / 停用"), self.toggle_rule, None),
-                               (tr("删除"), self.delete_rule, "Danger")]:
-            b = QPushButton(text)
-            if name:
-                b.setObjectName(name)
-            b.clicked.connect(fn)
-            p.add_head(b)
         self.rules_table = make_table([tr("供应商"), tr("文件名关键字"), tr("起订条件"), tr("手动调整线"), tr("放弃供应商线"), tr("本次匹配的文件"), tr("状态")],
                                       stretch_col=5)
-        self.rules_table.setItemDelegateForColumn(6, StatusDelegate(self.rules_table))
-        self.rules_table.setMinimumHeight(300)
-        self.rules_table.doubleClicked.connect(lambda _: self.edit_rule())
+        self.rules_table.setParent(hold)
         from erp_widgets import RowSorter
         self.rules_sorter = RowSorter(self.rules_table)
-        self.rules_table.setToolTip(tr("双击一行也可以编辑。设置文件：{0}", SETTINGS_PATH))
-        p.v.addWidget(self.rules_table, 1)
-        lay.addWidget(p, 1)
+        __import__("rules_page").build(self, lay)
         return w
 
     # ---------- 页面：日志 ----------
@@ -4651,15 +4583,18 @@ class MainWindow(QMainWindow):
                               None,
                               (tr("清空"), self._clear_log, tr("只清空这里显示的，日志文件不动"))])
         self.log_hero.add(more)
-        lay.addWidget(self.log_hero)
-        card = Card(margins=(4, 4, 4, 4))
+        hold = QWidget(w)
+        hold.hide()
+        self.log_hero.setParent(hold)
         self.log_view = QTextEdit()
         self.log_view.setObjectName("LogView")
         self.log_view.setReadOnly(True)
-        self.log_view.setMinimumHeight(520)
-        card.v.addWidget(self.log_view, 1)
-        lay.addWidget(card, 1)
+        __import__("log_page").build(self, lay)
+        QTimer.singleShot(0, self._render_log)
         return w
+
+    def _open_log_file(self):
+        open_path(os.path.abspath(os.path.join(LOG_DIR, LOG_FILE)))
 
     # ---------- 日志 ----------
     def log(self, msg):
@@ -4701,17 +4636,18 @@ class MainWindow(QMainWindow):
         for msg in q:
             for line in msg.split("\n"):
                 lvl = log_level(line)
-                self.log_entries.append((lvl, line))
-                if self._log_visible(lvl):
-                    log_html.append(self._fmt_line(lvl, line))
+                self.log_entries.append((lvl, line, datetime.now()))
                 if line.strip() and not set(line.strip()) <= {"="}:
                     self.feed_entries.append((lvl, line))
                     feed_html.append(self._fmt_line(lvl, line))
         for lst, n in ((self.log_entries, 20000), (self.feed_entries, 5000)):
             if len(lst) > n:
                 del lst[:len(lst) - n]
-        if log_html:
-            self.log_view.append("<br>".join(log_html))
+        lp = getattr(self, "_log_page", None)
+        if lp is not None and lp.isVisible():
+            __import__("log_page").render(self)
+        else:
+            self._log_dirty = True
         if feed_html:
             self.feed.append("<br>".join(feed_html))
             self.feed.moveCursor(QTextCursor.End)
@@ -4721,8 +4657,8 @@ class MainWindow(QMainWindow):
         """运行日志页头：几条 · 几个提醒 · 几个错误；分段按钮上也写个数"""
         if not hasattr(self, "log_hero"):
             return
-        n_w = sum(1 for l, _t in self.log_entries if l == "warn")
-        n_e = sum(1 for l, _t in self.log_entries if l == "err")
+        n_w = sum(1 for e in self.log_entries if e[0] == "warn")
+        n_e = sum(1 for e in self.log_entries if e[0] == "err")
         sub = tr("本次打开以来 {0} 条", len(self.log_entries))
         if n_w:
             sub += f" · <span style='color:{T('warn')}'>" + tr("提醒 {0}", n_w) + "</span>"
@@ -4743,16 +4679,16 @@ class MainWindow(QMainWindow):
     def _render_log(self):
         if not hasattr(self, "log_view"):
             return
-        self.log_view.setHtml("<br>".join(self._fmt_line(l, t) for l, t in self.log_entries if self._log_visible(l)))
-        self.log_view.moveCursor(QTextCursor.End)
-        self._log_counts()
+        self._log_dirty = False
+        if not __import__("log_page").render(self):
+            self.log_view.setHtml("<br>".join(self._fmt_line(e[0], e[1]) for e in self.log_entries if self._log_visible(e[0])))
+            self.log_view.moveCursor(QTextCursor.End)
         self.feed.setHtml("<br>".join(self._fmt_line(l, t) for l, t in self.feed_entries))
         self.feed.moveCursor(QTextCursor.End)
 
     def _clear_log(self):
         self.log_entries.clear()
-        self.log_view.clear()
-        self._log_counts()
+        self._render_log()
 
     # ---------- 文件夹 ----------
     # ---------- 工作文件夹（workspace.py）：固定一个根目录，四个子文件夹程序建好 ----------
@@ -6252,6 +6188,13 @@ class MainWindow(QMainWindow):
                                  else tr("只能修改每个文件夹最近一次的分配"))
         if hasattr(self, "hist_tree"):
             self._mark_shown_history()
+            if hasattr(self, "_hist_days"):
+                self._hist_sel = s.get("history_id") or self._hist_sel
+                __import__("history_page").render(self)
+        try:
+            __import__("result_page").fill(self, s)
+        except Exception as e:
+            file_logger.error(f"result page fill failed: {e}", exc_info=True)
 
     # ---------- 起订规则 ----------
     def refresh_rules_table(self):
@@ -6288,12 +6231,29 @@ class MainWindow(QMainWindow):
             if not self.t_min2.isChecked():
                 sub += f" · <span style='color:{T('warn')}'>" + tr("起订量凑单已关") + "</span>"
             self.rules_hero.set_sub(sub)
+        try:
+            __import__("rules_page").render(self, rules, hit if sups else {})
+        except Exception as e:
+            file_logger.error(f"起订规则页刷新失败：{e}")
         if not rules:
             self.banner_rules.show_msg(tr("还没有起订规则。点「新增供应商规则」，填上供应商的起订箱数或金额。"), "info")
         else:
             self.banner_rules.hide()
 
+    def _rule_dialog(self, rule):
+        return RuleDialog(self, rule, self.info.get("suppliers") or [], compact=True)
+
+    def _set_rule(self, i, rule):
+        settings["rules"][i] = rule
+        self._save_rules(tr("已保存规则"))
+
     def _sel_rule(self):
+        sel = getattr(self, "_rule_sel", None)
+        if hasattr(self, "_rules_grid"):
+            if isinstance(sel, int) and 0 <= sel < len(settings["rules"]):
+                return sel
+            QMessageBox.information(self, tr("起订量"), tr("先选一条规则。"))
+            return None
         rows = self.rules_table.selectionModel().selectedRows()
         if not rows:
             QMessageBox.information(self, tr("起订量"), tr("先在表格里选一条规则。"))
@@ -6314,6 +6274,7 @@ class MainWindow(QMainWindow):
         d = RuleDialog(self, {"mode": "all", "allow_drop": True, "enabled": True}, self.info.get("suppliers") or [])
         if d.exec() and d.result_rule:
             settings["rules"].append(d.result_rule)
+            self._rule_sel = len(settings["rules"]) - 1
             self._save_rules(tr("已添加规则"))
 
     def edit_rule(self):
@@ -6340,6 +6301,7 @@ class MainWindow(QMainWindow):
         name = settings["rules"][i].get("name")
         if QMessageBox.question(self, tr("删除规则"), tr("删除「{0}」的起订规则？", name)) == QMessageBox.Yes:
             settings["rules"].pop(i)
+            self._rule_sel = min(i, len(settings["rules"]) - 1) if settings["rules"] else None
             self._save_rules(tr("已删除规则"))
 
     # ---------- 缺失查找 ----------
@@ -6378,6 +6340,7 @@ class MainWindow(QMainWindow):
             return
         if not results:
             self.miss_status.setText(tr("没有缺失的商品。"))
+            __import__("missing_page").render(self, [])
             return
         t = self.miss_table
         t.setUpdatesEnabled(False)            # 几百上千行：填完再一次画出来
@@ -6408,6 +6371,7 @@ class MainWindow(QMainWindow):
         self.log(tr("✔ 缺失查找完成：{0}", msg))
         self.miss_sorter.apply()
         self._filter_missing(self.miss_filter.text())
+        __import__("missing_page").render(self, results)
         self.go_page("search")
 
     def _miss_base(self, r):
@@ -6426,12 +6390,11 @@ class MainWindow(QMainWindow):
 
     def run_web(self):
         from matcher import search_web_ean
-        rows = self.miss_table.selectionModel().selectedRows()
-        if not rows:
-            QMessageBox.information(self, tr("网络搜索"), tr("先在表格里选一行。"))
+        cur = __import__("missing_page").selected(self)
+        if not cur:
+            QMessageBox.information(self, tr("网络搜索"), tr("先在左边选一个商品。"))
             return
-        r = rows[0].row()
-        ean, art = self.miss_table.item(r, 0).text(), self.miss_table.item(r, 1).text()
+        ean, art = cur
         self.btn_web.setEnabled(False)
         self.btn_web.setText(tr("搜索中…"))
 
@@ -6449,7 +6412,7 @@ class MainWindow(QMainWindow):
     def _on_web_done(self, payload):
         ean, (result, source, st) = payload
         self.btn_web.setEnabled(True)
-        self.btn_web.setText(tr("网络搜索选中行"))
+        self.btn_web.setText(tr("网络搜索这个商品"))
         if result:
             QMessageBox.information(self, tr("网络搜索"), tr("EAN {0}\n\n{1}\n\n来源：{2}", ean, result, source))
         else:
