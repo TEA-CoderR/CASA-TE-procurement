@@ -3884,8 +3884,12 @@ class MainWindow(QMainWindow):
         outer.addWidget(self.cmp_stack, 1)
         p0 = QWidget()
         lay = QVBoxLayout(p0)
-        lay.setContentsMargins(28, 22, 28, 28)
-        lay.setSpacing(16)
+        lay.setContentsMargins(28, 18, 28, 22)
+        lay.setSpacing(14)
+        self._S = settings
+        import deter_steps as DS
+        hold0 = QWidget(p0)                   # 老的工作文件夹卡 / 三个拖放区藏在这里（refresh_ws 照旧填，老代码照用）
+        hold0.hide()
 
         # ---- 工作文件夹：固定一个，程序自动建好四个子文件夹（见 workspace.py）----
         p1 = Panel(tr("工作文件夹"))
@@ -3958,7 +3962,8 @@ class MainWindow(QMainWindow):
         p1.lay.addLayout(zr)
         self.banner_folder = Banner()
         p1.lay.addWidget(self.banner_folder)
-        lay.addWidget(p1)
+        p1.setParent(hold0)
+        DS.build_collect(self, lay)            # 设计稿「收集文件」：三张能拖文件进来的卡 + 准备好了吗
 
         # ---- 一个按钮：检查门店清单 → 确认 → 自动一家一家比价 ----
         foot0 = QFrame()                      # 设计稿：底部一条，左边写现在的状态，右边一个主按钮
@@ -3981,7 +3986,6 @@ class MainWindow(QMainWindow):
         self._oc_panel = oc_panel
         lay.addWidget(self.order_check.msg)
         lay.addWidget(self.order_check.summary_row)
-        lay.addStretch()
         p0box = QWidget()
         p0v = QVBoxLayout(p0box)
         p0v.setContentsMargins(0, 0, 0, 0)
@@ -4021,8 +4025,10 @@ class MainWindow(QMainWindow):
         # ---- 第 3 步：比价分配（进度 + 处理过程）----
         p2 = QWidget()
         lay = QVBoxLayout(p2)
-        lay.setContentsMargins(28, 22, 28, 28)
+        lay.setContentsMargins(28, 20, 28, 24)
         lay.setSpacing(16)
+        hold2 = QWidget(p2)
+        hold2.hide()
 
         # 这一批的门店：比完的点一下看结果（放在第 4 步）
         self.batch_box = QWidget()
@@ -4056,47 +4062,54 @@ class MainWindow(QMainWindow):
         self.bar.setFixedHeight(8)
         pcol.addWidget(self.bar)
         run.addLayout(pcol, 1)
-        lay.addSpacing(6)
-        lay.addLayout(run)
-        lay.addSpacing(6)
-
-        p3 = Panel(tr("处理过程"))
+        hold2.setLayout(run)
         self.feed = QTextEdit()
         self.feed.setReadOnly(True)
-        self.feed.setMinimumHeight(160)
-        p3.lay.addWidget(self.feed)
-        lay.addWidget(p3, 1)
+        DS.build_compare(self, lay)            # 设计稿「比价分配」：进度大卡 + 每家门店一行 + 右边正在做
         self.cmp_stack.addWidget(p2)
 
-        # ---- 第 4 步：下单发送（这一批每家店的结果 + 去发订单）----
+        # ---- 第 4 步：下单发送（设计稿：这一批的订单按供应商分组 + 右边订单邮件）----
+        p4box = QWidget()
+        p4v = QVBoxLayout(p4box)
+        p4v.setContentsMargins(0, 0, 0, 0)
+        p4v.setSpacing(0)
         p4 = QWidget()
         lay = QVBoxLayout(p4)
-        lay.setContentsMargins(28, 22, 28, 28)
-        lay.setSpacing(16)
-        pd = Panel(tr("这一批的门店"))
-        pd.setToolTip(tr("点一家门店切换过去看它的比价结果"))
-        pd.lay.addWidget(self.batch_box)
+        lay.setContentsMargins(28, 20, 28, 20)
+        lay.setSpacing(14)
+        hold4 = QWidget(p4)
+        hold4.hide()
+        h4 = QVBoxLayout(hold4)
+        h4.addWidget(self.batch_box)
         self.done_note = QLabel(tr("比价完成后，每家店的结果在这里"))
-        self.done_note.setObjectName("Faint")
-        pd.lay.addWidget(self.done_note)
-        lay.addWidget(pd)
-        acts = QHBoxLayout()
+        h4.addWidget(self.done_note)
+        DS.build_send(self, lay)
+        p4v.addWidget(p4, 1)
+        foot4 = QFrame()
+        foot4.setObjectName("StatusBar")
+        acts = QHBoxLayout(foot4)
+        acts.setContentsMargins(28, 12, 28, 12)
         acts.setSpacing(10)
+        n4 = QLabel(tr("发之前会再列一遍发给谁、几封"))
+        n4.setObjectName("Faint")
+        acts.addWidget(n4)
+        acts.addStretch()
         b_res = QPushButton(tr("查看比价结果"))
         b_res.clicked.connect(lambda: self.go_page("result"))
         b_rep = QPushButton(tr("门店报告"))
         b_rep.clicked.connect(lambda: self.open_store_report())
-        b_send = QPushButton(tr("去发送订单") + "  →")
-        b_send.setObjectName("Primary")
-        b_send.setToolTip(tr("程序生成的订单在采购订单跟踪里是「待登记」：双击审核邮件后发给供应商"))
-        b_send.clicked.connect(lambda: self.go_page("tracking"))
-        acts.addWidget(b_res)
-        acts.addWidget(b_rep)
-        acts.addStretch()
-        acts.addWidget(b_send)
-        lay.addLayout(acts)
-        lay.addStretch()
-        self.cmp_stack.addWidget(p4)
+        b_trk = QPushButton(tr("订单跟踪"))
+        b_trk.setToolTip(tr("发出去以后在采购订单跟踪里看确认 / 发货 / 到货"))
+        b_trk.clicked.connect(lambda: self.go_page("tracking"))
+        self._sd_all = QPushButton(tr("全部发送") + "  →")
+        self._sd_all.setObjectName("Primary")
+        self._sd_all.setMinimumHeight(40)
+        self._sd_all.setEnabled(False)
+        self._sd_all.clicked.connect(lambda: DS.send_all(self))
+        for b_ in (b_res, b_rep, b_trk, self._sd_all):
+            acts.addWidget(b_)
+        p4v.addWidget(foot4)
+        self.cmp_stack.addWidget(p4box)
         self._cmp_show(0)
         return w
 
@@ -4106,6 +4119,10 @@ class MainWindow(QMainWindow):
             return
         if i == 1:
             self._review_stack.setCurrentIndex(1 if self.order_check.rows else 0)
+        if i == 2:
+            __import__("deter_steps").render_compare(self)
+        if i == 3:
+            __import__("deter_steps").refresh_send(self)
         self.cmp_stack.setCurrentIndex(i)
         self.cmp_steps.set_shown(i)
 
@@ -4807,6 +4824,10 @@ class MainWindow(QMainWindow):
             ready = bool(n_l) and bool(st["prices"])
             self.cmp_steps.set_state(0, "done" if ready else "now", tr("{0} 份清单 · {1} 家报价", n_l, len(st["prices"])))
             self.cmp_steps.set_state(1, "now" if ready else "todo", "")
+        try:
+            __import__("deter_steps").render_collect(self, st, root)
+        except Exception as e:
+            file_logger.error(f"收集文件页刷新失败：{e}")
 
     def _busy_drop(self):
         if self.running:
@@ -5079,6 +5100,7 @@ class MainWindow(QMainWindow):
         self._batch_results = []
         self._in_batch = True
         self._batch_bg = False
+        self._batch_info = {}
         if msg:
             self.banner_folder.show_msg(msg, "warn" if warn else "ok")
         self.refresh_ws()
@@ -5094,12 +5116,14 @@ class MainWindow(QMainWindow):
             return
         folder = q.pop(0)
         self._switch_folder(folder, load=False)
+        QTimer.singleShot(50, lambda: __import__("deter_steps").render_compare(self))
         if not self.start(auto=True):
             self._batch_results.append((os.path.basename(folder), False, tr("没能开始")))
             QTimer.singleShot(0, self._run_next_in_batch)
 
     def _finish_batch(self):
         self._in_batch = False
+        QTimer.singleShot(0, lambda: __import__("deter_steps").render_compare(self))
         res = getattr(self, "_batch_results", []) or []
         ok = [n for n, good, _ in res if good]
         bad = [f"{n}（{why}）" for n, good, why in res if not good]
@@ -5863,6 +5887,9 @@ class MainWindow(QMainWindow):
     def _on_progress(self, pct, text):
         self.bar.setValue(pct)
         self.stage.setText(text)
+        if time.time() - getattr(self, "_cp_last", 0) > 0.4:      # 第 3 步每家门店那几行（别画得太勤）
+            self._cp_last = time.time()
+            __import__("deter_steps").render_compare(self)
         dlg = getattr(self, "_cmp_task", None)
         if dlg is not None and not dlg.is_done:
             i = max(k for k, (lo, _) in enumerate(CMP_STAGES) if pct >= lo)
@@ -5910,6 +5937,10 @@ class MainWindow(QMainWindow):
             return
         self.bar.setValue(100)
         self.stage.setText(tr("{0} 比价完成，主订单和供应商文件已保存", store))
+        sups = summary.get("suppliers") or []
+        self.__dict__.setdefault("_batch_info", {})[store] = (
+            sum(sp.get("amount") or 0 for sp in sups), summary.get("total_rows") or 0, summary.get("priced_rows") or 0,
+            sum(1 for sp in sups if (sp.get("colli") or 0) > 0), summary.get("missing") or 0, summary.get("elapsed"))
         self.last_summary = summary
         self.show_summary(summary)
         self.refresh_history()
