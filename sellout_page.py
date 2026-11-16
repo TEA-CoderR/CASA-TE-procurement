@@ -1002,7 +1002,8 @@ class SelloutPage:
         self._lists_loading = False
         if err:
             self.win.log(tr("⚠ SELL OUT：读分类 / 供应商失败：{0}", err))
-            self.status.setText(tr("连不上数据库：{0}", err))
+            self.status.setText(tr("连不上数据库") + "  ⓘ")       # 原文很长：放鼠标提示
+            self.status.setToolTip(str(err))
             return
         self.tree, self.upto = tree, upto
         c = self.cfg
@@ -1175,6 +1176,7 @@ class SelloutPage:
         nd = (res["end"] - res["start"]).days + 1
         up = res.get("upto")
         self.h1.setText(tr("SELL OUT · {0}", stores))
+        self.status.setToolTip("")
         self.status.setText(tr("{0:%d/%m/%Y} – {1:%d/%m/%Y} · {2} 天 · {3:,} 个商品", res["start"], res["end"], nd, len(rows)) +
                             (tr(" · 名单：{0}", self.codes_name) if self.codes_name and res["filters"].get("codes") else "") +
                             (tr(" · 销售数据到 {0:%d/%m}", up) if up else ""))

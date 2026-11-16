@@ -11,7 +11,7 @@ from PySide6.QtCore import Qt, QByteArray
 from PySide6.QtGui import QColor, QPainter, QPen, QIcon, QPixmap, QLinearGradient, QFont
 from PySide6.QtSvg import QSvgRenderer
 
-APP_VERSION = "v3.3.22"
+APP_VERSION = "v3.3.23"
 FONT_DIR = os.path.join(getattr(sys, "_MEIPASS", None) or os.path.dirname(os.path.abspath(__file__)), "fonts")
 # 中文字体：Windows 上用微软雅黑 UI（2026-11-16 用户：有的字看着糊——设计稿的 Noto Sans SC 没有屏幕微调信息，
 # 在 Windows 的小字号下发虚；雅黑是专门为 Windows 屏幕调过的）；别的系统才用程序带的 Noto Sans SC
@@ -469,6 +469,10 @@ def build_qss():
     #Faint {{ color: {t['muted']}; font-size: 12px; }}
     #Hint {{ color: {t['muted']}; font-size: 12px; }}
     #Section {{ font-size: 15px; font-weight: 600; color: {t['text']}; }}
+    #HeroTitle {{ font-size: 26px; font-weight: 700; color: {t['text']}; }}
+    #HeroSub {{ color: {t['head']}; font-size: 13px; }}
+    #StatVal {{ font-family: "{NUM_FONT}", "{UI_FONT}"; font-size: 24px; font-weight: 600; color: {t['text']}; }}
+    QTextEdit#LogView {{ font-family: "{NUM_FONT}", "{UI_FONT}"; font-size: 12px; background: {t['surface']}; border: none; }}
     #ActionBar {{ background: {t['surface']}; border-top: 1px solid {t['line']}; }}
     #StepBar {{ background: {t['surface']}; border: 1px solid {t['line']}; border-bottom: 1px solid {card_bottom}; border-radius: 12px; }}
     #StepCell {{ border-right: 1px solid {t['line']}; }}

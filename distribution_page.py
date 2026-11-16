@@ -116,19 +116,13 @@ class DistributionPage:
     def build(self):
         w = QWidget()
         lay = QVBoxLayout(w)
-        lay.setContentsMargins(24, 20, 24, 24)
+        lay.setContentsMargins(28, 22, 28, 24)
         lay.setSpacing(14)
-        head = QHBoxLayout()
-        tl = QVBoxLayout()
-        tl.setSpacing(2)
-        t = QLabel(tr("分货数据处理"))
-        t.setObjectName("PageTitle")
-        t.setText(t.text() + "  ⓘ")
-        t.setToolTip(tr("处理分货表格：补齐 EAN 条码、从 Sheet1 提取各门店数量，导出新的 Excel（原文件不改）。"))
-        tl.addWidget(t)
-        head.addLayout(tl, 1)
-        lay.addLayout(head)
-        self.steps = StepBar([(tr("选择文件"), ""), (tr("处理方式"), ""), (tr("处理"), ""), (tr("查看、导出"), "")])
+        from page_kit import Hero
+        self.hero = Hero(tr("分货数据处理"), tr("还没有选择文件"),
+                         tip=tr("处理分货表格：补齐 EAN 条码、从 Sheet1 提取各门店数量，导出新的 Excel（原文件不改）。"))
+        lay.addWidget(self.hero)
+        self.steps = __import__("page_kit").FlowCard([(tr("选择文件"), ""), (tr("处理方式"), ""), (tr("处理"), ""), (tr("查看、导出"), "")])
         lay.addWidget(self.steps)
 
         body = QHBoxLayout()
@@ -176,12 +170,10 @@ class DistributionPage:
             rb = QRadioButton(tr(title))
             rb.setStyleSheet("font-weight:600;")
             rb.setProperty("mode", mode)
-            d = QLabel(tr(desc))
-            d.setWordWrap(True)
-            d.setObjectName("Faint")
-            d.setContentsMargins(24, 0, 0, 0)
+            rb.setText(tr(title) + "  ⓘ")             # 界面要简洁：说明放鼠标提示
+            rb.setToolTip(tr(desc))
+            card.setToolTip(tr(desc))
             cv.addWidget(rb)
-            cv.addWidget(d)
             self.mode_group.addButton(rb)
             self.mode_cards[mode] = (card, rb)
             card.mousePressEvent = lambda _e, rb=rb: rb.setChecked(True)
@@ -326,6 +318,7 @@ class DistributionPage:
         self.cfg["last_file"] = p
         save_settings(self.settings)
         self.file_edit.setText(os.path.normpath(p))
+        self.hero.set_sub(os.path.basename(p))
         names = list(sheets.keys())
         home = sheets[names[0]]
         col = D.find_column(home, D.HOME_PRODUCT_COLUMN_NAMES) or D.detect_product_column(home)

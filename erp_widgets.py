@@ -1971,7 +1971,12 @@ class DropZone(QFrame):
             more.setObjectName("Faint")
             self.list_box.addWidget(more)
         self.count.setText(tr("{0} 个", len(files)) if files else "")
-        self.hint.setText(note or tr("把文件拖到这里"))
+        # 界面要简洁（2026-11-16）：说明放进标题的鼠标提示（标题后面 ⓘ），格子里只在空着时写一句「拖到这里」
+        if note:
+            self.title.setText(self.title_text + "  ⓘ")
+            self.title.setToolTip(note)
+        self.hint.setText(tr("把文件拖到这里"))
+        self.hint.setVisible(not files)
 
     def _pick(self):
         from PySide6.QtWidgets import QFileDialog

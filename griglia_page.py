@@ -138,105 +138,32 @@ class _Tab:
         self.ctl.render()
 
 
-class _StatList(QWidget):
+class _SupRank(QWidget):
     """
-    几行「要看的」：彩色圆点 + 名字 + 右边的个数 + ›，一行一个标签页，点一行跳过去（鼠标停着整行淡底）。
-    items = [(名字, 个数文字, 颜色记号, 标签页, 鼠标提示)]
-    """
-    clicked = Signal(int)
-    ROW = 30
-
-    def __init__(self, ui):
-        super().__init__()
-        self.ui, self.items, self.hover = ui, [], -1
-        self.setMouseTracking(True)
-        self.setCursor(Qt.PointingHandCursor)
-
-    def set(self, items):
-        self.items = list(items)
-        self.setFixedHeight(self.ROW * len(self.items))
-        self.update()
-
-    def _row(self, e):
-        y = e.position().y() if hasattr(e, "position") else e.y()
-        i = int(y // self.ROW)
-        return i if 0 <= i < len(self.items) else -1
-
-    def mouseMoveEvent(self, e):
-        i = self._row(e)
-        if i != self.hover:
-            self.hover = i
-            self.setToolTip(self.items[i][4] if i >= 0 else "")
-            self.update()
-
-    def leaveEvent(self, _e):
-        self.hover = -1
-        self.update()
-
-    def mousePressEvent(self, e):
-        i = self._row(e)
-        if i >= 0:
-            self.clicked.emit(self.items[i][3])
-
-    def paintEvent(self, _e):
-        from PySide6.QtGui import QPainter, QFont
-        from PySide6.QtCore import QRectF
-        from theme import NUM_FONT, UI_FONT
-        T = self.ui.T
-        p = QPainter(self)
-        p.setRenderHint(QPainter.Antialiasing)
-        W = self.width()
-        f_lbl, f_num = QFont(UI_FONT), QFont(NUM_FONT)
-        f_lbl.setPixelSize(13)
-        f_num.setPixelSize(15)
-        f_num.setBold(True)
-        for i, (label, val, tone, _tab, _tip) in enumerate(self.items):
-            y = i * self.ROW
-            if i == self.hover:
-                p.setPen(Qt.NoPen)
-                p.setBrush(QColor(T("surface2")))
-                p.drawRoundedRect(QRectF(0, y + 2, W, self.ROW - 4), 8, 8)
-            p.setPen(Qt.NoPen)
-            p.setBrush(QColor(T(tone)))
-            p.drawEllipse(QRectF(10, y + self.ROW / 2 - 4, 8, 8))
-            p.setFont(f_lbl)
-            p.setPen(QColor(T("text")))
-            p.drawText(QRectF(28, y, W - 100, self.ROW), Qt.AlignLeft | Qt.AlignVCenter, label)
-            p.setPen(QColor(T("muted")))
-            p.drawText(QRectF(W - 22, y, 16, self.ROW), Qt.AlignCenter, "›")
-            p.setFont(f_num)
-            p.setPen(QColor(T(tone) if val not in ("0", "—") else T("faint")))
-            p.drawText(QRectF(W - 110, y, 84, self.ROW), Qt.AlignRight | Qt.AlignVCenter, val)
-        p.end()
-
-
-class _SupChart(QWidget):
-    """
-    这周每家批发商一栏：名字、「n 个最便宜」（大字）、有几个 Griglia 商品 · 占几成，下面一根竖条（高 = 最便宜的个数），
-    最便宜最多的那家蓝条；点一栏 = 价格表只看这家最便宜的（再点一次取消），选中的那栏淡蓝底
+    这周每家批发商一行（和促销分析「门店排名」一个样子）：名字 · 横条（它最便宜的个数）· 「n 个最便宜」· 有几个 Griglia 商品 · 占几成。
+    最便宜最多的那家蓝条；点一行 = 价格表只看这家最便宜的（再点一次取消），选中的那行淡蓝底 + 青色条
     """
     clicked = Signal(str)
-    BAR_H = 40
+    ROW = 36
 
     def __init__(self, ui):
         super().__init__()
         self.ui, self.sups, self.sel, self.hover = ui, [], None, -1
         self.setMouseTracking(True)
-        self.setMinimumHeight(128)
         self.setCursor(Qt.PointingHandCursor)
 
     def set(self, sups, sel=None):
         self.sups, self.sel = list(sups), sel
+        self.setFixedHeight(max(1, len(self.sups)) * self.ROW)
         self.update()
 
-    def _col(self, e):
-        x = e.position().x() if hasattr(e, "position") else e.x()
-        n = len(self.sups)
-        i = int(x * n / max(1, self.width())) if n else -1
-        return i if 0 <= i < n else -1
+    def _row(self, e):
+        y = e.position().y() if hasattr(e, "position") else e.y()
+        i = int(y // self.ROW)
+        return i if 0 <= i < len(self.sups) else -1
 
     def mouseMoveEvent(self, e):
-        i = self._col(e)
+        i = self._row(e)
         if i != self.hover:
             self.hover = i
             self.update()
@@ -250,7 +177,7 @@ class _SupChart(QWidget):
         self.update()
 
     def mousePressEvent(self, e):
-        i = self._col(e)
+        i = self._row(e)
         if i >= 0:
             self.clicked.emit(self.sups[i]["label"])
 
@@ -259,132 +186,102 @@ class _SupChart(QWidget):
         from PySide6.QtCore import QRectF
         from theme import NUM_FONT, UI_FONT
         T = self.ui.T
-        n = len(self.sups)
-        if not n:
+        if not self.sups:
             return
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
-        W, H = self.width(), self.height()
-        cw = W / n
+        W = self.width()
         top = max(d["cheapest"] for d in self.sups) or 1
-        base = H - 6
-        f_title, f_small, f_num = QFont(UI_FONT), QFont(UI_FONT), QFont(NUM_FONT)
-        f_title.setPixelSize(12)
-        f_title.setBold(True)
-        f_small.setPixelSize(11)
-        f_num.setPixelSize(16)
-        f_num.setBold(True)
+        f_name, f_num, f_small = QFont(UI_FONT), QFont(NUM_FONT), QFont(UI_FONT)
+        f_name.setPixelSize(13)
+        f_name.setWeight(QFont.Medium)
+        f_num.setPixelSize(13)
+        f_num.setWeight(QFont.DemiBold)
+        f_small.setPixelSize(12)
+        name_w, num_w, sub_w = 130, 130, 150
+        bar_x = name_w + 10
+        bar_w = max(40, W - bar_x - num_w - sub_w - 24)
         for i, d in enumerate(self.sups):
-            box = QRectF(i * cw + 4, 0, cw - 8, H)
+            y = i * self.ROW
             sel = d["label"] == self.sel
             lead = d["cheapest"] == top and d["cheapest"] > 0
             if sel or i == self.hover:
                 p.setPen(Qt.NoPen)
-                p.setBrush(QColor(T("accent_soft") if sel else T("surface2")))
-                p.drawRoundedRect(box, 10, 10)
-            pad = 12
-            tx, tw = box.left() + pad, box.width() - 2 * pad
-            p.setFont(f_title)
-            p.setPen(QColor(T("accent") if (sel or lead) else T("muted")))
-            p.drawText(QRectF(tx, 10, tw, 16), Qt.AlignLeft | Qt.AlignVCenter,
-                       QFontMetrics(f_title).elidedText(d["label"], Qt.ElideRight, int(tw)))
+                p.setBrush(QColor(T("accent_soft") if sel else T("hover")))
+                p.drawRoundedRect(QRectF(0, y + 2, W, self.ROW - 4), 9, 9)
+            p.setFont(f_name)
+            p.setPen(QColor(T("text")))
+            p.drawText(QRectF(12, y, name_w - 12, self.ROW), Qt.AlignLeft | Qt.AlignVCenter,
+                       QFontMetrics(f_name).elidedText(d["label"], Qt.ElideRight, name_w - 12))
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor(T("track")))
+            p.drawRoundedRect(QRectF(bar_x, y + self.ROW / 2 - 5, bar_w, 10), 5, 5)
+            w = bar_w * d["cheapest"] / top
+            if w > 0:
+                p.setBrush(QColor(T("cyan") if sel else T("accent") if lead else T("ghost")))
+                p.drawRoundedRect(QRectF(bar_x, y + self.ROW / 2 - 5, max(10.0, w), 10), 5, 5)
+            x = bar_x + bar_w + 12
             p.setFont(f_num)
             p.setPen(QColor(T("text") if d["cheapest"] else T("faint")))
-            num = f"{d['cheapest']:,}"
-            p.drawText(QRectF(tx, 30, tw, 22), Qt.AlignLeft | Qt.AlignVCenter, num)
-            nw = QFontMetrics(f_num).horizontalAdvance(num)
+            p.drawText(QRectF(x, y, num_w, self.ROW), Qt.AlignRight | Qt.AlignVCenter,
+                       tr("{0:,} 个最便宜", d["cheapest"]))
             p.setFont(f_small)
             p.setPen(QColor(T("muted")))
-            p.drawText(QRectF(tx + nw + 5, 30, max(0, tw - nw - 5), 22), Qt.AlignLeft | Qt.AlignVCenter, tr("个最便宜"))
-            p.setPen(QColor(T("faint")))
-            p.drawText(QRectF(tx, 52, tw, 16), Qt.AlignLeft | Qt.AlignVCenter,
-                       QFontMetrics(f_small).elidedText(tr("有 {0:,} 个 · {1:.0%}", d["carried"], d["share"]),
-                                                        Qt.ElideRight, int(tw)))
-            h = max(4.0, self.BAR_H * d["cheapest"] / top)
-            p.setPen(Qt.NoPen)
-            p.setBrush(QColor(T("accent") if (sel or lead) else T("ghost") if d["cheapest"] else T("track")))
-            p.drawRoundedRect(QRectF(tx, base - h, tw, h), 4, 4)
+            p.drawText(QRectF(x + num_w, y, sub_w, self.ROW), Qt.AlignRight | Qt.AlignVCenter,
+                       tr("有 {0:,} · {1:.0%}", d["carried"], d["share"]))
         p.end()
 
 
-class GridPanel(QFrame):
+class GridPanel(QWidget):
     """
-    Griglia 页顶上的总览（2026-11-02 用户：Griglia 统计也做得好看点；和订单跟踪的「本月」一个样子，整块一个外框）：
-      左：一圈 = 这周还有批发商在做的 Griglia 商品占几成 + Griglia 商品数（大字）、几个有批发商在做、几家报价（文件名在页面标题右边）
-      中：要看的几样（都不做了 / 新上架 / 最低价换了供应商 / 价格可疑），点一行跳到那张表
-      右：每家批发商一栏：几个 Griglia 商品它最便宜、它有几个，点一栏 = 价格表只看这家最便宜的
+    Griglia 页顶上的总览（2026-11-16 重做，照设计稿的样子）：
+      一排指标卡：批发商还在做（占几成）· 停售 · 新上架 · 最低价换了供应商 · 价格可疑（点一张跳到那张表）
+      卡片「这周各家批发商」：每家一行横条（几个 Griglia 商品它最便宜），点一行 = 价格表只看这家最便宜的
+    接口和以前一样：show_stats / set_sel / restyle，tab_clicked(int) / sup_clicked(str)
     """
     tab_clicked = Signal(int)
     sup_clicked = Signal(str)
 
     def __init__(self, ui):
         super().__init__()
-        from erp_widgets import Ring
+        from page_kit import Stat, Card
         self.ui = ui
-        self.setObjectName("Panel")
-        h = QHBoxLayout(self)
-        h.setContentsMargins(18, 12, 14, 10)
-        h.setSpacing(14)
-        lw = QWidget()
-        lw.setFixedWidth(290)
-        lv = QVBoxLayout(lw)
-        lv.setContentsMargins(0, 0, 0, 0)
-        lv.setSpacing(8)
-        self.cap = QLabel(tr("这周批发商还在做"))
-        self.cap.setObjectName("GpCap")
-        lv.addWidget(self.cap)
+        v = QVBoxLayout(self)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(12)
         row = QHBoxLayout()
-        row.setSpacing(14)
-        self.ring = Ring()
-        self.ring.setToolTip(tr("Griglia 商品里，这周至少一家批发商报价里有的占几成"))
-        row.addWidget(self.ring, 0, Qt.AlignVCenter)
-        tv = QVBoxLayout()
-        tv.setSpacing(1)
-        self.big = QLabel("")
-        self.big.setObjectName("GpBig")
-        self.sub = QLabel("")
-        self.sub.setObjectName("GpSub")
-        self.sub2 = QLabel("")
-        self.sub2.setObjectName("GpSub")
-        tv.addStretch()
-        for x in (self.big, self.sub, self.sub2):
-            tv.addWidget(x)
-        tv.addStretch()
-        row.addLayout(tv, 1)
-        lv.addLayout(row)
-        lv.addStretch()
-        h.addWidget(lw)
-        self.seps = [QFrame(), QFrame()]
-        h.addWidget(self.seps[0])
-        mw = QWidget()
-        mw.setFixedWidth(250)
-        mv = QVBoxLayout(mw)
-        mv.setContentsMargins(0, 0, 0, 0)
-        mv.setSpacing(4)
-        self.cap2 = QLabel(tr("要看的"))
-        self.cap2.setObjectName("GpCap")
-        mv.addWidget(self.cap2)
-        self.stats = _StatList(ui)
-        self.stats.clicked.connect(self.tab_clicked.emit)
-        mv.addWidget(self.stats)
-        mv.addStretch()
-        h.addWidget(mw)
-        h.addWidget(self.seps[1])
-        self.chart = _SupChart(ui)
+        row.setSpacing(12)
+        self.k_cov = Stat(tr("批发商还在做"), "check", "ok", tr("Griglia 商品里，这周至少一家批发商报价里有的占几成"))
+        self.kpis = [Stat(tr("停售"), "box", "err", "", clickable=True),
+                     Stat(tr("新上架"), "spark", "accent", "", clickable=True),
+                     Stat(tr("最低价换了供应商"), "refresh", "warn", "", clickable=True),
+                     Stat(tr("价格可疑"), "search", "violet", "", clickable=True)]
+        row.addWidget(self.k_cov)
+        self._tabs_of = [0, 1, 2, 3]
+        for i, k in enumerate(self.kpis):
+            row.addWidget(k)
+            k.clicked.connect(lambda i=i: self.tab_clicked.emit(self._tabs_of[i]))
+        v.addLayout(row)
+        self.card = Card(tr("这周各家批发商"), tr("每家批发商这周报价里，几个 Griglia 商品它最便宜（条越长越多）；点一行：价格表只看这家最便宜的"))
+        self.chart = _SupRank(ui)
         self.chart.clicked.connect(self.sup_clicked.emit)
-        h.addWidget(self.chart, 1)
-        for sp in self.seps:
-            sp.setFixedWidth(1)
-        self.restyle()
+        self.card.v.addWidget(self.chart)
+        v.addWidget(self.card)
 
     def show_stats(self, ov, n_sup, stats, sel=None):
-        """ov = griglia.overview(…)；stats = _StatList 的几行"""
+        """ov = griglia.overview(…)；stats = [(名字, 个数文字, 颜色记号, 标签页, 鼠标提示)]（四张卡）"""
         s = ov["share"]
-        self.ring.set(s, "ok" if s is None or s >= 0.95 else "warn" if s >= 0.85 else "err", color_text=False)
-        self.big.setText(tr("{0:,} 个商品", ov["grid"]))
-        self.sub.setText(tr("{0:,} 个有批发商在做", ov["covered"]))
-        self.sub2.setText(tr("{0} 家批发商报价", n_sup))
-        self.stats.set(stats)
+        tone = "ok" if s is None or s >= 0.95 else "warn" if s >= 0.85 else "err"
+        self.k_cov.set_tone(tone)
+        self.k_cov.set("—" if s is None else f"{s:.0%}", None,
+                       sub=tr("{0:,} / {1:,} 个商品 · {2} 家报价", ov["covered"], ov["grid"], n_sup))
+        for k, (label, val, tone, tab, tip) in zip(self.kpis, stats):
+            k.cap.setText(label + "  ⓘ")
+            k.cap.setToolTip(tip)
+            k.setToolTip(tr("点一下：看「{0}」那张表", label))
+            k.set(val, self.ui.T(tone) if val not in ("0", "—") else None, sub=tr("点开看明细"))
+        self._tabs_of = [st[3] for st in stats]
+        self.card.set_title(tr("这周各家批发商（{0}）", len(ov["sups"])))
         self.chart.set(ov["sups"], sel)
 
     def set_sel(self, sel):
@@ -392,17 +289,9 @@ class GridPanel(QFrame):
         self.chart.update()
 
     def restyle(self):
-        from theme import NUM_FONT
-        T = self.ui.T
-        self.setStyleSheet(
-            f"#GpCap {{ color: {T('muted')}; font-size: 12px; font-weight: 600; }}"
-            f"#GpBig {{ font-family: \"{NUM_FONT}\"; font-size: 22px; font-weight: 600; color: {T('text')}; }}"
-            f"#GpSub {{ color: {T('muted')}; font-size: 12px; }}")
-        for sp in self.seps:
-            sp.setStyleSheet(f"background: {T('line')};")
-        for w in (self.ring, self.stats, self.chart):
-            w.update()
-
+        for k in [self.k_cov] + self.kpis:
+            k.restyle()
+        self.chart.update()
 
 
 # 每列默认宽度（按列编号；批发商价格列没写 = 84）。用户拖过的宽度记在设置里，优先用
@@ -452,33 +341,38 @@ class GrigliaPage:
 
     # ---------- 界面 ----------
     def build(self):
+        """
+        2026-11-16 重做（用户：Griglia 也重做，现在的不好看）：页头（文件名 · 日期 · 几个商品）+ 右边 找替代商品 · 导出 Excel · ⋯；
+        一排指标卡 · 「这周各家批发商」排名 · 一张卡片放四张表（停售 / 新品 / 价格 / 价格可疑）；整页往下滚
+        """
         ui = self.ui
+        from page_kit import Hero, Card, button, more_menu
+        from PySide6.QtWidgets import QScrollArea
         w = QWidget()
         lay = QVBoxLayout(w)
-        lay.setContentsMargins(24, 20, 24, 24)
+        lay.setContentsMargins(28, 22, 28, 24)
         lay.setSpacing(14)
-        t = QLabel(tr("Griglia") + "  ⓘ")
-        t.setObjectName("PageTitle")
-        t.setToolTip(tr("我们的 DETERSIVI 总表（工作文件夹「0 Griglia」里最新的一份）和这周批发商报价对比：哪些商品停售了（批发商都不卖了）、哪些新品不在 Griglia 里（几家在做、各家价格）、Griglia 里的商品现在哪家最便宜。新品只算报价里「我们这几类」的部门（Griglia 商品所在的部门）"))
-        head = QHBoxLayout()
-        head.addWidget(t)
-        head.addSpacing(12)
-        self.file_lbl = QLabel("")
-        self.file_lbl.setObjectName("Faint")
-        head.addWidget(self.file_lbl, 1)
-        for text, fn, tip in ((tr("换 Griglia…"), self.choose, tr("选一份新的 Griglia，复制到工作文件夹「0 Griglia」（旧的挪进 _旧文件）")),
-                              (tr("打开文件夹"), self.open_dir, ""), (tr("刷新"), self.refresh, tr("重新读 Griglia 和「2 供应商报价」")),
-                              (tr("导出 Excel"), self.export, "")):
-            b = QPushButton(text)
-            if tip:
-                b.setToolTip(tip)
-            b.clicked.connect(fn)
-            head.addWidget(b)
-        lay.addLayout(head)
+        tip = tr("我们的 DETERSIVI 总表（工作文件夹「0 Griglia」里最新的一份）和这周批发商报价对比：哪些商品停售了（批发商都不卖了）、哪些新品不在 Griglia 里（几家在做、各家价格）、Griglia 里的商品现在哪家最便宜。新品只算报价里「我们这几类」的部门（Griglia 商品所在的部门）")
+        self.hero = Hero(tr("Griglia"), tr("我们的 DETERSIVI 总表 vs 这周批发商报价"), tip=tip)
+        self.file_lbl = self.hero.sub
+        self.b_repl = button(tr("找替代商品"), self._find_repl,
+                             tip=tr("停售的商品很多是换了规格（40 洗 → 50 洗、950 ml → 1000 ml）：在这周报价里找像的商品，核对后替换进 Griglia"))
+        self.b_exp = button(tr("导出 Excel"), self.export, primary=True)
+        more, acts = more_menu([
+            (tr("换 Griglia…"), self.choose, tr("选一份新的 Griglia，复制到工作文件夹「0 Griglia」（旧的挪进 _旧文件）")),
+            (tr("打开文件夹"), self.open_dir, None),
+            (tr("刷新"), self.refresh, tr("重新读 Griglia 和「2 供应商报价」")),
+            None,
+            (tr("替换记录"), self._repl_log, tr("哪天谁把哪个原商品换成了哪个新商品、改的是哪个文件第几行")),
+        ])
+        self.b_log = acts[tr("替换记录")]
+        for b in (self.b_repl, self.b_exp, more):
+            self.hero.add(b)
+        lay.addWidget(self.hero)
 
         self.stack = QStackedWidget()
         from erp_widgets import EmptyState
-        self.empty = EmptyState("search", tr("还没有 Griglia"),
+        self.empty = EmptyState("griglia", tr("还没有 Griglia"),
                                 tr("把我们的 DETERSIVI 总表（ELENCO_DETERSIVI.xlsx）放进工作文件夹「0 Griglia」，或点「换 Griglia…」"))
         b = QPushButton(tr("选择 Griglia…"))
         b.setObjectName("Primary")
@@ -486,14 +380,22 @@ class GrigliaPage:
         self.empty.buttons.addWidget(b)
         self.stack.addWidget(self.empty)
 
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setStyleSheet("QScrollArea { background: transparent; }")
         body = QWidget()
+        body.setObjectName("GrBody")
+        body.setStyleSheet("#GrBody { background: transparent; }")
         bv = QVBoxLayout(body)
-        bv.setContentsMargins(0, 0, 0, 0)
-        bv.setSpacing(12)
+        bv.setContentsMargins(0, 0, 4, 8)
+        bv.setSpacing(14)
         self.panel = GridPanel(ui)
-        self.panel.tab_clicked.connect(lambda k: self.tabs.setCurrentIndex(k))
+        self.panel.tab_clicked.connect(self._go_tab)
         self.panel.sup_clicked.connect(self._sup_clicked)
         bv.addWidget(self.panel)
+        card = Card(margins=(16, 10, 16, 14))
         self.tabs = QTabWidget()
         self.min_n = QComboBox()
         for n in (1, 2, 3, 4):
@@ -509,17 +411,8 @@ class GrigliaPage:
         nb.setContentsMargins(0, 0, 0, 0)
         nb.addWidget(self.scope)
         nb.addWidget(self.min_n)
-        self.gone_bar = QWidget()
-        gb = QHBoxLayout(self.gone_bar)
-        gb.setContentsMargins(0, 0, 0, 0)
-        self.b_repl = QPushButton(tr("🔄 找替代商品"))
-        self.b_repl.setToolTip(tr("停售的商品很多是换了规格（40 洗 → 50 洗、950 ml → 1000 ml）：在这周报价里找像的商品，核对后替换进 Griglia"))
-        self.b_repl.clicked.connect(self._find_repl)
-        self.b_log = QPushButton(tr("替换记录"))
-        self.b_log.setToolTip(tr("哪天谁把哪个原商品换成了哪个新商品、改的是哪个文件第几行"))
-        self.b_log.clicked.connect(self._repl_log)
-        gb.addWidget(self.b_repl)
-        gb.addWidget(self.b_log)
+        self.gone_bar = QWidget()              # 以前放「找替代商品」「替换记录」，挪到页头了；留个空的占位
+        QHBoxLayout(self.gone_bar).setContentsMargins(0, 0, 0, 0)
         self._quotes, self._fresh = None, None
         self._repl = None             # 找替代商品提前算好的 (grid, (候选, 搜索池))，点按钮直接打开（用户 11-11：点了卡一下）
         self._repl_ready = threading.Event()
@@ -534,8 +427,12 @@ class GrigliaPage:
         for bx, text in zip(self.boxes, (tr("停售"), tr("新品"), tr("价格"), tr("价格可疑"))):
             self.tabs.addTab(bx, text)
         self.tabs.setTabToolTip(3, tr("报价表里明显写错的价格（低于 €0.05，或比别家中间价低 70% 以上，多半是箱价 / 件价搞混）：不拿来比最低价，请找供应商确认"))
-        bv.addWidget(self.tabs, 1)
-        self.stack.addWidget(body)
+        card.v.addWidget(self.tabs, 1)
+        card.setMinimumHeight(600)
+        bv.addWidget(card, 1)
+        scroll.setWidget(body)
+        self.scroll = scroll
+        self.stack.addWidget(scroll)
         self.busy = QLabel(tr("正在统计…"))
         self.busy.setAlignment(Qt.AlignCenter)
         self.busy.setObjectName("Faint")
@@ -544,6 +441,10 @@ class GrigliaPage:
         w.showEvent = lambda e: (QWidget.showEvent(w, e), self._first_show())
         self.page = w
         return w
+
+    def _go_tab(self, k):
+        self.tabs.setCurrentIndex(k)
+        self.scroll.ensureWidgetVisible(self.tabs, 0, 40)
 
     def _first_show(self):
         if not self._loaded_once:
@@ -613,7 +514,7 @@ class GrigliaPage:
                 if hasattr(self.win, "log"):
                     self.win.log(tr("⚠ 读不了 Griglia 原件（{0}）：{1}", self.source(), e))
         if not r or not G.find_file(r):
-            self.file_lbl.setText("")
+            self.file_lbl.setText(tr("我们的 DETERSIVI 总表 vs 这周批发商报价"))
             self.stack.setCurrentIndex(0)
             return
         self.running = True
@@ -696,8 +597,10 @@ class GrigliaPage:
                  (tr("最低价换了供应商"), f"{moved:,}", "warn", 2, tr("现在最便宜的批发商不是 Griglia 里登记的那家")),
                  (tr("价格可疑"), f"{len(st['odd']):,}", "warn", 3,
                   tr("报价表里明显写错的价格（低于 €0.05，或比别家中间价低 70% 以上，多半是箱价 / 件价搞混）：不拿来比最低价，请找供应商确认"))]
-        self.file_lbl.setText(f"{grid['name']} · {datetime.fromtimestamp(grid.get('mtime') or 0):%d/%m/%Y}"
-                              + (" · " + tr("同步文件夹") if self.source() and os.path.isfile(self.source()) else ""))
+        self.file_lbl.setText(" · ".join(x for x in (
+            grid["name"], f"{datetime.fromtimestamp(grid.get('mtime') or 0):%d/%m/%Y}",
+            tr("同步文件夹") if self.source() and os.path.isfile(self.source()) else "",
+            tr("{0:,} 个商品", len(grid.get("items") or [])), tr("{0} 家批发商报价", len(self._labels))) if x))
         self.file_lbl.setToolTip(tr("原件：{0}\n程序读的是「0 Griglia」里的副本，原件变了会自动重新复制；加替代品时直接改原件", self.source())
                                  if self.source() else tr("这份 Griglia 只在工作文件夹「0 Griglia」里（没有记下原件）。"
                                                           "想直接改同步文件夹那份：点「换 Griglia…」从同步文件夹选一次"))
@@ -718,7 +621,7 @@ class GrigliaPage:
         if c is None:
             return
         self.t_price.ctl.set_filter(c, None if self._best_sel() == label else {label})
-        self.tabs.setCurrentIndex(2)
+        self._go_tab(2)
 
     # ---------- 表格 ----------
     def _tab(self, idx, key, cols, data, extra=None):
@@ -902,6 +805,7 @@ class GrigliaPage:
         n = len(self._done_log())
         self.b_log.setText(tr("替换记录（{0}）", n) if n else tr("替换记录"))
         self.b_log.setEnabled(bool(n))
+        self.b_repl.setVisible(self.b_repl.isEnabled())       # 没有停售 / 划线的：页头不放这个按钮
 
     def _repl_log(self):
         from griglia_replace_dialog import ReplaceLogDialog
