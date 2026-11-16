@@ -6,7 +6,7 @@ a = Analysis(
     ['main.py'],
     pathex=[],
     binaries=[],
-    datas=[('fonts', 'fonts')],
+    datas=[('fonts/Inter-*.ttf', 'fonts'), ('fonts/JetBrainsMono-*.ttf', 'fonts'), ('fonts/*OFL*.txt', 'fonts')],   # Noto Sans SC 不打包（Windows 用雅黑）
     hiddenimports=[
         'openpyxl', 'openpyxl.workbook', 'openpyxl.worksheet',
         'win32com', 'win32com.client',

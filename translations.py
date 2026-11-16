@@ -4000,4 +4000,9 @@ TRANSLATIONS = {
     '紧凑': ('Compact', 'Compatta'),
     '标准': ('Standard', 'Standard'),
     '舒适': ('Comfortable', 'Comoda'),
+    '回到本周 DETERSIVO 采购（四步）': ("Back to this week's DETERSIVO purchasing (four steps)", 'Torna agli acquisti DETERSIVO della settimana (quattro passi)'),
+    '这一批每家门店的比价结果：分给哪家批发商、缺失、订单文件': ('Comparison results of this batch per store: which wholesaler, missing items, order files', "Risultati del confronto per negozio: grossista assegnato, mancanti, file d'ordine"),
+    '历史记录 · 缺失查找 · 起订规则': ('History · missing items · minimum-order rules', "Storico · articoli mancanti · regole minimo d'ordine"),
+    '本周 DETERSIVO 采购': ("This week's DETERSIVO purchasing", 'Acquisti DETERSIVO della settimana'),
+    '本周采购': ('This week', 'Questa settimana'),
 }

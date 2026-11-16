@@ -2880,11 +2880,15 @@ class MainWindow(QMainWindow):
     # 一个入口里有几页的，顶栏下面一排标签切换。NAV / SUB_PAGES 照旧（页面编号、别的代码都按它们）
     RAIL = [("home", tr("驾驶舱"), "home", ["home"]),
             ("buy", tr("采购"), "cart",
-             ["store_orders", "store_pdv", "order", "result", "history", "rules", "search", "griglia"]),
+             ["store_orders", "store_pdv", "order", "result", "history", "rules", "search"]),
             ("tracking", tr("订单"), "truck", ["tracking"]),
-            ("analysis", tr("分析"), "result", ["volantino"]),
+            ("analysis", tr("分析"), "result", ["volantino", "griglia"]),
             ("data", tr("数据"), "db", ["distribution", "import"]),
             ("settings", tr("设置"), "rules", ["settings", "log"])]
+    # 2026-11-16 用户：点图标栏弹出的小菜单只放这一级的页面——比价结果 / 历史记录 / 起订规则 / 缺失查找是 DETERSIVO采购
+    # 里面的，在 DETERSIVO 页顶栏右边进；Griglia 挪到「分析」；设置不弹菜单（运行日志在系统设置里）
+    RAIL_MENU = {"buy": ["store_orders", "store_pdv", "order"], "settings": ["settings"]}
+    DETER_PAGES = ("order", "result", "history", "rules", "search")
 
     def __init__(self):
         super().__init__()
@@ -3246,7 +3250,7 @@ class MainWindow(QMainWindow):
 
     def _rail_clicked(self, rid):
         """一个入口只有一页：直接过去；有几页（采购 / 数据 / 设置）：旁边弹出一个小菜单选哪一页（设计稿里没有那排标签）"""
-        pages = dict((r, p) for r, _t, _i, p in self.RAIL)[rid]
+        pages = self._rail_menu(rid)
         cur = self.NAV[self.stack.currentIndex()][0]
         self.rail_btns[self._rail_of(cur)].setChecked(True)      # 还没换页：选中的还是现在这个入口
         if len(pages) == 1:
@@ -3263,16 +3267,33 @@ class MainWindow(QMainWindow):
         m.setWindowFlags(m.windowFlags() | Qt.FramelessWindowHint | Qt.NoDropShadowWindowHint)
         m.setAttribute(Qt.WA_TranslucentBackground)
         for k in pages:
-            a = m.addAction(self._tab_label(k), lambda kk=k: self.go_page(kk))
+            label = tr("本周 DETERSIVO 采购") if (k == "order" and pages[0] == "order") else self._tab_label(k)
+            a = m.addAction(label, lambda kk=k: self.go_page(kk))
             a.setCheckable(True)
-            a.setChecked(k == cur)
+            a.setChecked(k == cur or (k == "order" and cur in self.DETER_PAGES and "result" not in pages))
         m.exec(pos)
+
+    def _rail_menu(self, rid):
+        """点图标栏这个入口时小菜单里列哪几页"""
+        return self.RAIL_MENU.get(rid) or dict((r, p) for r, _t, _i, p in self.RAIL)[rid]
 
     def _crumb_menu(self):
         cur = self.NAV[self.stack.currentIndex()][0]
-        pages = dict((r, p) for r, _t, _i, p in self.RAIL)[self._rail_of(cur)]
+        if cur in self.DETER_PAGES:                 # DETERSIVO 里面：列它自己的几页
+            pages = list(self.DETER_PAGES)
+        else:
+            pages = self._rail_menu(self._rail_of(cur))
         if len(pages) > 1:
             self._flyout(pages, self.top_eyebrow.mapToGlobal(self.top_eyebrow.rect().bottomLeft()) + QPoint(0, 6))
+
+    def _deter_more_menu(self):
+        """DETERSIVO 页顶栏「⋯」：历史记录 / 缺失查找 / 起订规则"""
+        from PySide6.QtWidgets import QMenu
+        m = QMenu(self)
+        for k in ("history", "search", "rules"):
+            m.addAction(self._tab_label(k), lambda kk=k: self.go_page(kk))
+        b = self.top_deter_more
+        m.exec(b.mapToGlobal(b.rect().bottomRight()) - QPoint(m.sizeHint().width(), -6))
 
     def _build_tabstrip(self):
         """一个入口里有几页（采购 / 数据 / 设置）：顶栏下面一排标签"""
@@ -3384,6 +3405,25 @@ class MainWindow(QMainWindow):
         self.top_set_btn.setToolTip(tr("比价开关、起订规则、供应商名称、门店间调货、检查用的订货周期和算法"))
         self.top_set_btn.clicked.connect(lambda: (self._ensure_all(), self.open_cmp_settings()))
         self.top_set_btn.hide()
+        # DETERSIVO 里面的几页（2026-11-16 用户：不跟总仓 / 门店采购排在一起）：比价结果 · ⋯（历史记录 / 缺失查找 / 起订规则）
+        self.top_deter_back = QPushButton("←  " + tr("本周采购"))
+        self.top_deter_back.setMinimumHeight(36)
+        self.top_deter_back.setCursor(Qt.PointingHandCursor)
+        self.top_deter_back.setToolTip(tr("回到本周 DETERSIVO 采购（四步）"))
+        self.top_deter_back.clicked.connect(lambda: self.go_page("order"))
+        self.top_deter_res = QPushButton(tr("比价结果"))
+        self.top_deter_res.setMinimumHeight(36)
+        self.top_deter_res.setCursor(Qt.PointingHandCursor)
+        self.top_deter_res.setToolTip(tr("这一批每家门店的比价结果：分给哪家批发商、缺失、订单文件"))
+        self.top_deter_res.clicked.connect(lambda: self.go_page("result"))
+        self.top_deter_more = QPushButton("⋯")
+        self.top_deter_more.setFixedSize(40, 36)
+        self.top_deter_more.setCursor(Qt.PointingHandCursor)
+        self.top_deter_more.setToolTip(tr("历史记录 · 缺失查找 · 起订规则"))
+        self.top_deter_more.clicked.connect(self._deter_more_menu)
+        for b in (self.top_deter_back, self.top_deter_res, self.top_deter_more):
+            b.hide()
+            h.addWidget(b)
         h.addWidget(self.top_set_btn)
 
         # 通知 / 深浅色 / 语言挪到左下角头像的菜单里（对象留着，别的代码还在用）
@@ -3636,7 +3676,8 @@ class MainWindow(QMainWindow):
         rail = {r: (t, p) for r, t, _i, p in self.RAIL}
         self.rail_btns[rid].setChecked(True)
         pages = rail[rid][1]
-        multi = len(pages) > 1
+        deter = key in self.DETER_PAGES
+        multi = len(self._rail_menu(rid)) > 1
         for k, b in self.tab_btns.items():
             b.setVisible(multi and k in pages)
         if key in self.tab_btns:
@@ -3646,12 +3687,16 @@ class MainWindow(QMainWindow):
             _wd = [tr("周一"), tr("周二"), tr("周三"), tr("周四"), tr("周五"), tr("周六"), tr("周日")][datetime.now().weekday()]
             self.top_eyebrow.setText(f"{_wd} · {datetime.now():%d/%m/%Y}")
         else:
-            self.top_eyebrow.setText(rail[rid][0] + (f" / {'DETERSIVO' if key == 'order' else self._tab_label(key)}  ▾" if multi else ""))
+            sub = "DETERSIVO" if deter else self._tab_label(key)
+            self.top_eyebrow.setText(rail[rid][0] + (f" / {sub}  ▾" if multi else ""))
         self.top_eyebrow.setCursor(Qt.PointingHandCursor if multi else Qt.ArrowCursor)
         self.top_eyebrow.setToolTip(tr("点一下换到这个入口里的别的页面") if multi else "")
         title = tr("本周 DETERSIVO 采购 · {0:%d/%m}", datetime.now()) if key == "order" else self._tab_label(key)
         self.top_title.setText(title + ("  ⓘ" if getattr(self, "_page_tips", {}).get(key) else ""))
-        own = key == "order"                       # 设计稿：DETERSIVO 页顶栏右边只有「设置」
+        own = deter                                # 设计稿：DETERSIVO 页顶栏右边只有「设置」（+ 里面几页的入口）
+        self.top_deter_back.setVisible(deter and key != "order")
+        self.top_deter_res.setVisible(key == "order")
+        self.top_deter_more.setVisible(deter)
         tw = getattr(getattr(self, "tracking", None), "top_widget", None) if key == "tracking" else None
         for k in range(self.top_slot_lay.count()):
             wdg = self.top_slot_lay.itemAt(k).widget()
@@ -6648,7 +6693,7 @@ def main():
     f = QFont()
     f.setFamilies([theme.LATIN_FONT, UI_FONT])
     f.setPointSize(10)
-    app.setFont(f)
+    app.setFont(theme.crisp(f))
     win = MainWindow()
     win.show()
     win._boot_shown = time.perf_counter() - _BOOT_T0

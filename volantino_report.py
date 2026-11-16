@@ -29,7 +29,8 @@ def _num_font(px, bold=False):
     f = QFont(NUM_FONT)
     f.setPixelSize(px)
     f.setBold(bold)
-    return f
+    from theme import crisp
+    return crisp(f)
 
 
 def _ui_font(px, bold=False):
@@ -201,7 +202,7 @@ class TrendChart(QWidget):
         self.days, self.ref = days, ref
         self.update()
 
-    LEFT, RIGHT, TOP, BOTTOM = 0, 0, 8, 22
+    LEFT, RIGHT, TOP, BOTTOM = 0, 0, 22, 38
 
     def _plot(self):
         return QRectF(self.LEFT, self.TOP, self.width() - self.LEFT - self.RIGHT, self.height() - self.TOP - self.BOTTOM)
@@ -231,12 +232,12 @@ class TrendChart(QWidget):
         self.update()
 
     def paintEvent(self, _e):
-        """设计稿：每天一根柱子 = 销售额（深蓝），里面亮蓝 = 毛利；黄色虚线 = 活动前日均；下面只写几个日期"""
+        """每天一根柱子 = 销售额（深蓝），里面亮蓝 = 毛利；黄色虚线 = 活动前日均；柱子上写销售额、里面写毛利，下面日期 + 星期"""
         n = len(self.days)
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         r = self._plot()
-        top = max([rv for _, rv, _ in self.days] + [self.ref or 0, 1]) * 1.04
+        top = max([rv for _, rv, _ in self.days] + [self.ref or 0, 1]) * 1.02
         p.setPen(QPen(QColor(T("border")), 1))
         p.drawLine(QPointF(r.left(), r.bottom() + 0.5), QPointF(r.right(), r.bottom() + 0.5))
         if not n:
@@ -277,18 +278,51 @@ class TrendChart(QWidget):
             pen = QPen(QColor(T("warn")), 1.5, Qt.DashLine)
             p.setPen(pen)
             p.drawLine(QPointF(r.left(), y), QPointF(r.right(), y))
-        # 下面几个日期：第一天、两个中间、最后一天
-        p.setFont(_num_font(11))
-        p.setPen(QColor(T("faint")))
-        marks = sorted({0, n // 3, (2 * n) // 3, n - 1}) if n > 3 else list(range(n))
-        for k, i in enumerate(marks):
-            d = self.days[i][0]
-            x = r.left() + i * (bw + gap) + bw / 2
-            al = Qt.AlignLeft if k == 0 else Qt.AlignRight if k == len(marks) - 1 else Qt.AlignHCenter
-            box = QRectF(x - bw / 2, r.bottom() + 5, 60, 16) if k == 0 else \
-                QRectF(x + bw / 2 - 60, r.bottom() + 5, 60, 16) if k == len(marks) - 1 else QRectF(x - 30, r.bottom() + 5, 60, 16)
-            p.drawText(box, al | Qt.AlignVCenter, f"{d:%d/%m}")
+        # 2026-11-16 用户：金额直接写在柱子上（不用鼠标停上去），每天下面写日期 + 星期几
+        wd = [tr("周一"), tr("周二"), tr("周三"), tr("周四"), tr("周五"), tr("周六"), tr("周日")]
+        f_val = _num_font(11, True)
+        f_in = _num_font(10, True)
+        f_day = _num_font(11)
+        f_wd = _ui_font(10)
+        fm_v = QFontMetrics(f_val)
+        step = 1
+        while step < n and fm_v.horizontalAdvance("€0.0k") > step * (bw + gap) - 2:
+            step += 1                                     # 柱子太窄：隔几天写一次
+        for i, (d, rv, pr) in enumerate(self.days):
+            x = r.left() + i * (bw + gap)
+            cx = x + bw / 2
+            box = QRectF(cx - (bw + gap) * step / 2, 0, (bw + gap) * step, 0)
+            if d <= today and rv > 0 and i % step == 0:
+                h = r.height() * rv / top
+                p.setFont(f_val)
+                p.setPen(QColor(T("text")))
+                p.drawText(QRectF(box.left(), r.bottom() - h - 18, box.width(), 16), Qt.AlignCenter, _eur_k(rv))
+                hp = r.height() * max(pr, 0) / top
+                txt = _eur_k(pr)
+                if hp >= 18 and QFontMetrics(f_in).horizontalAdvance(txt) <= bw - 2:
+                    p.setFont(f_in)
+                    p.setPen(QColor(T("on_accent")))
+                    p.drawText(QRectF(x, r.bottom() - hp + 2, bw, 14), Qt.AlignHCenter | Qt.AlignTop, txt)
+            if i % step:
+                continue
+            is_today = d == today
+            p.setFont(f_day)
+            p.setPen(QColor(T("accent") if is_today else T("muted")))
+            p.drawText(QRectF(box.left(), r.bottom() + 4, box.width(), 15), Qt.AlignCenter, f"{d:%d/%m}")
+            p.setFont(f_wd)
+            p.setPen(QColor(T("accent") if is_today else (T("warn") if d.weekday() >= 5 else T("faint"))))
+            p.drawText(QRectF(box.left(), r.bottom() + 19, box.width(), 15), Qt.AlignCenter, wd[d.weekday()])
         p.end()
+
+
+def _eur_k(v):
+    """柱子上的金额：€850 / €1.2k / €12k"""
+    a = abs(v)
+    if a >= 10000:
+        return f"€{v / 1000:.0f}k"
+    if a >= 1000:
+        return f"€{v / 1000:.1f}k"
+    return f"€{v:.0f}"
 
 
 def _is_dark():
@@ -610,7 +644,7 @@ class Report(QWidget):
         self.legend = Legend([])
         self.c_trend.head.addWidget(self.legend)
         self.trend = TrendChart()
-        self.trend.setMinimumHeight(250)
+        self.trend.setMinimumHeight(290)
         self.c_trend.v.addWidget(self.trend, 1)
         r2.addWidget(self.c_trend, 2)
         self.c_imp = Card(tr("让利对当月毛利率的影响"))

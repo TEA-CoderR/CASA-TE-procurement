@@ -13,8 +13,18 @@ from PySide6.QtSvg import QSvgRenderer
 
 APP_VERSION = "v3.3.22"
 FONT_DIR = os.path.join(getattr(sys, "_MEIPASS", None) or os.path.dirname(os.path.abspath(__file__)), "fonts")
-# 2026-11-16（用户：用设计稿的字体）：中文 Noto Sans SC（程序自带 Regular / Medium / Bold，OFL），找不到文件退回微软雅黑
-UI_FONT = "Noto Sans SC" if os.path.exists(os.path.join(FONT_DIR, "NotoSansSC-Regular.ttf")) else "Microsoft YaHei UI"
+# 中文字体：Windows 上用微软雅黑 UI（2026-11-16 用户：有的字看着糊——设计稿的 Noto Sans SC 没有屏幕微调信息，
+# 在 Windows 的小字号下发虚；雅黑是专门为 Windows 屏幕调过的）；别的系统才用程序带的 Noto Sans SC
+IS_WIN = sys.platform == "win32"
+UI_FONT = "Microsoft YaHei UI" if IS_WIN or not os.path.exists(os.path.join(FONT_DIR, "NotoSansSC-Regular.ttf")) \
+    else "Noto Sans SC"
+
+
+def crisp(f):
+    """Windows 上字按像素对齐（全微调）：小字更清楚，不发虚"""
+    if IS_WIN:
+        f.setHintingPreference(QFont.PreferFullHinting)
+    return f
 # 2026-11-15 第 3 轮（用户：要和设计稿一模一样）：程序自带设计稿的字体——英文 / 数字 Inter，数字列 JetBrains Mono（等宽，表格对得齐）；
 # 中文没有自带，照旧微软雅黑（Inter 里没有的字 Qt 自动用后面的字体）
 LATIN_FONT = "Inter" if os.path.exists(os.path.join(FONT_DIR, "Inter-Regular.ttf")) else UI_FONT
@@ -30,7 +40,7 @@ def load_fonts():
     try:
         from PySide6.QtGui import QFontDatabase
         for f in sorted(os.listdir(FONT_DIR)):
-            if f.lower().endswith((".ttf", ".otf")):
+            if f.lower().endswith((".ttf", ".otf")) and not (IS_WIN and f.startswith("NotoSans")):
                 QFontDatabase.addApplicationFont(os.path.join(FONT_DIR, f))
     except Exception:
         pass
@@ -160,7 +170,7 @@ def _legacy_t():
 def num_font(size=10, bold=False):
     f = QFont(NUM_FONT, size)
     f.setBold(bold)
-    return f
+    return crisp(f)
 
 
 def _arrow_svg(color):
