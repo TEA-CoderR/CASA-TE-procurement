@@ -1829,7 +1829,7 @@ class ManualDialog(QDialog):
                 self.cand_cache[t] = res
             self._cand_sig.loaded.emit((done, res))
 
-        threading.Thread(target=work, daemon=True).start()
+        __import__("erp_widgets").run_excel_job(work)      # 用 Excel 的活排进同一条线程（一批门店比价不再卡死）
 
     def refresh_status(self):
         from min_order_optimizer import _satisfied
@@ -3102,6 +3102,7 @@ class MainWindow(QMainWindow):
         self.apply_theme(qss=settings.get("theme", "dark") != self._qss_theme)
         mark("apply_theme")
         QTimer.singleShot(5000, lambda: threading.Thread(target=_preload_libs, daemon=True).start())
+        __import__("erp_widgets").EXCEL_WORKER.start()      # Excel 后台线程开程序时就起好，以后不再新开
         self.log(tr("{0} {1} 启动 {2:%Y-%m-%d %H:%M:%S}", APP_NAME, APP_VERSION, datetime.now()))
         self._log_boot_times(steps)
         QTimer.singleShot(300, self.check_db)
@@ -5419,7 +5420,7 @@ class MainWindow(QMainWindow):
                 log(traceback.format_exc())
                 dlg.post_finished(False, tr("{0}\n\n数据库连不上的话，到「系统设置」检查地址和密码。", e))
 
-        threading.Thread(target=work, daemon=True).start()
+        __import__("erp_widgets").run_excel_job(work)      # 用 Excel 的活排进同一条线程（一批门店比价不再卡死）
 
     def edit_supplier_names(self):
         heads = (self.info or {}).get("suppliers") or []
@@ -5603,7 +5604,7 @@ class MainWindow(QMainWindow):
                 summary = {"ok": False, "error": _friendly_error(e)}
             self.bridge.done.emit(summary)
 
-        threading.Thread(target=work, daemon=True).start()
+        __import__("erp_widgets").run_excel_job(work)      # 用 Excel 的活排进同一条线程（一批门店比价不再卡死）
         return True
 
     def _choose_from_worker(self, results):
@@ -5875,7 +5876,7 @@ class MainWindow(QMainWindow):
                 self.log(tr("❌ 处理失败：{0}", e))
                 self.bridge.rewrite_done.emit((None, 0, str(e)))
 
-        threading.Thread(target=work, daemon=True).start()
+        __import__("erp_widgets").run_excel_job(work)      # 用 Excel 的活排进同一条线程（一批门店比价不再卡死）
 
     def _on_rewrite_done(self, payload):
         out, n, err = payload
@@ -6062,7 +6063,7 @@ class MainWindow(QMainWindow):
                 self.log(tr("❌ 处理失败：{0}", e))
                 self.bridge.rewrite_done.emit((None, 0, str(e)))
 
-        threading.Thread(target=work, daemon=True).start()
+        __import__("erp_widgets").run_excel_job(work)      # 用 Excel 的活排进同一条线程（一批门店比价不再卡死）
 
     def _scen_clicked(self, row, col):
         res = (self.last_summary or {}).get("scenarios") or []
@@ -6305,7 +6306,7 @@ class MainWindow(QMainWindow):
                 self.log(tr("❌ 查找失败：{0}", e))
                 self.bridge.missing_done.emit(None, str(e), use_web)
 
-        threading.Thread(target=work, daemon=True).start()
+        __import__("erp_widgets").run_excel_job(work)      # 用 Excel 的活排进同一条线程（一批门店比价不再卡死）
 
     def _on_missing_done(self, results, error, use_web):
         self.btn_find.setEnabled(True)

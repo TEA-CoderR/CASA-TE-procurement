@@ -89,7 +89,7 @@ def run_check(settings, lists, *, price_dir, log=print, progress=None, days=None
         progress.post_progress(5)
         # 报价（Excel）和数据库同时读：读报价主要用电脑，查数据库主要在等服务器，一起做省时间
         from concurrent.futures import ThreadPoolExecutor
-        q_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="quotes")
+        q_pool = _quotes_pool()          # 一直留着的两条线程（读报价可能用 Excel：线程退出时拆 COM 会和界面互相卡死，2026-11-16）
         t_q = time.time()
         q_fut = q_pool.submit(lambda: (read_quotes(settings, price_dir, log), time.time()))   # 记下读完的时间
         import order_record as REC
@@ -280,8 +280,18 @@ def run_check(settings, lists, *, price_dir, log=print, progress=None, days=None
                           quote_labels=list(q_files.keys()) if q_files else [],
                           store=lists[0]["store"], transit=transit)
     finally:
-        if q_pool is not None:
-            q_pool.shutdown(wait=False)
+        pass                             # 读报价的线程留着下次用，不关
+
+
+_QPOOL = []
+
+
+def _quotes_pool():
+    """读报价 / 查供应商编号用的两条线程：建一次一直用（不退出）"""
+    if not _QPOOL:
+        from concurrent.futures import ThreadPoolExecutor
+        _QPOOL.append(ThreadPoolExecutor(max_workers=2, thread_name_prefix="quotes"))
+    return _QPOOL[0]
 
 
 def read_quotes(settings, price_dir, log):

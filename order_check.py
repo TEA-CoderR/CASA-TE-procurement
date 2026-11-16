@@ -1004,7 +1004,7 @@ class OrderCheck:
                 dlg.post_finished(False, str(e))
                 self.sig.done.emit((None, str(e), None))
 
-        threading.Thread(target=work, daemon=True).start()
+        __import__("erp_widgets").run_excel_job(work)      # 可能用到 Excel：排进同一条线程（不在线程退出时卡死）
 
     def _algo(self):
         from reorder_page import algo_params

@@ -644,7 +644,7 @@ class GrigliaPage:
                 self.sig.done.emit((None, None, str(e)))
                 return
             self._warm_replacements(grid, quotes, self._fresh)
-        threading.Thread(target=work, daemon=True).start()
+        __import__("erp_widgets").run_excel_job(work)      # 可能用到 Excel：排进同一条线程（不在线程退出时卡死）
 
     def _warm_replacements(self, grid, quotes, fresh):
         """统计完在后台接着把「找替代商品」算好（约 1 秒）：点按钮时不用再等"""

@@ -3181,3 +3181,58 @@ class TransferEditDialog(QDialog):
 def math_ceil(x):
     import math
     return int(math.ceil(float(x) - 1e-9))
+
+
+# =====================================================================
+# 用 Excel（COM）的后台活：放在同一条一直不退出的线程里做
+# =====================================================================
+class _ExcelWorker:
+    """
+    2026-11-16 用户截图：一批门店比价，FOIANO 比完、开始 MARLIA 时整个程序卡死（hang.log：界面线程停在
+    threading.Thread.start() 等新线程起来）。原因：每家店开一条新线程，比完的那条线程用过 Excel（COM），
+    退出时 Windows 要拆掉它的 COM 环境，这一步拿着系统的「加载锁」又在等界面线程；同一时间界面线程开下一家的
+    新线程要同一把锁 → 互相等，死锁。
+    做法：Excel 的活（比价、修改分配、换方案、读报价…）都交给一条一直活着的线程排队做，线程不退出就不会拆 COM，
+    下一家也不用开新线程。
+    """
+
+    def __init__(self):
+        import queue
+        self.q = queue.Queue()
+        self.t = None
+        self.lock = threading.Lock()
+
+    def start(self):
+        with self.lock:
+            if self.t is None:
+                self.t = threading.Thread(target=self._loop, daemon=True, name="excel-worker")
+                self.t.start()
+
+    def submit(self, fn):
+        self.start()
+        self.q.put(fn)
+
+    def busy(self):
+        return not self.q.empty()
+
+    def _loop(self):
+        try:
+            import pythoncom
+            pythoncom.CoInitialize()
+        except Exception:
+            pass
+        while True:
+            fn = self.q.get()
+            try:
+                fn()
+            except Exception:
+                import logging
+                logging.getLogger("procurement").exception("后台 Excel 任务出错")
+
+
+EXCEL_WORKER = _ExcelWorker()
+
+
+def run_excel_job(fn):
+    """把要用 Excel 的后台活排进同一条线程（不阻塞界面，按顺序一件件做）"""
+    EXCEL_WORKER.submit(fn)
