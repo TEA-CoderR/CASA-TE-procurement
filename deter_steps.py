@@ -121,7 +121,7 @@ def send_state(o):
 
 
 # ===================================================================== 界面零件
-from PySide6.QtCore import Qt, Signal, QObject                                   # noqa: E402
+from PySide6.QtCore import Qt, Signal, QObject, QTimer                                  # noqa: E402
 from PySide6.QtWidgets import (QFrame, QHBoxLayout, QVBoxLayout, QGridLayout, QLabel, QPushButton,   # noqa: E402
                                QWidget, QScrollArea, QMessageBox, QPlainTextEdit, QSizePolicy)
 from theme import T                                                              # noqa: E402
@@ -768,6 +768,7 @@ def build_send(win, lay):
     sc.setWidgetResizable(True)
     sc.setFrameShape(QFrame.NoFrame)
     sc.setObjectName("MissScroll")
+    win._sd_scroll = sc
     inner = QWidget()
     inner.setObjectName("MissInner")
     sc.viewport().setObjectName("MissInner")
@@ -833,6 +834,16 @@ def _loaded(win, r):
 
 
 def _render_groups(win):
+    sc = getattr(win, "_sd_scroll", None)
+    keep = sc.verticalScrollBar().value() if sc is not None else 0
+    try:
+        _render_groups_inner(win)
+    finally:
+        if sc is not None:                    # 重画（发完一封、换分组）以后停在原来的位置
+            QTimer.singleShot(0, lambda: sc.verticalScrollBar().setValue(keep))
+
+
+def _render_groups_inner(win):
     _clear(win._sd_groups)
     rows = getattr(win, "_sd_rows", None) or []
     err = getattr(win, "_sd_err", None)
@@ -892,6 +903,8 @@ def _render_groups(win):
             b.setObjectName("SendRow")
             b.setCheckable(True)
             b.setChecked(oid == win._sd_sel)
+            b.setProperty("oid", oid)
+            b.setFocusPolicy(Qt.NoFocus)          # 拿到焦点时滚动区会把它滚进来 → 不要
             b.setCursor(Qt.PointingHandCursor)
             b.setMinimumHeight(40)
             rh = QHBoxLayout(b)
@@ -926,12 +939,12 @@ def html_escape(s):
 
 
 def _pick(win, oid, redraw=True):
+    """点一行：只换选中的那一行 + 右边的邮件。
+    2026-11-18（用户：点 MEGA CASH 里的门店，界面跳到下面去）：以前整个列表删掉重建，滚动位置跟着乱跳"""
     win._sd_sel = oid
     if redraw:
         for b in win._sd_page.findChildren(QPushButton, "SendRow"):
-            b.setChecked(False)
-        _render_groups(win)
-        return
+            b.setChecked(b.property("oid") == oid)
     st = win._sd_st
     if st is None or oid not in st.orders:
         _fill_mail(win, None)

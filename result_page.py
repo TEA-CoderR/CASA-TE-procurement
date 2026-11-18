@@ -411,7 +411,7 @@ def build(win, lay, hold):
     go = QPushButton(tr("去发送订单 →"))
     go.setObjectName("Primary")
     go.setMinimumHeight(40)
-    go.clicked.connect(lambda: (win.go_page("order"), win._cmp_show(3)))
+    go.clicked.connect(lambda: win._to_send_step())
     fh.addWidget(go)
     lay.addWidget(foot)
 
@@ -674,23 +674,6 @@ def fill(win, s):
             b.clicked.connect(lambda _=False, k=i, w=b: (w.setChecked(False), win.switch_scenario(k)))
         win.res_scen.addWidget(b)
     win.res_scen_card.setVisible(bool(res))
-    if res:
-        lk = QHBoxLayout()
-        b = QPushButton(tr("详细对比…"))
-        b.setObjectName("Link")
-        b.clicked.connect(lambda: _scen_dialog(win))
-        lk.addWidget(b)
-        if can_switch_scenario(s):
-            import scenarios as SC
-            diff = SC.diff_items(st.get("rows") or [], st["scenario_assigns"], st.get("labels") or {})
-            b2 = QPushButton(tr("差异商品（{0}）", len(diff)))
-            b2.setObjectName("Link")
-            b2.setEnabled(bool(diff))
-            from main import ScenarioDiffDialog
-            b2.clicked.connect(lambda: ScenarioDiffDialog(win, res, diff).exec())
-            lk.addWidget(b2)
-        lk.addStretch()
-        win.res_scen.addLayout(lk)
 
     # 底部
     n_files = len(used)

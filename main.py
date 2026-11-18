@@ -2606,12 +2606,6 @@ class ScenarioDialog(QDialog):
         t.setStyleSheet("font-size:20px;")
         head.addWidget(t)
         head.addStretch()
-        diff = (results[0].get("diff") if results else None) or []
-        self.b_diff = QPushButton(tr("差异商品（{0}）", len(diff)))
-        self.b_diff.setToolTip(tr("在不同方案里分给了不同供应商、或者买不到的商品，逐个对比"))
-        self.b_diff.setEnabled(bool(diff))
-        self.b_diff.clicked.connect(lambda: ScenarioDiffDialog(self, results, diff).exec())
-        head.addWidget(self.b_diff)
         b_names = QPushButton(tr("供应商名称"))
         b_names.setToolTip(tr("给供应商文件起名字（比如 formattato_… 叫 MEGA CASH），保存后重新对比"))
         b_names.clicked.connect(self._names)
@@ -3692,6 +3686,15 @@ class MainWindow(QMainWindow):
 
     def go(self, i):
         """i = 页面在 NAV 里的位置"""
+        if self.NAV[i][0] == "result" and getattr(self, "_redirecting", False) is False:
+            # 比价结果是 DETERSIVO 的第 4 步（2026-11-18）：到 DETERSIVO 页、切到那一步
+            self._redirecting = True
+            try:
+                self.go_page("order")
+                self._cmp_show(3)
+            finally:
+                self._redirecting = False
+            return
         if not self._startup_done and self.NAV[i][0] != "home":
             self._ensure_all()
         if self.pages[i] is None:
@@ -3725,7 +3728,7 @@ class MainWindow(QMainWindow):
         self.top_title.setText(title + ("  ⓘ" if getattr(self, "_page_tips", {}).get(key) else ""))
         own = deter                                # 设计稿：DETERSIVO 页顶栏右边只有「设置」（+ 里面几页的入口）
         self.top_deter_back.setVisible(deter and key != "order")
-        self.top_deter_res.setVisible(key == "order")
+        self.top_deter_res.setVisible(False)          # 比价结果现在是第 4 步，顶栏不再单独放
         self.top_deter_more.setVisible(deter)
         tw = getattr(getattr(self, "tracking", None), "top_widget", None) if key == "tracking" else None
         for k in range(self.top_slot_lay.count()):
@@ -3804,6 +3807,8 @@ class MainWindow(QMainWindow):
         due = getattr(self, "_theme_due", None)
         if due is not None:
             due.discard(key)
+        if key == "order" and "result" in (due or ()):
+            self._restyle_key("result")               # 比价结果放在 DETERSIVO 第 4 步里
         keys = [k for k, _ in self.NAV]
         i = keys.index(key) if key in keys else -1
         if i < 0 or self.pages[i] is None:
@@ -3832,7 +3837,8 @@ class MainWindow(QMainWindow):
         if key == "rules":
             self.refresh_rules_table()
         from page_kit import Stat
-        for st in self.stack.widget(i).findChildren(Stat):     # 指标卡的小图标颜色
+        host = self._res_wrap if key == "result" and getattr(self, "_res_wrap", None) is not None else self.stack.widget(i)
+        for st in host.findChildren(Stat):     # 指标卡的小图标颜色
             st.restyle()
 
     def _dark_titlebar(self):
@@ -3941,7 +3947,9 @@ class MainWindow(QMainWindow):
         outer = QVBoxLayout(w)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
-        self.cmp_steps = FlowBar([(tr("收集文件"), ""), (tr("审核清单"), ""), (tr("比价分配"), ""), (tr("下单发送"), "")])
+        # 2026-11-18（用户）：五步 —— 比价结果也是一步（看完没问题再下单发送）
+        self.cmp_steps = FlowBar([(tr("收集文件"), ""), (tr("审核清单"), ""), (tr("比价分配"), ""), (tr("比价结果"), ""),
+                                  (tr("下单发送"), "")])
         self.cmp_steps.setToolTip(tr("几家批发商卖的商品差不多：按最低价给每个商品选供应商，帮有起订量的供应商凑单，把订购数量写回各家报价文件。点一步看那一步"))
         self.cmp_steps.clicked.connect(self._cmp_show)
         outer.addWidget(self.cmp_steps)
@@ -4133,7 +4141,14 @@ class MainWindow(QMainWindow):
         DS.build_compare(self, lay)            # 设计稿「比价分配」：进度大卡 + 每家门店一行 + 右边正在做
         self.cmp_stack.addWidget(p2)
 
-        # ---- 第 4 步：下单发送（设计稿：这一批的订单按供应商分组 + 右边订单邮件）----
+        # ---- 第 4 步：比价结果（「比价结果」页面整页放进来，_embed_result）----
+        self._res_slot = QWidget()
+        self._res_slot_lay = QVBoxLayout(self._res_slot)
+        self._res_slot_lay.setContentsMargins(0, 0, 0, 0)
+        self._res_slot_lay.setSpacing(0)
+        self.cmp_stack.addWidget(self._res_slot)
+
+        # ---- 第 5 步：下单发送（设计稿：这一批的订单按供应商分组 + 右边订单邮件）----
         p4box = QWidget()
         p4v = QVBoxLayout(p4box)
         p4v.setContentsMargins(0, 0, 0, 0)
@@ -4159,8 +4174,8 @@ class MainWindow(QMainWindow):
         n4.setObjectName("Faint")
         acts.addWidget(n4)
         acts.addStretch()
-        b_res = QPushButton(tr("查看比价结果"))
-        b_res.clicked.connect(lambda: self.go_page("result"))
+        b_res = QPushButton("← " + tr("比价结果"))
+        b_res.clicked.connect(lambda: self._cmp_show(3))
         b_rep = QPushButton(tr("门店报告"))
         b_rep.clicked.connect(lambda: self.open_store_report())
         b_trk = QPushButton(tr("订单跟踪"))
@@ -4179,7 +4194,7 @@ class MainWindow(QMainWindow):
         return w
 
     def _cmp_show(self, i):
-        """DETERSIVO 四步：切到第 i 步那一屏（顶上蓝线跟着）"""
+        """DETERSIVO 五步：切到第 i 步那一屏（顶上蓝线跟着）：0 收集文件 · 1 审核清单 · 2 比价分配 · 3 比价结果 · 4 下单发送"""
         if not hasattr(self, "cmp_stack"):
             return
         if i == 1:
@@ -4187,9 +4202,34 @@ class MainWindow(QMainWindow):
         if i == 2:
             __import__("deter_steps").render_compare(self)
         if i == 3:
+            self._embed_result()
+        if i == 4:
             __import__("deter_steps").refresh_send(self)
         self.cmp_stack.setCurrentIndex(i)
         self.cmp_steps.set_shown(i)
+
+    def _embed_result(self):
+        """「比价结果」页面放进 DETERSIVO 第 4 步（只做一次；以后 go_page("result") 都跳到这一步）"""
+        if getattr(self, "_res_wrap", None) is not None or not hasattr(self, "_res_slot_lay"):
+            return
+        keys = [k for k, _ in self.NAV]
+        i = keys.index("result")
+        if self.pages[i] is None:
+            self._build_page(i)
+        wrap = self.stack.widget(i)
+        self.stack.removeWidget(wrap)
+        self.stack.insertWidget(i, QWidget())          # 原位置留个空页（页面编号不变）
+        self._res_slot_lay.addWidget(wrap)
+        wrap.show()
+        self._res_wrap = wrap
+
+    def _to_send_step(self):
+        """比价结果看完 →「去发送订单」：第 4 步打勾，到第 5 步"""
+        if hasattr(self, "cmp_steps"):
+            self.cmp_steps.set_state(3, "done", "")
+            self.cmp_steps.set_current(4)
+        self.go_page("order")
+        self._cmp_show(4)
 
     def _fact(self, label, value):
         col = QVBoxLayout()
@@ -5201,7 +5241,10 @@ class MainWindow(QMainWindow):
         self.banner_folder.show_msg(msg, "warn" if bad else "ok")
         self.refresh_folder()
         # 比完先看比价结果（用户 11-18：确定没问题再去下单发送）；第 4 步「下单发送」等用户自己点过去
-        self.cmp_steps.set_state(3, "todo", "")
+        self.cmp_steps.set_state(4, "todo", "")
+        if ok:
+            self.cmp_steps.set_state(2, "done", "")
+            self.cmp_steps.set_current(3)
         bg = getattr(self, "_batch_bg", False)
         self._batch_bg = False
         if ok and bg:                                   # 点过「后台运行」：问要不要回去看结果
@@ -6013,12 +6056,12 @@ class MainWindow(QMainWindow):
         self.refresh_history()
         self.cmp_steps.set_current(3)
         self.cmp_steps.set_state(2, "done", "")
+        self.cmp_steps.set_state(4, "todo", "")
         if batch:
             self._batch_results.append((store, True, ""))
             self._refresh_batch(self.folder_edit.text().strip())
             QTimer.singleShot(300, self._run_next_in_batch)
             return
-        self.cmp_steps.set_state(3, "todo", "")
         self.refresh_folder()
         from erp_widgets import ask_return
         ask_return(self, dlg, tr("{0} 比价完成", store),
@@ -6060,13 +6103,6 @@ class MainWindow(QMainWindow):
         lb.setObjectName("Faint")
         self.scen_switch_lay.addWidget(lb)
         st = s.get("state") or {}
-        if can_switch_scenario(s):
-            import scenarios as SC
-            diff = SC.diff_items(st.get("rows") or [], st["scenario_assigns"], st.get("labels") or {})
-            bd = QPushButton(tr("差异商品（{0}）", len(diff)))
-            bd.setEnabled(bool(diff))
-            bd.clicked.connect(lambda: ScenarioDiffDialog(self, res, diff).exec())
-            self.scen_switch_lay.addWidget(bd)
         if can_switch_scenario(s) and self._is_current(s):
             for i, r in enumerate(res):
                 if r.get("chosen"):
