@@ -897,7 +897,7 @@ class ReplaceLogDialog(QDialog):
     def _load(self, done):
         import os
         import griglia_replace as GR
-        self.done = done
+        self.done_log = done            # 别叫 self.done：会盖掉 QDialog.done()，窗口就关不掉了（11-18 bug）
         items = (self.grid or {}).get("items") or {}
         struck = (self.grid or {}).get("struck") or {}
         self.missing = set(GR.missing_old_rows(done, self.grid))

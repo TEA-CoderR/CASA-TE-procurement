@@ -59,3 +59,19 @@ def test_remember_columns_with_name_fields():
     t = QTableWidget(0, 2)
     remember_columns(t, cfg, "x", ["at", "old_name"], lambda: None)
     assert t.columnWidth(1) == 400 and t.property("_cols_remembered")
+
+
+def test_replace_log_dialog_closes():
+    """用户 11-18：替换记录窗口关不掉（self.done 盖掉了 QDialog.done()）"""
+    from PySide6.QtWidgets import QPushButton
+    from PySide6.QtCore import QTimer
+    import griglia_replace_dialog as D
+    _app()
+    grid = {"items": {"N1": {"name": "NEW", "best": 2.0}}, "struck": {}, "path": "/tmp/x/g.xlsx"}
+    done = {"O1": {"new": "N1", "name": "NEW", "old_name": "OLD", "at": "2026-11-18 10:43", "row": 5,
+                   "moved_to": 3, "file": "/tmp/g.xlsx", "best": 2.2, "old_price": 2.0}}
+    d = D.ReplaceLogDialog(None, {"show_images": False}, done, grid)
+    close = next(b for b in d.findChildren(QPushButton) if b.text() == "关闭")
+    QTimer.singleShot(50, close.click)
+    QTimer.singleShot(2000, d.reject)               # 万一关不掉也别卡住测试
+    assert d.exec() == 1 and not d.isVisible()
