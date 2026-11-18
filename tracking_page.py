@@ -1945,7 +1945,7 @@ class TrackingPage:
             self.drawer.restyle()
             self._update_src()
         if self.st is not None and self.rows:
-            self.refresh()
+            self.update_view()      # 只按新颜色重画（11-18：以前 refresh() 重新算全部订单 + 读在途，换颜色卡几秒）
 
 
 class _OptDate(QWidget):

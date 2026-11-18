@@ -781,47 +781,27 @@ def run_process(ordine_file, eliminare_path, distribuire_path, log, progress=Non
 
         path = os.path.join(distribuire_path, file)
 
-        wb, ws = open_values(path, log)      # 只读报价：公式结果存在文件里就不开 Excel（结果一样）
-        if ws is None:
+        # 2026-11-18（用户：比价很慢）：每家门店的报价都是同一份文件复制过来的（大小、修改时间一样）
+        # → 第一家读过以后，后面几家直接用读好的结果（cache/quotes，按文件名 + 大小 + 修改时间认），不再打开
+        qm = quote_matrix(path, log)
+        if qm is None:
             continue
-
-        col_ean, row_ean = find_col_best(ws, COL_CODICE_EAN)
-        col_price, row_price = find_col(ws, COL_PREZZO_NETTO)
-
-        if not col_ean or not col_price:
+        if not qm.get("ok"):
             log(tr("⚠ {0} 缺少必要列", file))
-            if wb is not None:
-                wb.close()
             continue
-
-        # 数据从表头行之后开始
-        header_row = max(row_ean, row_price)
-
-        # 每箱件数（PREZZO NETTO 是单件价，一箱金额 = 件价 × 每箱件数）
-        col_ord_p, _ = find_col(ws, COL_ORDINE)
-        pack_col, pack_how = _detect_pack_col(ws, path, header_row, col_ord_p, col_price)
-        if pack_col:
-            head = ws.cell(header_row, pack_col).value
-            log(tr("  {0} 每箱件数：{1} 列{2}", file, get_column_letter(pack_col),
+        header_row = qm["header_row"]
+        if qm["pack_col"]:
+            head = qm["pack_head"]
+            log(tr("  {0} 每箱件数：{1} 列{2}", file, get_column_letter(qm["pack_col"]),
                    tr("（表头「{0}」）", str(head).strip()) if head not in (None, "") else tr("（从公式推断）")))
         else:
             log(tr("⚠ {0} 找不到每箱件数列，金额按每箱 1 件计算", file))
-        pack_map = {}
+        price_map = qm["price"]
+        pack_map = qm["pack"]
+        for e, n in qm["count"].items():
+            ean_supplier_count[e] = ean_supplier_count.get(e, 0) + n
+        wb = None
 
-        # 构建价格字典，同时统计 EAN 出现次数
-        price_map = {}
-        last_row = get_last_row(ws, col_ean)
-        for i in range(header_row + 1, last_row + 1):
-            e = clean_ean(ws.cell(i, col_ean).value)
-            p = parse_price(ws.cell(i, col_price).value)
-            if e and p is not None:
-                price_map[e] = p
-                pack_map[e] = parse_pack(ws.cell(i, pack_col).value) if pack_col else 1
-                # 统计 EAN 在多少个供应商文件中出现
-                if e not in ean_supplier_count:
-                    ean_supplier_count[e] = 0
-                ean_supplier_count[e] += 1
-        
         log(tr("  {0} 表头在第 {1} 行，数据从第 {2} 行开始", file, header_row, header_row + 1))
 
         # 写入主表，统计命中数
@@ -1530,6 +1510,88 @@ def _write_missing_report(distribuire_path, rows, assignment):
 # 修改分配 →「加商品凑单」：供应商报价里、这次没订的商品（库存足但卖得快的快消品等）加进来凑起订量
 # =====================
 _DESC_HEADS = ("DESCRIZIONE", "DESCRIPTION", "ARTICOLO", "PRODOTTO", "DENOMINAZIONE", "NOME")
+
+
+QUOTE_MATRIX_VER = 1    # 比价读报价的规则改了就加 1
+
+
+def _quote_key(path, ver):
+    """同一份报价（文件名、大小、修改时间都一样）不管复制到哪个门店的文件夹，都是同一个键"""
+    import hashlib
+    st = os.stat(path)
+    key = f"{ver}|{os.path.basename(path).lower()}|{st.st_size}|{st.st_mtime_ns}"
+    return hashlib.sha1(key.encode("utf-8")).hexdigest()
+
+
+_QM_MEM = {}
+
+
+def quote_matrix(path, log):
+    """
+    比价「构建价格」读一份报价：{ok, header_row, pack_col, pack_head, price: {EAN: 件价}, pack: {EAN: 每箱件数},
+    count: {EAN: 文件里出现几行}}；打不开 None。和以前逐格读的结果一样，只是读过的同一份文件直接用。
+    """
+    import json
+    from settings import app_dir
+    try:
+        k = _quote_key(path, QUOTE_MATRIX_VER)
+    except OSError:
+        k = None
+    if k and k in _QM_MEM:
+        return _QM_MEM[k]
+    cp = os.path.join(app_dir(), "cache", "quotes", "m_" + k + ".json") if k else None
+    if cp and os.path.exists(cp):
+        try:
+            with open(cp, encoding="utf-8") as f:
+                out = json.load(f)
+            _QM_MEM[k] = out
+            return out
+        except Exception:
+            pass
+    wb, ws = open_values(path, log)      # 只读报价：公式结果存在文件里就不开 Excel（结果一样）
+    if ws is None:
+        return None
+    try:
+        col_ean, row_ean = find_col_best(ws, COL_CODICE_EAN)
+        col_price, row_price = find_col(ws, COL_PREZZO_NETTO)
+        if not col_ean or not col_price:
+            out = {"ok": False}
+        else:
+            header_row = max(row_ean, row_price)
+            col_ord_p, _ = find_col(ws, COL_ORDINE)
+            pack_col, _how = _detect_pack_col(ws, path, header_row, col_ord_p, col_price)
+            head = ws.cell(header_row, pack_col).value if pack_col else None
+            price, pack, count = {}, {}, {}
+            last_row = get_last_row(ws, col_ean)
+            for i in range(header_row + 1, last_row + 1):
+                e = clean_ean(ws.cell(i, col_ean).value)
+                p = parse_price(ws.cell(i, col_price).value)
+                if e and p is not None:
+                    price[e] = p
+                    pack[e] = parse_pack(ws.cell(i, pack_col).value) if pack_col else 1
+                    count[e] = count.get(e, 0) + 1
+            out = {"ok": True, "header_row": header_row, "pack_col": pack_col,
+                   "pack_head": head if isinstance(head, (str, int, float)) or head is None else str(head),
+                   "price": price, "pack": pack, "count": count}
+    finally:
+        if wb is not None:
+            try:
+                wb.close()
+            except Exception:
+                pass
+    if k:
+        _QM_MEM[k] = out
+        if len(_QM_MEM) > 40:
+            _QM_MEM.pop(next(iter(_QM_MEM)))
+        try:
+            os.makedirs(os.path.dirname(cp), exist_ok=True)
+            tmp = cp + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(out, f, ensure_ascii=False)
+            os.replace(tmp, cp)
+        except Exception:
+            pass
+    return out
 
 
 PRICE_CACHE_VER = 5     # 读报价的规则改了（例如找列的办法）就加 1，旧的缓存自动作废

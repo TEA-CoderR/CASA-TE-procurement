@@ -395,9 +395,12 @@ def render_collect(win, st, root):
     import supplier_names as SN
     import griglia as G
     S = win._S
-    win._dc_page.setStyleSheet(qss())
-    for c in (win._dc_lists, win._dc_prices, win._dc_elim):
-        c.restyle()
+    tkey = (T("canvas"), T("accent"), T("text"))
+    if getattr(win, "_dc_tkey", None) != tkey:              # 样式表只在换颜色后套一次（以前每次刷新都套，很费时间）
+        win._dc_page.setStyleSheet(qss())
+        win._dc_tkey = tkey
+        for c in (win._dc_lists, win._dc_prices, win._dc_elim):
+            c.restyle()
     today = date.today()
 
     def mtime(folder, f):
@@ -627,15 +630,55 @@ def compare_rows(batch, queue, results, current, running, info):
 
 
 def render_compare(win):
+    """
+    比价时每 0.4 秒调一次。2026-11-18（用户：比价分配很卡，点一下就闪退）：以前每次都删掉全部行重建、
+    还给整页重新套样式表 → 比价期间界面一直很忙，Qt 删控件时刚好点到也会出事。现在：
+    哪几家 / 每家的状态没变时只改文字和进度条；样式表只在换颜色后套一次。
+    """
     if not hasattr(win, "_cp_rows"):
         return
     S = win._S
-    win._cp_page.setStyleSheet(qss())
+    tkey = (T("canvas"), T("accent"), T("text"))
+    if getattr(win, "_cp_tkey", None) != tkey:
+        win._cp_page.setStyleSheet(qss())
+        win._cp_tkey = tkey
+        win._cp_sig = None
     batch = (S.get("wholesale_batch") or {}).get("stores") or {}
     cur = win.folder_edit.text().strip()
     rows = compare_rows(batch, getattr(win, "_batch_queue", None) or [], getattr(win, "_batch_results", None) or [],
                         cur, win.running, getattr(win, "_batch_info", {}))
+    sig = (tkey, tuple((r[0], r[1]) for r in rows))
+    if sig != getattr(win, "_cp_sig", None):
+        _build_compare_rows(win, rows)
+        win._cp_sig = sig
+    for (name, state, sub, p, amt, secs), (s, bar, a, t) in zip(rows, getattr(win, "_cp_items", [])):
+        txt = win.stage.text() if state == "now" else sub
+        if s.text() != txt:
+            s.setText(txt)
+        bar.set((win.bar.value() / 100) if state == "now" else (p or 0),
+                {"done": "ok", "now": "accent", "fail": "err"}.get(state, "muted"))
+        if a.text() != amt:
+            a.setText(amt)
+        if t.text() != secs:
+            t.setText(secs)
+    done = sum(1 for r in rows if r[1] == "done")
+    if win.running:
+        left = len(getattr(win, "_batch_queue", None) or [])
+        win._cp_cap.setText(tr("正在比价 · 一家一家来"))
+        win._cp_big.setText(tr("{0} / {1} 家比完", done, len(rows)) if rows else tr("正在比价"))
+        win._cp_store.setText(os.path.basename(os.path.normpath(cur)) if cur else "")
+        if left:
+            win._cp_cap.setText(tr("正在比价 · 后面还有 {0} 家", left))
+    else:
+        win._cp_cap.setText(tr("比价 · 一家一家来"))
+        win._cp_big.setText(tr("{0} / {1} 家比完", done, len(rows)) if rows else tr("还没开始"))
+        win._cp_store.setText("")
+
+
+def _build_compare_rows(win, rows):
+    """哪几家 / 状态变了才重建这几行（一家比完、开始下一家时）"""
     _clear(win._cp_rows)
+    win._cp_items = []
     for name, state, sub, p, amt, secs in rows:
         f = QFrame()
         f.setObjectName("StoreLine")
@@ -659,19 +702,17 @@ def render_compare(win):
         h.addWidget(n)
         v = QVBoxLayout()
         v.setSpacing(6)
-        s = QLabel(win.stage.text() if state == "now" else sub)
+        s = QLabel("")
         s.setStyleSheet(f"color:{T('err') if state == 'fail' else T('muted') if state == 'wait' else T('head')};")
         v.addWidget(s)
         bar = RP.Progress()
-        bar.set((win.bar.value() / 100) if state == "now" else (p or 0),
-                {"done": "ok", "now": "accent", "fail": "err"}.get(state, "muted"))
         v.addWidget(bar)
         h.addLayout(v, 1)
-        a = RP.mono(amt, 13, 600)
+        a = RP.mono("", 13, 600)
         a.setFixedWidth(90)
         a.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         h.addWidget(a)
-        t = RP.mono(secs, 12, 500, "muted")
+        t = RP.mono("", 12, 500, "muted")
         t.setFixedWidth(56)
         t.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         h.addWidget(t)
@@ -681,20 +722,9 @@ def render_compare(win):
             eff.setOpacity(0.6)
             f.setGraphicsEffect(eff)
         win._cp_rows.addWidget(f)
+        win._cp_items.append((s, bar, a, t))
     if not rows:
         win._cp_rows.addWidget(RP.muted(tr("检查完门店清单、点「确认，开始比价」后，这里一家一家显示"), 13))
-    done = sum(1 for r in rows if r[1] == "done")
-    if win.running:
-        left = len(getattr(win, "_batch_queue", None) or [])
-        win._cp_cap.setText(tr("正在比价 · 一家一家来"))
-        win._cp_big.setText(tr("{0} / {1} 家比完", done, len(rows)) if rows else tr("正在比价"))
-        win._cp_store.setText(os.path.basename(os.path.normpath(cur)) if cur else "")
-        if left:
-            win._cp_cap.setText(tr("正在比价 · 后面还有 {0} 家", left))
-    else:
-        win._cp_cap.setText(tr("比价 · 一家一家来"))
-        win._cp_big.setText(tr("{0} / {1} 家比完", done, len(rows)) if rows else tr("还没开始"))
-        win._cp_store.setText("")
 
 
 # ===================================================================== ④ 下单发送

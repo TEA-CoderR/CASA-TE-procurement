@@ -1,215 +1,93 @@
 """
-Excel COM 连接池模块
-实现连接复用，避免重复创建/销毁Excel进程
+Excel COM 实例复用（每条线程一个）
+
+2026-11-18 重写（用户：比价分配点一下就闪退）：以前是几条线程共用的「连接池」，一条线程建的 Excel 对象
+会被另一条线程拿去用 —— Excel COM 对象只能在建它的那条线程里用，跨线程用会让程序直接崩（不报错就闪退）；
+池满时还会拿着锁等别人还，而还的时候也要这把锁 → 互相等。
+现在：每条线程第一次要 Excel 时建一个、以后这条线程一直用它；别的线程拿不到。会用 Excel 的后台活
+本来就都排在同一条线程里（erp_widgets.EXCEL_WORKER），所以全程序通常只有一个 Excel。
+接口照旧：get_excel() → (excel, 是不是新建的)，release_excel(excel) 不再做事。
 """
-import win32com.client as win32
 import threading
-import gc
-from queue import Queue, Empty
 import time
 
-
-class ExcelConnection:
-    """Excel连接包装器"""
-    
-    def __init__(self, excel_instance):
-        self.excel = excel_instance
-        self.created_at = time.time()
-        self.last_used = time.time()
-        self.use_count = 0
-    
-    def touch(self):
-        """更新最后使用时间"""
-        self.last_used = time.time()
-        self.use_count += 1
-    
-    def is_expired(self, max_age=300):
-        """检查连接是否过期（默认5分钟）"""
-        return (time.time() - self.last_used) > max_age
+_local = threading.local()
+_stats = {"created": 0, "reused": 0}
 
 
-class ExcelPool:
-    """
-    Excel COM 对象连接池
-    
-    特性：
-    - 连接复用：避免重复创建Excel进程
-    - 线程安全：支持多线程并发访问
-    - 自动过期：长时间未使用的连接自动回收
-    - 连接限制：最大连接数控制
-    """
-    
-    def __init__(self, max_connections=3, max_age=300):
-        """
-        Args:
-            max_connections: 最大连接数
-            max_age: 连接最大存活时间（秒），默认5分钟
-        """
-        self._pool = Queue(maxsize=max_connections)
-        self._lock = threading.Lock()
-        self._max_connections = max_connections
-        self._max_age = max_age
-        self._active_count = 0
-        self._total_created = 0
-        self._total_reused = 0
-        
-        # 启动清理线程
-        self._cleanup_thread = threading.Thread(target=self._cleanup_loop, daemon=True)
-        self._cleanup_thread.start()
-    
-    def acquire(self):
-        """
-        从池获取或创建新的Excel实例
-        
-        Returns:
-            (excel_instance, is_new) 元组
-            is_new=True表示新建连接，False表示复用
-        """
-        with self._lock:
-            # 尝试从池获取空闲实例
-            try:
-                conn = self._pool.get_nowait()
-                
-                # 检查是否过期
-                if conn.is_expired(self._max_age):
-                    self._close_connection(conn)
-                    return self._create_new_connection()
-                
-                # 复用连接
-                conn.touch()
-                self._total_reused += 1
-                return conn.excel, False
-                
-            except Empty:
-                # 池为空，创建新实例
-                return self._create_new_connection()
-    
-    def _create_new_connection(self):
-        """创建新的Excel连接"""
-        if self._active_count >= self._max_connections:
-            # 池已满，等待或阻塞获取
-            try:
-                conn = self._pool.get(timeout=10)
-                conn.touch()
-                self._total_reused += 1
-                return conn.excel, False
-            except Empty:
-                raise Exception("Excel连接池已满，请稍后重试")
-        
-        # 创建新实例
-        excel = win32.Dispatch("Excel.Application")
-        excel.Visible = False
-        excel.DisplayAlerts = False
+def _alive(excel):
+    try:
+        _ = excel.Visible          # Excel 被关掉 / 崩了：这里会出错
+        return True
+    except Exception:
+        return False
+
+
+def _new():
+    import win32com.client as win32
+    excel = win32.Dispatch("Excel.Application")
+    excel.Visible = False
+    excel.DisplayAlerts = False
+    try:
         excel.ScreenUpdating = False
-        
-        conn = ExcelConnection(excel)
-        self._active_count += 1
-        self._total_created += 1
-        
-        return excel, True
-    
-    def release(self, excel):
-        """
-        释放Excel实例回池
-        
-        Args:
-            excel: Excel COM对象
-        """
-        try:
-            # 查找对应的连接
-            with self._lock:
-                # 简单处理：直接放回池
-                try:
-                    self._pool.put_nowait(excel)
-                except:
-                    # 池已满，关闭连接
-                    self._force_close(excel)
-        except Exception as e:
-            print(f"[ExcelPool] 释放连接失败: {e}")
-    
-    def _force_close(self, excel):
-        """强制关闭Excel实例"""
-        try:
-            excel.Quit()
-        except:
-            pass
-        finally:
-            del excel
-            gc.collect()
-            with self._lock:
-                self._active_count -= 1
-    
-    def _close_connection(self, conn):
-        """关闭连接"""
-        try:
-            conn.excel.Quit()
-        except:
-            pass
-        finally:
-            del conn.excel
-            gc.collect()
-            with self._lock:
-                self._active_count -= 1
-    
-    def _cleanup_loop(self):
-        """后台清理过期连接"""
-        while True:
-            time.sleep(60)  # 每分钟检查一次
-            self._cleanup_expired()
-    
-    def _cleanup_expired(self):
-        """清理过期连接"""
-        # 简单实现：暂不主动清理，依赖获取时检查
+    except Exception:
         pass
-    
-    def get_stats(self):
-        """获取连接池统计信息"""
-        return {
-            'max_connections': self._max_connections,
-            'active_connections': self._active_count,
-            'idle_connections': self._pool.qsize(),
-            'total_created': self._total_created,
-            'total_reused': self._total_reused,
-            'reuse_rate': self._total_reused / max(1, self._total_created + self._total_reused)
-        }
-    
-    def close_all(self):
-        """关闭所有连接（程序退出时调用）"""
-        while not self._pool.empty():
-            try:
-                conn = self._pool.get_nowait()
-                self._close_connection(conn)
-            except:
-                pass
-        
-        with self._lock:
-            self._active_count = 0
-
-
-# 全局连接池实例
-excel_pool = ExcelPool(max_connections=5)  # 增加到5个连接
+    return excel
 
 
 def get_excel():
-    """
-    获取Excel实例（推荐使用）
-    
-    Returns:
-        excel_instance: Excel COM对象
-    """
-    return excel_pool.acquire()
+    """这条线程的 Excel（没有或已经坏了就新建）→ (excel, is_new)"""
+    excel = getattr(_local, "excel", None)
+    if excel is not None and _alive(excel):
+        _local.used = time.time()
+        _stats["reused"] += 1
+        return excel, False
+    excel = _new()
+    _local.excel, _local.used = excel, time.time()
+    _stats["created"] += 1
+    return excel, True
 
 
 def release_excel(excel):
-    """释放Excel实例"""
-    excel_pool.release(excel)
+    """留给这条线程下次用（以前放回共用的池；现在什么都不用做）"""
+    return None
+
+
+class _Compat:
+    """老代码写 excel_pool.acquire() / excel_pool.release(x)"""
+
+    @staticmethod
+    def acquire():
+        return get_excel()
+
+    @staticmethod
+    def release(excel):
+        return release_excel(excel)
+
+    @staticmethod
+    def get_stats():
+        return get_pool_stats()
+
+    @staticmethod
+    def close_all():
+        close_pool()
+
+
+excel_pool = _Compat()
 
 
 def get_pool_stats():
-    """获取连接池统计"""
-    return excel_pool.get_stats()
+    n = _stats["created"] + _stats["reused"]
+    return {"total_created": _stats["created"], "total_reused": _stats["reused"],
+            "reuse_rate": _stats["reused"] / max(1, n)}
 
 
 def close_pool():
-    """关闭连接池"""
-    excel_pool.close_all()
+    """关掉这条线程的 Excel（只能关自己线程建的）"""
+    excel = getattr(_local, "excel", None)
+    _local.excel = None
+    if excel is not None:
+        try:
+            excel.Quit()
+        except Exception:
+            pass

@@ -11,11 +11,12 @@ import os
 import time
 import threading
 
-from PySide6.QtCore import Qt, QObject, Signal, QTimer, QRectF, QPointF, QSize
+from PySide6.QtCore import Qt, QObject, Signal, QTimer, QRectF, QPointF, QSize, QEvent, QEventLoop
+from PySide6.QtGui import QKeySequence
 from PySide6.QtGui import QColor, QPainter, QPen, QFont
 from PySide6.QtWidgets import (QToolTip, QWidget, QFrame, QLabel, QPushButton, QHBoxLayout, QVBoxLayout, QDialog,
                                QProgressBar, QStyledItemDelegate, QSizePolicy, QMainWindow, QStyleOptionViewItem,
-                               QStyle, QApplication)
+                               QStyle, QApplication, QTableView)
 
 from i18n import tr
 from theme import T, NUM_FONT, icon
@@ -127,6 +128,69 @@ class BusyDialog(QDialog):
         if on_done:
             on_done(box.get("r"), box.get("e"))
         return box.get("r"), box.get("e")
+
+
+class StepsDialog(QDialog):
+    """
+    界面线程里一步步做、每步都要动界面的活（换深浅色：套样式、刷新每一页…）：
+    一个有百分比的进度条 + 现在做哪一步；每步之间让界面画一下（进度条看得见在走）。
+    StepsDialog.run(parent, "正在换颜色", [(说明, 函数), …], on_done)。
+    设计规范（用户 11-18）：凡是会卡住的地方都要有进度条 —— 能放后台线程的用 BusyDialog / TaskDialog，
+    只能在界面线程做的拆成几步用它。
+    """
+    def __init__(self, parent, title, n):
+        super().__init__(parent)
+        self.setObjectName("Dialog")
+        self.setWindowTitle(title)
+        self.setModal(True)
+        self.setMinimumWidth(380)
+        self.setWindowFlag(Qt.WindowCloseButtonHint, False)
+        v = QVBoxLayout(self)
+        v.setContentsMargins(22, 18, 22, 18)
+        v.setSpacing(10)
+        self.lab = QLabel(title)
+        v.addWidget(self.lab)
+        self.bar = QProgressBar()
+        self.bar.setRange(0, max(1, n))
+        self.bar.setTextVisible(False)
+        self.bar.setFixedHeight(6)
+        v.addWidget(self.bar)
+
+    def reject(self):
+        pass
+
+    def step(self, i, text):
+        self.lab.setText(text)
+        self.bar.setValue(i)
+        self.repaint()
+        QApplication.processEvents(QEventLoop.ExcludeUserInputEvents)   # 只画界面，不处理点击 / 按键
+
+    @staticmethod
+    def run(parent, title, steps, on_done=None, show=True):
+        """按顺序做完 steps（同步，做完才返回）；一步出错记下来接着做下一步"""
+        dlg = StepsDialog(parent, title, len(steps)) if show and steps else None
+        if dlg is not None:
+            task_started(id(dlg), title)
+            dlg.show()
+            dlg.step(0, title)
+        errors = []
+        for i, (text, fn) in enumerate(steps):
+            if dlg is not None:
+                dlg.step(i, f"{title} · {text}")
+            try:
+                fn()
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                errors.append((text, e))
+        if dlg is not None:
+            dlg.step(len(steps), title)
+            task_ended(id(dlg))
+            dlg.hide()
+            dlg.deleteLater()
+        if on_done:
+            on_done(errors)
+        return errors
 
 
 def open_file(parent, path, label=None):
@@ -763,6 +827,7 @@ class BgTaskPill(QPushButton):
         self.setMaximumWidth(280)
         self.clicked.connect(self._open)
         self._pct, self._text = 0.0, ""
+        self._manual = None              # 界面线程自己分步做的活（打开程序时准备页面）：(文字, 百分比, 说明)
         self.timer = QTimer(self, interval=700, timeout=self._refresh)
         self.hide()
         BgTaskPill._all.append(self)
@@ -776,8 +841,27 @@ class BgTaskPill(QPushButton):
             except RuntimeError:              # 窗口已经关了
                 cls._all.remove(p)
 
+    def set_manual(self, text, pct, tip=""):
+        """没有任务窗口、界面线程一步步做的活（打开程序时一页页准备）：在这里显示进度；text=None 去掉"""
+        self._manual = None if text is None else (text, pct, tip)
+        self._refresh()
+        if self._manual is not None:
+            self.repaint()               # 马上画出来（下一步又要占着界面线程）
+
     def _refresh(self):
         tasks = [d for d in BG_TASKS if not d.is_done]
+        if not tasks and self._manual is not None:
+            self.timer.stop()
+            text, pct, tip = self._manual
+            if text != self._text:
+                fm = self.fontMetrics()
+                self.setFixedWidth(max(150, min(280, fm.horizontalAdvance(text) + 46)))
+            self._text, self._pct = text, pct
+            self.setToolTip(tip)
+            self.update()
+            if not self.isVisible():
+                self.show()
+            return
         if not tasks:
             self.timer.stop()
             self.hide()
@@ -1159,7 +1243,6 @@ class StepperDelegate(QStyledItemDelegate):
         view.viewport().installEventFilter(self)
 
     def eventFilter(self, obj, ev):
-        from PySide6.QtCore import QEvent
         if ev.type() == QEvent.Leave and self._hover is not None:     # 鼠标离开表格：去掉悬停效果
             self._hover = None
             obj.setCursor(Qt.ArrowCursor)
@@ -1718,9 +1801,9 @@ class CopyHelper(QObject):
       · 自己画出来的控件（起订量进度条等）：右键「复制」，控件提供 copy_text() 方法
     不想让某个控件里的文字可选：给它或它的上级设属性 noTextSelect=True。"""
 
+    TYPES = (QEvent.Show, QEvent.KeyPress, QEvent.ContextMenu)
+
     def eventFilter(self, obj, ev):
-        from PySide6.QtCore import QEvent
-        from PySide6.QtGui import QKeySequence
         t = ev.type()
         if t == QEvent.Show and isinstance(obj, QLabel):
             self._make_selectable(obj)
@@ -2140,10 +2223,9 @@ def fit_to_screen(w, margin=12):
 
 class ScreenFit(QObject):
     """全程序：每个对话框 / 小窗口打开时都检查一次，不会比屏幕大、不会跑出屏幕（按钮被挡住就点不到了）"""
+    TYPES = (QEvent.Show,)
 
     def eventFilter(self, obj, ev):
-        from PySide6.QtCore import QEvent
-        from PySide6.QtWidgets import QMainWindow
         if ev.type() == QEvent.Show and isinstance(obj, (QDialog, QMainWindow)) and obj.isWindow() \
                 and not obj.isMaximized() and not obj.isFullScreen():
             def later(o=obj):
@@ -2155,6 +2237,46 @@ class ScreenFit(QObject):
             QTimer.singleShot(0, later)
         return False
 
+
+
+class AppEventHub(QObject):
+    """
+    全程序只装这一个事件过滤器（2026-11-18，用户：打开程序、换深浅色都很卡）。
+    以前装了 5 个（滚轮防误触、复制、窗口不超出屏幕、列宽记住、记最后点的按钮），每个界面事件
+    （换颜色时几万个）都要进 5 次 Python，还在里面 import → 很卡。现在：先按事件类型查一下表，
+    只有要管的类型才交给对应的那几个；换深浅色时 pause()，样式刷新期间一个都不进。
+    add(处理者, 事件类型) —— 处理者有 eventFilter(obj, ev) 方法、返回 True = 吃掉这个事件。
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.routes = {}
+        self.paused = 0
+
+    def add(self, handler, types=None):
+        for t in (types if types is not None else handler.TYPES):
+            self.routes.setdefault(t, []).append(handler.eventFilter)
+        return handler
+
+    def pause(self):
+        self.paused += 1
+
+    def resume(self):
+        self.paused = max(0, self.paused - 1)
+
+    def eventFilter(self, obj, ev):
+        if self.paused:
+            return False
+        fns = self.routes.get(ev.type())
+        if not fns:
+            return False
+        for fn in fns:
+            try:
+                if fn(obj, ev):
+                    return True
+            except RuntimeError:          # 控件刚被删掉
+                pass
+        return False
 
 class WidthMemory(QObject):
     """
@@ -2187,9 +2309,9 @@ class WidthMemory(QObject):
             w = ""
         return w + "|" + "|".join(heads)
 
+    TYPES = (QEvent.Show,)
+
     def eventFilter(self, obj, ev):
-        from PySide6.QtCore import QEvent
-        from PySide6.QtWidgets import QTableView
         if ev.type() == QEvent.Show and isinstance(obj, QTableView) and not obj.property("_wm_on") \
                 and not obj.property("_cols_remembered"):
             obj.setProperty("_wm_on", True)

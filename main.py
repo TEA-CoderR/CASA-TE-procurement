@@ -13,7 +13,7 @@ import logging
 import threading
 from datetime import datetime
 
-from PySide6.QtCore import Qt, QObject, Signal, QTimer, QRectF, QSize, QByteArray, QPointF, QPoint
+from PySide6.QtCore import Qt, QObject, Signal, QTimer, QRectF, QSize, QByteArray, QPointF, QPoint, QEvent
 
 
 def _skip_pyside_source_scan():
@@ -3060,11 +3060,18 @@ class MainWindow(QMainWindow):
         if self._startup_done:
             return
         todo = [i for i, pg in enumerate(self.pages) if pg is None and self.NAV[i][0] not in self.LAZY_PAGES]
+        total = sum(1 for k, _ in self.NAV if k not in self.LAZY_PAGES)
         if todo:
+            done = total - len(todo)
+            nm = self._tab_label(self.NAV[todo[0]][0])
+            self.bg_pill.set_manual(tr("正在准备页面 {0}/{1}", done + 1, total), 100.0 * done / max(1, total),
+                                    tr("打开程序后一页页准备，现在：{0}\n准备好以前点别的页面会先等它准备完", nm))
             self._build_page(todo[0])
             QTimer.singleShot(0, self._build_next)
             return
+        self.bg_pill.set_manual(tr("正在准备页面 {0}/{1}", total, total), 100.0, "")
         self._finish_startup()
+        self.bg_pill.set_manual(None, 0)
 
     def _log_boot_times(self, steps):
         """启动用时写进日志（只写给维护的人看，不翻译）：总共多久、窗口什么时候出来的、每页建了多久、收尾每一步"""
@@ -3081,10 +3088,14 @@ class MainWindow(QMainWindow):
         """要用到别的页面了（切页面、快捷键、从别处调过来）：没建完的一次建完"""
         if self._startup_done:
             return
-        for i, pg in enumerate(self.pages):
-            if pg is None and self.NAV[i][0] not in self.LAZY_PAGES:
-                self._build_page(i)
-        self._finish_startup()
+        from erp_widgets import StepsDialog
+        todo = [i for i, pg in enumerate(self.pages) if pg is None and self.NAV[i][0] not in self.LAZY_PAGES]
+        steps = [(self._tab_label(self.NAV[i][0]), lambda i=i: self._build_page(i)) for i in todo]
+        steps.append((tr("收尾"), self._finish_startup))
+        # 页面还没准备完就点了别的页面：一次准备完，看得见进度（11-18 设计规范：会卡的地方都要有进度条）
+        StepsDialog.run(self, tr("正在准备页面"), steps, show=self.isVisible() and len(steps) > 2)
+        if hasattr(self, "bg_pill"):
+            self.bg_pill.set_manual(None, 0)
 
     def _finish_startup(self):
         if self._startup_done:
@@ -3685,6 +3696,8 @@ class MainWindow(QMainWindow):
             self._ensure_all()
         if self.pages[i] is None:
             self._build_page(i)
+        if self.NAV[i][0] in getattr(self, "_theme_due", ()):      # 换过颜色以后第一次来这一页：先刷新颜色
+            self._restyle_key(self.NAV[i][0])
         self.stack.setCurrentIndex(i)
         key, text = self.NAV[i]
         if key == "log" and getattr(self, "_log_dirty", False):
@@ -3735,13 +3748,44 @@ class MainWindow(QMainWindow):
         if key == "order" and hasattr(self, "price_mail"):
             self.price_mail.maybe_check(self.ws_root())      # 后台看邮件里有没有新报价（30 分钟最多一次）
 
+    # 每一页的「页面对象」（有 restyle()）：换颜色时只马上刷新正在看的这一页，别的页第一次切过去时再刷新
+    PAGE_OBJ = {"home": "dashboard", "store_orders": "store_orders", "store_pdv": "store_pdv",
+                "settings": "settings_page", "order": "order_check", "distribution": "distribution",
+                "import": "import_page", "griglia": "griglia_page", "tracking": "tracking",
+                "volantino": "volantino", "sellout": "sellout"}
+
     def apply_theme(self, qss=True):
+        """
+        换深浅色 / 主色（2026-11-18 用户：换颜色会卡住、还没有进度条）：
+        ① 套全局样式时把全程序的事件过滤器（AppEventHub）停掉 —— 以前几万个刷新事件每个都进 5 次 Python；
+        ② 只马上刷新顶栏 / 图标栏和正在看的这一页，别的页记在 _theme_due，切过去时（go）再刷新；
+        ③ 一步步做，进度窗口看得见（StepsDialog）。
+        """
         if not getattr(self, "_startup_done", True):
             return                                       # 页面还没建完：建完时会套一次
         theme.set_theme(settings.get("theme", "dark"))
+        cur = self.NAV[self.stack.currentIndex()][0]
+        self._theme_due = {k for k, _ in self.NAV}
+        steps = []
         if qss:
+            steps.append((tr("套用新颜色"), self._theme_qss))
+        steps.append((tr("顶栏和图标栏"), self._theme_chrome))
+        steps.append((self._tab_label(cur), lambda: self._restyle_key(cur)))
+        from erp_widgets import StepsDialog
+        StepsDialog.run(self, tr("正在换颜色"), steps, show=qss and self.isVisible())
+
+    def _theme_qss(self):
+        hub = getattr(QApplication.instance(), "_event_hub", None)
+        if hub is not None:
+            hub.pause()
+        try:
             QApplication.instance().setStyleSheet(build_qss())
             theme.refresh_frozen()
+        finally:
+            if hub is not None:
+                hub.resume()
+
+    def _theme_chrome(self):
         self._paint_rail()
         dark = settings.get("theme") == "dark"
         self.theme_btn.setIcon(icon("sun" if dark else "moon", T("muted"), 16))
@@ -3750,33 +3794,46 @@ class MainWindow(QMainWindow):
         self.search_icon.setPixmap(icon("search", T("muted"), 15).pixmap(15, 15))
         self.bell_dot.setStyleSheet(f"background:{T('err')}; border-radius:4px; border:1px solid {T('side')};")
         self._set_db_state(getattr(self, "_db_ok", None))
-        for pg in (getattr(self, "dashboard", None), getattr(self, "store_orders", None), getattr(self, "store_pdv", None),
-                   getattr(self, "settings_page", None), getattr(self, "order_check", None),
-                   getattr(self, "distribution", None), getattr(self, "import_page", None),
-                   getattr(self, "griglia_page", None), getattr(self, "tracking", None), getattr(self, "agent_panel", None),
-                   getattr(self, "volantino", None), getattr(self, "sellout", None)):
-            if pg is not None and hasattr(pg, "restyle"):
-                pg.restyle()
-        for b in (self.banner_folder, self.banner_result, self.banner_rules):
-            if b.isVisible():
-                b.restyle()
-        from page_kit import Stat
-        for st in self.findChildren(Stat):            # 指标卡的小图标颜色
-            st.restyle()
-        self.btn_folder.setIcon(icon("folder", T("text")))
-        self.gauge.update()
-        for attr, mod in (("_res_qss_page", "result_page"), ("_hist_page", "history_page"),
-                          ("_miss_page", "missing_page"), ("_log_page", "log_page")):
-            pg = getattr(self, attr, None)
-            if pg is not None:
-                pg.setStyleSheet(__import__(mod).qss())
-        if hasattr(self, "_miss_items"):
-            __import__("missing_page")._render_list(self)
-        self._render_log()
+        ap = getattr(self, "agent_panel", None)
+        if ap is not None and hasattr(ap, "restyle"):
+            ap.restyle()
         self._dark_titlebar()
-        if self.last_summary:
+
+    def _restyle_key(self, key):
+        """刷新一页的颜色（页面自己画的颜色、指标卡小图标…）；全局样式已经套过了"""
+        due = getattr(self, "_theme_due", None)
+        if due is not None:
+            due.discard(key)
+        keys = [k for k, _ in self.NAV]
+        i = keys.index(key) if key in keys else -1
+        if i < 0 or self.pages[i] is None:
+            return
+        obj = getattr(self, self.PAGE_OBJ.get(key, ""), None) if key in self.PAGE_OBJ else None
+        if obj is not None and hasattr(obj, "restyle"):
+            obj.restyle()
+        if key == "order":
+            for b in (self.banner_folder, self.banner_result, self.banner_rules):
+                if b.isVisible():
+                    b.restyle()
+            self.btn_folder.setIcon(icon("folder", T("text")))
+            self.gauge.update()
+        mods = {"result": ("_res_qss_page", "result_page"), "history": ("_hist_page", "history_page"),
+                "search": ("_miss_page", "missing_page"), "log": ("_log_page", "log_page")}
+        if key in mods:
+            pg = getattr(self, mods[key][0], None)
+            if pg is not None:
+                pg.setStyleSheet(__import__(mods[key][1]).qss())
+        if key == "search" and hasattr(self, "_miss_items"):
+            __import__("missing_page")._render_list(self)
+        if key == "log":
+            self._render_log()
+        if key == "result" and self.last_summary:
             self.show_summary(self.last_summary)
-        self.refresh_rules_table()
+        if key == "rules":
+            self.refresh_rules_table()
+        from page_kit import Stat
+        for st in self.stack.widget(i).findChildren(Stat):     # 指标卡的小图标颜色
+            st.restyle()
 
     def _dark_titlebar(self):
         if sys.platform != "win32":
@@ -6546,11 +6603,16 @@ class WheelGuard(QObject):
         self.clicked_view = None    # 点过的表格（鼠标离开后失效）
         self.last_page_wheel = -1e9 # 上一次把滚轮交给页面的时间
 
+    TYPES = (QEvent.Polish, QEvent.Wheel, QEvent.Enter, QEvent.MouseMove, QEvent.MouseButtonPress, QEvent.Leave)
+    _KINDS = None
+
     @staticmethod
     def _view_of(obj):
         """obj 是表格 / 列表 / 文本框（或它们的 viewport）→ 返回那个控件，否则 None"""
-        from PySide6.QtWidgets import QAbstractItemView, QTextEdit, QPlainTextEdit
-        kinds = (QAbstractItemView, QTextEdit, QPlainTextEdit)
+        kinds = WheelGuard._KINDS
+        if kinds is None:
+            from PySide6.QtWidgets import QAbstractItemView, QTextEdit, QPlainTextEdit
+            kinds = WheelGuard._KINDS = (QAbstractItemView, QTextEdit, QPlainTextEdit)
         w = obj if isinstance(obj, kinds) else None
         if w is None:
             par = obj.parentWidget() if hasattr(obj, "parentWidget") else None
@@ -6579,7 +6641,6 @@ class WheelGuard(QObject):
         return True
 
     def eventFilter(self, obj, ev):
-        from PySide6.QtCore import QEvent
         t = ev.type()
         if t == QEvent.Polish:
             if isinstance(obj, (QAbstractSpinBox, QComboBox)):
@@ -6656,6 +6717,15 @@ def _init_click_recorder():
     _ClickRecorder._INPUT = frozenset((QEvent.MouseButtonPress, QEvent.MouseButtonRelease, QEvent.KeyPress, QEvent.Wheel))
 
 
+def _event_hub(app):
+    hub = getattr(app, "_event_hub", None)
+    if hub is None:
+        from erp_widgets import AppEventHub
+        hub = app._event_hub = AppEventHub(app)
+        app.installEventFilter(hub)
+    return hub
+
+
 def _start_hang_watchdog(app):
     """
     界面卡住时自动记下「卡在哪一行代码」（logs/hang.log，不会关掉程序）。
@@ -6672,6 +6742,33 @@ def _start_hang_watchdog(app):
                 f"（下面「界面卡住」那几行就是卡的时候在做什么）\n")
         f.flush()
         app._hang_file = f
+        # 程序闪退（Qt / Excel 那层崩了，Python 来不及报错）时也记下当时每条线程在跑哪一行：logs/crash.log
+        cf = open(os.path.join(LOG_DIR, "crash.log"), "a", encoding="utf-8")
+        cf.write(f"\n=== {APP_NAME} {APP_VERSION} 启动 {_dt.now():%Y-%m-%d %H:%M:%S}（下面有内容 = 这次闪退了）\n")
+        cf.flush()
+        faulthandler.enable(file=cf, all_threads=True)
+        app._crash_file = cf
+
+        def _hook(tp, val, tb, _old=sys.excepthook):
+            try:
+                import traceback
+                cf.write(f"[{_dt.now():%H:%M:%S}] 没处理的错误：\n" + "".join(traceback.format_exception(tp, val, tb)))
+                cf.flush()
+            except Exception:
+                pass
+            _old(tp, val, tb)
+        sys.excepthook = _hook
+
+        def _thook(a, _old=threading.excepthook):
+            try:
+                import traceback
+                cf.write(f"[{_dt.now():%H:%M:%S}] 后台线程 {a.thread.name if a.thread else ''} 出错：\n"
+                         + "".join(traceback.format_exception(a.exc_type, a.exc_value, a.exc_traceback)))
+                cf.flush()
+            except Exception:
+                pass
+            _old(a)
+        threading.excepthook = _thook
         state = {"beat": time.time()}
 
         def beat():
@@ -6686,7 +6783,7 @@ def _start_hang_watchdog(app):
         app._hang_timer = t
         _init_click_recorder()
         rec = _ClickRecorder(app)
-        app.installEventFilter(rec)
+        _event_hub(app).add(rec, _ClickRecorder._INPUT)
         app._click_rec = rec
         beat()
 
@@ -6750,18 +6847,15 @@ def main():
     except Exception:
         pass
     app.setStyle("Fusion")
-    app._wheel_guard = WheelGuard(app)
-    app.installEventFilter(app._wheel_guard)
+    hub = _event_hub(app)                       # 全程序只装一个事件过滤器（AppEventHub），按事件类型分给下面几个
+    app._wheel_guard = hub.add(WheelGuard(app))
     from erp_widgets import CopyHelper
-    app._copy_helper = CopyHelper(app)          # 程序里的文字都可以选中复制，表格 Ctrl+C / 右键复制
-    app.installEventFilter(app._copy_helper)
+    app._copy_helper = hub.add(CopyHelper(app))  # 程序里的文字都可以选中复制，表格 Ctrl+C / 右键复制
     from erp_widgets import ScreenFit
-    app._screen_fit = ScreenFit(app)            # 窗口打开时不会比屏幕大、不会跑出屏幕
-    app.installEventFilter(app._screen_fit)
+    app._screen_fit = hub.add(ScreenFit(app))    # 窗口打开时不会比屏幕大、不会跑出屏幕
     from erp_widgets import WidthMemory
-    app._width_memory = WidthMemory(app, settings.setdefault("table_widths", {}),
-                                    lambda: save_settings(settings))     # 所有表格拖过的列宽都记住
-    app.installEventFilter(app._width_memory)
+    app._width_memory = hub.add(WidthMemory(app, settings.setdefault("table_widths", {}),
+                                            lambda: save_settings(settings)))     # 所有表格拖过的列宽都记住
     theme.load_fonts()
     f = QFont()
     f.setFamilies([theme.LATIN_FONT, UI_FONT])

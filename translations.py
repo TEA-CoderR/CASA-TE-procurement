@@ -4392,4 +4392,11 @@ TRANSLATIONS = {
     '现供应商': ('Current supplier', 'Fornitore attuale'),
     '替换那天 Griglia 里原商品的供应商': ("The old item's supplier in the Griglia on the day of the replacement", 'Fornitore del vecchio articolo nella Griglia il giorno della sostituzione'),
     '替换那天报价最便宜的批发商（新价格就是它的）': ('The cheapest wholesaler on the day of the replacement (the new price is theirs)', 'Il grossista più economico il giorno della sostituzione (il nuovo prezzo è il suo)'),
+    '正在准备页面 {0}/{1}': ('Preparing pages {0}/{1}', 'Preparazione pagine {0}/{1}'),
+    '正在准备页面': ('Preparing pages', 'Preparazione pagine'),
+    '正在换颜色': ('Changing colours', 'Cambio colori'),
+    '打开程序后一页页准备，现在：{0}\n准备好以前点别的页面会先等它准备完': ('Pages are prepared one by one after start-up, now: {0}\nClicking another page before then waits until they are ready', "Dopo l'avvio le pagine si preparano una alla volta, ora: {0}\nSe apri un'altra pagina prima, attende che siano pronte"),
+    '收尾': ('Finishing', 'Completamento'),
+    '顶栏和图标栏': ('Top bar and icon bar', 'Barra superiore e barra icone'),
+    '套用新颜色': ('Applying the new colours', 'Applicazione dei nuovi colori'),
 }
