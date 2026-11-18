@@ -4389,4 +4389,7 @@ TRANSLATIONS = {
     '没放回：{0}': ('Not put back: {0}', 'Non rimessi: {0}'),
     '备份里找不到这几个（要手动补）：{0}': ('Not found in the backups (add them by hand): {0}', 'Non trovati nei backup (aggiungerli a mano): {0}'),
     '原商品没有留在 Griglia 最下面（可以点左下角「把原商品放回最下面」）': ('The old item was not kept at the bottom of the Griglia (click "Put old items back at the bottom" at the bottom left)', 'Il vecchio articolo non è rimasto in fondo alla Griglia (clicca «Rimetti i vecchi articoli in fondo» in basso a sinistra)'),
+    '现供应商': ('Current supplier', 'Fornitore attuale'),
+    '替换那天 Griglia 里原商品的供应商': ("The old item's supplier in the Griglia on the day of the replacement", 'Fornitore del vecchio articolo nella Griglia il giorno della sostituzione'),
+    '替换那天报价最便宜的批发商（新价格就是它的）': ('The cheapest wholesaler on the day of the replacement (the new price is theirs)', 'Il grossista più economico il giorno della sostituzione (il nuovo prezzo è il suo)'),
 }

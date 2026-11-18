@@ -810,7 +810,8 @@ class ReplaceLogDialog(QDialog):
     """替换记录（用户 11-09：程序里要有替换记录，不然不知道改了哪个）：0 Griglia/_替代记录.json，新的在上面。
     用户 11-18：加新旧价格好对比、商品带小图；以前原地换掉的原商品可以从备份抄回最下面"""
     COLS = [("at", "时间", 128), ("by", "谁", 70), ("old_name", "原商品", 280), ("old", "旧条码", 116),
-            ("old_price", "原价格", 84), ("name", "替代成", 280), ("new", "新条码", 116), ("price", "新价格", 84),
+            ("old_price", "原价格", 84), ("old_sup", "原供应商", 150), ("name", "替代成", 280), ("new", "新条码", 116),
+            ("price", "新价格", 84), ("sup", "现供应商", 150),
             ("diff", "差价", 76), ("size", "规格", 110), ("in", "在 Griglia 里", 92), ("file", "文件 · 行", 220)]
     PRICE_F = ("old_price", "price", "diff")
 
@@ -844,7 +845,9 @@ class ReplaceLogDialog(QDialog):
         self.t.setHorizontalHeaderLabels([tr(h) for _f, h, _w in self.COLS])
         tips = {"old_price": tr("替换那天 Griglia 里记的价格（PA MIGLIORE，没有就用 PREZZO NETTO）· 供应商"),
                 "price": tr("替换那天这周报价里最便宜的价格 · 批发商"),
-                "diff": tr("新价格比原价格贵多少（红 = 贵了，绿 = 便宜了）")}
+                "diff": tr("新价格比原价格贵多少（红 = 贵了，绿 = 便宜了）"),
+                "old_sup": tr("替换那天 Griglia 里原商品的供应商"),
+                "sup": tr("替换那天报价最便宜的批发商（新价格就是它的）")}
         for c, (f, _h, _w) in enumerate(self.COLS):
             if f in tips:
                 self.t.horizontalHeaderItem(c).setToolTip(tips[f])
@@ -869,7 +872,7 @@ class ReplaceLogDialog(QDialog):
         self.ctl.rendered.connect(lambda n, tot: self.count.setText(tr("{0:,} / {1:,}", n, tot)))
         import settings as ST
         self.ctl.remember(settings.setdefault("griglia_cols", {}), "replace_log", lambda: ST.save_settings(settings),
-                          [f for f, _h, _w in self.COLS], ver=2)
+                          [f for f, _h, _w in self.COLS], ver=3)
         self.search.textChanged.connect(lambda _: self.ctl.render())
         lay.addWidget(self.t, 1)
         foot = QHBoxLayout()
@@ -958,7 +961,7 @@ class ReplaceLogDialog(QDialog):
                 it.setForeground(QColor(T("accent")))
             elif f == "in" and r["in"] != tr("在"):
                 it.setForeground(QColor(T("warn")))
-            elif f in ("old", "new", "at", "by", "file"):
+            elif f in ("old", "new", "at", "by", "file", "old_sup", "sup"):
                 it.setForeground(QColor(T("muted")))
             if f in self.PRICE_F:
                 it.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
