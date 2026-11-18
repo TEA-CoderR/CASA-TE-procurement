@@ -1150,7 +1150,7 @@ def griglia_add_replacements(grid, picks, by=None, via="desktop", excel=None, lo
                          "struck": bool(o.get("struck")), "size": GR.change(o.get("name") or "", c["name"])[0],
                          "best": c.get("best"), "best_sup": c.get("best_sup"), "score": c.get("score"),
                          # 新旧价格对比（用户 11-18）：旧 = Griglia 里记的（最低价 PA MIGLIORE，没有用 PREZZO NETTO），新 = 这周报价最低
-                         "old_price": o.get("best") or o.get("price"), "old_sup": o.get("supplier") or "",
+                         "old_price": GR.old_price_sup(o)[0], "old_sup": GR.old_price_sup(o)[1],
                          "old_pack": o.get("pack"), "pack": c.get("pack")}
     GR.save_done(gdir, done)
     audit(by, via, "griglia_add_replacements", {"file": target, "n": len(written), "backup": bk,
@@ -1182,15 +1182,21 @@ def griglia_restore_old(grid, olds, by=None, via="desktop", excel=None, log=None
         return {"restored": [], "missing": missing, "backup": None, "file": target, "checked": 0}
     bk = _backup_griglia(target, backup_dir, url, log)
     items = [(o, (done.get(o) or {}).get("new"), found[o][0], found[o][1]) for o in olds if o in found]
+    info = {}
     restored, n_cells = _edit_griglia_safely(
-        target, grid.get("sheet"), lambda work, ops: GR.restore_rows(work, grid, items, excel=excel, log=log, url=url, ops=ops),
-        log)
+        target, grid.get("sheet"),
+        lambda work, ops: GR.restore_rows(work, grid, items, excel=excel, log=log, url=url, ops=ops, info=info), log)
     if restored and os.path.normcase(os.path.abspath(target)) != os.path.normcase(os.path.abspath(path)):
         shutil.copy2(target, path)
     for o, row in restored:
         if o in done:
             done[o]["restored_to"] = row
             done[o]["moved_to"] = row
+            price, sup = info.get(o, (None, ""))
+            if done[o].get("old_price") is None and price is not None:
+                done[o]["old_price"] = price
+            if not done[o].get("old_sup") and sup:
+                done[o]["old_sup"] = sup
     GR.save_done(gdir, done)
     audit(by, via, "griglia_restore_old", {"file": target, "rows": restored, "missing": missing, "backup": bk}, None)
     return {"restored": restored, "missing": missing, "backup": bk, "file": target, "checked": n_cells}

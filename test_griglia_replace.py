@@ -682,8 +682,11 @@ def test_restore_old_rows_from_backup_to_bottom_struck():
             self.Workbooks = type("W", (), {"Open": lambda _s, p, ReadOnly=False: WB(books[os.path.basename(p)])})()
     found = GR.find_in_backups(["b2.xlsx", "b1.xlsx"], g, ["8002222000017", "8009999999999"], excel=Ex())
     assert found == {"8002222000017": ("b1.xlsx", 5)}
-    ex, ops = Ex(), []
-    done = GR.restore_rows("g.xlsx", g, [("8002222000017", "8002222000024", "b1.xlsx", 5)], excel=ex, ops=ops)
+    ex, ops, info = Ex(), [], {}
+    done = GR.restore_rows("g.xlsx", g, [("8002222000017", "8002222000024", "b1.xlsx", 5)], excel=ex, ops=ops, info=info)
+    assert info == {"8002222000017": (1.5, "F.LLI PETRILLO SRL")}                     # 原价格 / 原供应商从备份那一行读
+    # Fornitore 空着（Griglia 已停用的常这样）→ 几家批发商里最便宜的
+    assert GR.old_price_sup({"best": 2.49, "supplier": "", "prices": {"MELONI": 2.49, "MEGA CASH": 2.68}}) == (2.49, "MELONI")
     assert ex.saved and done == [("8002222000017", 8)] and ops == [("append", 8)]
     assert cur.v[(8, 2)] == "8002222000017" and cur.v[(8, 3)] == "SVELTO PIATTI LIMONE 980 ML" and cur.v[(8, 1)] == "102"
     assert cur.v[(5, 2)] == "8002222000024"                                         # 新商品那一行不动

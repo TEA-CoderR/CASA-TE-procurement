@@ -906,14 +906,14 @@ class ReplaceLogDialog(QDialog):
             f = r.get("file") or ""
             og = items.get(old) or struck.get(old) or {}
             ng = items.get(r.get("new")) or {}
-            op = r.get("old_price") if r.get("old_price") is not None else (og.get("best") or og.get("price"))
+            op = r.get("old_price") if r.get("old_price") is not None else GR.old_price_sup(og)[0]
             np_ = r.get("best") if r.get("best") is not None else (ng.get("best") or ng.get("price"))
             dst = r.get("restored_to") or r.get("moved_to")
             self.rows.append({"at": r.get("at") or "", "by": r.get("by") or "", "old": old,
                               "old_name": r.get("old_name") or og.get("name") or "",
                               "new": r.get("new") or "", "name": r.get("name") or "", "size": r.get("size") or "",
                               "old_price": op, "price": np_,
-                              "old_sup": r.get("old_sup") or og.get("supplier") or "",
+                              "old_sup": r.get("old_sup") or GR.old_price_sup(og)[1],
                               "sup": r.get("best_sup") or ng.get("supplier") or "",
                               "diff": (np_ - op) / op if op and np_ else None,
                               "in": tr("在") if r.get("new") in items else tr("不在"),
@@ -1007,7 +1007,7 @@ class ReplaceLogDialog(QDialog):
         self.restored = True
         done = GR.load_done(os.path.dirname(self.grid["path"]))
         for o, row in res["restored"]:
-            self.grid.setdefault("struck", {})[o] = {"ean": o, "row": row}
+            self.grid.setdefault("struck", {}).setdefault(o, {"ean": o, "row": row})
         self._load(done)
         self._update_restore()
         self.ctl.render()

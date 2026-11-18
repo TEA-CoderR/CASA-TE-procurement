@@ -816,7 +816,34 @@ def find_in_backups(backups, grid, eans, excel=None, log=None):
     return found
 
 
-def restore_rows(path, grid, items, excel=None, log=None, url=None, ops=None):
+def old_price_sup(item, sup_cols=None, row=None):
+    """
+    原商品的价格和供应商（替换记录用，用户 11-18「为什么有些没有原价」）：
+    价格 = PA MIGLIORE，没有用 PREZZO NETTO；供应商 = Fornitore 列，空的（Griglia 已停用的商品常常空着）用几家批发商里最便宜的那家。
+    item = griglia 解析出来的商品；也可以给 Excel 一整行 row（0 开始）+ grid 的 cols / sup_cols
+    """
+    def num(v):
+        try:
+            return float(v) if v not in (None, "") else None
+        except (TypeError, ValueError):
+            return None
+    if row is not None:
+        cols = item or {}
+        g = (lambda k: row[cols[k]] if cols.get(k) is not None and cols[k] < len(row) else None)
+        price = num(g("best")) or num(g("price"))
+        sup = str(g("supplier") or "").strip()
+        prices = {h: num(row[i]) for h, i in (sup_cols or {}).items() if i < len(row) and num(row[i])}
+    else:
+        item = item or {}
+        price = item.get("best") or item.get("price")
+        sup = (item.get("supplier") or "").strip()
+        prices = item.get("prices") or {}
+    if not sup and prices:
+        sup = min(prices, key=prices.get)
+    return price, sup
+
+
+def restore_rows(path, grid, items, excel=None, log=None, url=None, ops=None, info=None):
     """
     items = [(旧条码, 新条码, 备份路径, 备份里的行号)]：把备份里那一行（格式 + 内容，按 R1C1 照抄）抄到 Griglia 最下面，
     划线、字变灰、旧条码格加批注、图片列写 IMAGE 公式——和替换时挪下去的旧行一样。
@@ -888,6 +915,12 @@ def restore_rows(path, grid, items, excel=None, log=None, url=None, ops=None):
             except Exception:
                 pass
             rng(ws, dst).FormulaR1C1 = rng(sws, src_row).FormulaR1C1
+            if info is not None:
+                try:
+                    vals = _values(sws, src_row, 1, src_row, last)[0]
+                    info[old_ean] = old_price_sup(grid.get("cols") or {}, grid.get("sup_cols") or {}, vals)
+                except Exception:
+                    pass
             try:
                 ws.Rows(dst).RowHeight = sws.Rows(src_row).RowHeight
             except Exception:
