@@ -393,7 +393,7 @@ class OrderCheck:
         from erp_widgets import accept_file_drops
         accept_file_drops(self.file_edit, self._dropped, (".xlsx", ".xlsm"), multi=True)
         r1.addWidget(self.file_edit, 1)
-        b2 = QPushButton(tr("选择文件…"))
+        b2 = QPushButton(tr("选择文件"))
         b2.clicked.connect(self.choose_file)
         r1.addWidget(b2)
         b_clr = QPushButton(tr("清空"))
@@ -456,7 +456,7 @@ class OrderCheck:
         algo_row, self.engine, self.algo_info = algo_widgets(self, ui)
         self.algo_info.setWordWrap(True)
         r3.addLayout(algo_row, 1)
-        dbb = QPushButton(tr("数据库设置…"))
+        dbb = QPushButton(tr("数据库设置"))
         dbb.clicked.connect(self.db_settings)
         r3.addWidget(dbb)
         self.btn_run = QPushButton(tr("检查数量"))
@@ -580,7 +580,7 @@ class OrderCheck:
         from PySide6.QtWidgets import QTabWidget
         self.prob = {}
         self._prob_filling = False
-        self.prob_btn = QPushButton()
+        self.prob_btn = __import__("erp_widgets").CountButton("", tone="warn")
         self.prob_btn.setStyleSheet(f"color:{ui.T('warn')};")
         self.prob_btn.clicked.connect(lambda: self._open_prob(None))
         self.prob_btn.hide()
@@ -1766,7 +1766,8 @@ class OrderCheck:
             if getattr(t, "_hf", None) is not None and t._hf.active():
                 t._hf.reapply()
             t.setColumnHidden(0, len((self.meta or {}).get("stores") or []) < 2)
-        self.prob_btn.setText(tr("⚠ 待核对（{0}）", total))
+        self.prob_btn.setText("⚠ " + tr("待核对"))
+        self.prob_btn.set_count(total)
         self.prob_btn.setToolTip("\n".join(tips) + "\n" + tr("点一下打开"))
         self.prob_btn.setVisible(bool(total))
         self._prob_filling = False

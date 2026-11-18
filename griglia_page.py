@@ -56,7 +56,7 @@ class _ExportDialog(QDialog):
         foot.addStretch()
         cancel = QPushButton(tr("取消"))
         cancel.clicked.connect(self.reject)
-        self.ok = QPushButton(tr("导出…"))
+        self.ok = QPushButton(tr("导出"))
         self.ok.setObjectName("Primary")
         self.ok.clicked.connect(self.accept)
         foot.addWidget(cancel)
@@ -374,7 +374,7 @@ class GrigliaPage:
         from erp_widgets import EmptyState
         self.empty = EmptyState("griglia", tr("还没有 Griglia"),
                                 tr("把我们的 DETERSIVI 总表（ELENCO_DETERSIVI.xlsx）放进工作文件夹「0 Griglia」，或点「换 Griglia…」"))
-        b = QPushButton(tr("选择 Griglia…"))
+        b = QPushButton(tr("选择 Griglia"))
         b.setObjectName("Primary")
         b.clicked.connect(self.choose)
         self.empty.buttons.addWidget(b)
@@ -803,7 +803,7 @@ class GrigliaPage:
 
     def _update_log_btn(self):
         n = len(self._done_log())
-        self.b_log.setText(tr("替换记录（{0}）", n) if n else tr("替换记录"))
+        self.b_log.setToolTip(tr("已替换 {0} 个商品", n) if n else "")
         self.b_log.setEnabled(bool(n))
         self.b_repl.setVisible(self.b_repl.isEnabled())       # 没有停售 / 划线的：页头不放这个按钮
 

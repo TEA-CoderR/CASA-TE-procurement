@@ -135,7 +135,7 @@ class DistributionPage:
         self.file_edit = QLineEdit()
         self.file_edit.setReadOnly(True)
         self.file_edit.setPlaceholderText(tr("还没有选择文件"))
-        b = QPushButton(tr("选择文件…"))
+        b = QPushButton(tr("选择文件"))
         b.clicked.connect(self.choose_file)
         self.btn_pick = b
         r.addWidget(self.file_edit, 1)

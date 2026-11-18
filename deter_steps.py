@@ -361,7 +361,7 @@ def build_collect(win, lay):
     note.setMinimumHeight(58)
     note.clicked.connect(win.open_deter_arrival)
     win._dc_elim.foot.addWidget(note)
-    chk = QPushButton(tr("报价表和数据库对比…"))
+    chk = QPushButton(tr("报价与数据库核对"))
     chk.setObjectName("DeterLink")
     chk.setCursor(Qt.PointingHandCursor)
     chk.setToolTip(tr("只读检查：报价表里的商品数据库有没有、登记的供应商对不对、进价和箱规一样不一样"))
@@ -794,7 +794,7 @@ def build_send(win, lay):
     sv.addWidget(win._sd_body, 1)
     win._sd_att = QVBoxLayout()
     sv.addLayout(win._sd_att)
-    win._sd_btn = QPushButton(tr("发送这一封…"))
+    win._sd_btn = QPushButton(tr("发送此订单"))
     win._sd_btn.setObjectName("Primary")
     win._sd_btn.setMinimumHeight(40)
     win._sd_btn.setToolTip(tr("打开发送窗口：发件 / 收件 / 正文都还能改，发之前会再确认"))
@@ -855,7 +855,7 @@ def _render_groups_inner(win):
         _fill_mail(win, None)
         if hasattr(win, "_sd_all"):
             win._sd_all.setEnabled(False)
-            win._sd_all.setText(tr("全部发送") + "  →")
+            win._sd_all.set_count(None)
         return
     total = sum(float(o.get("amount") or 0) for _i, o in rows)
     todo = [i for i, o in rows if o.get("draft")]
@@ -867,7 +867,7 @@ def _render_groups_inner(win):
                             sent, len(todo), T("ok")) + (f" · {day[8:10]}/{day[5:7]}" if day else ""))
     if hasattr(win, "_sd_all"):
         win._sd_all.setEnabled(bool(todo))
-        win._sd_all.setText(tr("全部发送（{0}）", len(todo)) + "  →")
+        win._sd_all.set_count(len(todo))
     by_store = getattr(win, "_sd_by", "sup") == "store"
     groups = {}
     for oid, o in rows:
@@ -1019,7 +1019,7 @@ def _fill_mail(win, d):
         h.addWidget(n, 1)
         win._sd_att.addWidget(f)
     win._sd_btn.setEnabled(bool(o.get("draft")))
-    win._sd_btn.setText(tr("发送这一封…") if o.get("draft") else send_state(o)[0])
+    win._sd_btn.setText(tr("发送此订单") if o.get("draft") else send_state(o)[0])
 
 
 def _send_one(win):

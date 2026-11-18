@@ -449,7 +449,7 @@ class ReplaceDialog(QDialog):
         cancel = QPushButton(tr("关闭"))
         cancel.clicked.connect(self.reject)
         foot.addWidget(cancel)
-        self.b_add = QPushButton("")
+        self.b_add = __import__("erp_widgets").CountButton("")
         self.b_add.setObjectName("Primary")
         self.b_add.clicked.connect(self._add)
         foot.addWidget(self.b_add)
@@ -612,7 +612,8 @@ class ReplaceDialog(QDialog):
 
     def _update_foot(self):
         n = len(self.checked)
-        self.b_add.setText(tr("替换进 Griglia（{0}）", n))
+        self.b_add.setText(tr("替换进 Griglia"))
+        self.b_add.set_count(n)
         self.b_add.setEnabled(n > 0)
         changed = sum(1 for i in self.checked if self._chg(i)[1])
         self.status.setText(tr("勾了 {0} 个 · 其中 {1} 个换了规格", n, changed) if n else tr("勾上要替换的"))
@@ -876,7 +877,7 @@ class ReplaceLogDialog(QDialog):
         self.search.textChanged.connect(lambda _: self.ctl.render())
         lay.addWidget(self.t, 1)
         foot = QHBoxLayout()
-        self.b_restore = QPushButton("")
+        self.b_restore = __import__("erp_widgets").CountButton("", tone="warn")
         self.b_restore.clicked.connect(self._restore)
         foot.addWidget(self.b_restore)
         foot.addStretch()
@@ -924,7 +925,8 @@ class ReplaceLogDialog(QDialog):
     def _update_restore(self):
         n = len(self.missing)
         self.b_restore.setVisible(bool(n))
-        self.b_restore.setText(tr("把原商品放回最下面（{0}）", n))
+        self.b_restore.setText(tr("把原商品放回最下面"))
+        self.b_restore.set_count(n)
         self.b_restore.setToolTip(tr("这几条替换时原商品没有留在 Griglia 最下面（11-18 以前 Griglia 已停用的商品是直接换掉的）。"
                                      "从程序文件夹的 Griglia 备份里找到原来那一行，抄到最下面划线，和现在替换的做法一样"))
 

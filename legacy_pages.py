@@ -65,7 +65,7 @@ class LegacyPage:
             self.btn.setObjectName("Primary")
             self.btn.clicked.connect(self.open_legacy)
             es.buttons.addWidget(self.btn)
-            pick = QPushButton(tr("设置旧程序位置…"))
+            pick = QPushButton(tr("设置旧程序位置"))
             pick.clicked.connect(self.pick_legacy)
             es.buttons.addWidget(pick)
             self._update_btn()

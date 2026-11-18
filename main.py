@@ -1596,7 +1596,7 @@ class ManualDialog(QDialog):
         btns.addWidget(b_base)
         btns.addWidget(b_auto)
         if edit_mode and rules:
-            b_fill = QPushButton(tr("加商品凑单…"))
+            b_fill = QPushButton(tr("加商品凑单"))
             b_fill.setToolTip(tr("没达到起订条件的供应商：不换供应商，从它的报价里挑商品多订（订单里已有的多订几箱，或者加这次没订、但卖得快的商品），和总仓采购的加商品凑单一样"))
             b_fill.clicked.connect(self.add_items)
             btns.addWidget(b_fill)
@@ -2606,6 +2606,13 @@ class ScenarioDialog(QDialog):
         t.setStyleSheet("font-size:20px;")
         head.addWidget(t)
         head.addStretch()
+        diff = (results[0].get("diff") if results else None) or []
+        from erp_widgets import CountButton
+        self.b_diff = CountButton(tr("差异商品"), len(diff))
+        self.b_diff.setToolTip(tr("在不同方案里分给了不同供应商、或者买不到的商品，逐个对比"))
+        self.b_diff.setEnabled(bool(diff))
+        self.b_diff.clicked.connect(lambda: ScenarioDiffDialog(self, results, diff).exec())
+        head.addWidget(self.b_diff)
         b_names = QPushButton(tr("供应商名称"))
         b_names.setToolTip(tr("给供应商文件起名字（比如 formattato_… 叫 MEGA CASH），保存后重新对比"))
         b_names.clicked.connect(self._names)
@@ -3977,7 +3984,7 @@ class MainWindow(QMainWindow):
         b_open.clicked.connect(lambda: open_path(self.ws_root()))
         self.btn_folder = b_open
         row.addWidget(b_open)
-        b_move = QPushButton(tr("换位置…"))
+        b_move = QPushButton(tr("更改位置"))
         b_move.setObjectName("Link")
         b_move.clicked.connect(self.change_ws_root)
         row.addWidget(b_move)
@@ -4021,13 +4028,13 @@ class MainWindow(QMainWindow):
         self.zone_elim.files_dropped.connect(self._drop_eliminare)
         p1.lay.addLayout(zones)
         zr = QHBoxLayout()
-        b_miss = QPushButton(tr("上周没到的…"))
+        b_miss = QPushButton(tr("上周未到货"))
         b_miss.setObjectName("Link")
         b_miss.setToolTip(tr("列出每家店上一次的 DETERSIVO 订单，勾上还没到货的 → 自动变成这家店的扣减文件（不用再手动放）"))
         b_miss.clicked.connect(self.open_deter_arrival)
         zr.addWidget(b_miss)
         zr.addStretch()
-        b_chk = QPushButton(tr("报价表和数据库对比…"))
+        b_chk = QPushButton(tr("报价与数据库核对"))
         b_chk.setObjectName("Link")
         b_chk.setToolTip(tr("只读检查：报价表里的商品数据库有没有、登记的供应商对不对、进价和箱规一样不一样"))
         b_chk.clicked.connect(self.check_prices_vs_db)
@@ -4181,7 +4188,7 @@ class MainWindow(QMainWindow):
         b_trk = QPushButton(tr("订单跟踪"))
         b_trk.setToolTip(tr("发出去以后在采购订单跟踪里看确认 / 发货 / 到货"))
         b_trk.clicked.connect(lambda: self.go_page("tracking"))
-        self._sd_all = QPushButton(tr("全部发送") + "  →")
+        self._sd_all = __import__("erp_widgets").CountButton(tr("全部发送"))
         self._sd_all.setObjectName("Primary")
         self._sd_all.setMinimumHeight(40)
         self._sd_all.setEnabled(False)
@@ -4256,7 +4263,7 @@ class MainWindow(QMainWindow):
         hl = QVBoxLayout(hold)
         self.btn_missing = button(tr("缺失商品"), self.show_missing)
         self.btn_transfers = button(tr("调货单"), self.show_transfers)
-        self.btn_edit = button(tr("修改分配…"), self.edit_allocation,
+        self.btn_edit = button(tr("修改分配"), self.edit_allocation,
                                tip=tr("已经写入以后，还可以改商品的供应商并重新写回文件"))
         self.btn_edit.setEnabled(False)
 
@@ -5376,7 +5383,7 @@ class MainWindow(QMainWindow):
         btns.setSpacing(8)
         b_scen = QPushButton(tr("管理方案"))
         b_scen.clicked.connect(self.edit_scenarios)
-        b_tr = QPushButton(tr("门店间调货…"))
+        b_tr = QPushButton(tr("门店间调货"))
         b_tr.setToolTip(tr("DETERSIVO采购的门店间调货（和总仓采购分开设，默认不启用）"))
         b_tr.clicked.connect(self.edit_transfers)
         b_names = QPushButton(tr("供应商名称"))
@@ -6103,6 +6110,14 @@ class MainWindow(QMainWindow):
         lb.setObjectName("Faint")
         self.scen_switch_lay.addWidget(lb)
         st = s.get("state") or {}
+        if can_switch_scenario(s):
+            import scenarios as SC
+            from erp_widgets import CountButton
+            diff = SC.diff_items(st.get("rows") or [], st["scenario_assigns"], st.get("labels") or {})
+            bd = CountButton(tr("差异商品"), len(diff))
+            bd.setEnabled(bool(diff))
+            bd.clicked.connect(lambda: ScenarioDiffDialog(self, res, diff).exec())
+            self.scen_switch_lay.addWidget(bd)
         if can_switch_scenario(s) and self._is_current(s):
             for i, r in enumerate(res):
                 if r.get("chosen"):

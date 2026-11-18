@@ -312,7 +312,7 @@ def algo_widgets(page, ui):
     p = algo_params(page.settings)
     engine.setCurrentIndex(max(0, engine.findData(p.get("engine", "v2"))))
     row.addWidget(engine)
-    btn = QPushButton(tr("算法设置…"))
+    btn = QPushButton(tr("算法设置"))
     row.addWidget(btn)
     info = QLabel("")
     info.setObjectName("Faint")

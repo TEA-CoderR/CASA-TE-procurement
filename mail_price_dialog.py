@@ -169,7 +169,7 @@ class PriceMailDialog(QDialog):
         self.b_undo.clicked.connect(self.undo)
         self.b_undo.hide()
         foot.addWidget(self.b_undo)
-        self.b_go = QPushButton("")
+        self.b_go = __import__("erp_widgets").CountButton("")
         self.b_go.setObjectName("Primary")
         self.b_go.clicked.connect(self.apply)
         foot.addWidget(self.b_go)
@@ -248,7 +248,8 @@ class PriceMailDialog(QDialog):
 
     def _update(self):
         n = len(self._picked())
-        self.b_go.setText(tr("放进供应商报价（{0}）", n) if n else tr("放进供应商报价"))
+        self.b_go.setText(tr("放进供应商报价"))
+        self.b_go.set_count(n)
         self.b_go.setEnabled(bool(n))
 
     def apply(self):

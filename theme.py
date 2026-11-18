@@ -518,9 +518,11 @@ def build_qss():
                        font-size: 15px; font-weight: 700; padding: 11px 30px; }}
     QPushButton#Run:hover {{ background: {t['accent_hover']}; }}
     QPushButton#Run:disabled {{ background: {t['track']}; color: {t['faint']}; }}
-    QPushButton#Link {{ background: transparent; border: none; color: {t['accent']}; padding: 4px 6px; font-weight: 600; }}
-    QPushButton#Link:hover {{ background: transparent; color: {t['accent_hover']}; text-decoration: underline; }}
-    QPushButton#Link:disabled {{ background: transparent; color: {t['faint']}; }}
+    /* 次要操作（以前是一行蓝字链接，用户 11-18：不正式）→ 小号描边按钮，和别的按钮一个家族 */
+    QPushButton#Link {{ background: {t['surface']}; border: 1px solid {t['border']}; border-radius: 7px; color: {t['accent']};
+                        padding: 4px 11px; font-weight: 600; }}
+    QPushButton#Link:hover {{ background: {t['accent_soft']}; border-color: {t['accent']}; color: {t['accent']}; }}
+    QPushButton#Link:disabled {{ background: {t['surface2']}; border-color: {t['line']}; color: {t['faint']}; }}
     QPushButton#Chip {{ border-radius: 15px; padding: 5px 13px; font-size: 12px; color: {t['muted']}; background: {t['surface']}; }}
     QPushButton#Chip:hover {{ color: {t['text']}; }}
     QPushButton#Chip:checked {{ background: {t['accent']}; color: {t['on_accent']}; border-color: {t['accent']}; }}

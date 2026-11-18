@@ -282,10 +282,10 @@ class VolantinoPage:
         self.b_exp.clicked.connect(self.export)
         head.addWidget(self.b_exp, 0, Qt.AlignBottom)
         # 不常用的放进「⋯」（按钮对象留着：别的代码按它们开关）
-        self.b_imp = QPushButton(tr("导入名单…"))
+        self.b_imp = QPushButton(tr("导入名单"))
         self.b_imp.setToolTip(tr("选这一期的名单 Excel：有条码或商品编号就行；促销价、日期能认就自动认"))
         self.b_imp.clicked.connect(self.import_file)
-        self.b_edit = QPushButton(tr("修改…"))
+        self.b_edit = QPushButton(tr("修改"))
         self.b_edit.setToolTip(tr("改这一期的名称、类型、日期、门店；导入的名单还能删除。数据库里的促销单只在程序里改，数据库不动"))
         self.b_edit.clicked.connect(self.edit_period)
         self.b_ref = QPushButton(tr("刷新"))
@@ -316,7 +316,7 @@ class VolantinoPage:
         from erp_widgets import EmptyState
         self.empty = EmptyState("volantino", tr("这一类还没有名单"),
                                 tr("点「导入名单…」选这一期的名单 Excel，或在上面的下拉里选数据库里的促销单"))
-        b = QPushButton(tr("导入名单…"))
+        b = QPushButton(tr("导入名单"))
         b.setObjectName("Primary")
         b.clicked.connect(self.import_file)
         self.empty.buttons.addWidget(b)

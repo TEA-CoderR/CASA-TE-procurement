@@ -13,7 +13,7 @@ import threading
 
 from PySide6.QtCore import Qt, QObject, Signal, QTimer, QRectF, QPointF, QSize, QEvent, QEventLoop
 from PySide6.QtGui import QKeySequence
-from PySide6.QtGui import QColor, QPainter, QPen, QFont
+from PySide6.QtGui import QColor, QPainter, QPen, QFont, QFontMetrics
 from PySide6.QtWidgets import (QToolTip, QWidget, QFrame, QLabel, QPushButton, QHBoxLayout, QVBoxLayout, QDialog,
                                QProgressBar, QStyledItemDelegate, QSizePolicy, QMainWindow, QStyleOptionViewItem,
                                QStyle, QApplication, QTableView)
@@ -213,6 +213,62 @@ def open_file(parent, path, label=None):
         QMessageBox.warning(parent, tr("打开订单文件"), tr("打开失败：{0}", err))
         return False
     return True
+
+
+class CountButton(QPushButton):
+    """
+    按钮 + 右边一个数字小徽章（用户 11-18：「差异商品（209）」这种写法不正式）。
+    CountButton(tr("差异商品"), 209)；set_count(n) 改数字（None / 0 = 不显示徽章，show_zero=True 时 0 也显示）。
+    """
+    def __init__(self, text="", count=None, tone="accent", parent=None, show_zero=False):
+        super().__init__(text, parent)
+        self._n, self._tone, self._zero, self._css = None, tone, show_zero, ""
+        self.set_count(count)
+
+    def setStyleSheet(self, css):          # 自己的样式（例如字的颜色）和徽章要的右边留白合在一起
+        self._css = css or ""
+        self._apply_css()
+
+    def _apply_css(self):
+        pad = f"padding-right:{self._badge()[0] + 22}px;" if self._n is not None else ""
+        super().setStyleSheet(self._css + (" " if self._css and pad else "") + pad)
+
+    def set_count(self, n, tone=None):
+        if tone:
+            self._tone = tone
+        self._n = n if (n is not None and n != "" and (n or self._zero)) else None
+        self._apply_css()
+        self.update()
+
+    def count(self):
+        return self._n
+
+    def _badge(self):
+        f = QFont(self.font())
+        f.setPointSizeF(max(7.0, (f.pointSizeF() if f.pointSizeF() > 0 else 9.0) - 1.0))
+        f.setBold(True)
+        return QFontMetrics(f).horizontalAdvance(f"{self._n:,}" if isinstance(self._n, int) else str(self._n)) + 14, f
+
+    def paintEvent(self, e):
+        super().paintEvent(e)
+        if self._n is None:
+            return
+        w, f = self._badge()
+        h = 18
+        r = QRectF(self.width() - w - 12, (self.height() - h) / 2, w, h)
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        primary = self.objectName() == "Primary"
+        col = QColor(T("on_accent") if primary else T(self._tone if self.isEnabled() else "faint"))
+        bg = QColor(col)
+        bg.setAlpha(60 if primary else 34)
+        p.setPen(Qt.NoPen)
+        p.setBrush(bg)
+        p.drawRoundedRect(r, h / 2, h / 2)
+        p.setPen(col)
+        p.setFont(f)
+        p.drawText(r, Qt.AlignCenter, f"{self._n:,}" if isinstance(self._n, int) else str(self._n))
+        p.end()
 
 
 # =====================================================================
@@ -1999,7 +2055,7 @@ class DropZone(QFrame):
         top.addWidget(self.title)
         top.addWidget(self.count)
         top.addStretch()
-        self.btn_pick = QPushButton(tr("选择文件…"))
+        self.btn_pick = QPushButton(tr("选择文件"))
         self.btn_pick.setObjectName("Link")
         self.btn_pick.setCursor(Qt.PointingHandCursor)
         self.btn_pick.clicked.connect(self._pick)

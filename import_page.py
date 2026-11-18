@@ -63,7 +63,7 @@ class ImportPage:
         self.file_edit.setReadOnly(True)
         self.file_edit.setPlaceholderText(tr("Excel，里面要有一列商品编号（CodArticolo / Codice / 商品编号 …）"))
         r.addWidget(self.file_edit, 1)
-        b = QPushButton(tr("选择文件…"))
+        b = QPushButton(tr("选择文件"))
         b.clicked.connect(self.choose_file)
         r.addWidget(b)
         cv.addLayout(r)

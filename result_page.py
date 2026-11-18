@@ -674,6 +674,28 @@ def fill(win, s):
             b.clicked.connect(lambda _=False, k=i, w=b: (w.setChecked(False), win.switch_scenario(k)))
         win.res_scen.addWidget(b)
     win.res_scen_card.setVisible(bool(res))
+    if res:
+        # 11-18（用户）：以前是两行蓝字「详细对比… / 差异商品（n）」，不正式 → 两个正式的小按钮，数字放徽章
+        from erp_widgets import CountButton
+        lk = QHBoxLayout()
+        lk.setSpacing(8)
+        b = QPushButton(tr("方案明细"))
+        b.setObjectName("Link")
+        b.setToolTip(tr("几个方案的金额、缺几个、各供应商箱数逐项对比"))
+        b.clicked.connect(lambda: _scen_dialog(win))
+        lk.addWidget(b)
+        if can_switch_scenario(s):
+            import scenarios as SC
+            diff = SC.diff_items(st.get("rows") or [], st["scenario_assigns"], st.get("labels") or {})
+            b2 = CountButton(tr("差异商品"), len(diff))
+            b2.setObjectName("Link")
+            b2.setToolTip(tr("在不同方案里分给了不同供应商、或者买不到的商品，逐个对比"))
+            b2.setEnabled(bool(diff))
+            from main import ScenarioDiffDialog
+            b2.clicked.connect(lambda: ScenarioDiffDialog(win, res, diff).exec())
+            lk.addWidget(b2)
+        lk.addStretch()
+        win.res_scen.addLayout(lk)
 
     # 底部
     n_files = len(used)
