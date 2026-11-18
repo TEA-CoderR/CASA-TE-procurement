@@ -321,7 +321,7 @@ class ReplaceDialog(QDialog):
             "相似度 ≥ 80% 的先勾上，都要看一眼再替换。\n"
             "替换进 Griglia：原来那一行换成新商品（分类 / 品牌 / 门店勾选照旧，条码 / 名称 / 箱规 / 价格 / 供应商换成新的、"
             "编号空着，改过的格子浅蓝底），原商品那一行抄到文件最下面、划线停用。新商品 Griglia 里已经有的，只把原商品那一行移到最下面。"
-            "Griglia 里已经划线的：直接把那一行改成新商品、去掉划线。\n"
+            "Griglia 里已经划线的也一样：那一行换成新商品，原商品抄到文件最下面划线。\n"
             "替换过的商品，以后门店清单里再有旧条码，检查清单时自动换成新商品去采购。"))
         title.setStyleSheet("font-size:15px; font-weight:700;")
         head.addWidget(title)
@@ -553,7 +553,7 @@ class ReplaceDialog(QDialog):
                     it.setData(Qt.UserRole + 1, pct(ch) if ch else None)
                 if f == "old":
                     it.setToolTip(f"{old.get('name') or ''}\n{old['ean']}" + (
-                        "\n\n" + tr("Griglia 第 {0} 行已经划线：替换时直接把这一行改成新商品、去掉划线", old.get("row") or "?")
+                        "\n\n" + tr("Griglia 第 {0} 行已经划线：替换时这一行换成新商品，原商品抄到最下面划线", old.get("row") or "?")
                         if old.get("struck") else ""))
                     if ch:
                         it.setData(SEGS, self.GR.diff_tokens(old.get("name") or "", ch["name"]))
@@ -735,13 +735,11 @@ class ReplaceDialog(QDialog):
         if len(picks) > 12:
             lines += "\n" + tr("…还有 {0} 个", len(picks) - 12)
         n_in = sum(1 for _o, c in picks if c.get("in_grid"))
-        n_st = sum(1 for o, _c in picks if o.get("struck"))
         msg = tr("替换 Griglia 里 {0} 个商品：\n{1}\n\n改的文件：{2}（{3}）\n{4}\n\n"
                  "原来那一行换成新商品（改过的格子浅蓝底，编号空着）；旧商品那一行抄到文件最下面、划线。\n"
                  "其中 {5} 个新商品 Griglia 里已经有，只把旧行移到最下面。\n"
-                 "其中 {6} 个 Griglia 里已经划线：那一行直接改成新商品、去掉划线。\n"
                  "改之前在程序文件夹存一份备份；先在本机副本上改，逐格核对：除了这几行别的格子都没变才放回，核对不过原文件不动。Excel / WPS 要关着，文件大，可能要几分钟。\n"
-                 "同步文件夹里的文件同事都会看到。确定替换？", len(picks), lines, name, where, os.path.dirname(target), n_in, n_st)
+                 "同步文件夹里的文件同事都会看到。确定替换？", len(picks), lines, name, where, os.path.dirname(target), n_in)
         if QMessageBox.question(self, tr("替换进 Griglia"), msg) != QMessageBox.Yes:
             return
         import product_images as PI

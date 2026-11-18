@@ -454,7 +454,8 @@ def price_cols(grid, labels):
 def plan_rows(grid, picks, today=None):
     """
     要写的：[(旧条码, 旧行号, {列(0 开始): 值}, 怎么写)]，按行号从下往上（删行不影响上面的行号）。
-    怎么写：move = 原地换成新商品、旧行抄到最下面划线；inplace = 旧商品本来就是划线的那一行，直接改成新商品、去掉划线；
+    怎么写：move = 原地换成新商品、旧行抄到最下面划线（Griglia 已停用的商品也这样，用户 11-18）；
+    inplace = 老的写法（划线那一行直接改成新商品，旧商品不留），现在不再生成，write_rows 还认；
     noop = 划线的商品、新商品 Griglia 里已经有：Excel 不用改，只记替换记录
     picks = [(旧商品, 候选)]。旧行原地换成新商品（分类 / 品牌 / 门店勾选 / 公式照旧），这里只给要换掉的格子：
     条码、名称、箱规、最低价（PREZZO NETTO、PA MIGLIORE）、Fornitore（最便宜那家，Griglia 里的写法）、各批发商价格；
@@ -488,7 +489,8 @@ def plan_rows(grid, picks, today=None):
         for h, i in (grid.get("sup_cols") or {}).items():          # 这家这周没报价：清掉照抄过来的旧价格
             if i not in pc.values():
                 vals[i] = None
-        out.append((old["ean"], old.get("row"), vals, "inplace" if old.get("struck") else "move"))
+        # 用户 11-18：Griglia 已停用的商品也一样——这一行换成新商品，旧商品抄到最下面划线（以前原地改、旧商品就没了）
+        out.append((old["ean"], old.get("row"), vals, "move"))
     out.sort(key=lambda x: -(x[1] or 0))
     return out
 
@@ -736,6 +738,12 @@ def write_rows(path, grid, plan, excel=None, log=None, url=None, ops=None):
                 continue
             # 2. 原来那一行原地换成新商品
             _write_new(ws, row, vals, cols, img_col, new_ean, url, row_range, ec, None)
+            try:
+                f = row_range(row).Font
+                if f.Color == GREY_FONT:
+                    f.ColorIndex = -4105                          # 原来是 Griglia 已停用的灰字：改回自动颜色
+            except Exception:
+                pass
             ops.append(("write", row))
             done.append((old_ean, row, dst))
         if head() != head_before:           # 表头被改了：一个字都不存

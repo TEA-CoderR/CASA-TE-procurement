@@ -420,8 +420,8 @@ def test_name_diff_marks_only_what_changed():
     assert "".join(t for t, _k in GR.diff_tokens("A 40 LAV.X", "B")) == "A 40 LAV.X"
 
 
-def test_struck_items_get_replacements_and_are_replaced_in_place():
-    """用户 11-11：Griglia 里划线的商品也要找替代；替换时划线的那一行直接改成新商品、去掉划线，不再挪"""
+def test_struck_items_get_replacements_and_old_row_moved_to_bottom():
+    """用户 11-11：Griglia 里划线的商品也要找替代；11-18：替换时和别的一样——这一行换成新商品，旧商品抄到最下面划线"""
     g = _grid("x.xlsx")
     sv = g["items"].pop("8002222000017")                  # SVELTO 980 当成划线的（第 5 行）
     g["struck"] = {sv["ean"]: sv}
@@ -431,13 +431,14 @@ def test_struck_items_get_replacements_and_are_replaced_in_place():
     assert c["ean"] == "8002222000024"
     assert all(r["old"]["ean"] != "8002222000017" for r in GR.suggest(g, QUOTES))   # 不算「都不做了」
     plan = GR.plan_rows(g, [(out[0]["old"], c)])
-    assert plan[0][3] == "inplace"
+    assert plan[0][3] == "move"
     ws = _sheet()
     done = GR.write_rows("x.xlsx", g, plan, excel=_Excel(ws))
-    assert done == [("8002222000017", 5, None)]
-    assert ws.v[(5, 2)] == "8002222000024" and ws.v.get((8, 2)) is None       # 原地改、没往下抄
+    assert done == [("8002222000017", 5, 8)]
+    assert ws.v[(5, 2)] == "8002222000024"                                     # 这一行换成新商品
+    assert ws.v[(8, 2)] == "8002222000017"                                     # 旧商品抄到最下面
     assert _font(ws, 5, "Strikethrough") is False
-    assert "8002222000017" in ws.comments[(5, 2)]
+    assert _font(ws, 8, "Strikethrough") is True
     # 划线的商品、新商品 Griglia 里已有：Excel 不动，只记录
     pool = GR.pool(g, QUOTES)
     have = next(x for x in pool if x["ean"] == "8004444000013")
