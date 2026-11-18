@@ -5200,18 +5200,18 @@ class MainWindow(QMainWindow):
         msg += "。" + tr("点下面的门店看各家的结果。")
         self.banner_folder.show_msg(msg, "warn" if bad else "ok")
         self.refresh_folder()
-        self.cmp_steps.set_state(3, "done" if ok else "todo", "")
+        # 比完先看比价结果（用户 11-18：确定没问题再去下单发送）；第 4 步「下单发送」等用户自己点过去
+        self.cmp_steps.set_state(3, "todo", "")
         bg = getattr(self, "_batch_bg", False)
         self._batch_bg = False
         if ok and bg:                                   # 点过「后台运行」：问要不要回去看结果
             from erp_widgets import ask_return
             ask_return(self, type("_Bg", (), {"in_background": True})(), msg.split("。")[0],
-                       lambda: (self.go_page("order"), self._cmp_show(3)))
+                       lambda: self.go_page("result"))
             return
         self.show_toast(msg.split("。")[0])
         if ok:
-            self.go_page("order")
-            self._cmp_show(3)
+            self.go_page("result")
 
     def _refresh_batch(self, path):
         """① 下面一行：这一批的门店（点了切换总文件夹），每家显示「待比价 / 已比价」"""
@@ -6018,11 +6018,11 @@ class MainWindow(QMainWindow):
             self._refresh_batch(self.folder_edit.text().strip())
             QTimer.singleShot(300, self._run_next_in_batch)
             return
-        self.cmp_steps.set_state(3, "done", "")
+        self.cmp_steps.set_state(3, "todo", "")
         self.refresh_folder()
         from erp_widgets import ask_return
         ask_return(self, dlg, tr("{0} 比价完成", store),
-                   lambda: (self.go_page("order"), self._cmp_show(3), self.show_toast(tr("{0} 比价完成", store))))
+                   lambda: (self.go_page("result"), self.show_toast(tr("{0} 比价完成", store))))
 
     def show_transfers(self, *_):
         s = self.last_summary or {}

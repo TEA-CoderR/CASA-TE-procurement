@@ -48,3 +48,22 @@ def test_compare_rows_states():
     st = {r[0]: r[1] for r in rows}
     assert st == {"FOIANO": "done", "MARLIA": "fail", "S.MARCO": "now", "S.CONCORDIO": "wait"}
     assert rows[0][2] == "601 / 624 分给 3 家 · 缺 23" and rows[0][4] == "€3,810"
+
+
+def test_result_store_chips_group_whole_batch_date_folder(monkeypatch):
+    """比价结果顶上的门店：同一个「4 比价结果\\日期」里的几家门店都列出来（以前只按门店文件夹比 → 只有一家）"""
+    import os
+    import history
+    import result_page as RP
+    root = os.path.join("C:" + os.sep, "W", "4 比价结果", "2026-11-18")
+    runs = [
+        {"id": "a", "time": "2026-11-18 12:40:00", "folder": os.path.join(root, "FOIANO"), "store": "FOIANO"},
+        {"id": "b", "time": "2026-11-18 12:50:00", "folder": os.path.join(root, "MARLIA"), "store": "MARLIA"},
+        {"id": "c", "time": "2026-11-18 12:57:00", "folder": os.path.join(root, "S.MARCO"), "store": "S.MARCO"},
+        {"id": "d", "time": "2026-11-18 12:58:00", "folder": os.path.join(root, "S.MARCO"), "store": "S.MARCO"},
+        {"id": "e", "time": "2026-11-11 10:00:00",
+         "folder": os.path.join("C:" + os.sep, "W", "4 比价结果", "2026-11-11", "FOIANO"), "store": "FOIANO"},
+    ]
+    monkeypatch.setattr(history, "list_runs", lambda: runs)
+    got = RP._batch_runs({"history_id": "d"})
+    assert [e["id"] for e in got] == ["a", "b", "d"]

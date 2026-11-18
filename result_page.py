@@ -416,8 +416,21 @@ def build(win, lay, hold):
     lay.addWidget(foot)
 
 
+def _batch_key(e):
+    """
+    同一批比价的认法：工作文件夹「4 比价结果\日期\门店」→ 同一个日期文件夹的几家门店算一批
+    （11-18 修：以前按门店文件夹比，每家店的文件夹都不一样 → 顶上只显示一家）；
+    别的文件夹照旧按 文件夹 + 同一天
+    """
+    import reorder_service as RS
+    folder = e.get("folder") or ""
+    if folder and RS.batch_root_of(folder):
+        return ("batch", os.path.normcase(os.path.dirname(os.path.normpath(folder))))
+    return ("day", os.path.normcase(folder), (e.get("time") or "")[:10])
+
+
 def _batch_runs(s):
-    """和这条结果同一天、同一个文件夹的几家门店（每家取最近一次）"""
+    """和这条结果同一批的几家门店（每家取最近一次）"""
     import history
     try:
         runs = history.list_runs()
@@ -427,10 +440,10 @@ def _batch_runs(s):
     me = next((e for e in runs if e.get("id") == hid), None)
     if not me:
         return []
-    day, folder = (me.get("time") or "")[:10], me.get("folder")
+    key = _batch_key(me)
     seen, out = set(), []
     for e in sorted(runs, key=lambda e: e.get("time") or "", reverse=True):
-        if (e.get("time") or "")[:10] != day or e.get("folder") != folder:
+        if _batch_key(e) != key:
             continue
         st = e.get("store") or e.get("main_file")
         if st in seen:
@@ -441,7 +454,21 @@ def _batch_runs(s):
 
 
 def _open_run(win, hid):
+    """点顶上一家门店：是那家店最新的一次比价 → 切换到那家店（修改分配、缺失商品、门店报告都跟着这家）；
+    不是最新的 → 只看历史记录"""
     import history
+    import reorder_service as RS
+    e = next((x for x in history.list_runs() if x.get("id") == hid), None)
+    folder = (e or {}).get("folder") or ""
+    if folder and RS.batch_root_of(folder) and os.path.isdir(folder) and not getattr(win, "running", False):
+        try:
+            from service import load_state
+            st = load_state(folder)
+        except Exception:
+            st = None
+        if st and st.get("history_id") == hid:
+            win._show_store_result(folder)
+            return
     data = history.load_run(hid)
     if data:
         win.last_summary = data
