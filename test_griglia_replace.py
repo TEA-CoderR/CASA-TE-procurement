@@ -650,3 +650,81 @@ def test_checked_order_writes_substitute_ean_and_its_code():
     head = [c.value for c in ws[1]]
     row = dict(zip(head, [c.value for c in ws[2]]))
     assert n == 1 and row["CODICE EAN"] == "8009999000011" and row["COLLI"] == 2 and str(row["CodArticolo"]) == "205"
+
+
+def test_restore_old_rows_from_backup_to_bottom_struck():
+    """用户 11-18：以前原地换掉的 Griglia 已停用商品，从备份里把原商品抄回最下面划线"""
+    g = _grid("x.xlsx")
+    g["header_row"] = 3
+    cur = _sheet()
+    cur.v[(5, 2)], cur.v[(5, 3)] = "8002222000024", "SVELTO PIATTI LIMONE 1000 ML"   # 第 5 行已经原地换成新商品
+    bk_old, bk_new = _sheet(), _sheet()
+    bk_new.v[(5, 2)] = "8002222000024"                                              # 替换以后的备份：没有原商品
+    books = {"g.xlsx": cur, "b2.xlsx": bk_new, "b1.xlsx": bk_old}
+
+    class Ex:
+        def __init__(self):
+            self.saved = False
+            ex = self
+
+            class WB:
+                def __init__(self, ws):
+                    self.ws = ws
+
+                def Worksheets(self, _n):
+                    return self.ws
+
+                def Save(self):
+                    ex.saved = True
+
+                def Close(self, SaveChanges=False):
+                    pass
+            self.Workbooks = type("W", (), {"Open": lambda _s, p, ReadOnly=False: WB(books[os.path.basename(p)])})()
+    found = GR.find_in_backups(["b2.xlsx", "b1.xlsx"], g, ["8002222000017", "8009999999999"], excel=Ex())
+    assert found == {"8002222000017": ("b1.xlsx", 5)}
+    ex, ops = Ex(), []
+    done = GR.restore_rows("g.xlsx", g, [("8002222000017", "8002222000024", "b1.xlsx", 5)], excel=ex, ops=ops)
+    assert ex.saved and done == [("8002222000017", 8)] and ops == [("append", 8)]
+    assert cur.v[(8, 2)] == "8002222000017" and cur.v[(8, 3)] == "SVELTO PIATTI LIMONE 980 ML" and cur.v[(8, 1)] == "102"
+    assert cur.v[(5, 2)] == "8002222000024"                                         # 新商品那一行不动
+    assert _font(cur, 8, "Strikethrough") is True and "8002222000024" in cur.comments[(8, 2)]
+    # 已经有了就不再加
+    ex2 = Ex()
+    assert GR.restore_rows("g.xlsx", g, [("8002222000017", None, "b1.xlsx", 5)], excel=ex2) == [] and not ex2.saved
+    done_log = {"8002222000017": {"new": "8002222000024", "row": 5, "moved_to": None},
+                "8001111000014": {"new": "x", "row": 4, "moved_to": 9}}
+    assert GR.missing_old_rows(done_log, {"items": {}, "struck": {}}) == ["8002222000017"]
+    assert GR.missing_old_rows(done_log, {"items": {}, "struck": {"8002222000017": {}}}) == []
+
+
+def test_restore_old_command_records_row():
+    import commands as CMD
+    work, bdir = tempfile.mkdtemp(), tempfile.mkdtemp()
+    p = os.path.join(work, "SCHEDA.xlsx")
+    _xlsx(p)
+    _xlsx(os.path.join(bdir, "SCHEDA_20261118_104300.xlsx"))
+    g = _grid(p)
+    g["header_row"] = 3
+    GR.save_done(work, {"8002222000017": {"new": "8002222000024", "row": 5, "moved_to": None, "struck": True}})
+    cur, bk = _sheet(), _sheet()
+    cur.v[(5, 2)] = "8002222000024"
+
+    class WB:
+        def __init__(self, ws):
+            self.ws = ws
+
+        def Worksheets(self, _n):
+            return self.ws
+
+        def Save(self):
+            pass
+
+        def Close(self, SaveChanges=False):
+            pass
+    ex = type("E", (), {})()
+    ex.Workbooks = type("W", (), {"Open": lambda _s, path, ReadOnly=False:
+                                  WB(bk if "_2026" in os.path.basename(path) else cur)})()
+    res = CMD.griglia_restore_old(g, ["8002222000017"], by="t", excel=ex, backup_dir=bdir)
+    assert res["restored"] == [("8002222000017", 8)] and res["missing"] == []
+    r = GR.load_done(work)["8002222000017"]
+    assert r["restored_to"] == 8 and r["moved_to"] == 8

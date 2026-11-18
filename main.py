@@ -1141,6 +1141,8 @@ class FillItemsDialog(QDialog):
         hh.setStretchLastSection(False)
         for c, wd in enumerate(self.WIDTHS):
             self.table.setColumnWidth(c, wd)
+        import product_images as PI
+        PI.add_thumbs(self.table, 0, 1, settings)
         self.table.setTextElideMode(Qt.ElideRight)
         self.table.horizontalHeaderItem(5).setToolTip(tr("库存够卖 = 本店库存 ÷ 日均（账面库存是负数时按 0 算）"))
         self.table.horizontalHeaderItem(10).setToolTip(tr("订后够卖 =（本店库存 + 已订和加的箱数 × 每箱件数）÷ 日均"))
@@ -1550,6 +1552,8 @@ class ManualDialog(QDialog):
         self.table.setEditTriggers(QAbstractItemView.DoubleClicked | QAbstractItemView.SelectedClicked)
         self.table.cellClicked.connect(self._cell_clicked)
         self.table.setItemDelegateForColumn(6, SupplierComboDelegate(self))
+        import product_images as PI
+        PI.add_thumbs(self.table, 2, 1, settings)
         self.qty_stepper = None
         if edit_mode:                                # 箱数：− / ＋ 点一下改 1，点中间照旧输入
             from erp_widgets import StepperDelegate
@@ -1998,6 +2002,8 @@ class MissingDialog(QDialog):
         self.table = make_table([tr("行"), "EAN", "ARTICOLO", "Codice Fornitore", tr("供应商"), qh, tr("原因"),
                                  tr("有报价的供应商"), tr("库存够卖（天）")],
                                 stretch_col=2, numeric_cols=(0, 5, 8))
+        import product_images as PI
+        PI.add_thumbs(self.table, 2, 1, settings)
         self.table.horizontalHeaderItem(5).setToolTip(
             tr("主订单里这个商品要订的数量（箱数；主订单按件数订货时是件数）——就是这次买不到的量，不是库存"))
         self.table.horizontalHeaderItem(3).setToolTip(tr("供应商自己的货号（数据库商品表里登记的）"))
@@ -2427,6 +2433,8 @@ class ScenarioDiffDialog(QDialog):
         if self.c_cover:
             heads.append(tr("库存够卖（天）"))
         self.table = make_table(heads, stretch_col=1, numeric_cols=(2, self.c_gap) + ((self.c_cover,) if self.c_cover else ()))
+        import product_images as PI
+        PI.add_thumbs(self.table, 1, 0, settings)
         if self.c_cover:
             self.kind.addItem(tr("只看买不到、店里又不够卖一周的"), "urgent")
             self.table.horizontalHeaderItem(self.c_cover).setToolTip(
@@ -4198,6 +4206,8 @@ class MainWindow(QMainWindow):
         self.chg_table = make_table([tr("行"), "EAN", "ARTICOLO", tr("箱数"), tr("原供应商"), tr("原件价"), tr("新供应商"), tr("新件价"),
                                      tr("多花 €"), tr("原因")], stretch_col=2, numeric_cols=(0, 3, 5, 7, 8))
         self.chg_table.setItemDelegateForColumn(9, StatusDelegate(self.chg_table))
+        import product_images as PI
+        PI.add_thumbs(self.chg_table, 2, 1, settings)
         self.chg_table.setMinimumHeight(260)
         self.chg_sorter = RowSorter(self.chg_table)
         self.chg_hf = HeaderFilter(self.chg_table, apply=lambda: self._filter_changes(self.chg_filter.text()),
@@ -6748,6 +6758,10 @@ def main():
     from erp_widgets import ScreenFit
     app._screen_fit = ScreenFit(app)            # 窗口打开时不会比屏幕大、不会跑出屏幕
     app.installEventFilter(app._screen_fit)
+    from erp_widgets import WidthMemory
+    app._width_memory = WidthMemory(app, settings.setdefault("table_widths", {}),
+                                    lambda: save_settings(settings))     # 所有表格拖过的列宽都记住
+    app.installEventFilter(app._width_memory)
     theme.load_fonts()
     f = QFont()
     f.setFamilies([theme.LATIN_FONT, UI_FONT])

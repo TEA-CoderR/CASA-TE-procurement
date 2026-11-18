@@ -110,6 +110,8 @@ class DeterArrivalDialog(QDialog):
         hh.setStretchLastSection(False)
         for c, (_f, _h, wd) in enumerate(COLS):
             self.t.setColumnWidth(c, wd)
+        import product_images as PI
+        PI.add_thumbs(self.t, 1, 2, settings)
         self.t.horizontalHeaderItem(0).setToolTip(tr("点一下勾上 / 取消：还没到货的勾上"))
         from erp_widgets import TableSortFilter, fit_to_screen
         import settings as ST

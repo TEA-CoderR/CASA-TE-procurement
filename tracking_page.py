@@ -2194,6 +2194,8 @@ class RecordLinesDialog(QDialog):
         hh.setStretchLastSection(False)
         for c, (_f, _h, wd) in enumerate(self.COLS):
             self.t.setColumnWidth(c, wd)
+        import product_images as PI
+        PI.add_thumbs(self.t, 3, 1, getattr(page, "settings", None))
         from erp_widgets import TableSortFilter, fit_to_screen
         import settings as ST
         self.ctl = TableSortFilter(self.t, lambda: len(self.rows), self._text, self._fill, key=self._key,

@@ -2069,19 +2069,21 @@ def remember_columns(table, cfg, key, fields, save, ver=1):
     返回 reset()：恢复默认顺序
     """
     hh = table.horizontalHeader()
+    table.setProperty("_cols_remembered", True)        # 全程序的 WidthMemory 不再管这张表
     hh.setSectionsMovable(True)
     hh.setFirstSectionMovable(True)
-    col_of = {f: c for c, f in enumerate(fields)}
+    # 列编号可以是数字也可以是名字（「old_name」这种）：一律按文字比（用户 11-18：拖过的列宽下次打开没记住——名字当编号的表以前读不回来）
+    col_of = {str(f): c for c, f in enumerate(fields)}
     if cfg.get(key + "_columns_ver") != ver:
         cfg.pop(key + "_columns", None)
         cfg[key + "_columns_ver"] = ver
         save()
     hh.blockSignals(True)
     for f, wd in (cfg.get(key + "_widths") or {}).items():
-        c = col_of.get(int(f)) if str(f).lstrip("-").isdigit() else None
+        c = col_of.get(str(f))
         if c is not None and wd and wd > 20:
             table.setColumnWidth(c, int(wd))
-    order = [int(f) for f in (cfg.get(key + "_columns") or []) if str(f).lstrip("-").isdigit() and int(f) in col_of]
+    order = [str(f) for f in (cfg.get(key + "_columns") or []) if str(f) in col_of]
     for v, f in enumerate(order):
         cur = hh.visualIndex(col_of[f])
         if cur != v and cur >= 0:
@@ -2152,6 +2154,120 @@ class ScreenFit(QObject):
                     pass
             QTimer.singleShot(0, later)
         return False
+
+
+class WidthMemory(QObject):
+    """
+    全程序的表格：拖过的列宽都记住，下次打开照旧（用户 11-18「每次我拖动了列宽都要记住」）。
+    已经用 remember_columns 自己记的表格不管。别的表格第一次有内容时把「按内容自动宽」的列改成可以拖
+    （宽度按内容，最宽 420），用户拖了就记在 cfg[表格的名字] = {列号: 宽度}；
+    表格的名字 = 窗口类名 + 列名（同一个窗口里几张表按列名分开）。
+    """
+    MAX_W = 420
+
+    def __init__(self, parent, cfg, save):
+        super().__init__(parent)
+        self.cfg, self.save = cfg, save
+        self._timer = QTimer(self)
+        self._timer.setSingleShot(True)
+        self._timer.setInterval(500)
+        self._timer.timeout.connect(self.save)
+
+    @staticmethod
+    def key_of(t):
+        m = t.model()
+        if m is None:
+            return None
+        heads = [str(m.headerData(c, Qt.Horizontal) or "") for c in range(m.columnCount())]
+        if not any(heads):
+            return None
+        try:
+            w = t.window().__class__.__name__
+        except Exception:
+            w = ""
+        return w + "|" + "|".join(heads)
+
+    def eventFilter(self, obj, ev):
+        from PySide6.QtCore import QEvent
+        from PySide6.QtWidgets import QTableView
+        if ev.type() == QEvent.Show and isinstance(obj, QTableView) and not obj.property("_wm_on") \
+                and not obj.property("_cols_remembered"):
+            obj.setProperty("_wm_on", True)
+            QTimer.singleShot(0, lambda t=obj: self._attach(t))
+        return False
+
+    def _attach(self, t):
+        try:
+            if t.property("_cols_remembered") or t.model() is None:
+                return
+            m, hh = t.model(), t.horizontalHeader()
+        except RuntimeError:
+            return
+        st = {"key": None, "busy": False}
+
+        def check():
+            try:
+                if t.property("_cols_remembered"):
+                    return
+                self._apply(t, st)
+            except RuntimeError:
+                pass
+
+        later = QTimer(t)
+        later.setSingleShot(True)
+        later.setInterval(0)
+        later.timeout.connect(check)
+        for sig in (m.rowsInserted, m.modelReset, m.layoutChanged, m.columnsInserted):
+            sig.connect(lambda *_: later.start())
+        hh.sectionResized.connect(lambda c, _o, w: self._resized(t, st, c, w))
+        check()
+
+    def _apply(self, t, st):
+        from PySide6.QtWidgets import QHeaderView
+        hh = t.horizontalHeader()
+        key = self.key_of(t)
+        if key is None:
+            return
+        saved = self.cfg.get(key) or {}
+        # 只改「按内容自动宽」的列；铺满剩下宽度的那一列（Stretch）照旧铺满，拖它旁边的列它跟着变
+        auto = [c for c in range(t.model().columnCount()) if hh.sectionResizeMode(c) == QHeaderView.ResizeToContents]
+        if key == st["key"] and not auto:
+            return
+        if not auto and not saved:
+            st["key"] = key
+            return
+        if auto and not saved and t.model().rowCount() == 0:
+            return                                   # 等有内容了再按内容定宽度
+        st["busy"] = True
+        try:
+            for c in auto:
+                hh.setSectionResizeMode(c, QHeaderView.Interactive)
+            for c in auto:
+                if str(c) in saved:
+                    continue
+                t.resizeColumnToContents(c)
+                t.setColumnWidth(c, min(max(t.columnWidth(c), 56), self.MAX_W))
+            for c, w in saved.items():
+                try:
+                    c = int(c)
+                except ValueError:
+                    continue
+                if 0 <= c < t.model().columnCount() and w and w > 20 \
+                        and hh.sectionResizeMode(c) == QHeaderView.Interactive:
+                    t.setColumnWidth(c, int(w))
+        finally:
+            st["busy"] = False
+        st["key"] = key
+
+    def _resized(self, t, st, c, w):
+        from PySide6.QtWidgets import QApplication
+        if st["busy"] or t.property("_cols_remembered") or not (QApplication.mouseButtons() & Qt.LeftButton):
+            return
+        key = self.key_of(t)
+        if key is None or w <= 20:
+            return
+        self.cfg.setdefault(key, {})[str(c)] = int(w)
+        self._timer.start()
 
 
 class ColumnChooser(QObject):
@@ -3241,3 +3357,22 @@ EXCEL_WORKER = _ExcelWorker()
 def run_excel_job(fn):
     """把要用 Excel 的后台活排进同一条线程（不阻塞界面，按顺序一件件做）"""
     EXCEL_WORKER.submit(fn)
+
+
+def excel_call(fn):
+    """在后台线程里（例如 BusyDialog.run 的 func）调用：交给 Excel 那条线程做完再返回结果（出错照样抛出）。
+    别在界面线程、也别在 Excel 那条线程自己里面调用"""
+    ev, box = threading.Event(), {}
+
+    def job():
+        try:
+            box["r"] = fn()
+        except BaseException as e:
+            box["e"] = e
+        finally:
+            ev.set()
+    EXCEL_WORKER.submit(job)
+    ev.wait()
+    if "e" in box:
+        raise box["e"]
+    return box.get("r")

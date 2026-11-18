@@ -763,6 +763,189 @@ def write_rows(path, grid, plan, excel=None, log=None, url=None, ops=None):
                 pass
 
 
+# ===================================================================== 把原商品从备份抄回最下面（用户 11-18）
+def find_in_backups(backups, grid, eans, excel=None, log=None):
+    """
+    在备份里找原商品那一行：backups = 备份文件路径（新的在前），eans = 要找的旧条码。
+    返回 {条码: (备份路径, 行号)}（每个条码用最新一份里有的）。只读，不改任何文件。
+    """
+    from utils import clean_ean
+    found = {}
+    want = set(eans)
+    cols = grid.get("cols") or {}
+    ec = cols.get("ean", 0) + 1
+    hr = grid.get("header_row") or 0
+    own = excel is None
+    if own:
+        import pythoncom
+        import win32com.client as win32
+        pythoncom.CoInitialize()
+        excel = win32.DispatchEx("Excel.Application")
+        excel.Visible = False
+        excel.DisplayAlerts = False
+    try:
+        for bk in backups:
+            if not want - set(found):
+                break
+            wb = None
+            try:
+                wb = excel.Workbooks.Open(os.path.abspath(bk), ReadOnly=True)
+                ws = wb.Worksheets(grid.get("sheet")) if grid.get("sheet") else wb.ActiveSheet
+                u = ws.UsedRange
+                n = int(u.Row) + int(u.Rows.Count) + 5
+                col = [r[0] for r in _values(ws, 1, ec, n, ec)]
+                for i, x in enumerate(col, 1):
+                    e = clean_ean(x)
+                    if i > hr and e in want and e not in found:
+                        found[e] = (bk, i)
+            except Exception as e:
+                if log:
+                    log(f"读不了备份 {os.path.basename(bk)}：{e}")
+            finally:
+                if wb is not None:
+                    try:
+                        wb.Close(SaveChanges=False)
+                    except Exception:
+                        pass
+    finally:
+        if own:
+            try:
+                excel.Quit()
+            except Exception:
+                pass
+    return found
+
+
+def restore_rows(path, grid, items, excel=None, log=None, url=None, ops=None):
+    """
+    items = [(旧条码, 新条码, 备份路径, 备份里的行号)]：把备份里那一行（格式 + 内容，按 R1C1 照抄）抄到 Griglia 最下面，
+    划线、字变灰、旧条码格加批注、图片列写 IMAGE 公式——和替换时挪下去的旧行一样。
+    Griglia 里已经有这个旧条码的跳过（不重复加）。返回 [(旧条码, 抄到的行号)]；ops 记 ("append", 行号)
+    """
+    from utils import clean_ean
+    ops = ops if ops is not None else []
+    log = log or (lambda *_a: None)
+    own = excel is None
+    if own:
+        import pythoncom
+        import win32com.client as win32
+        pythoncom.CoInitialize()
+        excel = win32.DispatchEx("Excel.Application")
+        excel.Visible = False
+        excel.DisplayAlerts = False
+        excel.ScreenUpdating = False
+    done = []
+    wb, srcs = None, {}
+    try:
+        wb = excel.Workbooks.Open(os.path.abspath(path))
+        ws = wb.Worksheets(grid.get("sheet")) if grid.get("sheet") else wb.ActiveSheet
+        cols = grid.get("cols") or {}
+        ec = cols.get("ean", 0) + 1
+        hr = grid.get("header_row")
+        last = max([c for c in cols.values()] + [i for i in (grid.get("sup_cols") or {}).values()] + [0]) + 1
+        if hr:
+            head_vals = _values(ws, hr, 1, hr, min(ws.UsedRange.Columns.Count + ws.UsedRange.Column - 1, 1000))[0]
+            last = max([last] + [i for i, x in enumerate(head_vals, 1) if x not in (None, "")])
+        img_col = next((c for c in range(1, min(last, 40) + 1) if hr and _is_img_head(ws.Cells(hr, c).Value)), None)
+        known = max([(it.get("row") or 0) for it in grid.get("items", {}).values()] +
+                    [(it.get("row") or 0) for it in (grid.get("struck") or {}).values()] + [hr or 0])
+
+        def col_vals():
+            u = ws.UsedRange
+            n = max(int(u.Row) + int(u.Rows.Count) - 1, known) + 5
+            return [r[0] for r in _values(ws, 1, ec, n, ec)]
+
+        def rng(sh, r):
+            return sh.Range(sh.Cells(r, 1), sh.Cells(r, last))
+
+        head_n, head_w = max(hr or 0, 1), min(last, 200)
+
+        def head():
+            return [["=" if isinstance(x, str) and x.startswith("=") else x for x in r]
+                    for r in _values(ws, 1, 1, head_n, head_w, "Formula")]
+        head_before = head()
+        for old_ean, new_ean, bk, src_row in items:
+            col = col_vals()
+            if any(i > (hr or 0) and clean_ean(x) == old_ean for i, x in enumerate(col, 1)):
+                log(f"Griglia 里已经有 {old_ean}，不再加")
+                continue
+            if bk not in srcs:
+                swb = excel.Workbooks.Open(os.path.abspath(bk), ReadOnly=True)
+                srcs[bk] = (swb, swb.Worksheets(grid.get("sheet")) if grid.get("sheet") else swb.ActiveSheet)
+            sws = srcs[bk][1]
+            if clean_ean(sws.Cells(src_row, ec).Value) != old_ean:
+                log(f"备份 {os.path.basename(bk)} 第 {src_row} 行不是 {old_ean}，跳过")
+                continue
+            filled = [i for i, x in enumerate(col, 1) if x not in (None, "")]
+            dst = max(filled[-1] if filled else 0, known) + 1
+            if dst <= (hr or 0):
+                raise RuntimeError(f"找不到 Griglia 最下面一行（算出来第 {dst} 行），没有修改")
+            ops.append(("append", dst))
+            rng(sws, src_row).Copy()
+            rng(ws, dst).PasteSpecial(Paste=-4122)                      # 只贴格式
+            try:
+                excel.CutCopyMode = False
+            except Exception:
+                pass
+            rng(ws, dst).FormulaR1C1 = rng(sws, src_row).FormulaR1C1
+            try:
+                ws.Rows(dst).RowHeight = sws.Rows(src_row).RowHeight
+            except Exception:
+                pass
+            if img_col:
+                _set_formula(ws.Cells(dst, img_col), image_formula(old_ean, url))
+            moved = rng(ws, dst)
+            moved.Font.Strikethrough = True
+            moved.Font.Color = GREY_FONT
+            try:
+                c = ws.Cells(dst, ec)
+                if c.Comment is not None:
+                    c.Comment.Delete()
+                c.AddComment("Non più disponibile dai grossisti" + (f" → sostituito da {new_ean}" if new_ean else ""))
+            except Exception:
+                pass
+            done.append((old_ean, dst))
+        if head() != head_before:
+            raise RuntimeError("改动碰到了 Griglia 的表头（前几行），已放弃，文件没有保存")
+        if done:
+            wb.Save()
+        return done
+    finally:
+        for swb, _sws in srcs.values():
+            try:
+                swb.Close(SaveChanges=False)
+            except Exception:
+                pass
+        if wb is not None:
+            try:
+                wb.Close(SaveChanges=False)
+            except Exception:
+                pass
+        if own:
+            try:
+                excel.Quit()
+            except Exception:
+                pass
+
+
+def missing_old_rows(done, grid):
+    """替换记录里旧商品没有留在 Griglia 最下面的（11-18 以前 Griglia 已停用的商品是原地换掉的）：[旧条码]"""
+    have = set((grid or {}).get("items") or {}) | set((grid or {}).get("struck") or {})
+    return [old for old, r in done.items()
+            if not r.get("moved_to") and not r.get("restored_to") and old not in have]
+
+
+def list_backups(name, bdir=None):
+    """这个 Griglia 文件的备份（新的在前）"""
+    bdir = bdir or backup_dir()
+    stem, ext = os.path.splitext(name)
+    try:
+        fs = sorted((f for f in os.listdir(bdir) if f.startswith(stem + "_") and f.endswith(ext)), reverse=True)
+    except OSError:
+        return []
+    return [os.path.join(bdir, f) for f in fs]
+
+
 # ===================================================================== 改完核对：别的格子一个都不能变（用户 11-11）
 _REF = re.compile(r"(?<![A-Za-z0-9_!'.\"/])(\$?)([A-Z]{1,3})(\$?)(\d+)(?![0-9A-Za-z_(])")
 

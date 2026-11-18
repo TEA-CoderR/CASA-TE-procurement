@@ -226,6 +226,8 @@ class AddItemsDialog(QDialog):
         self.table.itemChanged.connect(self._edited)
         from erp_widgets import StepperDelegate     # 加几箱：− / ＋ 点一下改 1 箱
         StepperDelegate.install(self.table, self.ADD)
+        import product_images as PI
+        PI.add_thumbs(self.table, 0, 1, self.page.settings)
         from erp_widgets import HeaderFilter        # 右键表头按列筛选（和搜索框、两个勾选一起生效）
         self._base_hide = {}
         self.hf = HeaderFilter(self.table, apply=self._filter,

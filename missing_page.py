@@ -30,6 +30,24 @@ def _letters(name, tone, size):
     return lb
 
 
+def _pic(name, ean, tone, size):
+    """商品小图（用户 11-18：列表都放缩略图）：有图显示图，没图显示名称头两个字母"""
+    box = QWidget()
+    box.setFixedSize(size, size)
+    lt = _letters(name, tone, size)
+    lt.setParent(box)
+    img = QLabel(box)
+    img.setFixedSize(size, size)
+    img.setAlignment(Qt.AlignCenter)
+    img.setStyleSheet(f"background:{T('canvas')}; border-radius:{14 if size > 40 else 9}px;")
+    try:
+        import product_images as PI
+        PI.set_label_image(img, ean, size)
+    except Exception:
+        img.hide()
+    return box
+
+
 class ItemRow(QPushButton):
     def __init__(self, it, win):
         super().__init__()
@@ -42,7 +60,7 @@ class ItemRow(QPushButton):
         h.setSpacing(12)
         best = it["best"]
         tone = _tone(best) if best else "muted"
-        h.addWidget(_letters(it["art"], tone, 36))
+        h.addWidget(_pic(it["art"], it["ean"], tone, 36))
         v = QVBoxLayout()
         v.setSpacing(2)
         n = QLabel(it["art"] or "—")
@@ -68,7 +86,7 @@ class CandCard(QFrame):
         h = QHBoxLayout(self)
         h.setContentsMargins(14, 12, 14, 12)
         h.setSpacing(14)
-        h.addWidget(_letters(art, "accent", 40), 0, Qt.AlignTop)
+        h.addWidget(_pic(art, ean, "accent", 40), 0, Qt.AlignTop)
         v = QVBoxLayout()
         v.setSpacing(4)
         name = QLabel()

@@ -136,6 +136,8 @@ class TransferDialog(QDialog):
                  tr("原来订（箱）"), tr("现在订（箱）"), tr("调出后够卖（天）"), tr("调入后够卖（天）")]
         self._set_row = ui.table_set_row
         self.table = ui.make_table(heads, stretch_col=5, numeric_cols=(6, 7, 8, 9, 10, 11))
+        import product_images as PI
+        PI.add_thumbs(self.table, 5, 4, getattr(parent, "_S", None))
         self.table.horizontalHeaderItem(10).setToolTip(tr("调出门店把这些货调走以后，剩下的库存还能卖几天"))
         self.table.horizontalHeaderItem(11).setToolTip(tr("调入门店收到调货（加上这次还订的箱数）以后能卖几天"))
         from erp_widgets import TableSortFilter, ColumnFilterBox

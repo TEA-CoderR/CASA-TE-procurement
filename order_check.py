@@ -619,6 +619,8 @@ class OrderCheck:
             t = ui.make_table([tr("门店"), tr("条码"), tr("名称"), tr("供应商"), tr("批发商"), tr("清单箱数"), tr("确定箱数") + " ✎"],
                               stretch_col=2, numeric_cols=(5, 6))
             t.verticalHeader().setDefaultSectionSize(30)
+            import product_images as PI
+            PI.add_thumbs(t, 2, 1, self.settings)
             t.setEditTriggers(QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed |
                               QAbstractItemView.AnyKeyPressed)
             for c, wd in ((0, 90), (1, 130), (3, 170), (4, 86), (5, 76), (6, 110)):

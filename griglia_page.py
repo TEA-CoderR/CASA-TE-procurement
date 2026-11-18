@@ -809,7 +809,10 @@ class GrigliaPage:
 
     def _repl_log(self):
         from griglia_replace_dialog import ReplaceLogDialog
-        ReplaceLogDialog(self.win, self.settings, self._done_log(), self.grid).exec()
+        dlg = ReplaceLogDialog(self.win, self.settings, self._done_log(), self.grid, source=self.source())
+        dlg.exec()
+        if dlg.restored:
+            self.refresh()
 
     def source(self):
         """Griglia 原件（同步文件夹里的）：「换 Griglia…」时记下的"""
