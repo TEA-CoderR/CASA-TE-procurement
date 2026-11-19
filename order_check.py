@@ -2392,9 +2392,10 @@ class OrderCheck:
             t.item(k, _col(2)).setToolTip("🏷 " + ptip)
         pk = t.item(k, _col(10))
         if x.get("quote_sup"):
-            same = not x.get("db_pack") or abs(x["pack"] - x["db_pack"]) < 1e-9
-            pk.setToolTip(tr("{0} 的报价：每箱 {1:g} 件", x["quote_sup"], x["pack"]) +
-                          ("" if same else "\n" + tr("数据库箱规是每箱 {0:g} 件", x["db_pack"])))
+            qp = x.get("quote_pack") or x["pack"]
+            same = abs(qp - x["pack"]) < 1e-9
+            pk.setToolTip(tr("每箱 {0:g} 件（数据库箱规，和门店清单一样）", x["pack"]) +
+                          ("" if same else "\n" + tr("{0} 的报价：每箱 {1:g} 件，比价时按件数换算", x["quote_sup"], qp)))
             if not same:
                 pk.setForeground(QColor(T("accent")))
         elif x.get("pack"):

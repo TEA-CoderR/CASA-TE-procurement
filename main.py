@@ -1704,6 +1704,18 @@ class ManualDialog(QDialog):
             it = self.table.item(k, 6)
             it.setFlags(it.flags() | Qt.ItemIsEditable)
             it.setToolTip(tr("点击选择其他供应商"))
+        if c and r.get("base_pack") and (r.get("colli") or {}).get(c):
+            # 主订单是数据库箱规的箱：这家按件数换算成它自己的箱（2026-11-19）
+            pk = float((r.get("packs") or {}).get(c) or 1)
+            got, need = r["colli"][c] * pk, float(r.get("need") or 0)
+            it = self.table.item(k, 6)
+            tip = tr("门店要 {0:g} 件（{1:g} 箱 × {2:g}）→ {3} 订 {4} 箱 × {5:g} = {6:g} 件",
+                     need, float(r.get("qty") or 0), float(r["base_pack"]), short(c), r["colli"][c], pk, got)
+            if r.get("unfit"):
+                tip += "\n" + tr("箱规太大、没有自动选的：{0}", "、".join(short(s_) for s_ in r["unfit"]))
+            it.setToolTip((it.toolTip() + "\n" if n_offers > 1 else "") + tip)
+            if abs(got - need) > 1e-9:
+                it.setForeground(QColor(T("warn")))
         if c != b:
             for col in range(self.table.columnCount()):
                 self.table.item(k, col).setBackground(QColor(T("accent_soft")))

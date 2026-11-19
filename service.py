@@ -27,7 +27,18 @@ from openpyxl.utils import get_column_letter
 # =====================
 # 供应商选择：最低价 + 起订量凑单（可由操作员决定 / 手动调整）
 # =====================
-def _price_row(row, qty, unit, packs, ean="", articolo=""):
+FIT_MAX = 1.5      # 换算后订到的件数超过要的 1.5 倍：这家箱规太大，不自动选它（2026-11-19 用户定）
+
+
+def fit_boxes(need, pack):
+    """要 need 件、一箱 pack 件 → 订几箱：取最接近的整箱（一半进上去），最少 1 箱"""
+    if need <= 0:
+        return 0
+    pack = pack if pack and pack > 0 else 1
+    return max(1, int(math.floor(need / pack + 0.5 + 1e-9)))
+
+
+def _price_row(row, qty, unit, packs, ean="", articolo="", base=None):
     """
     一个商品的报价数据。
       unit : {供应商: 单件价}
@@ -35,7 +46,13 @@ def _price_row(row, qty, unit, packs, ean="", articolo=""):
       prices: 比价用的「一箱价」= 单件价 × 参考件数（参考件数 = 单件价最低那家的每箱件数），
               所以选供应商就是比单件价；同一商品各家箱规一样时，就等于真实的一箱价。
       amt  : 真实的一箱金额 = 单件价 × 这家的每箱件数（算起订金额、各家采购金额用）
+    base：主订单的箱数是按哪种箱算的（CASSA_DB = 数据库箱规，门店清单和审核都是这种箱）。
+      给了就按件数换算到每家批发商：要的件数 = 箱数 × base，每家订 fit_boxes(件数, 这家每箱件数) 箱（colli），
+      amt = 这家真实金额 ÷ 主订单箱数；换算后超过要的 FIT_MAX 倍的批发商不自动选（prices 里拿掉，记在 unfit），
+      全部都超过就照样留着（只有这几家有货）。
     """
+    if base and base > 0:
+        return _price_row_base(row, qty, unit, packs, ean, articolo, float(base))
     best, ref = None, 1
     for s, p in unit.items():
         if p is not None and (best is None or p < best):
@@ -44,6 +61,48 @@ def _price_row(row, qty, unit, packs, ean="", articolo=""):
             "unit": dict(unit), "packs": dict(packs), "ref_pack": ref,
             "prices": {s: (p * ref if p is not None else None) for s, p in unit.items()},
             "amt": {s: (p * (packs.get(s) or 1) if p is not None else None) for s, p in unit.items()}}
+
+
+def _price_row_base(row, qty, unit, packs, ean, articolo, base):
+    q = float(qty or 0) if not isinstance(qty, str) else (float(qty) if qty.strip() else 0.0)
+    need = q * base
+    colli, amt, prices, unfit = {}, {}, {}, {}
+    for s, p in unit.items():
+        if p is None:
+            prices[s] = amt[s] = None
+            continue
+        pk = packs.get(s) or 1
+        c = fit_boxes(need, pk)
+        colli[s] = c
+        prices[s] = p * base                                  # 比价：按件价比（每主订单一箱）
+        amt[s] = (c * pk * p / q) if q > 0 else p * pk        # 真实金额 ÷ 主订单箱数
+        if need > 0 and c * pk > need * FIT_MAX + 1e-9:
+            unfit[s] = c * pk
+    if unfit and len(unfit) < sum(1 for p in prices.values() if p is not None):
+        for s in unfit:
+            prices[s] = None
+    else:
+        unfit = {}
+    return {"row": row, "qty": qty, "ean": ean, "articolo": articolo, "unit": dict(unit), "packs": dict(packs),
+            "ref_pack": base, "base_pack": base, "need": need, "prices": prices, "amt": amt, "colli": colli,
+            "unfit": unfit}
+
+
+def pack_changes(rows, assign):
+    """按批发商箱规换算以后件数和门店要的不一样的商品：[{行, ean, 商品, 要的件数, 供应商, 每箱, 箱数, 订到件数}]"""
+    out = []
+    for r in rows or []:
+        s = assign.get(r["row"]) if assign else None
+        if not s or not r.get("base_pack") or not (r.get("colli") or {}).get(s):
+            continue
+        pk = float((r.get("packs") or {}).get(s) or 1)
+        c = r["colli"][s]
+        got = c * pk
+        need = float(r.get("need") or 0)
+        if abs(got - need) > 1e-9:
+            out.append({"row": r["row"], "ean": r.get("ean", ""), "articolo": r.get("articolo", ""), "need": need,
+                        "base": r["base_pack"], "qty": r.get("qty"), "supplier": s, "pack": pk, "colli": c, "got": got})
+    return out
 
 
 def _price_row_pieces(row, pieces, unit, packs, ean="", articolo=""):
@@ -78,6 +137,11 @@ def set_row_qty(r, q):
     if r.get("pieces") is not None:
         r2 = _price_row_pieces(r["row"], q, r.get("unit") or {}, r.get("packs") or {}, r.get("ean", ""),
                                r.get("articolo", ""))
+        for k, v in r.items():
+            r2.setdefault(k, v)
+    elif r.get("base_pack"):
+        r2 = _price_row_base(r["row"], q, r.get("unit") or {}, r.get("packs") or {}, r.get("ean", ""),
+                             r.get("articolo", ""), r["base_pack"])
         for k, v in r.items():
             r2.setdefault(k, v)
     else:
@@ -868,8 +932,11 @@ def run_process(ordine_file, eliminare_path, distribuire_path, log, progress=Non
     supplier_headers = [ws_main.cell(1, col).value for col in range(SUPPLIER_MATRIX_START_COL, q)]
     rows_data = []
     col_pezzi, _ = find_col(ws_main, "PEZZI")
+    col_base, _ = (None, None) if col_pezzi else find_col(ws_main, "CASSA_DB")
     if col_pezzi:
         log(tr("主订单有 PEZZI 列：按件数订货，各家箱数 = 件数 ÷ 这家每箱件数（向上取整）"))
+    elif col_base:
+        log(tr("主订单的箱数按数据库箱规（门店清单的箱）：每家批发商按件数换算成它的箱数（取最接近的整箱）"))
     for i in range(2, main_last + 1):
         unit = {}
         for k, col in enumerate(range(SUPPLIER_MATRIX_START_COL, q)):
@@ -885,7 +952,16 @@ def run_process(ordine_file, eliminare_path, distribuire_path, log, progress=Non
                 pieces = 0.0
             rows_data.append(_price_row_pieces(i, pieces, unit, packs_i, ean, art))
         else:
-            rows_data.append(_price_row(i, qty, unit, packs_i, ean, art))
+            base = None
+            if col_base:
+                try:
+                    base = float(ws_main.cell(i, col_base).value or 0) or None
+                except (TypeError, ValueError):
+                    base = None
+            rows_data.append(_price_row(i, qty, unit, packs_i, ean, art, base=base))
+    n_unfit = sum(1 for r in rows_data if r.get("unfit"))
+    if n_unfit:
+        log(tr("{0} 个商品有批发商的箱规太大（换算后超过要的 {1:g} 倍），这几家不自动选", n_unfit, FIT_MAX))
 
     # 最低价分配 + 起订量凑单优化
     P(62, tr("选择供应商（最低价 + 起订量凑单）..."))
@@ -963,6 +1039,13 @@ def run_process(ordine_file, eliminare_path, distribuire_path, log, progress=Non
     missing_count = 0
     missing_items = []  # [(ean, articolo), ...]
     row_by_i = {r["row"]: r for r in rows_data}
+    summary["pack_changes"] = pack_changes(rows_data, assignment)
+    if summary["pack_changes"]:
+        log(tr("按批发商箱规换算：{0} 个商品订到的件数和门店要的不一样（取最接近的整箱）",
+               len(summary["pack_changes"])))
+        for x in summary["pack_changes"][:30]:
+            log(tr("  {0}：要 {1:g} 件 → {2} {3} 箱 × {4:g} = {5:g} 件", x["articolo"] or x["ean"], x["need"],
+                   normalize(x["supplier"]), x["colli"], x["pack"], x["got"]))
     # 调货：主订单 PEZZI 改成减完的件数，备注写从哪家店调了几件；全部靠调货的商品不向批发商订
     for i, t in transfer_rows.items():
         r = row_by_i.get(i)
@@ -1182,7 +1265,9 @@ def run_process(ordine_file, eliminare_path, distribuire_path, log, progress=Non
 
             if ean in supplier_ean_index:
                 j = supplier_ean_index[ean]
-                _write_order(ws, j, col_ord, order_input, ws_main.cell(i, col_colli_main).value)
+                rr = row_by_i.get(i)
+                q_w = _order_qty(rr, assigned_supplier) if rr and rr.get("colli") else ws_main.cell(i, col_colli_main).value
+                _write_order(ws, j, col_ord, order_input, q_w)
                 count += 1
 
         for sup in summary["suppliers"]:
@@ -2001,7 +2086,7 @@ def rewrite_assignment(data, new_assign, new_sources, log, progress=None, force=
     col_pezzi_m, _ = find_col(ws, "PEZZI")
     for r in changed:
         ws.cell(r["row"], SUPPLIER_RESULT_COL).value = new_assign.get(r["row"])
-        if r.get("colli") and col_colli_m and new_assign.get(r["row"]):
+        if r.get("pieces") is not None and r.get("colli") and col_colli_m and new_assign.get(r["row"]):
             ws.cell(r["row"], col_colli_m).value = _order_qty(r, new_assign.get(r["row"]))
         if r["row"] in q_changed:
             v = r.get("qty") or 0

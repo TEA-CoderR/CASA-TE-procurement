@@ -631,6 +631,16 @@ def fill(win, s):
     if ts:
         rows.append((str(len(ts)), tr("{0} 个商品门店间调货", len(ts)), tr("少订的箱数 · 调货单已生成"), "violet",
                      win.show_transfers))
+    try:
+        from service import pack_changes
+        pch = pack_changes(st.get("rows") or [], st.get("assignment") or {}) if st.get("rows") \
+            else list(s.get("pack_changes") or [])
+    except Exception:
+        pch = list(s.get("pack_changes") or [])
+    if pch:
+        rows.append((str(len(pch)), tr("{0} 个商品按批发商箱规换算", len(pch)),
+                     tr("订到的件数和门店要的不一样（取最接近的整箱）"), "accent",
+                     lambda p=pch: _pack_dialog(win, p, (st.get("labels") or s.get("supplier_labels") or {}))))
     lost = [c for c in (s.get("changes") or []) if c.get("new") is None]
     if lost:
         rows.append((str(len(lost)), tr("{0} 个商品这次不采购", len(lost)), tr("放弃了供应商，只有它有货"), "err",
@@ -738,3 +748,48 @@ def _scen_dialog(win):
     d.exec()
     win.scen_panel.setParent(win._res_hold)
     win.scen_panel.hide()
+
+
+def _pack_dialog(win, items, labels):
+    """按批发商箱规换算的商品：门店要几件 → 分到的那家订几箱、几件（2026-11-19）"""
+    from PySide6.QtWidgets import QDialog, QVBoxLayout, QTableWidget, QTableWidgetItem, QHeaderView, QDialogButtonBox
+    from erp_widgets import TableSortFilter, fit_to_screen
+    d = QDialog(win)
+    d.setWindowTitle(tr("按批发商箱规换算"))
+    v = QVBoxLayout(d)
+    heads = [tr("条码"), tr("商品"), tr("门店要（件）"), tr("供应商"), tr("每箱"), tr("订几箱"), tr("订到（件）"), tr("差")]
+    t = QTableWidget(0, len(heads))
+    t.setHorizontalHeaderLabels(heads)
+    t.verticalHeader().setVisible(False)
+    t.setEditTriggers(QTableWidget.NoEditTriggers)
+    t.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
+    rows = [[x["ean"], x["articolo"], x["need"], labels.get(x["supplier"]) or x["supplier"], x["pack"],
+             float(x["colli"]), x["got"], x["got"] - x["need"]] for x in items]
+
+    def text(i, c):
+        val = rows[i][c]
+        return f"{val:+g}" if c == 7 else f"{val:g}" if isinstance(val, float) else str(val)
+
+    def fill(i, k):
+        if t.rowCount() <= k:
+            t.setRowCount(k + 1)
+        for c in range(len(heads)):
+            it = QTableWidgetItem(text(i, c))
+            if c >= 2 and c != 3:
+                it.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            if c == 7:
+                it.setForeground(QColor(T("warn") if rows[i][7] > 0 else T("err")))
+            t.setItem(k, c, it)
+
+    ctl = TableSortFilter(t, lambda: len(rows), text, fill, key=lambda i, c: rows[i][c], numeric=(2, 4, 5, 6, 7))
+    ctl.render()
+    d._ctl = ctl
+    t.setColumnWidth(1, 320)
+    v.addWidget(t)
+    bb = QDialogButtonBox(QDialogButtonBox.Close)
+    bb.button(QDialogButtonBox.Close).setText(tr("关闭"))
+    bb.rejected.connect(d.reject)
+    v.addWidget(bb)
+    d.resize(900, 520)
+    fit_to_screen(d)
+    d.exec()

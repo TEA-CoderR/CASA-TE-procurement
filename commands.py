@@ -330,8 +330,8 @@ def apply_quotes(settings, rows, price_dir, log, files=False):
     n = PC.apply_quotes(rows, PC.best_quotes(files))
     for x in rows:                                  # 这几家报价里都没有（比价时会成为缺失）
         x["in_quote"] = bool(x.get("quote_sup"))
-    diff = sum(1 for x in rows if x.get("quote_sup") and x.get("db_pack") and abs(x["pack"] - x["db_pack"]) > 1e-9)
-    log(tr("[检查清单] {0} 份报价：{1} 个商品改用最便宜那家的箱规和件价，其中 {2} 个箱规和数据库不一样",
+    diff = sum(1 for x in rows if x.get("quote_sup") and x.get("db_pack") and abs(x.get("quote_pack", x["pack"]) - x["db_pack"]) > 1e-9)
+    log(tr("[检查清单] {0} 份报价：{1} 个商品改用最便宜那家的件价（箱数照数据库箱规），其中 {2} 个报价箱规和数据库不一样",
            len(files), n, diff))
     return n, len(files)
 
