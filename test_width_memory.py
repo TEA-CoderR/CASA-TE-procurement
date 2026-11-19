@@ -75,3 +75,38 @@ def test_replace_log_dialog_closes():
     QTimer.singleShot(50, close.click)
     QTimer.singleShot(2000, d.reject)               # 万一关不掉也别卡住测试
     assert d.exec() == 1 and not d.isVisible()
+
+
+def test_fill_column_drags_other_columns_the_right_way():
+    """2026-11-19（用户：审核清单的列拖动是反的）：铺满的商品列不跟着别的列变 → 拖宽别的列，边线跟着鼠标往右走"""
+    from PySide6.QtWidgets import QTableWidget
+    from erp_widgets import FillColumn
+    app = _app()
+    t = QTableWidget(3, 4)
+    t.resize(600, 300)
+    for c in range(1, 4):
+        t.setColumnWidth(c, 80)
+    cfg = {}
+    fc = FillColumn(t, 0, min_w=100, last_w=80, cfg=cfg, key="u", save=lambda: None)
+    t.show()
+    app.processEvents()
+    fc.fit()
+    w0 = t.columnWidth(0)
+    assert w0 >= 300                                   # 铺满剩下的宽度
+    x_right = t.horizontalHeader().sectionViewportPosition(1) + t.columnWidth(1)
+    t.setColumnWidth(1, 140)                           # 拖宽第 2 列
+    app.processEvents()
+    assert t.columnWidth(0) == w0                      # 商品列不变（以前 Stretch：商品列变窄，边线留在原地 = 反的）
+    assert t.horizontalHeader().sectionViewportPosition(1) + t.columnWidth(1) == x_right + 60
+    t.resize(800, 300)                                 # 窗口变宽：商品列跟着铺满
+    app.processEvents()
+    app.processEvents()
+    assert t.columnWidth(0) > w0
+    fc.user, cfg["u"] = True, True                      # 用户自己拖过商品列：不再自动改
+    w1 = t.columnWidth(0)
+    t.resize(900, 300)
+    app.processEvents()
+    app.processEvents()
+    assert t.columnWidth(0) == w1
+    fc.reset()
+    assert "u" not in cfg and t.columnWidth(0) > w1

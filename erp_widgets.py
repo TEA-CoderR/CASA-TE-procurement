@@ -16,7 +16,7 @@ from PySide6.QtGui import QKeySequence
 from PySide6.QtGui import QColor, QPainter, QPen, QFont, QFontMetrics
 from PySide6.QtWidgets import (QToolTip, QWidget, QFrame, QLabel, QPushButton, QHBoxLayout, QVBoxLayout, QDialog,
                                QProgressBar, QStyledItemDelegate, QSizePolicy, QMainWindow, QStyleOptionViewItem,
-                               QStyle, QApplication, QTableView)
+                               QStyle, QApplication, QTableView, QHeaderView)
 
 from i18n import tr
 from theme import T, NUM_FONT, icon
@@ -2253,6 +2253,72 @@ def remember_columns(table, cfg, key, fields, save, ver=1):
         save()
 
     return reset
+
+
+class FillColumn(QObject):
+    """
+    让一列（通常是「商品」名称列）铺满表格剩下的宽度，但拖别的列宽时方向是对的。
+    2026-11-19（用户：审核清单的列拖动是反的）：以前用 QHeaderView.Stretch —— 铺满的列在左边时，
+    往右拖别的列的右边线，铺满的列跟着变窄，那条边线留在原地、这一列反而往左长，看起来就是「反的」。
+    现在：这一列是普通可拖的列，只在表格变大变小（窗口缩放、侧栏开关）时重新算它的宽度；
+    最后一列铺满（setStretchLastSection），拖宽别的列时右边的列往右挪、最后一列变窄，和 Excel 一样。
+    用户自己拖了这一列的宽度以后就不再自动改它（下次打开照用户拖的）。
+    """
+
+    def __init__(self, table, col, min_w=220, last_w=110, cfg=None, key=None, save=None):
+        super().__init__(table)
+        self.t, self.col, self.min_w, self.last_w = table, col, min_w, last_w
+        self.cfg, self.key, self.save = cfg, key, save
+        self.user = bool(cfg is not None and key and cfg.get(key))
+        self._busy = False
+        hh = table.horizontalHeader()
+        hh.setSectionResizeMode(col, QHeaderView.Interactive)
+        hh.setStretchLastSection(True)
+        hh.sectionResized.connect(self._resized)
+        table.viewport().installEventFilter(self)
+
+    def _resized(self, c, _old, _new):
+        if c == self.col and not self._busy and QApplication.mouseButtons() & Qt.LeftButton:
+            self.user = True                  # 用户自己拖了：以后不再自动铺满（记在设置里，下次打开也照用户的）
+            if self.cfg is not None and self.key and not self.cfg.get(self.key):
+                self.cfg[self.key] = True
+                if self.save:
+                    self.save()
+
+    def reset(self):
+        """恢复默认列宽时：又变回自动铺满"""
+        self.user = False
+        if self.cfg is not None and self.key:
+            self.cfg.pop(self.key, None)
+        self.fit()
+
+    def eventFilter(self, obj, ev):
+        if ev.type() == QEvent.Resize and ev.size().width() != ev.oldSize().width() \
+                and not QApplication.mouseButtons() & Qt.LeftButton:     # 只管表格变宽变窄（拖列时出现滚动条不算）
+            QTimer.singleShot(0, self.fit)
+        return False
+
+    def fit(self, force=False):
+        try:
+            t, hh = self.t, self.t.horizontalHeader()
+            hh.setStretchLastSection(True)            # 表格第一次填好时 TableSortFilter 会关掉它，这里再打开
+            if (self.user and not force) or t.isColumnHidden(self.col):
+                return
+            vis = [hh.logicalIndex(v) for v in range(t.columnCount())]
+            vis = [c for c in vis if not t.isColumnHidden(c)]
+            if not vis:
+                return
+            last = vis[-1]
+            others = sum(t.columnWidth(c) for c in vis if c not in (self.col, last))
+            if last != self.col:
+                others += self.last_w
+            w = max(self.min_w, t.viewport().width() - others)
+            if w != t.columnWidth(self.col):
+                self._busy = True
+                t.setColumnWidth(self.col, w)
+                self._busy = False
+        except RuntimeError:
+            pass
 
 
 def fit_to_screen(w, margin=12):

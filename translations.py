@@ -4425,4 +4425,13 @@ TRANSLATIONS = {
     '{0} · 要审核 {1} 个 · 已看 {2} · 已改 {3} 个 · 估算 {4}': ('{0} · to review {1} · seen {2} · changed {3} · estimate {4}', '{0} · da verificare {1} · visti {2} · modificati {3} · stima {4}'),
     '在途已够': ('Enough in transit', 'Sufficiente in arrivo'),
     '扣在途 {0} 箱': ('−{0} cs in transit', '−{0} colli in arrivo'),
+    '下一个待审商品': ('Next item to review', 'Prossimo articolo da verificare'),
+    '跳到下一个要审核、还没看过的商品（左边带黄点的）。\n快捷键：空格 = 下一个待审 · + / − = 确定箱数加减 1 箱 · 0 = 不订 · 退格 = 恢复系统建议 · ↑ ↓ = 上下一个': ('Jump to the next item to review that has not been seen yet (yellow dot on the left).\nShortcuts: Space = next to review · + / − = confirmed cases ±1 · 0 = do not order · Backspace = back to the system suggestion · ↑ ↓ = previous / next', 'Vai al prossimo articolo da verificare non ancora visto (punto giallo a sinistra).\nScorciatoie: Spazio = prossimo da verificare · + / − = colli confermati ±1 · 0 = non ordinare · Backspace = torna al suggerimento · ↑ ↓ = precedente / successivo'),
+    '这家门店要审核的商品都看过了': ('All items to review for this store have been seen', 'Tutti gli articoli da verificare di questo negozio sono stati visti'),
+    '缺货：本店库存 {0:g} 件': ('Out of stock: store stock {0:g} pcs', 'Esaurito: giacenza negozio {0:g} pz'),
+    '缺货：本店没有库存': ('Out of stock in this store', 'Esaurito in questo negozio'),
+    '库存只够卖 {0} 天，不到一个订货周期（{1:g} 天）': ('Stock lasts only {0} days, less than one order cycle ({1:g} days)', 'La giacenza basta solo {0} giorni, meno di un ciclo d\'ordine ({1:g} giorni)'),
+    '库存够卖很久（{0}）': ('Stock lasts a long time ({0})', 'La giacenza basta a lungo ({0})'),
+    'A 类：本店卖得最多的商品，不能断货': ('Class A: top seller in this store, must not run out', 'Classe A: tra i più venduti del negozio, non deve mancare'),
+    '没有销量': ('no sales', 'nessuna vendita'),
 }

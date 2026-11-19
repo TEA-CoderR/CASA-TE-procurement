@@ -26,6 +26,7 @@ def _clear(lay):
     while lay.count():
         w = lay.takeAt(0).widget()
         if w:
+            w.hide()              # 马上藏起来（deleteLater 要等下一轮才删，快速上下翻时旧标签会叠在新标签下面）
             w.deleteLater()
 
 
