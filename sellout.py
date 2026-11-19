@@ -21,6 +21,7 @@ SELL OUT 分析（进销存，2026-11-16 用户：照 ERP「进销存报表」�
 （例：FESTE SPECIALI - ACC.CARNEVALE E HALLOWEEN、CAFFETTIERE E ACCESSORI - BOLLITORI）→ 按第一个「 - 」拆成中类和小类；
 没有「 - 」的整个名字当中类，小类空着。
 """
+import math
 import re
 from datetime import date, datetime, timedelta
 
@@ -31,7 +32,7 @@ NAMES = dict(STORES)
 NAMES[WAREHOUSE] = "BMS"
 PURCHASE_TYPES = ("CA", "CI", "UI", "MG")     # MG：ERP 进销存报表也算进货（2026-11-19 对过 FOIANO：差的 8 件就是 MG）
 # 合计时直接相加的字段（剩余按每个商品算好再加，采购量 ≤ 0 的不算，和 ERP 合计行一样）
-SUMS = ("stock", "pq", "pv", "sq", "sv", "cost", "rem_q", "rem_v")
+SUMS = ("stock", "pq", "pv", "sq", "sv", "cost", "cost_e", "rem_q", "rem_v")
 GROUPS = ("item", "sup", "cat", "mid", "small", "store")
 CHUNK = 1500
 _DASH = re.compile(r"\s+-\s+")
@@ -314,6 +315,23 @@ def _blank():
     return {"stock": 0.0, "pq": 0.0, "pv": 0.0, "sq": 0.0, "sv": 0.0, "cost": 0.0}
 
 
+def price2(x):
+    """进价四舍五入到分（0.605 → 0.61，和 ERP 一样往上进，不用 Python 的银行家舍入）"""
+    return math.floor(abs(x) * 100 + 0.5 + 1e-7) / 100 * (1 if x >= 0 else -1)
+
+
+def sale_cost(pq, pv, sq, cost):
+    """
+    ERP 进销存报表的销售成本：这段时间进的货够卖（采购量 > 0 且 ≥ 销售量）→ 销售量 × 平均进价（到分）；
+    别的（没进货、只有调出、卖的比进的多）→ 销售记录的成本 TotAcquisto。
+    核对：S.FILIPPO · DUE ESSE 01/08–16/11 PANTOFOLA 18 进 18 卖 → 18 × 3.03 = 54.54（销售记录是 54.45）、
+    ESPOSITORE 200 进 95 卖 → 95 × 0.61；SAIS · FOIANO VENTILATORE 88 进 178 卖 → 销售记录 1514.34。
+    """
+    if pq > 0 and sq <= pq:
+        return sq * price2(pv / pq)
+    return cost
+
+
 def metrics(r, agg=False):
     """
     一行 → 平均进价 / 售价、销售率、差额、毛利、剩余（照 ERP 进销存报表）。
@@ -336,7 +354,9 @@ def metrics(r, agg=False):
     else:
         r["diff"] = sv - pv                           # 合计 = 全部销售额 − 全部采购额（ERP 合计行一样）
         r["diff_rate"] = r["diff"] / sv if sv else None
-    r["profit"] = sv - cost                           # 毛利 = 销售额 − 销售记录的成本（ERP 一样）
+    if not agg:
+        r["cost_e"] = sale_cost(pq, pv, sq, cost)
+    r["profit"] = sv - r["cost_e"]                    # 毛利 = 销售额 − 销售成本（ERP 一样，见 sale_cost）
     r["margin"] = r["profit"] / sv if sv else None
     return r
 

@@ -232,6 +232,19 @@ def test_erp_formulas_margin_at_sales_cost_and_no_purchase_rows_blank():
     assert "MG" in S.PURCHASE_TYPES
 
 
+def test_margin_at_rounded_avg_cost_when_bought_enough():
+    """2026-11-19 S.FILIPPO · DUE ESSE 01/08–16/11 和 ERP 逐行对过：进的够卖 → 销售量 × 平均进价（到分，0.605 → 0.61）"""
+    a = S.metrics(dict(stock=0, pq=18, pv=54.45, sq=18, sv=93.94, cost=54.45))           # PANTOFOLA 354084
+    assert abs(a["profit"] - 39.40) < 1e-6 and round(a["margin"] * 100, 1) == 41.9
+    b = S.metrics(dict(stock=105, pq=200, pv=121.0, sq=95, sv=57.10, cost=57.0))         # ESPOSITORE 354345
+    assert abs(b["profit"] + 0.85) < 1e-6
+    c = S.metrics(dict(stock=23, pq=72, pv=43.56, sq=47, sv=56.00, cost=28.0))           # STELO 344303
+    assert abs(c["profit"] - 27.33) < 1e-6
+    t = S.total([a, b, c])
+    assert abs(t["profit"] - (39.40 - 0.85 + 27.33)) < 1e-6
+    assert S.price2(0.605) == 0.61 and S.price2(3.025) == 3.03 and S.price2(-13.745) == -13.75
+
+
 def test_transfer_rows_use_their_own_price(monkeypatch):
     """ERP 调货行（CI / UI）按那一行自己的进价算采购额，没有进价才按 CA 平均进价"""
     raw = {"start": date(2026, 10, 1), "end": date(2026, 10, 2), "scope": (1,), "tree": {"subs": {}, "cats": {}},
