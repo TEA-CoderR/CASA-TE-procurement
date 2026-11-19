@@ -2312,6 +2312,12 @@ class FillColumn(QObject):
             others = sum(t.columnWidth(c) for c in vis if c not in (self.col, last))
             if last != self.col:
                 others += self.last_w
+                if t.columnWidth(last) != self.last_w:      # 最后一列先放回默认宽（铺满时会再变宽，但不会自己变窄）
+                    self._busy = True
+                    hh.setStretchLastSection(False)
+                    t.setColumnWidth(last, self.last_w)
+                    hh.setStretchLastSection(True)
+                    self._busy = False
             w = max(self.min_w, t.viewport().width() - others)
             if w != t.columnWidth(self.col):
                 self._busy = True

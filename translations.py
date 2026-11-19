@@ -4434,4 +4434,5 @@ TRANSLATIONS = {
     '库存够卖很久（{0}）': ('Stock lasts a long time ({0})', 'La giacenza basta a lungo ({0})'),
     'A 类：本店卖得最多的商品，不能断货': ('Class A: top seller in this store, must not run out', 'Classe A: tra i più venduti del negozio, non deve mancare'),
     '没有销量': ('no sales', 'nessuna vendita'),
+    '换一个工作文件夹': ('Choose another working folder', 'Scegli un\'altra cartella di lavoro'),
 }

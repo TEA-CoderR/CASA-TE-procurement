@@ -187,6 +187,20 @@ def _arrow_svg(color):
     return path.replace("\\", "/")
 
 
+def _check_svg(color):
+    """勾选框里的对勾（白色或主题色），和下拉箭头一样生成小 SVG"""
+    import tempfile
+    path = os.path.join(tempfile.gettempdir(), f"erp_check_{color.strip('#')}.svg")
+    if not os.path.exists(path):
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 12 12"><path d="M2.5 6.2l2.4 2.4 4.6-5" '
+                        f'fill="none" stroke="{color}" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>')
+        except OSError:
+            return ""
+    return path.replace("\\", "/")
+
+
 def build_qss_legacy():
     """2026-11-15 以前的样式。总仓采购 / 门店采购两页（用户：这两页很喜欢，不用动）套这一份，别的页面用新的 build_qss"""
     t = _legacy_t()
@@ -499,7 +513,20 @@ def build_qss():
     QComboBox QAbstractItemView {{ background: {t['surface']}; border: 1px solid {t['border']}; border-radius: 8px; padding: 4px;
         selection-background-color: {t['hover']}; selection-color: {t['accent']}; outline: none; }}
     QCheckBox, QRadioButton {{ spacing: 8px; }}
-    QCheckBox::indicator {{ width: 15px; height: 15px; }}
+    QCheckBox::indicator {{ width: 16px; height: 16px; border: 1.5px solid {t['border']}; border-radius: 4px; background: {t['surface']}; }}
+    QCheckBox::indicator:hover {{ border-color: {t['accent']}; }}
+    QCheckBox::indicator:checked {{ background: {t['accent']}; border-color: {t['accent']}; image: url("{_check_svg(t['on_accent'])}"); }}
+    QCheckBox::indicator:indeterminate {{ background: {t['accent_soft']}; border-color: {t['accent']}; }}
+    QCheckBox::indicator:disabled {{ background: {t['surface2']}; border-color: {t['line']}; }}
+    QCheckBox::indicator:checked:disabled {{ background: {t['faint']}; border-color: {t['faint']}; }}
+    QRadioButton::indicator {{ width: 16px; height: 16px; border: 1.5px solid {t['border']}; border-radius: 9px; background: {t['surface']}; }}
+    QRadioButton::indicator:hover {{ border-color: {t['accent']}; }}
+    QRadioButton::indicator:checked {{ border: 5px solid {t['accent']}; background: {t['surface']}; width: 8px; height: 8px; }}
+    QRadioButton::indicator:disabled {{ background: {t['surface2']}; border-color: {t['line']}; }}
+    QTableView::indicator, QListView::indicator, QTreeView::indicator {{ width: 15px; height: 15px; border: 1.5px solid {t['border']};
+        border-radius: 4px; background: {t['surface']}; }}
+    QTableView::indicator:checked, QListView::indicator:checked, QTreeView::indicator:checked {{ background: {t['accent']};
+        border-color: {t['accent']}; image: url("{_check_svg(t['on_accent'])}"); }}
 
     /* ---------- 按钮 ---------- */
     QPushButton {{ background: {t['surface']}; border: 1px solid {t['border']}; border-radius: 8px;

@@ -303,9 +303,9 @@ def build_collect(win, lay):
     win.ws_label.setStyleSheet(f"color:{T('muted')}; font-size:12px;")
     path.addWidget(win.ws_label)
     for text, fn, tip in ((tr("打开"), win.btn_folder.click, tr("打开工作文件夹")),
-                          (tr("换位置…"), win.change_ws_root, None)):
+                          (tr("更改位置"), win.change_ws_root, tr("换一个工作文件夹"))):
         b = QPushButton(text)
-        b.setObjectName("DeterLink")
+        b.setObjectName("Link")
         b.setCursor(Qt.PointingHandCursor)
         if tip:
             b.setToolTip(tip)
@@ -362,7 +362,7 @@ def build_collect(win, lay):
     note.clicked.connect(win.open_deter_arrival)
     win._dc_elim.foot.addWidget(note)
     chk = QPushButton(tr("报价与数据库核对"))
-    chk.setObjectName("DeterLink")
+    chk.setObjectName("Link")
     chk.setCursor(Qt.PointingHandCursor)
     chk.setToolTip(tr("只读检查：报价表里的商品数据库有没有、登记的供应商对不对、进价和箱规一样不一样"))
     chk.clicked.connect(win.check_prices_vs_db)

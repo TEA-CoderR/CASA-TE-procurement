@@ -16,7 +16,7 @@ import time
 from datetime import datetime
 
 from PySide6.QtCore import Qt, QObject, Signal, QTimer, QEvent
-from PySide6.QtGui import QColor, QFontMetrics
+from PySide6.QtGui import QColor, QFontMetrics, QPen
 from PySide6.QtWidgets import (QWidget, QLabel, QPushButton, QLineEdit, QComboBox, QHBoxLayout, QVBoxLayout,
                                QFileDialog, QMessageBox, QSpinBox, QAbstractItemView, QHeaderView, QDialog,
                                QGridLayout, QFrame, QStyledItemDelegate, QAbstractSpinBox, QButtonGroup, QMenu,
@@ -253,12 +253,14 @@ class _ProductDelegate(QStyledItemDelegate):
         p.setFont(f2)
         p.setPen(QColor(T("faint")))
         p.drawText(QRectF(tx, r.top() + 29, tw, 16), Qt.AlignLeft | Qt.AlignVCenter, str(ean))
-        if tier in ("A", "B", "C"):                   # 等级小标签：A 类（最要紧、不能断货的）蓝底蓝字，B 灰，C 淡
+        if tier in ("A", "B", "C"):
+            # 等级小标签不用彩色（2026-11-19 用户问要不要标颜色）：表格里红 / 黄 / 绿 / 蓝 / 紫都已经有意思了
+            # （不订 / 少订 / 照清单 / 多订·在途 / 调货），等级再上色会撞。A 类 = 深色实心白字（最显眼），B 灰框，C 淡
             ex = tx + QFontMetrics(f2).horizontalAdvance(str(ean)) + (8 if ean else 0)
             chip = QRectF(ex, r.top() + 30, 18, 14)
             if chip.right() < r.right() - 4:
-                fg_, bg_ = {"A": ("accent", "accent_soft"), "B": ("muted", "surface2"), "C": ("faint", "surface2")}[tier]
-                p.setPen(Qt.NoPen)
+                fg_, bg_ = {"A": ("surface", "text"), "B": ("muted", "surface2"), "C": ("faint", "surface2")}[tier]
+                p.setPen(QPen(QColor(T("line")), 1) if tier != "A" else Qt.NoPen)
                 p.setBrush(QColor(T(bg_)))
                 p.drawRoundedRect(chip, 4, 4)
                 f3 = QFont(opt.font)
@@ -810,7 +812,7 @@ class OrderCheck:
                 self.table.setColumnWidth(_col(cid), wd)
         self.ctl.set_title(_col(TRANSIT), tr("在途"))         # 表头短一点（鼠标提示写明是箱数）
         from erp_widgets import FillColumn          # 商品列铺满剩下的宽度（不用 Stretch：拖别的列会「反着走」，2026-11-19）
-        self._fill_prod = FillColumn(self.table, _col(3), min_w=200, last_w=110, cfg=self.cfg,
+        self._fill_prod = FillColumn(self.table, _col(3), min_w=180, last_w=100, cfg=self.cfg,
                                      key="check_prod_user", save=lambda: save_settings(self.settings))
         hh.setMinimumSectionSize(50)
         self._moves_in, self._moves_out = {}, {}
@@ -1133,6 +1135,7 @@ class OrderCheck:
         self.view.blockSignals(False)
         self._replan(render=False)
         self._fill()
+        QTimer.singleShot(0, self._select_first)         # 一打开就选中第一个商品（右边详情栏不是空的，直接开始审）
         self._fill_prod.fit()                            # 商品列铺满剩下的宽度（TableSortFilter 第一次填表会关掉最后一列铺满，FillColumn 再打开）
         self._load_transit()                            # 在途列：后台读（检查时一般已经读好，这里直接返回）
         # 不急的：每月销量（查数据库）、商品详情窗口（建窗口 + 连数据库）等界面空下来再做，
@@ -1141,7 +1144,7 @@ class OrderCheck:
         self._m24_token = getattr(self, "_m24_token", 0) + 1
         from erp_widgets import when_idle
         when_idle(self._after_done, quiet_ms=1500)
-        self.summary_row.show()
+        # 摘要行（「打开检查窗口 / 确认，开始比价」）不再显示：审核就在第 2 步里，底部状态栏有同样的按钮（2026-11-19）
         self.window.setWindowTitle(tr("检查门店订货清单 — {0} · {1} 个商品",
                                       "、".join(store_label(k) for k in meta["stores"]), len(rows)))
         done = tr("✔ {0}：{1} 个商品", "、".join(store_label(k) for k in meta["stores"]), len(rows))
@@ -2097,6 +2100,11 @@ class OrderCheck:
         return [i for i in self.ctl.visible
                 if i not in self._seen and not _edited(self.rows[i]) and self._needs_review(self.rows[i])]
 
+    def _select_first(self):
+        if self.table.rowCount() and self.table.currentRow() < 0:
+            self.ctl.ensure(0)
+            self.table.setCurrentCell(0, EDIT_COL)
+
     def next_todo(self):
         """「下一个待审商品」（空格键）：跳到下一个要审核、还没看的商品，看完了就提示"""
         todo = self._todo_rows()
@@ -2452,7 +2460,7 @@ class OrderCheck:
             elif cv == float("inf") or (cyc and cv > 3 * cyc):
                 tok = "faint"
                 tip = tr("库存够卖很久（{0}）", tr("没有销量") if cv == float("inf") else tr("{0} 天", _days(cv)))
-            it.setForeground(QColor(T(tok)))
+            it.setData(Qt.ForegroundRole, QColor(T(tok)) if tok != "text" else None)
             if bold:
                 f = it.font()
                 f.setBold(True)
@@ -2518,8 +2526,8 @@ class OrderCheck:
         changed = _edited(x)
         # 确定箱数的颜色 = 和门店清单比（和「判断」同一套颜色）：一样 黑 · 少订 黄 · 不订 红 · 多订 蓝；手动改过 黄底
         fb, lb = int(x["fbox"]), int(x.get("lbox") or 0)
-        tok = ("faint" if not lb else "err") if fb == 0 else "warn" if fb < lb else "accent" if fb > lb else "text"
-        c.setForeground(QColor(T(tok)))
+        tok = ("faint" if not lb else "err") if fb == 0 else "warn" if fb < lb else "accent" if fb > lb else None
+        c.setData(Qt.ForegroundRole, QColor(T(tok)) if tok else None)    # 一样的不写死颜色（换深浅色时跟着主题）
         c.setBackground(QColor(T("warn_soft")) if changed else QColor(0, 0, 0, 0))
         c.setToolTip((tr("手动改过：系统建议 {0:,} 箱", x["sbox"]) if x.get("sbox") is not None else
                       tr("手动改过：门店清单 {0:,} 箱", x["lbox"])) if changed else tr("双击修改箱数，0 = 不订"))
@@ -2550,6 +2558,18 @@ class OrderCheck:
             self._fill_row(i, k)
         finally:
             self._filling = was
+
+    def restyle(self):
+        """换深浅色：表格每一行的颜色、右边详情栏、左边门店卡重新画（数据不重读）"""
+        if not self.rows or not hasattr(self, "ctl"):
+            return
+        self._refresh_rows(list(self.ctl.visible))
+        if hasattr(self, "drawer"):
+            self.drawer._paint_static()
+            if self._cur_i is not None:
+                self._show_drawer(self._cur_i)
+        self._refresh_side()
+        self._summary()
 
     def _refresh_rows(self, idx):
         """只重画这几行（改一个调货不用整张表重画）；很多行时：看得见的马上画，其余的一批批重画"""

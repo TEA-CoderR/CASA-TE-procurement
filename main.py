@@ -103,9 +103,11 @@ file_logger = _setup_file_logger()
 # =====================================================================
 import theme
 from theme import T, build_qss, icon, app_icon, UI_FONT, NUM_FONT, ICONS, THEMES
-if not settings.get("ui_dark_v2"):          # 2026-11-15 用户：新界面先用深色（顶栏可以切回浅色），每台电脑只换一次
-    settings["theme"] = "dark"
+if not settings.get("ui_light_v3"):         # 2026-11-19 用户：以后以浅色为主（可以切深色），每台电脑只换一次
+    settings["theme"] = "light"
+    settings["theme_follow"] = False
     settings["ui_dark_v2"] = True
+    settings["ui_light_v3"] = True
     try:
         save_settings(settings)
     except Exception:
