@@ -1034,17 +1034,24 @@ class DetailWindow(ToolWindow):
         self.load_box.setVisible(len(self.detail) > self.CHUNK)
         self._load_chunk(0, self._load_token)
 
-    CHUNK = 300               # 每批行数：小一点，后台预先载入时主窗口也不卡
+    CHUNK = 300               # 行数多于这个才显示载入进度条
+    BUDGET = 0.04             # 每批最多占界面 0.04 秒（按时间分批，电脑慢也不卡）
 
     def _load_chunk(self, start, token):
         if token != self._load_token:
             return                                  # 又重新载入了，这一批作废
         t = self.table
-        end = min(len(self.detail), start + self.CHUNK)
+        # 按时间分批（2026-11-19 用户：算完以后还会卡一会）：以前固定 300 行一批，办公电脑上一批要 0.5 秒以上，
+        # 后台预先载入时主窗口一顿一顿的；现在每批最多 BUDGET 秒，到点就让界面喘口气
+        import time as _t
+        t0 = _t.perf_counter()
+        n = len(self.detail)
+        end = start
         t.setUpdatesEnabled(False)
-        for i in range(start, end):
-            self._fill_row(i)
-            self._show_qty(i)
+        while end < n and (end - start < 20 or _t.perf_counter() - t0 < self.BUDGET):
+            self._fill_row(end)
+            self._show_qty(end)
+            end += 1
         t.setUpdatesEnabled(True)
         self.load_bar.setValue(end)
         self.load_lbl.setText(tr("正在载入订货明细… {0:,} / {1:,} 行", end, len(self.detail)))

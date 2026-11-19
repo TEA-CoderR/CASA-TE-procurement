@@ -6779,6 +6779,86 @@ def _event_hub(app):
     return hub
 
 
+STALL_SEC = 0.6          # 2026-11-19：界面停了这么久（用户能感觉到的小卡）就记进 logs/stall.log
+STALL_TICK = 0.1
+
+
+def _start_stall_sampler(app):
+    """
+    小卡顿记录（2026-11-19 用户：很多地方点了以后卡一会、没有进度条，都是以前遗留的 → 全面排查）。
+    hang.log 只记 5 秒以上的；这里界面每 0.1 秒报一次平安，停了 0.4 秒以上就开始每 0.1 秒看一次界面线程正在跑
+    本程序的哪一行，恢复时超过 STALL_SEC 就写一行：卡了几秒 · 最后点的按钮 · 卡最久的几处代码（按被看到的次数）。
+    只看界面线程、只记本程序文件夹里的代码，开销很小。logs/stall.log 超过 2 MB 换新文件（旧的留一份 .old）。
+    """
+    try:
+        from datetime import datetime as _dt
+        path = os.path.join(LOG_DIR, "stall.log")
+        try:
+            if os.path.getsize(path) > 2_000_000:
+                os.replace(path, path + ".old")
+        except OSError:
+            pass
+        f = open(path, "a", encoding="utf-8")
+        f.write(f"\n=== {APP_NAME} {APP_VERSION} 启动 {_dt.now():%Y-%m-%d %H:%M:%S}\n")
+        f.flush()
+        app._stall_file = f
+        main_id = threading.main_thread().ident
+        here = os.path.dirname(os.path.abspath(__file__)).lower()
+        beat = {"t": time.time()}
+
+        def tick():
+            beat["t"] = time.time()
+        tm = QTimer(app)
+        tm.setInterval(int(STALL_TICK * 1000))
+        tm.timeout.connect(tick)
+        tm.start()
+        app._stall_timer = tm
+
+        def own_stack():
+            fr = sys._current_frames().get(main_id)
+            out = []
+            while fr is not None and len(out) < 4:
+                fn = fr.f_code.co_filename
+                if fn.lower().startswith(here):
+                    out.append(f"{os.path.basename(fn)}:{fr.f_lineno} {fr.f_code.co_name}")
+                fr = fr.f_back
+            return " ← ".join(out) or "（不是本程序的代码：Qt 画界面 / 套样式，或别的库）"
+
+        def run():
+            from erp_widgets import RUNNING
+            last = time.time()
+            while True:
+                time.sleep(STALL_TICK)
+                now = time.time()
+                if now - last > 2:                       # 电脑睡眠醒来
+                    beat["t"] = now
+                last = now
+                if now - beat["t"] < 0.4:
+                    continue
+                start, seen = beat["t"], {}
+                while time.time() - beat["t"] > 0.25 and time.time() - start < 120:
+                    k = own_stack()
+                    seen[k] = seen.get(k, 0) + 1
+                    time.sleep(STALL_TICK)
+                dur = beat["t"] - start
+                if dur < STALL_SEC:
+                    continue
+                click, ct = _ClickRecorder.last
+                top = sorted(seen.items(), key=lambda kv: -kv[1])[:3]
+                try:
+                    f.write(f"[{_dt.now():%Y-%m-%d %H:%M:%S}] 卡 {dur:.1f} 秒"
+                            f" · 最后点的：{('「' + click + '」 ' + format(start - ct, '.1f') + ' 秒前') if click else '—'}"
+                            f" · 进度窗口：{'、'.join(RUNNING.values()) or '没有'}\n")
+                    for k, n in top:
+                        f.write(f"    {n * STALL_TICK:4.1f}s  {k}\n")
+                    f.flush()
+                except Exception:
+                    pass
+        threading.Thread(target=run, daemon=True, name="stall-sampler").start()
+    except Exception as e:
+        file_logger.info(f"小卡顿记录没开：{e}")
+
+
 def _start_hang_watchdog(app):
     """
     界面卡住时自动记下「卡在哪一行代码」（logs/hang.log，不会关掉程序）。
@@ -6890,6 +6970,7 @@ def main():
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
     _start_hang_watchdog(app)
+    _start_stall_sampler(app)
     # Qt 自带按钮（是 / 否 / 取消 等）的翻译
     try:
         from PySide6.QtCore import QTranslator, QLibraryInfo
