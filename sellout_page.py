@@ -1192,7 +1192,7 @@ class SelloutPage:
         self.k_rem.set(eur0(t["rem_v"]), tr("{0:,.0f} 件", t["rem_q"]), "err" if t["rem_q"] < 0 else "muted")
         self.flow.set(res["days"])
         self.bk.set(SO.bucket_counts(rows), self.bucket)
-        top = sorted((r for r in rows if r["rem_v"] > 0), key=lambda r: -r["rem_v"])[:3]
+        top = sorted((r for r in rows if (r["rem_v"] or 0) > 0), key=lambda r: -r["rem_v"])[:3]
         self.top_rem.set([(r["name"], r["ean"], r["rem_q"], r["rem_v"]) for r in top])
         self.rem_cap.setVisible(bool(top))
         self._fill_table()

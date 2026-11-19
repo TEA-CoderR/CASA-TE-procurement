@@ -213,3 +213,17 @@ def test_switching_store_view_equals_querying_that_store(monkeypatch):
                [(d, round(a, 6), round(b, 6), round(c, 6), round(e, 6)) for d, a, b, c, e in q["days"]], stores
         assert v["scope"] == q["scope"]
     assert S.view(full, []) is full and S.view(full, list(S.ALL_SCOPE)) is full
+
+
+def test_erp_formulas_margin_at_avg_cost_and_no_purchase_rows_blank():
+    """2026-11-19 和 ERP 进销存报表逐行对过：毛利 = 销售额 − 销售量 × 平均进价；这段时间没进货的商品剩余 / 差额空着、不算进合计"""
+    a = S.metrics(dict(stock=0, pq=12, pv=66.0, sq=13, sv=106.12, cost=70.0))          # ERP 206649 MOSTRO APPENDINO
+    assert abs(a["profit"] - 34.62) < 1e-9 and a["rem_q"] == -1 and abs(a["rem_v"] + 5.5) < 1e-9
+    assert abs(a["diff"] - 40.12) < 1e-9
+    b = S.metrics(dict(stock=37, pq=0, pv=0.0, sq=90, sv=82.88, cost=45.0))             # ERP 341936 RAGNATELA（没进货）
+    assert abs(b["profit"] - 37.88) < 1e-9
+    assert b["rem_q"] is None and b["rem_v"] is None and b["diff"] is None and b["diff_rate"] is None
+    t = S.total([a, b])
+    assert t["rem_q"] == -1 and abs(t["profit"] - (34.62 + 37.88)) < 1e-9 and abs(t["diff"] - 40.12) < 1e-9
+    assert t["sq"] == 103 and abs(t["rate_q"] - 103 / 12) < 1e-9
+    assert "MG" in S.PURCHASE_TYPES                     # FOIANO 差的 8 件就是 MG
