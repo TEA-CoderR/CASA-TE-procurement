@@ -11,11 +11,11 @@ SELL OUT 分析（进销存，2026-11-16 用户：照 ERP「进销存报表」�
             调货没有进价 → 按这个商品这段时间 CA 的平均进价算，没有就用销售记录的进价，再没有用商品表的 PrezzoForn
   销售      vendite_list_<门店>：销量 Qta，销售额 = TotRighe − TotCodIva（不含税），成本 = TotAcquisto
   销售率    件数 = 销售量 ÷ 采购量；金额 = 销售额 ÷ 采购额
-  销采率    差额 = 销售额 − 采购额；差额率 = 差额 ÷ 销售额（这段时间没进货的商品空着）
-  毛利      毛利额 = 销售额 − 销售量 × 平均进价（这段时间没进货的用销售记录的成本）；毛利率 = 毛利额 ÷ 销售额
-  剩余库存  剩余量 = 采购量 − 销售量；剩余额 = 剩余量 × 平均进价（这段时间没进货的商品空着，不算进合计）
-  2026-11-19 和 ERP「进销存报表」逐行对过（DUE ESSE · FOIANO · 01/08–16/11）：毛利、剩余、差额都照 ERP 的算法；
-  合计 = 每个商品的数加起来（不是用合计的平均价再算一遍）
+  销采率    差额 = 销售额 − 采购额；差额率 = 差额 ÷ 销售额（这段时间没有采购量的商品空着；合计 = 全部销售额 − 全部采购额）
+  毛利      毛利额 = 销售额 − 销售记录的成本；毛利率 = 毛利额 ÷ 销售额
+  剩余库存  剩余量 = 采购量 − 销售量；剩余额 = 剩余量 × 平均进价（采购量 ≤ 0 的商品空着，不算进合计）
+  采购额    每行入库都按那一行的进价 Prezzo_A（调货 CI / UI 也有自己的进价）；那一行没有进价才按 CA 平均进价补
+  2026-11-19 和 ERP「进销存报表」逐行对过（DUE ESSE 01/08–16/11、SAIS 01/01–16/11 · FOIANO）
 
 分类：ERP 的 categorie 只有两级（Categoria 大类 / Sottocategoria 小类）。小类的名字多半写成「中类 - 小类」
 （例：FESTE SPECIALI - ACC.CARNEVALE E HALLOWEEN、CAFFETTIERE E ACCESSORI - BOLLITORI）→ 按第一个「 - 」拆成中类和小类；
@@ -30,8 +30,8 @@ ALL_SCOPE = (0, 1, 2, 3, 4, 5)
 NAMES = dict(STORES)
 NAMES[WAREHOUSE] = "BMS"
 PURCHASE_TYPES = ("CA", "CI", "UI", "MG")     # MG：ERP 进销存报表也算进货（2026-11-19 对过 FOIANO：差的 8 件就是 MG）
-# 合计时直接相加的字段（毛利 / 剩余 / 差额按每个商品算好再加，和 ERP 合计行一样）
-SUMS = ("stock", "pq", "pv", "sq", "sv", "cost", "cost_e", "rem_q", "rem_v", "diff", "sv_b")
+# 合计时直接相加的字段（剩余按每个商品算好再加，采购量 ≤ 0 的不算，和 ERP 合计行一样）
+SUMS = ("stock", "pq", "pv", "sq", "sv", "cost", "rem_q", "rem_v")
 GROUPS = ("item", "sup", "cat", "mid", "small", "store")
 CHUNK = 1500
 _DASH = re.compile(r"\s+-\s+")
@@ -317,9 +317,8 @@ def _blank():
 def metrics(r, agg=False):
     """
     一行 → 平均进价 / 售价、销售率、差额、毛利、剩余（照 ERP 进销存报表）。
-    agg=False（一个商品 / 一家店的一个商品）：毛利 = 销售额 − 销售量 × 平均进价，这段时间没进货的用销售成本；
-      没进货的商品 剩余 / 差额 空着（None），不算进合计。
-    agg=True（合计、按供应商 / 分类 / 门店合计）：毛利 / 剩余 / 差额用加好的 cost_e / rem_q / rem_v / diff。
+    agg=False（一个商品 / 一家店的一个商品）：采购量 ≤ 0 的 剩余空着（None），没有采购量的差额空着，不算进合计。
+    agg=True（合计、按供应商 / 分类 / 门店合计）：剩余用加好的 rem_q / rem_v，差额 = 销售额 − 采购额。
     """
     pq, pv, sq, sv, cost = r["pq"], r["pv"], r["sq"], r["sv"], r["cost"]
     r["p_avg"] = pv / pq if pq else None
@@ -328,15 +327,17 @@ def metrics(r, agg=False):
     r["rate_v"] = sv / pv if pv > 0 else None
     if not agg:
         bought = pq > 0
-        r["cost_e"] = sq * r["p_avg"] if bought else cost
+        if not bought:
+            r["p_avg"] = None                         # 采购量 ≤ 0（只有调出 / 退货）：ERP 平均进价空着
         r["rem_q"] = pq - sq if bought else None
         r["rem_v"] = (pq - sq) * r["p_avg"] if bought else None
-        r["diff"] = sv - pv if bought else None
-        r["sv_b"] = sv if bought else 0.0
-    r["profit"] = sv - (r.get("cost_e") or 0.0)
+        r["diff"] = sv - pv if pq else None           # 有采购（负的也算）才写差额，ERP 一样
+        r["diff_rate"] = r["diff"] / sv if r["diff"] is not None and sv else None
+    else:
+        r["diff"] = sv - pv                           # 合计 = 全部销售额 − 全部采购额（ERP 合计行一样）
+        r["diff_rate"] = r["diff"] / sv if sv else None
+    r["profit"] = sv - cost                           # 毛利 = 销售额 − 销售记录的成本（ERP 一样）
     r["margin"] = r["profit"] / sv if sv else None
-    sv_b = r.get("sv_b") or 0.0
-    r["diff_rate"] = r["diff"] / sv_b if r.get("diff") is not None and sv_b else None
     return r
 
 
@@ -412,7 +413,7 @@ def build(raw):
             other[t] = other.get(t, 0.0) + q
             continue
         r = row(c)
-        val = v + (q - qp) * unit(c) if t == "CA" else q * unit(c)
+        val = v + (q - qp) * unit(c)                  # 有进价的行按自己的进价（调货行也有），没有的按 CA 平均进价补
         x = per(r, s)
         x["pq"] += q
         x["pv"] += val

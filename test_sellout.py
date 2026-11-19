@@ -215,15 +215,29 @@ def test_switching_store_view_equals_querying_that_store(monkeypatch):
     assert S.view(full, []) is full and S.view(full, list(S.ALL_SCOPE)) is full
 
 
-def test_erp_formulas_margin_at_avg_cost_and_no_purchase_rows_blank():
-    """2026-11-19 和 ERP 进销存报表逐行对过：毛利 = 销售额 − 销售量 × 平均进价；这段时间没进货的商品剩余 / 差额空着、不算进合计"""
-    a = S.metrics(dict(stock=0, pq=12, pv=66.0, sq=13, sv=106.12, cost=70.0))          # ERP 206649 MOSTRO APPENDINO
-    assert abs(a["profit"] - 34.62) < 1e-9 and a["rem_q"] == -1 and abs(a["rem_v"] + 5.5) < 1e-9
-    assert abs(a["diff"] - 40.12) < 1e-9
-    b = S.metrics(dict(stock=37, pq=0, pv=0.0, sq=90, sv=82.88, cost=45.0))             # ERP 341936 RAGNATELA（没进货）
+def test_erp_formulas_margin_at_sales_cost_and_no_purchase_rows_blank():
+    """2026-11-19 和 ERP 进销存报表逐行对过（DUE ESSE、SAIS · FOIANO）：毛利 = 销售额 − 销售成本；
+    采购量 ≤ 0 的剩余空着、不算进合计；差额有采购（负的也算）才写，合计 = 全部销售额 − 全部采购额"""
+    a = S.metrics(dict(stock=3, pq=88, pv=751.87, sq=178, sv=1780.84, cost=1514.34))     # SAIS 194835 VENTILATORE
+    assert abs(a["profit"] - 266.50) < 1e-6 and a["rem_q"] == -90 and abs(a["rem_v"] + 90 * 751.87 / 88) < 1e-6
+    assert abs(a["diff"] - 1028.97) < 1e-6
+    b = S.metrics(dict(stock=37, pq=0, pv=0.0, sq=90, sv=82.88, cost=45.0))              # 没进货
     assert abs(b["profit"] - 37.88) < 1e-9
     assert b["rem_q"] is None and b["rem_v"] is None and b["diff"] is None and b["diff_rate"] is None
-    t = S.total([a, b])
-    assert t["rem_q"] == -1 and abs(t["profit"] - (34.62 + 37.88)) < 1e-9 and abs(t["diff"] - 40.12) < 1e-9
-    assert t["sq"] == 103 and abs(t["rate_q"] - 103 / 12) < 1e-9
-    assert "MG" in S.PURCHASE_TYPES                     # FOIANO 差的 8 件就是 MG
+    c = S.metrics(dict(stock=5, pq=-25, pv=-137.5, sq=68, sv=484.85, cost=390.5))        # SAIS 174331 只有调出
+    assert c["p_avg"] is None and c["rem_q"] is None and abs(c["diff"] - 622.35) < 1e-6
+    t = S.total([a, b, c])
+    assert t["rem_q"] == -90 and abs(t["diff"] - (t["sv"] - t["pv"])) < 1e-9
+    assert abs(t["profit"] - (266.50 + 37.88 + 94.35)) < 1e-6
+    assert "MG" in S.PURCHASE_TYPES
+
+
+def test_transfer_rows_use_their_own_price(monkeypatch):
+    """ERP 调货行（CI / UI）按那一行自己的进价算采购额，没有进价才按 CA 平均进价"""
+    raw = {"start": date(2026, 10, 1), "end": date(2026, 10, 2), "scope": (1,), "tree": {"subs": {}, "cats": {}},
+           "sales": {}, "stock": {}, "prods": {}, "sups": {}, "filters": {},
+           "purch": [("2026-10-01", 9, 0, "CA", 10.0, 70.0, 10.0),          # 仓库 CA 10 件 @7
+                     ("2026-10-01", 9, 1, "CI", 4.0, 34.0, 4.0),            # 调入 4 件，自己的进价 8.5
+                     ("2026-10-02", 9, 1, "CI", 2.0, 0.0, 0.0)]}            # 没有进价 → CA 平均 7
+    r = S.build(raw)["rows"][0]
+    assert r["pq"] == 6 and abs(r["pv"] - (34.0 + 2 * 7.0)) < 1e-9
