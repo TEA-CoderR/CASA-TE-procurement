@@ -113,7 +113,19 @@ def key_tags(x, transit_boxes=0, edited=False):
     out = []
     if not x.get("in_db", True):
         return [(tr("数据库没有"), "err")]
-    if transit_boxes:
+    cut = x.get("transit_cut") or 0
+    if cut and not x.get("sbox"):
+        # 2026-11-19（用户：审核清单逻辑对不上）：本来要订（照清单 / 保护…），扣掉在途以后不用订了 →
+        # 只说这一个原因；以前还挂着「库存少 · 照清单」「缺货保护」，和「不订」自相矛盾
+        out.append((tr("在途 {0:g} 箱 · 已经够了", transit_boxes or cut), "info"))
+        if x.get("promo"):
+            out.append((tr("促销中"), "err"))
+        if edited:
+            out.append((tr("手动改过"), "accent"))
+        return out
+    if cut:
+        out.append((tr("在途 {0:g} 箱 · 少订 {1} 箱", transit_boxes or cut, cut), "info"))
+    elif transit_boxes:
         out.append((tr("在途 {0:g} 箱", transit_boxes), "info"))
     prot = x.get("protect")
     if prot == "new":
@@ -283,11 +295,13 @@ class _StoreCard(QPushButton):
         from theme import T
         self.name.setText(name)
         done = need == 0 or seen >= need
-        self.badge.setText(tr("已审核") if done else tr("{0} 个待审", need - seen))
+        # 和底部一个说法：要审核 n 个 = 判断不是照清单订的；这里写还有几个没看（以前写「待审」，和「要审核」数字对不上）
+        self.badge.setText(tr("不用审核") if need == 0 else tr("已看完") if done else tr("{0} 个没看", need - seen))
         tone = "ok" if done else "warn"
         self.badge.setStyleSheet(f"background:{T(tone + '_soft')}; color:{T(tone)}; border-radius:10px; padding:0 8px; font-size:11px;")
         self.bar.set(1.0 if need == 0 else seen / need, T("ok") if done else T("accent"))
-        self.sub.setText(tr("共 {0} 个 · 不用审核", total) if need == 0 else tr("已看 {0} / {1} · 改了 {2}", seen, need, edited))
+        self.sub.setText(tr("共 {0} 个 · 都照清单订", total) if need == 0
+                         else tr("要审核 {0} · 已看 {1} · 已改 {2}", need, seen, edited))
         self.setChecked(on)
 
 
@@ -1287,6 +1301,13 @@ class OrderCheck:
         if not x.get("in_db", True):
             return rv
         out = rv + R.review_marks(x.get("target") is not None, x["final"] > 0, self._arrive_days(x), x.get("store_inv"))
+        cut = x.get("transit_cut") or 0
+        if cut:
+            # 在途扣了箱数：写在判断后面（以前「不订」后面挂的是「库存可能不准」，看不出其实是因为货在路上）
+            out.insert(len(rv), ("transit", tr("在途已够") if not x.get("sbox") else tr("扣在途 {0} 箱", cut),
+                                 tr("已经订了、还没到货的 {0} 箱从这次的箱数里扣掉了（上周的单还没到，这次不重复订）", cut)))
+            if not x.get("sbox"):
+                return out                              # 这次不订的原因就是在途，别的提醒不放（详情栏「为什么」里还有）
         cz = x.get("censored")
         if cz:
             out.append(("censored", tr("断货补算"),
@@ -1611,6 +1632,9 @@ class OrderCheck:
         tok = VERDICT_TOKEN.get(kind, "text")
         m_in = self._moves_in.get((sid, code))
         extra = tr("调进 {0} 件 ← {1}", m_in["pieces"], R.STORES.get(m_in["from"], m_in["from"])) if m_in else ""
+        if x.get("transit_cut"):
+            tline = tr("应订 {0} 箱 − 在途 {1} 箱 = {2} 箱", x["sbox"] + x["transit_cut"], x["transit_cut"], x["sbox"])
+            extra = tline + (" · " + extra if extra else "")
         dr.show_decision(vt, tok, self._amount(x), (tr("清单"), x["lbox"]), (tr("确定"), x["fbox"]),
                          tok if kind != "same" else None, extra)
         reasons = "\n".join(["· " + l for l in self._reason_lines(x)] + ["⚠ " + m[2] for m in self._marks(x)] +
@@ -1731,7 +1755,9 @@ class OrderCheck:
         total, tips = 0, []
         for kind, (ti, page, t) in self.prob.items():
             allk = [i for i, x in enumerate(self.rows) if _tab_of(_problem(x)) == kind]
-            idx = [i for i in allk if (sid is None or self.rows[i].get("store") == sid) and
+            # 2026-11-19：个数也按选中的门店算（以前按钮写全部门店的 649，列表里却只有这家店的）
+            allk = [i for i in allk if sid is None or self.rows[i].get("store") == sid]
+            idx = [i for i in allk if
                    (not text or text in f"{self.rows[i].get('code')} {self.rows[i].get('ean')} {self.rows[i].get('name')}".lower())]
             title = _prob_title(kind, len(allk), has_grid)
             self.prob_tabs.setTabText(ti, title)
@@ -1981,6 +2007,19 @@ class OrderCheck:
         self._store_changed()
         self._refresh_side()
 
+    def _needs_review(self, x):
+        """
+        「要审核」全程序一个意思（2026-11-19 用户：审核清单逻辑对不上 —— 以前筛选按钮「要审核 0」、左边「95 个待审」、
+        底部「要审核 104」三个数各算各的）：判断不是「照清单订」（多订 / 少订 / 不订 / 调货），或者清单是新加 / 改过的；
+        沿用了上次审核的（review = kept）不用再审
+        """
+        rv = x.get("review")
+        if rv in ("new", "changed"):
+            return True
+        if rv == "kept":
+            return False
+        return self._verdict(x)[0] in ("transfer", "more", "less", "none")
+
     def _side_data(self):
         """左边门店列表：每家店 要审核几个（判断不是照清单订的 + 新加 / 清单改过的）、看过几个、改了几个"""
         stores = list((self.meta or {}).get("stores") or [])
@@ -1992,7 +2031,7 @@ class OrderCheck:
             except (KeyError, TypeError, ValueError):
                 continue
             d[0] += 1
-            need = self._verdict(x)[0] in ("transfer", "more", "less", "none") or x.get("review") in ("new", "changed")
+            need = self._needs_review(x)
             if need:
                 d[1] += 1
                 if i in self._seen or _edited(x):
@@ -2072,12 +2111,19 @@ class OrderCheck:
             self.export()
 
     def _update_view_counts(self, cnt):
-        """「看哪些」下拉框里带上个数：只看多订（12）"""
-        n = {"all": len(self.rows), "changed": sum(cnt.get(k, 0) for k in ("transfer", "more", "less", "none"))}
+        """「看哪些」下拉框 / 筛选按钮带上个数：只看多订（12）。
+        2026-11-19：个数按左边选中的门店算（以前一直是全部门店的，选了 FOIANO 还写「全部 1617」）"""
+        sid = self._store_sel()
+        mine = [x for x in self.rows if sid is None or x.get("store") == sid]
+        cnt = {}
+        for x in mine:
+            k_ = self._verdict(x)[0]
+            cnt[k_] = cnt.get(k_, 0) + 1
+        n = {"all": len(mine), "changed": sum(cnt.get(k, 0) for k in ("transfer", "more", "less", "none"))}
         n.update(cnt)
-        n["phantom"] = sum(1 for x in self.rows if x.get("phantom") and not _problem(x))
-        n["promo"] = sum(1 for x in self.rows if x.get("promo"))
-        n["review"] = sum(1 for x in self.rows if x.get("review") in ("new", "changed"))
+        n["phantom"] = sum(1 for x in mine if x.get("phantom") and not _problem(x))
+        n["promo"] = sum(1 for x in mine if x.get("promo"))
+        n["review"] = sum(1 for x in mine if self._needs_review(x))
         for k in range(self.view.count()):
             key = self.view.itemData(k)
             text = tr(dict(VIEWS)[key])
@@ -2108,8 +2154,9 @@ class OrderCheck:
         from theme import T as _T, NUM_FONT as _NF
         sid = self._store_sel()
         mine = [x for x in self.rows if sid is None or x.get("store") == sid]
-        need = sum(1 for x in mine if self._verdict(x)[0] in ("transfer", "more", "less", "none")
-                   or x.get("review") in ("new", "changed"))
+        need_rows = [i for i, x in enumerate(self.rows) if (sid is None or x.get("store") == sid) and self._needs_review(x)]
+        need = len(need_rows)
+        seen = sum(1 for i in need_rows if i in self._seen or _edited(self.rows[i]))
         ed = sum(1 for x in mine if _edited(x))
         tot = 0.0
         for x in mine:
@@ -2122,8 +2169,8 @@ class OrderCheck:
             return f"<b style=\"font-family:'{_NF}'; color:{_T(c)}\">{v}</b>"
         self.count_lbl.setTextFormat(Qt.RichText)
         self.count_lbl.setText(f"<span style='color:{_T('head')}; font-size:13px'>" +
-                               tr("{0} · 要审核 {1} 个 · 已改 {2} 个 · 估算 {3}",
-                                  R.STORES.get(sid, str(sid)) if sid is not None else tr("全部门店"), b_(need),
+                               tr("{0} · 要审核 {1} 个 · 已看 {2} · 已改 {3} 个 · 估算 {4}",
+                                  R.STORES.get(sid, str(sid)) if sid is not None else tr("全部门店"), b_(need), b_(seen),
                                   b_(ed, "warn" if ed else "text"), b_(f"€{tot:,.0f}")) + "</span>")
         self.count_lbl.setToolTip(tr("显示 {0} / {1} 行 · 已改 {2} 处 · 当前筛选合计 {3:g} 箱 · €{4:,.2f}",
                                      shown, total, n_edit, boxes, amt))
@@ -2142,7 +2189,7 @@ class OrderCheck:
         hide = (view == "changed" and kind not in ("transfer", "more", "less", "none")) or \
             (view in ("transfer", "more", "less", "none") and kind != view) or \
             (view == "phantom" and not x.get("phantom")) or (view == "promo" and not x.get("promo")) or \
-            (view == "review" and x.get("review") not in ("new", "changed"))
+            (view == "review" and not self._needs_review(x))
         return hide or \
                (bool(text) and text not in self._search_text(x))
 

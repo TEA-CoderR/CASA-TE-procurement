@@ -255,3 +255,19 @@ def test_order_file_edits_sync_back_to_tracking():
         {"store": "1", "supplier": "SAIS", "colli": 3, "amount": 24.0, "file": p},
         {"store": "BMS", "supplier": "SAIS", "colli": 5, "amount": 40.0, "file": p}], today=today)
     assert st.orders[bms]["amount"] == 40.0
+
+
+def test_transit_tags_do_not_contradict_verdict():
+    """2026-11-19：库存 0、在途够了 → 不订；详情栏不能再挂「库存少 · 照清单」「缺货保护」（和不订矛盾），只说在途"""
+    import order_check as OC
+    row = {"in_db": True, "pack": 6, "file_qty": 2, "suggested": 12, "inv0": 0, "daily0": 0.16, "daily": 0.16,
+           "cycle": 30, "tier": "C", "sales": [5, 10, 15, 30], "transit_pcs": 60.0}
+    OC.init_boxes([row])
+    assert row["sbox"] == 0 and row["transit_cut"] == 2
+    tags = [t for t, _ in OC.key_tags(row, 10)]
+    assert tags == ["在途 10 箱 · 已经够了"]
+    # 只扣了一部分：在途放第一个，写少订几箱
+    row2 = dict(row, file_qty=4, transit_pcs=6.0)
+    OC.init_boxes([row2])
+    assert row2["sbox"] == 3 and row2["transit_cut"] == 1
+    assert OC.key_tags(row2, 1)[0][0] == "在途 1 箱 · 少订 1 箱"
