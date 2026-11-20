@@ -202,3 +202,25 @@ def test_mega_cash_original_headers_read_and_prepared(tmp_path, monkeypatch):
     ws = openpyxl.load_workbook(out).active
     assert [ws.cell(5, c).value for c in (2, 8, 9)] == ["CODICE EAN", "PREZZO NETTO", "ORDINE"]
     assert ws["K6"].value == "=I6*H6*E6"
+
+
+def test_xls_dimensions_beyond_old_limit_fixed_in_place():
+    """WPS 存的 .xls 范围写成 1,048,576 行（Excel 不肯打开）→ 只把这条记录改成真正的行数，别的字节不动"""
+    import struct
+    import quote_prepare as QP
+
+    def rec(rid, payload):
+        return struct.pack("<HH", rid, len(payload)) + payload
+    head = rec(0x0809, b"\x00" * 16)
+    name = b"\x05\x00" + b"Sheet"
+    book_len = len(head) + len(rec(0x0085, struct.pack("<IBB", 0, 0, 0) + name)) + len(rec(0x000A, b""))
+    data = bytearray(head + rec(0x0085, struct.pack("<IBB", book_len, 0, 0) + name) + rec(0x000A, b""))
+    sheet = rec(0x0809, b"\x00" * 16) + rec(0x0200, struct.pack("<IIHHH", 0, 1048576, 0, 21, 0)) + rec(0x000A, b"")
+    data += sheet
+    before = bytes(data)
+    fixes = QP.fix_dimensions(data, [("Sheet", 6856, 21)])
+    assert fixes == [("Sheet", 1048576, 6856)]
+    pos = book_len + len(rec(0x0809, b"\x00" * 16)) + 4
+    assert struct.unpack_from("<IIHH", data, pos) == (0, 6856, 0, 21)
+    assert sum(a != b for a, b in zip(before, data)) <= 4 and len(before) == len(data)
+    assert QP.fix_dimensions(data, [("Sheet", 6856, 21)]) == []      # 修过的不再改

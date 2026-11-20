@@ -243,7 +243,14 @@ def prepare(src, out_dir, log=None):
     dst = os.path.join(out_dir, stem + ".xlsx")
     how = "copy"
     if src.lower().endswith(".xls"):
-        tmp = _excel_convert(src, log)
+        conv_src = src
+        try:                                                # WPS 存的 .xls 范围写错了 → 先修好，Excel 才肯打开
+            fixed = os.path.join(out_dir, "_fixed_" + os.path.basename(src))
+            if repair_xls(src, fixed):
+                conv_src = fixed
+        except Exception as e:
+            log(f"  修 .xls 没成功：{e}")
+        tmp = _excel_convert(conv_src, log)
         if tmp:
             shutil.copyfile(tmp, dst)
             how = "excel"
@@ -266,6 +273,78 @@ def prepare(src, out_dir, log=None):
     if how == "values":
         what += "（Excel 转不了 .xls，只按值转，原来的格式和公式没有了）"
     return dst, what
+
+
+def repair_xls(src, dst):
+    """
+    修好 Excel 不肯打开的 .xls（11-20 NEW GRIECO Canvass：「Office 检测到此文件存在一个问题…不能打开此文件」）：
+    这些 .xls 是用 WPS 存的，工作表的 DIMENSIONS（表格范围）写成 1,048,576 行——那是 .xlsx 的上限，
+    老 .xls 最多 65,536 行，Excel 的文件检查就当成坏文件拒绝打开。这里只把范围改成真正的行数 / 列数（同样长度、原地改），
+    其他一个字节都不动。返回改了什么 [(表名, 原来的行数, 改成的行数)]；没问题返回 []（dst 不写）。
+    """
+    import struct
+    import olefile
+    import xlrd
+    book = xlrd.open_workbook(src, on_demand=True)
+    try:
+        sizes = [(book.sheet_by_index(i).name, book.sheet_by_index(i).nrows, book.sheet_by_index(i).ncols)
+                 for i in range(book.nsheets)]
+    finally:
+        book.release_resources()
+    ole = olefile.OleFileIO(src)
+    try:
+        name = "Workbook" if ole.exists("Workbook") else "Book"
+        data = bytearray(ole.openstream(name).read())
+    finally:
+        ole.close()
+
+    fixes = fix_dimensions(data, sizes)
+    if not fixes:
+        return []
+    import shutil
+    shutil.copyfile(src, dst)
+    ole = olefile.OleFileIO(dst, write_mode=True)
+    try:
+        ole.write_stream(name, bytes(data))
+    finally:
+        ole.close()
+    return fixes
+
+
+def fix_dimensions(data, sizes):
+    """BIFF8 工作簿流（bytearray，原地改）里每个工作表的 DIMENSIONS 超过 .xls 上限的改成 sizes[i] = (表名, 行数, 列数)"""
+    import struct
+
+    def records(pos):
+        while pos + 4 <= len(data):
+            rid, ln = struct.unpack_from("<HH", data, pos)
+            yield pos, rid, ln
+            pos += 4 + ln
+
+    sheets = []                                            # BOUNDSHEET：每个工作表从流里哪个位置开始
+    for pos, rid, ln in records(0):
+        if rid == 0x0085:
+            off, _vis, kind = struct.unpack_from("<IBB", data, pos + 4)
+            if kind == 0:
+                sheets.append(off)
+        elif rid == 0x000A:                                # 工作簿那一段结束
+            break
+    fixes = []
+    for i, off in enumerate(sheets):
+        if i >= len(sizes):
+            break
+        sname, nrows, ncols = sizes[i]
+        for pos, rid, ln in records(off):
+            if rid == 0x0200 and ln >= 14:                 # DIMENSIONS
+                r0, r1, c0, c1 = struct.unpack_from("<IIHH", data, pos + 4)
+                if r1 > 65536 or c1 > 256:
+                    nr, nc = max(nrows, 1), max(min(c1, 256), ncols, 1)
+                    struct.pack_into("<IIHH", data, pos + 4, min(r0, nr - 1), nr, min(c0, nc - 1), nc)
+                    fixes.append((sname, r1, nr))
+                break
+            if rid == 0x000A:
+                break
+    return fixes
 
 
 def _excel_convert(src, log):
