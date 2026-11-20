@@ -274,10 +274,11 @@ class PriceMailDialog(QDialog):
         box.exec()
         if box.clickedButton() != ok:
             return
-        from erp_widgets import BusyDialog
+        from erp_widgets import BusyDialog, excel_call
         from settings import save_settings
+        # .xls 要用 Excel 转成整理好的 .xlsx：交给 Excel 那条一直不退出的线程做（别的线程用 Excel 退出时会卡死）
         r, e = BusyDialog.run(self, tr("放进供应商报价"), tr("正在从邮件下载报价…"),
-                              lambda: CMD.mail_import_prices(self.settings, self.root, picks))
+                              lambda: excel_call(lambda: CMD.mail_import_prices(self.settings, self.root, picks)))
         if e:
             msg = str(e)
             if isinstance(e, PermissionError):
@@ -300,6 +301,10 @@ class PriceMailDialog(QDialog):
         if skipped:
             QMessageBox.warning(self, tr("放进供应商报价"), tr("这几份没有放进去（原来的留着）：") + "\n" +
                                 "\n".join(f"· {lab}：{why}" for lab, why in skipped))
+        notes = [n for n in (undo.get("notes") or []) if n[0] in labs]
+        if notes:
+            QMessageBox.information(self, tr("放进供应商报价"), tr("已经放进去了，但要注意：") + "\n" +
+                                    "\n".join(f"· {lab}：{why}" for lab, why in notes))
         self.b_undo.show()
         self.watcher.changed.emit()
         if self.after:

@@ -258,7 +258,7 @@ class CountButton(QPushButton):
         r = QRectF(self.width() - w - 12, (self.height() - h) / 2, w, h)
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
-        primary = self.objectName() == "Primary"
+        primary = self.objectName() == "Primary" or (self.isCheckable() and self.isChecked() and self.objectName() == "Chip")
         col = QColor(T("on_accent") if primary else T(self._tone if self.isEnabled() else "faint"))
         bg = QColor(col)
         bg.setAlpha(60 if primary else 34)

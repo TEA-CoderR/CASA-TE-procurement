@@ -917,7 +917,7 @@ def _count_price_items(path):
     except Exception:
         pass
     import service
-    return len(service._read_price_file(path, log=lambda *a: None))
+    return len(service.read_price_file(path, log=lambda *a: None))     # 读过的（现在那份）直接用缓存
 
 
 def mail_import_prices(settings, root, picks, via="desktop", factory=None, check=None):
@@ -943,7 +943,7 @@ def mail_import_prices(settings, root, picks, via="desktop", factory=None, check
     tmp = tempfile.mkdtemp(prefix="casate_listini_")
     bak = os.path.join(app_dir(), "cache", "mail_prices_undo", datetime_now_tag())
     try:
-        plan = []
+        plan, notes = [], []
         for b in picks:
             m = b["mail"]
             acc = accs.get((m.get("mailbox") or "").lower())
@@ -955,6 +955,13 @@ def mail_import_prices(settings, root, picks, via="desktop", factory=None, check
                                  "encoding": b["part"][2], "name": MP.file_name(b)}], sub, factory=factory)[0]
             if os.path.getsize(path) < 200:
                 raise RuntimeError(tr("{0} 的附件下载下来是空的", b["label"]))
+            try:                              # 改成操作员以前手动整理好的格式（用户 11-20：他们会在表格里操作）
+                import quote_prepare as QP
+                path, what = QP.prepare(path, os.path.join(sub, "ok"))
+                if "只按值转" in what:
+                    notes.append((b["label"], tr("Excel 打不开这份 .xls，只按数值整理（价格对，原来的颜色和公式没有了）")))
+            except Exception as e:
+                notes.append((b["label"], tr("没能整理成以前的格式，放的是原文件（程序照样读得了）：{0}", e)))
             plan.append({"src": path, "replace": b.get("current"), "auto": True, "_b": b})
         # 比价读得了才放：读不了的、商品比现在那份少一大半的不放（旧的留着）
         check = check or _count_price_items
@@ -965,6 +972,12 @@ def mail_import_prices(settings, root, picks, via="desktop", factory=None, check
                 n = check(p["src"])
             except Exception as e:
                 skipped.append((b["label"], tr("比价读不了这份文件（{0}），要先手动整理表头", e)))
+                try:                          # 留一份给维护的人看到底是什么格式（cache/mail_prices_failed）
+                    fd = os.path.join(app_dir(), "cache", "mail_prices_failed")
+                    os.makedirs(fd, exist_ok=True)
+                    shutil.copy2(p["src"], os.path.join(fd, datetime_now_tag() + "_" + os.path.basename(p["src"])))
+                except Exception:
+                    pass
                 continue
             old_n = None
             if b.get("current") and os.path.exists(os.path.join(folder, b["current"])):
@@ -1004,6 +1017,7 @@ def mail_import_prices(settings, root, picks, via="desktop", factory=None, check
             json.dump([i for i in ids if i][-200:], f)
         audit(settings.get("user_name") or "", via, "mail_import_prices",
               {"labels": [b["label"] for b in picks]}, {"files": [n for n, _o in done]})
+        undo["notes"] = notes
         return done, undo, skipped
     finally:
         shutil.rmtree(tmp, ignore_errors=True)

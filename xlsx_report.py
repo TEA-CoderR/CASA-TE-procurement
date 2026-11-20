@@ -149,7 +149,7 @@ def add_sheet(wb, name, title, subtitle, cols, rows, marks=None, photo_eans=None
     ws.freeze_panes = ws.cell(hr + 1, 1 + off + (1 if photo else 0))   # 表头 + 照片 / 条码列一直看得到
     foot = end + 2
     if photo:
-        ws.cell(foot, 1, "Foto: si caricano da internet in Excel 365 · 照片要用 Excel 365 打开才显示").font = \
+        ws.cell(foot, 1, "Foto: si caricano da internet, visibili solo in Excel 365").font = \
             Font(name=XL_FONT, size=9, color=MUTED)
     # 打印：横向、一页宽
     ws.page_setup.orientation = "landscape"

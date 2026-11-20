@@ -5128,6 +5128,7 @@ class MainWindow(QMainWindow):
         if not dlg.exec():
             return
         plan, picked = dlg.result_plan(), dlg.picked()
+        plan, picked, notes = self._prepare_quotes(plan, picked)
         import supplier_names as SN
         try:
             done = FI.apply_suppliers(root, plan, folder=folder)
@@ -5147,6 +5148,45 @@ class MainWindow(QMainWindow):
         if same:
             parts.append(tr("更新 {0} 个同名文件", len(same)))
         self._after_drop(tr("供应商报价已更新") + "：" + "；".join(parts))
+        if notes:
+            QMessageBox.information(self, tr("供应商报价"), tr("已经放进去了，但要注意：") + "\n" +
+                                    "\n".join(f"· {n}：{why}" for n, why in notes))
+
+    def _prepare_quotes(self, plan, picked):
+        """
+        拖进来的批发商原报价先整理成操作员以前手动改好的格式（quote_prepare，和从邮件放进来的一样；用户 11-20）：
+        表头改名、.xls 转 .xlsx、PETRILLO / NEW GRIECO 的价格列。已经整理好的不动。返回 (plan, picked, 提醒)
+        """
+        import tempfile
+        import quote_prepare as QP
+        from erp_widgets import BusyDialog, excel_call
+        tmp = tempfile.mkdtemp(prefix="casate_quotes_")
+
+        def work():
+            out, notes = [], []
+            for i, p in enumerate(plan):
+                src = p["src"]
+                try:
+                    dst, what = QP.prepare(src, os.path.join(tmp, str(i)))
+                    if "只按值转" in what:
+                        notes.append((os.path.basename(dst), tr("Excel 打不开这份 .xls，只按数值整理（价格对，原来的颜色和公式没有了）")))
+                except Exception as e:
+                    dst = src
+                    notes.append((os.path.basename(src), tr("没能整理成以前的格式，放的是原文件（程序照样读得了）：{0}", e)))
+                out.append(dst)
+            return out, notes
+        r, e = BusyDialog.run(self, tr("供应商报价"), tr("正在整理报价格式…"), lambda: excel_call(work))
+        if e or not r:
+            return plan, picked, []
+        paths, notes = r
+        new_plan, new_picked = [], dict(picked)
+        for p, dst in zip(plan, paths):
+            if dst != p["src"]:
+                nm = new_picked.pop(os.path.basename(p["src"]), None)
+                if nm is not None:
+                    new_picked[os.path.basename(dst)] = nm
+            new_plan.append(dict(p, src=dst))
+        return new_plan, new_picked, notes
 
     def _ws_file_path(self, kind, label):
         """三个放文件区里一行的文字 → 文件路径"""
