@@ -104,7 +104,7 @@ def test_find_load_export(tmp_path=None):
     st = G.stats(g, {"X": {"9000000000001": _q(1.0)}})
     out = os.path.join(root, "stat.xlsx")
     G.export(st, out)
-    assert load_workbook(out).sheetnames == ["停售", "停售 · X", "新品", "价格", "价格可疑"]
+    assert load_workbook(out).sheetnames == ["Fuori listino", "Fuori listino · X", "Nuovi articoli", "Prezzi", "Prezzi sospetti"]
 
 
 def test_workspace_has_grid_folder():
@@ -379,8 +379,8 @@ def test_export_chosen_tables_styled_with_photos(tmp_path):
     out = str(tmp_path / "g.xlsx")
     G.export(st, out, which=["gone"], grid_name="SCHEDA.xlsx")
     wb = load_workbook(out)
-    assert wb.sheetnames == ["停售", "停售 · MELONI", "停售 · MEGA CASH"]       # 用户 11-20：每家批发商一张子表
-    ws = wb["停售"]
+    assert wb.sheetnames == ["Fuori listino", "Fuori listino · MELONI", "Fuori listino · MEGA CASH"]       # 用户 11-20：每家批发商一张子表
+    ws = wb["Fuori listino"]
     assert "Griglia" in ws["A1"].value and ws["A1"].fill.fgColor.rgb.endswith("1F3A5F")
     assert ws["A1"].font.name == ws.cell(6, 4).font.name == "Microsoft YaHei"          # 清楚的字体（用户 11-07）
     hr = next(r for r in range(1, 8) if ws.cell(r, 2).value == "EAN")
@@ -389,8 +389,8 @@ def test_export_chosen_tables_styled_with_photos(tmp_path):
     out2 = str(tmp_path / "p.xlsx")
     G.export(st, out2, which=["prices", "gone"], rows={"prices": st["prices"], "gone": []})
     wb = load_workbook(out2)
-    assert wb.sheetnames == ["停售", "停售 · MELONI", "停售 · MEGA CASH", "价格"]   # 顺序照表的顺序
-    ws = wb["价格"]
+    assert wb.sheetnames == ["Fuori listino", "Fuori listino · MELONI", "Fuori listino · MEGA CASH", "Prezzi"]   # 顺序照表的顺序
+    ws = wb["Prezzi"]
     hr = next(r for r in range(1, 8) if ws.cell(r, 2).value == "EAN")
     heads = [c.value for c in ws[hr]]
     var = ws.cell(hr + 1, heads.index("Variazione") + 1)
@@ -466,17 +466,22 @@ def test_gone_wholesaler_from_griglia_supplier_or_cheapest_price_column(tmp_path
     assert G.gone_wholesaler({"supplier": "", "prices": {}}, labels) == (None, False)
     st = {"labels": labels, "history": True, "new": [], "odd": [], "prices": [],
           "gone": [{"ean": "8055728243811", "name": "LADY VENEZIA", "supplier": "", "prices": {"F.LLI PETRILLO": 0.9},
-                    "best": 0.9, "wholesaler": "PETRILLO", "sup_guess": True},
+                    "best": 0.9, "wholesaler": "PETRILLO", "sup_guess": True, "supplier_fill": "F.LLI PETRILLO SRL"},
                    {"ean": "8002410024630", "name": "BILBOA", "supplier": "MEGA CASH & CARRY SRL", "best": 7.9,
                     "wholesaler": "MEGA CASH", "sup_guess": False}]}
     out = str(tmp_path / "g.xlsx")
     G.export(st, out, which=["gone"])
     wb = load_workbook(out)
-    assert wb.sheetnames == ["停售"] + [f"停售 · {l}" for l in labels]
-    ws = wb["停售 · PETRILLO"]
+    assert wb.sheetnames == ["Fuori listino"] + [f"Fuori listino · {l}" for l in labels]
+    ws = wb["Fuori listino · PETRILLO"]
     hr = next(r for r in range(1, 8) if ws.cell(r, 2).value == "EAN")
     heads = [c.value for c in ws[hr]]
     sup = ws.cell(hr + 1, heads.index("Fornitore Griglia") + 1)
-    assert ws.cell(hr + 1, 2).value == "8055728243811" and sup.value == "PETRILLO"
+    assert ws.cell(hr + 1, 2).value == "8055728243811" and sup.value == "F.LLI PETRILLO SRL"   # 和别的行一样的写法
+    assert sup.fill.fgColor.rgb in ("00000000", "00FFFFFF", "FFFFFFFF") or sup.fill.fill_type is None  # 不标颜色
+    assert not any("\u4e00" <= ch <= "\u9fff" for row in ws.iter_rows(values_only=True) for v in row
+                   for ch in str(v or ""))                                 # 全是意大利文
+    assert G.full_names({"1": {"supplier": "F.LLI PETRILLO SRL"}, "2": {"supplier": "F.LLI PETRILLO SRL"},
+                         "3": {"supplier": "PETRILLO"}}, labels) == {"PETRILLO": "F.LLI PETRILLO SRL"}
     assert ws.cell(hr + 2, 2).value is None                                    # 只有这家的
-    assert wb["停售 · MEGA CASH"].cell(hr + 1, heads.index("Fornitore Griglia") + 1).value == "MEGA CASH & CARRY SRL"
+    assert wb["Fuori listino · MEGA CASH"].cell(hr + 1, heads.index("Fornitore Griglia") + 1).value == "MEGA CASH & CARRY SRL"

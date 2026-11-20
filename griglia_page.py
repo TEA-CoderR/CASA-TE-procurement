@@ -697,9 +697,9 @@ class GrigliaPage:
             self.gone_bar.setParent(None)                 # 按钮先拿出来，旧表格删掉时别跟着删
         self.t_gone = self._tab(0, "gone", base + [(3, tr("编号"), "txt", lambda x: x.get("code"), None),
                                                    (4, tr("品牌"), "txt", lambda x: x.get("brand"), None)] + cats +
-                                # Griglia 没写供应商的：用 Griglia 里最便宜的批发商价格推出来的那家，橙字（用户 11-20）
-                                [(9, tr("Griglia 供应商"), "txt", lambda x: x.get("supplier") or x.get("wholesaler"),
-                                  lambda x: "warn" if x.get("sup_guess") else None),
+                                # Griglia 没写供应商的：用 Griglia 里最便宜的批发商价格推出来的那家，和别的行一样写（用户 11-20）
+                                [(9, tr("Griglia 供应商"), "txt",
+                                  lambda x: x.get("supplier") or x.get("supplier_fill") or x.get("wholesaler"), None),
                                  (10, tr("Griglia 价"), "price", lambda x: x.get("best") or x.get("price"), None)],
                                 st["gone"], extra=self.gone_bar)
         self.b_repl.setEnabled(bool(st["gone"]) or bool((self.grid or {}).get("struck")))   # 划线的商品也能找（用户 11-11）
@@ -776,8 +776,7 @@ class GrigliaPage:
         if dlg.exec() != QDialog.Accepted:
             return
         which, filtered = dlg.which(), dlg.filtered.isChecked()
-        names = dict(G.EXPORT_TABLES)
-        stem = names[which[0]] if len(which) == 1 else "统计"
+        stem = G.SHEETS[which[0]].replace(" ", "_") if len(which) == 1 else "Statistiche"   # 文件名意大利文
         p, _ = QFileDialog.getSaveFileName(self.win, tr("导出 Excel"), os.path.join(
             self._root() or "", f"Griglia_{stem}_{datetime.now():%Y%m%d}.xlsx"), tr("Excel 文件 (*.xlsx)"))
         if not p:
