@@ -21,6 +21,7 @@ from config import (
 from min_order_optimizer import optimize_min_order, optimize_min_orders
 from settings import load_settings, match_rules
 from supplier_layout import find_pack_col, find_order_input, order_formula, parse_pack
+import quote_format as QF
 from openpyxl.utils import get_column_letter
 
 
@@ -1199,8 +1200,7 @@ def run_process(ordine_file, eliminare_path, distribuire_path, log, progress=Non
 
         ws = wb_supplier.active
 
-        col_ean, row_ean_supplier = find_col_best(ws, COL_CODICE_EAN)
-        col_ord, row_ord = find_col(ws, COL_ORDINE)
+        col_ean, row_ean_supplier, col_ord, row_ord = QF.ean_ord(ws)     # 供应商原来的表头也认（CODICI EAN / Ord. …）
 
         if not col_ean or not col_ord:
             log(tr("⚠ {0} 缺少必要列 ({1}/{2})", file, COL_CODICE_EAN, COL_ORDINE))
@@ -1210,7 +1210,7 @@ def run_process(ordine_file, eliminare_path, distribuire_path, log, progress=Non
         # 数据从表头行之后开始
         supplier_header_row = max(row_ean_supplier, row_ord)
         # ORDINE 是公式（比如 Meloni 的 =L*E：L 填箱数）时，箱数写进箱数列，ORDINE 公式保留
-        col_price_w, _ = find_col(ws, COL_PREZZO_NETTO)
+        col_price_w = QF.price_col(ws, work_path)
         pack_col_w, _ = find_pack_col(ws, supplier_header_row, col_ord, col_price_w or 0)
         order_input = find_order_input(ws, supplier_header_row, col_ord, pack_col_w)
         if order_input:
@@ -1538,8 +1538,7 @@ def _supplier_work_path(path):
 
 def _supplier_index(ws, work_path):
     """返回 (ORDINE 列号, {EAN: 行号}, 箱数写法)，找不到列返回 (None, None, None)"""
-    col_ean, row_ean = find_col_best(ws, COL_CODICE_EAN)
-    col_ord, row_ord = find_col(ws, COL_ORDINE)
+    col_ean, row_ean, col_ord, row_ord = QF.ean_ord(ws)
     if not col_ean or not col_ord:
         return None, None, None
     header = max(row_ean, row_ord)
@@ -1559,7 +1558,7 @@ def _supplier_index(ws, work_path):
             index[e] = j
     if wb_calc:
         wb_calc.close()
-    col_price, _ = find_col(ws, COL_PREZZO_NETTO)
+    col_price = QF.price_col(ws, work_path)
     pack_col, _ = find_pack_col(ws, header, col_ord, col_price or 0)
     return col_ord, index, find_order_input(ws, header, col_ord, pack_col)
 
@@ -1597,7 +1596,7 @@ def _write_missing_report(distribuire_path, rows, assignment):
 _DESC_HEADS = ("DESCRIZIONE", "DESCRIPTION", "ARTICOLO", "PRODOTTO", "DENOMINAZIONE", "NOME")
 
 
-QUOTE_MATRIX_VER = 1    # 比价读报价的规则改了就加 1
+QUOTE_MATRIX_VER = 2    # 比价读报价的规则改了就加 1
 
 
 def _quote_key(path, ver):
@@ -1637,20 +1636,19 @@ def quote_matrix(path, log):
     if ws is None:
         return None
     try:
-        col_ean, row_ean = find_col_best(ws, COL_CODICE_EAN)
-        col_price, row_price = find_col(ws, COL_PREZZO_NETTO)
-        if not col_ean or not col_price:
+        lay = QF.layout(ws, path)       # 供应商原来的表头 + 固定价格规则（PETRILLO −6.83%、NEW GRIECO +1%）
+        if not lay:
             out = {"ok": False}
         else:
-            header_row = max(row_ean, row_price)
-            col_ord_p, _ = find_col(ws, COL_ORDINE)
+            col_ean, col_price, header_row, price_of = lay["ean"], lay["price_col"], lay["header_row"], lay["price"]
+            col_ord_p = lay["ord"]
             pack_col, _how = _detect_pack_col(ws, path, header_row, col_ord_p, col_price)
             head = ws.cell(header_row, pack_col).value if pack_col else None
             price, pack, count = {}, {}, {}
             last_row = get_last_row(ws, col_ean)
             for i in range(header_row + 1, last_row + 1):
                 e = clean_ean(ws.cell(i, col_ean).value)
-                p = parse_price(ws.cell(i, col_price).value)
+                p = price_of(ws, i) if e else None
                 if e and p is not None:
                     price[e] = p
                     pack[e] = parse_pack(ws.cell(i, pack_col).value) if pack_col else 1
@@ -1679,7 +1677,7 @@ def quote_matrix(path, log):
     return out
 
 
-PRICE_CACHE_VER = 5     # 读报价的规则改了（例如找列的办法）就加 1，旧的缓存自动作废
+PRICE_CACHE_VER = 6     # 读报价的规则改了（例如找列的办法）就加 1，旧的缓存自动作废
 
 
 def _price_cache_path(path):
@@ -1765,12 +1763,11 @@ def _read_price_file(path, log=None, fast=True):
     if ws is None:
         raise ValueError(tr("打不开报价文件：{0}", os.path.basename(path)))
     try:
-        col_ean, row_ean = find_col_best(ws, COL_CODICE_EAN)
-        col_price, row_price = find_col(ws, COL_PREZZO_NETTO)
-        if not col_ean or not col_price:
+        lay = QF.layout(ws, path)       # 供应商原来的表头 + 固定价格规则（PETRILLO −6.83%、NEW GRIECO +1%）
+        if not lay:
             raise ValueError(tr("{0} 缺少必要列", os.path.basename(path)))
-        header_row = max(row_ean, row_price)
-        col_ord, _ = find_col(ws, COL_ORDINE)
+        col_ean, col_price, header_row, price_of, col_ord = \
+            lay["ean"], lay["price_col"], lay["header_row"], lay["price"], lay["ord"]
         pack_col, _ = _detect_pack_col(ws, path, header_row, col_ord, col_price)
         col_desc = None
         for h in _DESC_HEADS:
@@ -1790,7 +1787,7 @@ def _read_price_file(path, log=None, fast=True):
         out = {}
         for i in range(header_row + 1, get_last_row(ws, col_ean) + 1):
             e = clean_ean(ws.cell(i, col_ean).value)
-            p = parse_price(ws.cell(i, col_price).value)
+            p = price_of(ws, i) if e and e not in out else None
             if e and p is not None and e not in out:
                 out[e] = {"price": p, "pack": (parse_pack(ws.cell(i, pack_col).value) if pack_col else 1) or 1,
                           "desc": str(ws.cell(i, col_desc).value or "").strip() if col_desc else ""}
