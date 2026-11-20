@@ -4466,4 +4466,7 @@ TRANSLATIONS = {
     '这个品牌里没有，点掉品牌再搜': ('Not found in this brand: turn off the brand and search again', 'Non trovato in questa marca: disattiva la marca e cerca di nuovo'),
     '品牌 {0}': ('Brand {0}', 'Marca {0}'),
     '在 {0} 里搜…': ('Search in {0}…', 'Cerca in {0}…'),
+    '点一下 = 只看这个品牌的商品（品牌取自原商品），什么都不输也会列出这个品牌的全部商品。\n不点也行：搜出来的同品牌商品排在前面，其他品牌放在下面': ("Click = show only this brand (taken from the original item); with an empty search it lists all products of the brand.\nWithout clicking: results of the same brand come first, other brands below", "Clicca = solo questa marca (presa dall'articolo originale); con la ricerca vuota elenca tutti gli articoli della marca.\nSenza cliccare: gli articoli della stessa marca vengono prima, le altre marche sotto"),
+    '只看 {0}': ('Only {0}', 'Solo {0}'),
+    '其他品牌 · {0} 个': ('Other brands · {0}', 'Altre marche · {0}'),
 }

@@ -220,6 +220,7 @@ def run_check(settings, lists, *, price_dir, log=print, progress=None, days=None
             try:
                 import griglia_replace as GR
                 from utils import clean_ean
+                GR.set_shared((settings.get("griglia") or {}).get("source") or "")
                 subs = GR.substitutes(GR.load_done(os.path.dirname(grid["path"])), grid)
                 n_s = GR.apply_substitutes(rows, subs, clean_ean)
                 if n_s:
@@ -1139,6 +1140,8 @@ def griglia_add_replacements(grid, picks, by=None, via="desktop", excel=None, lo
     """
     import shutil
     import griglia_replace as GR
+    if source:
+        GR.set_shared(source)
     from datetime import datetime
     path = grid["path"]
     target = source if source and os.path.isfile(source) else path
@@ -1181,6 +1184,8 @@ def griglia_restore_old(grid, olds, by=None, via="desktop", excel=None, log=None
     """
     import shutil
     import griglia_replace as GR
+    if source:
+        GR.set_shared(source)
     path = grid["path"]
     target = source if source and os.path.isfile(source) else path
     by = by or os.environ.get("USERNAME") or os.environ.get("USER") or ""

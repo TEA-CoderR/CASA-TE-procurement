@@ -536,6 +536,7 @@ class GrigliaPage:
                 G.save_seen(sp, seen)
                 st = G.stats(grid, quotes, fresh if hist else None)
                 import griglia_replace as GR
+                GR.set_shared((self.settings.get("griglia") or {}).get("source") or "")
                 done = GR.done_eans(GR.load_done(os.path.dirname(grid["path"])), grid)   # 加过替代品的：不再算「都不做了」
                 st["gone"] = [x for x in st["gone"] if x["ean"] not in done]
                 self._quotes, self._fresh = quotes, (fresh if hist else None)
@@ -817,7 +818,10 @@ class GrigliaPage:
 
     def source(self):
         """Griglia 原件（同步文件夹里的）：「换 Griglia…」时记下的"""
-        return (self.settings.get("griglia") or {}).get("source") or ""
+        src = (self.settings.get("griglia") or {}).get("source") or ""
+        import griglia_replace as GR
+        GR.set_shared(src)                     # 替换记录在 Griglia 原件旁边也存一份，同事看得到
+        return src
 
     def _tab_of(self, key):
         return {"gone": self.t_gone, "new": self.t_new, "prices": self.t_price, "odd": self.t_odd}.get(key)

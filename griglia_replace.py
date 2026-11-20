@@ -11,6 +11,7 @@ Griglia「都不做了」的商品在这周批发商报价里找替代品（2026
 规格不同不扣分——就是要找换了规格的。候选只从这周报价里、Griglia 里还没有的商品里找。
 """
 import json
+import platform
 import math
 import os
 import re
@@ -366,6 +367,11 @@ def brand_of(old):
     return None
 
 
+def has_word(c, tok):
+    """这个报价商品（任何一家的写法）里有没有这个词（品牌）"""
+    return bool(tok) and tok in _flat(" ".join(_norm(n) for n in (c.get("names") or [c.get("name") or ""])))
+
+
 def search(pool_, q, must=()):
     """
     手动搜（用户 11-09：要模糊一点）：条码开头对上，或者输入的每个词都在某家的写法里出现
@@ -501,14 +507,66 @@ def suggest(grid, quotes, fresh=None, skip=(), struck=False):
 FILE = "_替代记录.json"
 
 
-def load_done(grid_dir):
-    """{旧条码: {"new", "name", "at", "by"}}，放在工作文件夹「0 Griglia」里（大家共用）"""
+SHARED = {"dir": None}       # Griglia 原件所在的同步文件夹（大家共用）：替换记录也放一份在那里
+
+
+def set_shared(source):
+    """
+    用户 11-20：我这边替换的，同事那边也要看得到停售 / 替换记录 → 替换记录除了本机「0 Griglia」，
+    再在 Griglia 原件旁边（同步文件夹）每台电脑写一个 _替代记录_<电脑>.json，读的时候几台电脑的合起来。
+    source = 设置里 Griglia 原件的路径（没有 / 不在 = 只用本机的）
+    """
+    d = os.path.dirname(str(source or ""))
+    SHARED["dir"] = d if source and os.path.isfile(str(source)) and os.path.isdir(d) else None
+    return SHARED["dir"]
+
+
+def _me():
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", os.environ.get("COMPUTERNAME") or platform.node() or "pc") or "pc"
+
+
+def _read_json(p):
     try:
-        with open(os.path.join(grid_dir, FILE), encoding="utf-8") as f:
+        with open(p, encoding="utf-8") as f:
             d = json.load(f)
         return d if isinstance(d, dict) else {}
     except (OSError, ValueError):
         return {}
+
+
+def _merge(into, d):
+    """同一个旧条码几台电脑都记过：留时间最新的那条（时间一样时信息多的那条）"""
+    for k, r in d.items():
+        if not isinstance(r, dict):
+            continue
+        cur = into.get(k)
+        if cur is None or (str(r.get("at") or ""), len(r)) > (str(cur.get("at") or ""), len(cur)):
+            into[k] = r
+    return into
+
+
+def shared_files(d=None):
+    d = d or SHARED["dir"]
+    if not d or not os.path.isdir(d):
+        return []
+    return sorted(os.path.join(d, f) for f in os.listdir(d)
+                  if f.startswith("_替代记录") and f.endswith(".json") and "conflict" not in f.lower())
+
+
+def load_done(grid_dir):
+    """{旧条码: {"new", "name", "at", "by", …}}：本机「0 Griglia」那份 + 同步文件夹里每台电脑那份，合起来"""
+    out = _merge({}, _read_json(os.path.join(grid_dir, FILE))) if grid_dir else {}
+    d = SHARED["dir"]
+    mine = os.path.join(d, "_替代记录_%s.json" % _me()) if d else None
+    if mine and out and not os.path.exists(mine) and \
+            os.path.normcase(os.path.abspath(d)) != os.path.normcase(os.path.abspath(grid_dir or "")):
+        try:                                      # 以前只记在本机的：第一次就放一份到同步文件夹，同事马上看得到
+            _write_json(mine, out)
+        except OSError:
+            pass
+    for p in shared_files():
+        _merge(out, _read_json(p))
+    return out
 
 
 def done_eans(done, grid):
@@ -560,12 +618,22 @@ def apply_substitutes(rows, subs, clean=None):
     return n
 
 
-def save_done(grid_dir, done):
-    p = os.path.join(grid_dir, FILE)
+def _write_json(p, done):
     tmp = p + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(done, f, ensure_ascii=False, indent=1)
     os.replace(tmp, p)
+
+
+def save_done(grid_dir, done):
+    """本机一份；同步文件夹里只写这台电脑自己那个文件（两台电脑不会同时改同一个文件，同步盘不会冲突）"""
+    _write_json(os.path.join(grid_dir, FILE), done)
+    d = SHARED["dir"]
+    if d and os.path.normcase(os.path.abspath(d)) != os.path.normcase(os.path.abspath(grid_dir)):
+        try:
+            _write_json(os.path.join(d, "_替代记录_%s.json" % _me()), done)
+        except OSError:
+            pass                                  # 同步文件夹写不了：本机那份照样有
 
 
 def sup_full_names(grid):
