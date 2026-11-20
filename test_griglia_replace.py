@@ -531,6 +531,23 @@ def test_diff_cells_only_allows_replaced_rows():
     assert "A2" in cells and "B2" in cells and "A6" in cells
 
 
+
+def test_deleted_row_shifts_refs_after_slash_but_not_inside_text():
+    """用户 11-20：Griglia 的 X 列 =W704/V704，删掉上面一行后两个引用都要 −1（以前「/」后面的没改 → 误报 2058 个格子）"""
+    assert GR._shift_refs("=W704/V704", 703) == "=W703/V703"
+    assert GR._shift_refs("=$A$704:A900*Sheet2!B800", 703) == "=$A$703:A899*Sheet2!B800"
+    f = '=IFERROR(IMAGE("https://img.casaete.top/prodotti/A800/01.webp","",3),"")'
+    assert GR._shift_refs(f, 703) == f
+    d = tempfile.mkdtemp()
+    b, a = os.path.join(d, "b.xlsx"), os.path.join(d, "a.xlsx")
+    head = [["Fatturazione :"], ["Note :"], ["NO.", "Codice EAN", "Colli", "PZ", "X"]]
+    rows = [[i, f"800{i}", i, i * 2, f"=D{4 + i}/C{4 + i}"] for i in range(3)]
+    _book(b, head + rows)
+    moved = [0, "8000", 0, 0, "=D7/C7"]                 # 第 4 行（新商品 Griglia 里已有）抄到最下面再删掉
+    _book(a, head + [[1, "8001", 1, 2, "=D4/C4"], [2, "8002", 2, 4, "=D5/C5"], moved], struck=[6])
+    diffs, _n = GR.diff_cells(b, a, "GRIGLIA", [("append", 7), ("delete", 4)])
+    assert diffs == []
+
 def test_add_replacements_keeps_original_when_check_fails():
     """改完核对不过（别的格子变了）：原文件一个字节都不动"""
     import hashlib

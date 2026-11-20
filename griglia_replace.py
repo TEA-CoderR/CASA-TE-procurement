@@ -1114,7 +1114,10 @@ def list_backups(name, bdir=None):
 
 
 # ===================================================================== 改完核对：别的格子一个都不能变（用户 11-11）
-_REF = re.compile(r"(?<![A-Za-z0-9_!'.\"/])(\$?)([A-Z]{1,3})(\$?)(\d+)(?![0-9A-Za-z_(])")
+# 用户 11-20：以前把「/」后面的引用漏掉了（=W704/V705 只改了 W，V 没改）→ 核对误报 2058 个格子。
+# 现在「/」后面照样认；引号里的文字（IMAGE 的网址等）不动
+_REF = re.compile(r"(?<![A-Za-z0-9_!'.\"])(\$?)([A-Z]{1,3})(\$?)(\d+)(?![0-9A-Za-z_(])")
+_QUOTED = re.compile(r'("(?:[^"]|"")*")')
 
 
 def _shift_refs(f, deleted):
@@ -1122,7 +1125,8 @@ def _shift_refs(f, deleted):
     def sub(m):
         r = int(m.group(4))
         return f"{m.group(1)}{m.group(2)}{m.group(3)}{r - 1 if r > deleted else r}"
-    return _REF.sub(sub, f)
+    parts = _QUOTED.split(f)
+    return "".join(p if i % 2 else _REF.sub(sub, p) for i, p in enumerate(parts))
 
 
 _EXT = re.compile(r"\[(\d+)\]")
