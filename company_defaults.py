@@ -4,7 +4,7 @@
 """
 import json
 
-COMPANY_DEFAULTS_VER = 19          # v3.3.23 发布时同步
+COMPANY_DEFAULTS_VER = 20          # v3.3.24 发布时同步
 
 COMPANY_DEFAULTS = json.loads(r'''
 {
@@ -23,12 +23,13 @@ COMPANY_DEFAULTS = json.loads(r'''
   "max_stock_days": 14,
   "min_shelf": 1,
   "pack_threshold": 0.5,
-  "review_days": 30,
+  "review_days": 60,
   "safety_a": 0.9,
   "safety_b": 0.7,
   "safety_c": 0.5,
   "season": true,
   "service": 0.95,
+  "slowdown": true,
   "store_cycle": {
    "1": 1.0,
    "2": 1.0,
@@ -198,36 +199,25 @@ COMPANY_DEFAULTS = json.loads(r'''
   ],
   "replace_columns_ver": 5,
   "replace_log_cols_hidden": [],
-  "replace_log_cols_hidden_ver": 1,
-  "replace_log_columns": [
-   "at",
-   "by",
-   "old_name",
-   "old",
-   "name",
-   "new",
-   "size",
-   "in",
-   "file"
-  ],
-  "replace_log_columns_ver": 1,
+  "replace_log_cols_hidden_ver": 3,
+  "replace_log_columns_ver": 3,
   "replace_log_widths": {
-   "at": 128,
+   "at": 133,
    "by": 70,
-   "file": 220,
+   "file": 381,
    "in": 92,
    "name": 280,
-   "new": 150,
-   "old": 162,
+   "new": 132,
+   "old": 133,
    "old_name": 280,
    "size": 110
   },
   "replace_widths": {
    "best": 76,
    "n": 72,
-   "new": 260,
+   "new": 425,
    "new_ean": 0,
-   "old": 260,
+   "old": 425,
    "old_ean": 0,
    "pick": 39,
    "score": 76,
@@ -296,35 +286,34 @@ COMPANY_DEFAULTS = json.loads(r'''
    "7": 0
   },
   "check_cols_hidden": [
-   27,
-   9,
-   31,
-   10,
-   29,
-   30,
-   24,
+   1,
    2,
-   26,
-   16,
-   17,
-   18,
    5,
    6,
    7,
    8,
-   14,
+   9,
+   10,
    12,
    13,
+   14,
+   17,
+   18,
    19,
    21,
    23,
    25,
-   1
+   26,
+   27,
+   29,
+   30
   ],
   "check_cols_hidden_ver": 8,
   "check_columns": [
    3,
+   16,
    4,
+   31,
    28,
    11,
    15,
@@ -334,13 +323,11 @@ COMPANY_DEFAULTS = json.loads(r'''
    22,
    27,
    9,
-   31,
    10,
    29,
    24,
    2,
    26,
-   16,
    17,
    18,
    5,
@@ -358,34 +345,37 @@ COMPANY_DEFAULTS = json.loads(r'''
   ],
   "check_columns_ver": 10,
   "check_fit2": 10,
+  "check_fit3": 10,
+  "check_prod_user": true,
+  "check_transit_shown": true,
   "check_widths": {
-   "0": 112,
+   "0": 132,
    "1": 0,
    "10": 0,
-   "11": 54,
+   "11": 52,
    "12": 0,
    "13": 0,
    "14": 0,
-   "15": 118,
-   "16": 0,
+   "15": 106,
+   "16": 287,
    "17": 0,
    "18": 0,
    "19": 0,
    "2": 0,
-   "20": 92,
+   "20": 82,
    "21": 0,
    "22": 80,
    "23": 0,
-   "24": 0,
+   "24": 110,
    "25": 0,
    "26": 0,
    "27": 0,
-   "28": 60,
+   "28": 65,
    "29": 0,
-   "3": 64,
+   "3": 433,
    "30": 0,
-   "31": 0,
-   "4": 60,
+   "31": 56,
+   "4": 56,
    "5": 0,
    "6": 0,
    "7": 0,
@@ -487,25 +477,25 @@ COMPANY_DEFAULTS = json.loads(r'''
    "10": 76,
    "11": 76,
    "12": 95,
-   "13": 92,
+   "13": 145,
    "14": 66,
    "15": 97,
    "16": 70,
-   "17": 90,
+   "17": 111,
    "18": 180,
    "19": 150,
-   "2": 374,
+   "2": 332,
    "20": 150,
    "21": 170,
    "22": 0,
    "23": 80,
-   "3": 76,
-   "4": 70,
+   "3": 82,
+   "4": 95,
    "5": 74,
-   "6": 90,
+   "6": 81,
    "7": 70,
    "8": 74,
-   "9": 90
+   "9": 120
   }
  },
  "store_orders": {
@@ -626,9 +616,7 @@ COMPANY_DEFAULTS = json.loads(r'''
    "borrow_min_days": 30,
    "borrow_urgent": true,
    "colocated_store": 3,
-   "far_stores": [
-    1
-   ],
+   "far_stores": [],
    "fill_bms": true,
    "max_amount_gap": 30.0,
    "max_colli_gap": 3,
@@ -781,6 +769,23 @@ COMPANY_DEFAULTS = json.loads(r'''
   "formattato_059603(2).xlsx": "MEGA CASH",
   "formattato_059603.xlsx": "MEGA CASH"
  },
+ "table_widths": {
+  "MainWindow||供应商|起订量|各店|星期": {
+   "1": 113
+  },
+  "MainWindow|供应商|起订量 ↑|五家门店|状态|金额": {
+   "0": 670,
+   "1": 78
+  },
+  "MainWindow|供应商|起订量|五家门店|状态|金额": {
+   "0": 682,
+   "1": 66
+  },
+  "QDialog|条码|商品|门店要（件）|供应商|每箱|订几箱|订到（件）|差": {
+   "0": 134,
+   "3": 106
+  }
+ },
  "tracking": {
   "auto_register": true,
   "budget_cols_hidden": [],
@@ -860,6 +865,7 @@ COMPANY_DEFAULTS = json.loads(r'''
   "transit_dlg_columns_ver": 1,
   "written_at": "11-15 14:40"
  },
+ "update_auto": true,
  "volantino": {
   "items_cols_cols_hidden": [
    0
@@ -885,13 +891,13 @@ COMPANY_DEFAULTS = json.loads(r'''
   "items_cols_columns_ver": 1,
   "items_cols_widths": {
    "0": 0,
-   "1": 344,
+   "1": 714,
    "10": 74,
    "11": 74,
    "12": 74,
    "13": 87,
    "14": 74,
-   "2": 72,
+   "2": 130,
    "3": 66,
    "4": 100,
    "5": 90,
