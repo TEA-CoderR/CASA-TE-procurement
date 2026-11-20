@@ -697,7 +697,9 @@ class GrigliaPage:
             self.gone_bar.setParent(None)                 # 按钮先拿出来，旧表格删掉时别跟着删
         self.t_gone = self._tab(0, "gone", base + [(3, tr("编号"), "txt", lambda x: x.get("code"), None),
                                                    (4, tr("品牌"), "txt", lambda x: x.get("brand"), None)] + cats +
-                                [(9, tr("Griglia 供应商"), "txt", lambda x: x.get("supplier"), None),
+                                # Griglia 没写供应商的：用 Griglia 里最便宜的批发商价格推出来的那家，橙字（用户 11-20）
+                                [(9, tr("Griglia 供应商"), "txt", lambda x: x.get("supplier") or x.get("wholesaler"),
+                                  lambda x: "warn" if x.get("sup_guess") else None),
                                  (10, tr("Griglia 价"), "price", lambda x: x.get("best") or x.get("price"), None)],
                                 st["gone"], extra=self.gone_bar)
         self.b_repl.setEnabled(bool(st["gone"]) or bool((self.grid or {}).get("struck")))   # 划线的商品也能找（用户 11-11）

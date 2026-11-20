@@ -104,7 +104,7 @@ def test_find_load_export(tmp_path=None):
     st = G.stats(g, {"X": {"9000000000001": _q(1.0)}})
     out = os.path.join(root, "stat.xlsx")
     G.export(st, out)
-    assert load_workbook(out).sheetnames == ["停售", "新品", "价格", "价格可疑"]
+    assert load_workbook(out).sheetnames == ["停售", "停售 · X", "新品", "价格", "价格可疑"]
 
 
 def test_workspace_has_grid_folder():
@@ -379,7 +379,7 @@ def test_export_chosen_tables_styled_with_photos(tmp_path):
     out = str(tmp_path / "g.xlsx")
     G.export(st, out, which=["gone"], grid_name="SCHEDA.xlsx")
     wb = load_workbook(out)
-    assert wb.sheetnames == ["停售"]
+    assert wb.sheetnames == ["停售", "停售 · MELONI", "停售 · MEGA CASH"]       # 用户 11-20：每家批发商一张子表
     ws = wb["停售"]
     assert "Griglia" in ws["A1"].value and ws["A1"].fill.fgColor.rgb.endswith("1F3A5F")
     assert ws["A1"].font.name == ws.cell(6, 4).font.name == "Microsoft YaHei"          # 清楚的字体（用户 11-07）
@@ -389,7 +389,7 @@ def test_export_chosen_tables_styled_with_photos(tmp_path):
     out2 = str(tmp_path / "p.xlsx")
     G.export(st, out2, which=["prices", "gone"], rows={"prices": st["prices"], "gone": []})
     wb = load_workbook(out2)
-    assert wb.sheetnames == ["停售", "价格"]                                    # 顺序照表的顺序
+    assert wb.sheetnames == ["停售", "停售 · MELONI", "停售 · MEGA CASH", "价格"]   # 顺序照表的顺序
     ws = wb["价格"]
     hr = next(r for r in range(1, 8) if ws.cell(r, 2).value == "EAN")
     heads = [c.value for c in ws[hr]]
@@ -451,3 +451,32 @@ def test_struck_rows_are_not_griglia_items(tmp_path=None):
     wb.save(p)
     g = G.load(p)
     assert set(g["items"]) == {"8001111000014"} and set(g["struck"]) == {"8001111000021"}
+
+
+def test_gone_wholesaler_from_griglia_supplier_or_cheapest_price_column(tmp_path):
+    """用户 11-20：停售的商品有些 Griglia 没写供应商 → 按 Griglia 里最便宜的批发商价格推；导出每家一张子表"""
+    from openpyxl import load_workbook
+    import griglia as G
+    labels = ["PETRILLO", "NEW GRIECO", "MELONI", "MEGA CASH"]
+    assert G.match_label("F.LLI PETRILLO SRL", labels) == "PETRILLO"
+    assert G.match_label("MEGA CASH & CARRY SRL", labels) == "MEGA CASH"
+    assert G.match_label("MELONI WALTER SPA", labels) == "MELONI"
+    assert G.gone_wholesaler({"supplier": "NEW GRIECO SRL"}, labels) == ("NEW GRIECO", False)
+    assert G.gone_wholesaler({"supplier": "", "prices": {"MELONI": 2.0, "F.LLI PETRILLO": 1.5}}, labels) == ("PETRILLO", True)
+    assert G.gone_wholesaler({"supplier": "", "prices": {}}, labels) == (None, False)
+    st = {"labels": labels, "history": True, "new": [], "odd": [], "prices": [],
+          "gone": [{"ean": "8055728243811", "name": "LADY VENEZIA", "supplier": "", "prices": {"F.LLI PETRILLO": 0.9},
+                    "best": 0.9, "wholesaler": "PETRILLO", "sup_guess": True},
+                   {"ean": "8002410024630", "name": "BILBOA", "supplier": "MEGA CASH & CARRY SRL", "best": 7.9,
+                    "wholesaler": "MEGA CASH", "sup_guess": False}]}
+    out = str(tmp_path / "g.xlsx")
+    G.export(st, out, which=["gone"])
+    wb = load_workbook(out)
+    assert wb.sheetnames == ["停售"] + [f"停售 · {l}" for l in labels]
+    ws = wb["停售 · PETRILLO"]
+    hr = next(r for r in range(1, 8) if ws.cell(r, 2).value == "EAN")
+    heads = [c.value for c in ws[hr]]
+    sup = ws.cell(hr + 1, heads.index("Fornitore Griglia") + 1)
+    assert ws.cell(hr + 1, 2).value == "8055728243811" and sup.value == "PETRILLO"
+    assert ws.cell(hr + 2, 2).value is None                                    # 只有这家的
+    assert wb["停售 · MEGA CASH"].cell(hr + 1, heads.index("Fornitore Griglia") + 1).value == "MEGA CASH & CARRY SRL"

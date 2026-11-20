@@ -444,6 +444,8 @@ def stats(grid, quotes, fresh=None):
         return d or next((q["src"] for q in (o or {}).values() if q.get("src")), "")
 
     gone = [dict(it, direct=direct(e, None)) for e, it in items.items() if e not in offer]
+    for x in gone:                               # 用户 11-20：停售的也要知道以前是哪家批发商的（分表导出）
+        x["wholesaler"], x["sup_guess"] = gone_wholesaler(x, labels)
     new = []
     for e, o in offer.items():
         if e in eans:
@@ -510,6 +512,44 @@ def overview(st, n_grid):
     return {"grid": n_grid, "covered": covered, "share": covered / n_grid if n_grid else None, "sups": sups}
 
 
+def _words_of(s):
+    return set(re.findall(r"[A-Z0-9]{3,}", str(s or "").upper()))
+
+
+def match_label(name, labels):
+    """Griglia 里写的供应商 / 价格列名（F.LLI PETRILLO SRL、MEGA CASH & CARRY SRL）→ 这周报价的批发商名（PETRILLO、MEGA CASH）"""
+    ws = _words_of(name)
+    if not ws:
+        return None
+    best = None
+    for l in labels:
+        lw = _words_of(l)
+        if lw and lw <= ws and (best is None or len(lw) > len(_words_of(best))):
+            best = l
+    if best is None:                              # 反过来：报价名比 Griglia 写得长（PETRILLO SRL ↔ F.LLI PETRILLO）
+        for l in labels:
+            if ws & _words_of(l) and (_words_of(l) - ws) <= {"SRL", "SPA", "SNC", "CARRY", "CASH"}:
+                return l
+    return best
+
+
+def gone_wholesaler(x, labels):
+    """
+    停售商品以前是哪家批发商的 → (报价批发商名 或 None, 是不是推出来的)。
+    先看 Griglia 的 Fornitore；那一格空着（用户 11-20：LADY VENEZIA / PASTA DEL CAPITANO 没写）就用
+    Griglia 里几家批发商价格列最便宜的那家
+    """
+    lab = match_label(x.get("supplier"), labels)
+    if lab:
+        return lab, False
+    pr = {k: v for k, v in (x.get("prices") or {}).items() if v}
+    for k in sorted(pr, key=lambda k: pr[k]):
+        lab = match_label(k, labels)
+        if lab:
+            return lab, not x.get("supplier")
+    return None, False
+
+
 # 导出的四张表（2026-11-07 用户：可以只导出其中几张；带照片、要美观专业，参考门店报告）
 EXPORT_TABLES = (("gone", "停售"), ("new", "新品"), ("prices", "价格"), ("odd", "价格可疑"))
 
@@ -558,12 +598,25 @@ def export(st, path, labels=None, which=None, rows=None, url=None, grid_name=Non
             cols = [Col("EAN", 16, "ean"), Col("Cod. Art.", 10, "ean"), Col("Descrizione", 40, bold=True),
                     Col("Marca", 16)] + CATS + [Col("Fornitore Griglia", 22, group="sup"),
                                                 Col("Prezzo Griglia", 12, "price", group="price")]
-            data = [[x["ean"], x.get("code") or None, x.get("name"), x.get("brand") or None] + cats(x) +
-                    [x.get("supplier") or None, x.get("best") or x.get("price")] for x in xs]
-            X.add_sheet(wb, "停售", "Griglia · Articoli non più trattati dai grossisti", sub(len(xs)), cols, data,
-                        photo_eans=[x["ean"] for x in xs], url=url, tone="RED",
-                        note=f"停售：Griglia 里有，这周所有批发商的报价里都没有（{src}）。"
-                             f" In Griglia ma assenti da tutti i listini di questa settimana.")
+
+            def gone_sheet(name, title, part):
+                data, mk = [], {}
+                for k, x in enumerate(part):
+                    sup = x.get("supplier") or None
+                    if not sup and x.get("wholesaler"):
+                        sup = x["wholesaler"]
+                        mk[(k, 8)] = "AMBER"           # Griglia 没写供应商，按 Griglia 里最便宜的批发商价格推
+                    data.append([x["ean"], x.get("code") or None, x.get("name"), x.get("brand") or None] + cats(x) +
+                                [sup, x.get("best") or x.get("price")])
+                X.add_sheet(wb, name, title, sub(len(part)), cols, data, marks=mk,
+                            photo_eans=[x["ean"] for x in part], url=url, tone="RED",
+                            note=f"停售：Griglia 里有，这周所有批发商的报价里都没有（{src}）。橙底 = Griglia 没写供应商，"
+                                 f"按 Griglia 里最便宜的批发商价格推。 In Griglia ma assenti da tutti i listini di "
+                                 f"questa settimana; arancione = fornitore dedotto dai prezzi della Griglia.")
+            gone_sheet("停售", "Griglia · Articoli non più trattati dai grossisti", xs)
+            for l in labels:                         # 用户 11-20：每家批发商一张子表
+                part = [x for x in xs if (x.get("wholesaler") or gone_wholesaler(x, labels)[0]) == l]
+                gone_sheet(f"停售 · {l}", f"Griglia · Non più trattati · {l}", part)
         elif key == "new":
             cols = [Col("EAN", 16, "ean"), Col("Descrizione", 40, bold=True)] + CATS + \
                 [Col("Reparto", 18), Col("N. grossisti", 10, "num"), Col("Miglior prezzo", 12, "price", group="price"),
