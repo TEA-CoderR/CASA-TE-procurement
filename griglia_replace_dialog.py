@@ -62,6 +62,29 @@ def _pill(p, rect, text, tok, bold=True):
 
 
 SEGS = Qt.UserRole + 2           # 名字分段 [(文字, 0 一样 / 1 不一样 / None 标点)]
+VSUP = Qt.UserRole + 3           # 候选按批发商看时：这张卡显示哪家的价格
+
+
+def search_url(ean):
+    """没有图片的商品：在浏览器里按条码搜图片（用户 11-20）"""
+    from urllib.parse import quote
+    return "https://www.google.com/search?tbm=isch&q=" + quote(str(ean or "").strip())
+
+
+def cand_suppliers(cands):
+    """候选按批发商分：[(批发商, 几个)]，个数多的在前；一个候选几家都有就几家都算"""
+    cnt = {}
+    for c in cands:
+        for sup in (c.get("prices") or {}) or ([c["best_sup"]] if c.get("best_sup") else []):
+            cnt[sup] = cnt.get(sup, 0) + 1
+    return sorted(cnt.items(), key=lambda kv: (-kv[1], str(kv[0]).casefold()))
+
+
+def cands_of(cands, sup):
+    """只看这家批发商有的候选（sup = None：全部）"""
+    if not sup:
+        return list(cands)
+    return [c for c in cands if sup in (c.get("prices") or {}) or (not c.get("prices") and c.get("best_sup") == sup)]
 
 
 def diff_colors(side):
@@ -223,7 +246,12 @@ class _CandDelegate(QStyledItemDelegate):
         if d.get("in_grid"):
             parts.insert(0, (tr("Griglia 里已有"), T("warn")))
         parts.append((tr("{0} 家", d["n"]), T("muted")))
-        parts.append((_money(d["best"]) + " · " + str(d["best_sup"]), T("muted")))
+        vs = idx.data(VSUP)
+        if vs and vs in (d.get("prices") or {}):           # 按批发商看：写这家的价格（最便宜是别家时标出来）
+            pv = d["prices"][vs]
+            parts.append((_money(pv) + " · " + str(vs), T("text") if vs == d.get("best_sup") else T("muted")))
+        else:
+            parts.append((_money(d["best"]) + " · " + str(d["best_sup"]), T("muted")))
         parts.append((d["ean"], T("faint")))
         for k, (t, col) in enumerate(parts):
             if k:
@@ -239,6 +267,72 @@ class _CandDelegate(QStyledItemDelegate):
         p.restore()
 
 
+class _SupChip(QPushButton):
+    """候选上面按批发商分的小按钮：圆角胶囊 + 右边数字徽章（自己画，选中实心主题色）"""
+    H = 28
+
+    def __init__(self, text, n, on):
+        super().__init__(text)
+        self._n = n
+        self.setCheckable(True)
+        self.setChecked(on)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setFixedHeight(self.H)
+        self.setFocusPolicy(Qt.NoFocus)
+        self.setFlat(True)
+        self.setStyleSheet("QPushButton{border:none; background:transparent;}")
+
+    def _fonts(self):
+        f = QFont(self.font())
+        f.setPointSizeF(max(8.0, (f.pointSizeF() if f.pointSizeF() > 0 else 9.0)))
+        f.setWeight(QFont.DemiBold if self.isChecked() else QFont.Medium)
+        fb = QFont(f)
+        fb.setPointSizeF(max(7.0, f.pointSizeF() - 1.2))
+        fb.setWeight(QFont.Bold)
+        return f, fb
+
+    def sizeHint(self):
+        from PySide6.QtGui import QFontMetrics
+        f, fb = self._fonts()
+        w = QFontMetrics(f).horizontalAdvance(self.text()) + QFontMetrics(fb).horizontalAdvance(str(self._n)) + 14 + 14 + 8 + 10
+        return QSize(w, self.H)
+
+    def paintEvent(self, _e):
+        from PySide6.QtGui import QFontMetrics
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        on, hov = self.isChecked(), self.underMouse()
+        r = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+        p.setPen(QPen(QColor(T("accent") if on else T("accent") if hov else T("line")), 1))
+        p.setBrush(QColor(T("accent") if on else T("accent_soft") if hov else T("surface")))
+        p.drawRoundedRect(r, r.height() / 2, r.height() / 2)
+        f, fb = self._fonts()
+        bw = QFontMetrics(fb).horizontalAdvance(str(self._n)) + 12
+        badge = QRectF(r.right() - bw - 6, (r.height() - 18) / 2 + 0.5, bw, 18)
+        p.setFont(f)
+        p.setPen(QColor(T("on_accent") if on else T("text")))
+        p.drawText(QRectF(14, 0, badge.left() - 18, r.height()), Qt.AlignVCenter | Qt.AlignLeft, self.text())
+        bg = QColor(T("on_accent") if on else T("accent"))
+        bg.setAlpha(60 if on else 32)
+        p.setPen(Qt.NoPen)
+        p.setBrush(bg)
+        p.drawRoundedRect(badge, 9, 9)
+        p.setFont(fb)
+        p.setPen(QColor(T("on_accent") if on else T("accent")))
+        p.drawText(badge, Qt.AlignCenter, str(self._n))
+
+
+class _ImgLabel(QLabel):
+    def __init__(self, card):
+        super().__init__()
+        self._card = card
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.LeftButton:
+            self._card.image_clicked()
+        super().mousePressEvent(e)
+
+
 class _Card(QFrame):
     """右上角并排的商品卡：大图 + 名称 + 一两行小字"""
 
@@ -252,10 +346,11 @@ class _Card(QFrame):
         self.cap = QLabel(caption)
         self.cap.setObjectName("Faint")
         v.addWidget(self.cap)
-        self.img = QLabel()
+        self.img = _ImgLabel(self)
         self.img.setFixedSize(104, 104)
         self.img.setAlignment(Qt.AlignCenter)
         v.addWidget(self.img, 0, Qt.AlignHCenter)
+        self._ean = None
         self.name = QLabel("")
         self.name.setWordWrap(True)
         self.name.setAlignment(Qt.AlignHCenter | Qt.AlignTop)
@@ -278,17 +373,39 @@ class _Card(QFrame):
         self.name.setText(t)
         self.name.setStyleSheet(f"font-weight:600; color:{T('faint') if faint else T('text')};")
 
+    def has_image(self):
+        pm = self.img.pixmap()
+        return pm is not None and not pm.isNull()
+
+    def image_clicked(self):
+        """有图：放大看；没图：在浏览器里按条码搜图片"""
+        if not self._ean:
+            return
+        if self.has_image():
+            import product_images as PI
+            PI.preview(self, self._ean, self.settings)
+            return
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+        QDesktopServices.openUrl(QUrl(search_url(self._ean)))
+
     def set(self, ean, name, meta, faint=False):
         import product_images as PI
+        self._ean = ean or None
         if ean:
             PI.set_label_image(self.img, ean, 100, self.settings)
-            if self.img.isHidden() or self.img.pixmap() is None or self.img.pixmap().isNull():
-                self.img.setText(tr("没有图片"))
-                self.img.setStyleSheet(f"color:{T('faint')}; border:1px dashed {T('line')}; border-radius:8px;")
+            if self.img.isHidden() or not self.has_image():
+                self.img.setText(tr("没有图片") + "\n" + tr("网上搜索") + " ↗")
+                self.img.setStyleSheet(f"color:{T('accent')}; border:1px dashed {T('line')}; border-radius:8px;")
+                self.img.setToolTip(tr("这个条码没有商品图片：点一下在浏览器里按条码搜图片"))
             else:
                 self.img.setStyleSheet("")
+                self.img.setToolTip(tr("点一下放大看"))
+            self.img.setCursor(Qt.PointingHandCursor)
             self.img.show()
         else:
+            self.img.setToolTip("")
+            self.img.unsetCursor()
             self.img.clear()
             self.img.setText("—")
             self.img.setStyleSheet(f"color:{T('faint')}; border:1px dashed {T('line')}; border-radius:8px;")
@@ -413,6 +530,24 @@ class ReplaceDialog(QDialog):
         self.q.setMinimumWidth(220)
         ch.addWidget(self.q, 1)
         sv.addLayout(ch)
+        # 候选按批发商分：全部 / 每家一个小按钮（用户 11-20：混在一起看着累，要能按供应商分类，也能全部看）
+        self._sup = None
+        self._sup_key = None
+        self.sup_bar = QHBoxLayout()
+        self.sup_bar.setSpacing(6)
+        self.sup_bar.setContentsMargins(0, 0, 0, 0)
+        sup_box = QFrame()
+        sup_box.setLayout(self.sup_bar)
+        from PySide6.QtWidgets import QScrollArea
+        self.sup_scroll = QScrollArea()                   # 批发商多、右边窄（1366 屏）时左右滑，不挤出屏幕
+        self.sup_scroll.setWidget(sup_box)
+        self.sup_scroll.setWidgetResizable(True)
+        self.sup_scroll.setFrameShape(QFrame.NoFrame)
+        self.sup_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.sup_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.sup_scroll.setFixedHeight(_SupChip.H + 12)
+        self.sup_scroll.setStyleSheet("QScrollArea, QScrollArea > QWidget > QWidget {background:transparent;}")
+        sv.addWidget(self.sup_scroll)
         self.cands = QListWidget()
         self.cands.setFrameShape(QFrame.NoFrame)
         self.cands.setSpacing(2)
@@ -638,6 +773,7 @@ class ReplaceDialog(QDialog):
         self.q.blockSignals(True)
         self.q.clear()
         self.q.blockSignals(False)
+        self._sup = None
         self._fill_cands()
 
     def _show_new(self, i):
@@ -687,6 +823,8 @@ class ReplaceDialog(QDialog):
             cands = self.rows[i]["cands"]
             self.cap.setText(tr("候选（{0}）", len(cands)))
         cands = [c for c in cands if c["ean"] != old["ean"]]     # 同一个商品不能当自己的替代品
+        self._sup_chips(cands)
+        cands = cands_of(cands, self._sup)
         for c in cands:
             self._chg(i, c)
         none = QListWidgetItem(tr("— 不替代"))
@@ -697,6 +835,7 @@ class ReplaceDialog(QDialog):
             it = QListWidgetItem(c["name"])
             it.setData(Qt.UserRole, c)
             it.setData(SEGS, self.GR.diff_tokens(c["name"], old.get("name") or ""))
+            it.setData(VSUP, self._sup)
             it.setToolTip("\n".join(c.get("names") or [c["name"]])
                           + ("\n\n" + tr("Griglia 里已经有这个商品：选它 = 旧的那行移到最下面划线，不再加新行") if c.get("in_grid") else ""))
             self.cands.addItem(it)
@@ -704,6 +843,34 @@ class ReplaceDialog(QDialog):
                 self.cands.setCurrentItem(it)
         if not cur:
             self.cands.setCurrentItem(none)
+
+    def _sup_chips(self, cands):
+        """候选上面那排批发商小按钮（和现在这批候选一样就不重建）"""
+        sups = cand_suppliers(cands)
+        if self._sup not in {s for s, _n in sups}:
+            self._sup = None
+        key = (tuple(sups), self._sup)
+        if key == self._sup_key:
+            return
+        self._sup_key = key
+        while self.sup_bar.count():
+            w = self.sup_bar.takeAt(0).widget()
+            if w is not None:
+                w.deleteLater()
+        if len(sups) < 2:                       # 只有一家（或没有）：不用分
+            self.sup_scroll.hide()
+            return
+        self.sup_scroll.show()
+        for sup, n in [(None, len(cands))] + sups:
+            b = _SupChip(tr("全部") if sup is None else str(sup), n, sup == self._sup)
+            b.setToolTip(tr("全部候选") if sup is None else tr("只看 {0} 有的候选（价格写这家的）", sup))
+            b.clicked.connect(lambda _=False, s=sup: self._pick_sup(s))
+            self.sup_bar.addWidget(b)
+        self.sup_bar.addStretch()
+
+    def _pick_sup(self, sup):
+        self._sup = sup
+        self._fill_cands()
 
     def _picked(self, it):
         i = self._current()

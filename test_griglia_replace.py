@@ -731,3 +731,16 @@ def test_restore_old_command_records_row():
     assert res["restored"] == [("8002222000017", 8)] and res["missing"] == []
     r = GR.load_done(work)["8002222000017"]
     assert r["restored_to"] == 8 and r["moved_to"] == 8
+
+
+def test_candidates_grouped_by_wholesaler_and_image_search_link():
+    """找替代：候选能按批发商分（一个候选几家都有就几家都算）；没图片的点了按条码上网搜"""
+    import griglia_replace_dialog as D
+    cands = [{"ean": "1", "prices": {"PETRILLO": 2.13}, "best_sup": "PETRILLO"},
+             {"ean": "2", "prices": {"PETRILLO": 1.21, "NEW GRIECO": 1.16}, "best_sup": "NEW GRIECO"},
+             {"ean": "3", "prices": {"NEW GRIECO": 1.16}, "best_sup": "NEW GRIECO"},
+             {"ean": "4", "prices": {"MELONI": 0.67}, "best_sup": "MELONI"}]
+    assert D.cand_suppliers(cands) == [("NEW GRIECO", 2), ("PETRILLO", 2), ("MELONI", 1)]
+    assert [c["ean"] for c in D.cands_of(cands, "PETRILLO")] == ["1", "2"]
+    assert len(D.cands_of(cands, None)) == 4
+    assert D.search_url(" 8015100578382 ").endswith("tbm=isch&q=8015100578382")

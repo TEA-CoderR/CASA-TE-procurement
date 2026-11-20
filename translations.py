@@ -4456,4 +4456,9 @@ TRANSLATIONS = {
     '没能整理成以前的格式，放的是原文件（程序照样读得了）：{0}': ('Could not prepare it in the usual format, the original file was put in (the program can still read it): {0}', 'Impossibile prepararlo nel formato abituale, è stato inserito il file originale (il programma lo legge comunque): {0}'),
     '已经放进去了，但要注意：': ('Put in, but note:', 'Inseriti, ma attenzione:'),
     '正在整理报价格式…': ('Preparing the price list format…', 'Preparazione del formato del listino…'),
+    '网上搜索': ('Search online', 'Cerca online'),
+    '这个条码没有商品图片：点一下在浏览器里按条码搜图片': ('No product image for this barcode: click to search images by barcode in the browser', "Nessuna immagine per questo codice: clicca per cercare le immagini nel browser"),
+    '点一下放大看': ('Click to enlarge', 'Clicca per ingrandire'),
+    '全部候选': ('All candidates', 'Tutti i candidati'),
+    '只看 {0} 有的候选（价格写这家的）': ('Only candidates {0} has (showing its price)', 'Solo i candidati di {0} (con il suo prezzo)'),
 }
