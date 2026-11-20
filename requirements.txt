@@ -10,3 +10,4 @@ pandas
 SQLAlchemy
 mysqlclient
 PyMySQL
+xlrd==2.0.1

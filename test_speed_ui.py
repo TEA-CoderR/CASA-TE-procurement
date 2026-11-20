@@ -88,8 +88,8 @@ def test_quote_matrix_read_once_for_copies_in_every_store(tmp_path, monkeypatch)
         shutil.copy2(src, d / src.name)                        # 比价时每家门店复制一份（修改时间不变）
         stores.append(str(d / src.name))
     calls = []
-    real = service.open_values
-    monkeypatch.setattr(service, "open_values", lambda p, log: (calls.append(p), real(p, log))[1])
+    real = service.open_quote
+    monkeypatch.setattr(service, "open_quote", lambda p, log: (calls.append(p), real(p, log))[1])
     a = service.quote_matrix(stores[0], print)
     service._QM_MEM.clear()                                    # 换了程序进程也一样：读磁盘缓存
     b = service.quote_matrix(stores[1], print)

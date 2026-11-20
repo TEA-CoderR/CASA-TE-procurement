@@ -209,6 +209,52 @@ def read_values(path):
         wb.close()
 
 
+def read_sheets(path):
+    """
+    每个工作表的值 → [(表名, ValueSheet)]，活动的那页放第一个。.xlsx 用 openpyxl 只读模式；
+    .xls 用 xlrd 读文件里存好的值（不开 Excel：快，也不会因为 Excel 打不开而失败）。
+    """
+    if path.lower().endswith(".xls"):
+        import xlrd
+        book = xlrd.open_workbook(path, on_demand=True)
+        try:
+            out = []
+            for i in range(book.nsheets):
+                sh = book.sheet_by_index(i)
+                rows = []
+                for r in range(sh.nrows):
+                    row = []
+                    for c in range(sh.ncols):
+                        cell = sh.cell(r, c)
+                        v = cell.value
+                        if cell.ctype in (xlrd.XL_CELL_EMPTY, xlrd.XL_CELL_BLANK, xlrd.XL_CELL_ERROR) or v == "":
+                            v = None
+                        elif cell.ctype == xlrd.XL_CELL_BOOLEAN:
+                            v = bool(v)
+                        row.append(v)
+                    rows.append(row)
+                out.append((sh.name, ValueSheet(rows)))
+                book.unload_sheet(i)
+            return out
+        finally:
+            book.release_resources()
+    from openpyxl import load_workbook as _lw
+    wb = _lw(path, data_only=True, read_only=True)
+    try:
+        names = [wb.active.title] + [n for n in wb.sheetnames if n != wb.active.title]
+        out = []
+        for n in names:
+            ws = wb[n]
+            if not hasattr(ws, "iter_rows"):          # 图表页
+                continue
+            if hasattr(ws, "reset_dimensions"):
+                ws.reset_dimensions()
+            out.append((n, ValueSheet(ws.iter_rows(values_only=True))))
+        return out
+    finally:
+        wb.close()
+
+
 def cleanup_calculated_files():
     """清理临时计算公式生成的 .calc.xlsx 文件"""
     for calc_path in _calculated_cache.values():

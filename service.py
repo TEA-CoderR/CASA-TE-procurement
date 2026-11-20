@@ -478,6 +478,34 @@ def open_values(path, log):
     return (wb, wb.active) if wb else (None, None)
 
 
+def open_quote(path, log):
+    """
+    读一份批发商报价（只读）：(wb 要关的话, ws, layout)。.xls 和公式结果都存好的 .xlsx 直接读值（不开 Excel）；
+    几页的选认得出报价结构、行数最多的那页（不一定是活动页）。认不出 layout = None，ws = 第一页（找问题用）。
+    """
+    from utils import formulas_cached, read_sheets
+    sheets = None
+    if path.lower().endswith(".xls") or formulas_cached(path):
+        try:
+            sheets = read_sheets(path)
+        except Exception as e:
+            log(tr("  {0} 直接读值失败，改用 Excel：{1}", os.path.basename(path), e))
+            sheets = None
+    if sheets is not None:
+        ws, lay = QF.pick_sheet(sheets, path)
+        if lay:
+            return None, ws, lay
+        return None, (sheets[0][1] if sheets else None), {"why": QF.describe(sheets)}
+    wb, _, _ = safe_open(path, log)
+    if not wb:
+        return None, None, None
+    sheets = [(w.title, w) for w in [wb.active] + [w for w in wb.worksheets if w is not wb.active]]
+    ws, lay = QF.pick_sheet(sheets, path)
+    if lay:
+        return wb, ws, lay
+    return wb, wb.active, {"why": QF.describe(sheets)}
+
+
 def safe_save(wb, original_path, calc_path, log):
     """
     保存修改：直接使用 openpyxl 保存，避免 Excel COM 遍历所有单元格的性能问题。
@@ -1198,7 +1226,7 @@ def run_process(ordine_file, eliminare_path, distribuire_path, log, progress=Non
             log(tr("⚠ {0} 读取失败: {1}", file, e))
             continue
 
-        ws = wb_supplier.active
+        ws = QF.order_sheet(wb_supplier)     # 报价不一定在活动页
 
         col_ean, row_ean_supplier, col_ord, row_ord = QF.ean_ord(ws)     # 供应商原来的表头也认（CODICI EAN / Ord. …）
 
@@ -1234,7 +1262,7 @@ def run_process(ordine_file, eliminare_path, distribuire_path, log, progress=Non
             log(tr("  {0} EAN 列有公式，使用 Excel COM 计算...", file))
             calc_path = calculate_formulas(work_path)
             wb_calc = load_workbook(calc_path, data_only=True)
-            ws_calc = wb_calc.active
+            ws_calc = QF.same_sheet(wb_calc, ws)
             
             for j in range(supplier_header_row + 1, supplier_last + 1):
                 e = clean_ean(ws_calc.cell(j, col_ean).value)
@@ -1533,7 +1561,24 @@ def _supplier_work_path(path):
     alt = path + ".xlsx"
     if os.path.exists(alt) and is_valid_xlsx(alt):
         return alt
-    return convert_to_xlsx(path)
+    out = convert_to_xlsx(path)
+    if out.lower().endswith(".xls") and path.lower().endswith(".xls"):     # Excel 转不了：按值转（格式没了，内容一样）
+        out = xls_to_xlsx_values(path, alt)
+    return out
+
+
+def xls_to_xlsx_values(src, dst):
+    """.xls → .xlsx 只抄值（xlrd 读文件里存好的值），Excel 打不开这份 .xls 时用"""
+    from openpyxl import Workbook
+    from utils import read_sheets
+    wb = Workbook()
+    wb.remove(wb.active)
+    for name, vs in read_sheets(src):
+        ws = wb.create_sheet(str(name)[:31] or "Sheet")
+        for row in vs.iter_rows(values_only=True):
+            ws.append(list(row))
+    wb.save(dst)
+    return dst
 
 
 def _supplier_index(ws, work_path):
@@ -1549,7 +1594,7 @@ def _supplier_index(ws, work_path):
         v = ws.cell(j, col_ean).value
         if isinstance(v, str) and v.startswith("="):
             wb_calc = load_workbook(calculate_formulas(work_path), data_only=True)
-            src = wb_calc.active
+            src = QF.same_sheet(wb_calc, ws)
             break
     index = {}
     for j in range(header + 1, last + 1):
@@ -1632,17 +1677,16 @@ def quote_matrix(path, log):
             return out
         except Exception:
             pass
-    wb, ws = open_values(path, log)      # 只读报价：公式结果存在文件里就不开 Excel（结果一样）
+    wb, ws, lay = open_quote(path, log)   # 只读报价：.xls / 公式结果存好的直接读值，不开 Excel（结果一样）
     if ws is None:
         return None
     try:
-        lay = QF.layout(ws, path)       # 供应商原来的表头 + 固定价格规则（PETRILLO −6.83%、NEW GRIECO +1%）
-        if not lay:
+        if not lay or "why" in lay:     # 供应商原来的表头 + 固定价格规则（PETRILLO −6.83%、NEW GRIECO +1%）
             out = {"ok": False}
         else:
             col_ean, col_price, header_row, price_of = lay["ean"], lay["price_col"], lay["header_row"], lay["price"]
             col_ord_p = lay["ord"]
-            pack_col, _how = _detect_pack_col(ws, path, header_row, col_ord_p, col_price)
+            pack_col = lay.get("pack") or _detect_pack_col(ws, path, header_row, col_ord_p, col_price)[0]
             head = ws.cell(header_row, pack_col).value if pack_col else None
             price, pack, count = {}, {}, {}
             last_row = get_last_row(ws, col_ean)
@@ -1756,19 +1800,20 @@ def _guess_desc_col(ws, header_row, col_ean, rows=80):
 def _read_price_file(path, log=None, fast=True):
     log = log or (lambda *a: None)
     if fast:
-        wb, ws = open_values(path, log)     # 公式结果文件里都存好了：只读模式直接读值，不开 Excel（结果一样，快很多）
+        wb, ws, lay = open_quote(path, log)  # .xls / 公式结果存好的：直接读值，不开 Excel（结果一样，快很多）
     else:
         wb, _, _ = safe_open(path, log)
-        ws = wb.active if wb else None
+        ws, lay = QF.pick_sheet([(w.title, w) for w in wb.worksheets], path) if wb else (None, None)
+        ws = ws or (wb.active if wb else None)
     if ws is None:
         raise ValueError(tr("打不开报价文件：{0}", os.path.basename(path)))
     try:
-        lay = QF.layout(ws, path)       # 供应商原来的表头 + 固定价格规则（PETRILLO −6.83%、NEW GRIECO +1%）
-        if not lay:
-            raise ValueError(tr("{0} 缺少必要列", os.path.basename(path)))
+        if not lay or "why" in lay:     # 供应商原来的表头 + 固定价格规则（PETRILLO −6.83%、NEW GRIECO +1%）
+            why = (lay or {}).get("why")
+            raise ValueError(tr("{0} 缺少必要列", os.path.basename(path)) + (f"：{why}" if why else ""))
         col_ean, col_price, header_row, price_of, col_ord = \
             lay["ean"], lay["price_col"], lay["header_row"], lay["price"], lay["ord"]
-        pack_col, _ = _detect_pack_col(ws, path, header_row, col_ord, col_price)
+        pack_col = lay.get("pack") or _detect_pack_col(ws, path, header_row, col_ord, col_price)[0]
         col_desc = None
         for h in _DESC_HEADS:
             c, _r = find_col(ws, h)
@@ -2134,7 +2179,7 @@ def rewrite_assignment(data, new_assign, new_sources, log, progress=None, force=
         try:
             work = _supplier_work_path(os.path.join(dist, file))
             wb_s = load_workbook(work)
-            ws_s = wb_s.active
+            ws_s = QF.order_sheet(wb_s)
             col_ord, index, order_input = _supplier_index(ws_s, work)
             if not col_ord:
                 log(tr("⚠ {0} 缺少必要列 ({1}/{2})", file, COL_CODICE_EAN, COL_ORDINE))

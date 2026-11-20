@@ -99,3 +99,38 @@ def test_supplier_index_finds_original_order_column(tmp_path):
     ws = openpyxl.load_workbook(g).active
     col_ord, index, _ = service._supplier_index(ws, g)
     assert col_ord == 2 and index["3616304240508"] == 3
+
+
+def test_grieco_pack_column_without_header_found_without_formulas(tmp_path, monkeypatch):
+    raw = _grieco(tmp_path / "Canvass 46 New Grieco.xlsx", False)
+    _a, pack, m = _read(raw, tmp_path, monkeypatch)
+    assert pack == {"3616304240508": 12, "8054633836392": 6, "8050624487659": 10}
+    assert m["pack_col"] == 5
+
+
+def test_price_sheet_found_when_not_the_active_sheet(tmp_path, monkeypatch):
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Novita"
+    ws.append(["Nuovi articoli della settimana"])
+    ws2 = wb.create_sheet("LISTINO x Famiglie")
+    ws2.append(["barcode_pezzo", "articolo", "ARTICOLI.descrizione", "UDV", "Prezzo", "Ordine"])
+    for i in range(30):
+        ws2.append([str(8000000000000 + i), str(i), "ART %d" % i, 6, 1.0 + i / 10, None])
+    wb.active = 0
+    p = str(tmp_path / "Listino_01 - Offerte.xlsx")
+    wb.save(p)
+    a, pack, m = _read(p, tmp_path, monkeypatch)
+    assert len(a) == 30 and a["8000000000005"] == 1.5 and m["ok"]
+    import openpyxl
+    import quote_format as QF
+    assert QF.order_sheet(openpyxl.load_workbook(p)).title == "LISTINO x Famiglie"
+
+
+def test_unreadable_quote_says_what_headers_it_saw(tmp_path):
+    import pytest
+    import service
+    p = _save(tmp_path / "strano.xlsx", [["Codice", "Descr", "Costo"], ["1", "A", 2]])
+    with pytest.raises(ValueError) as e:
+        service._read_price_file(p)
+    assert "CODICE" in str(e.value) and "COSTO" in str(e.value)

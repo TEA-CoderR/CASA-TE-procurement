@@ -917,7 +917,7 @@ def _count_price_items(path):
     except Exception:
         pass
     import service
-    return len(service._read_price_file(path, log=lambda *a: None))
+    return len(service.read_price_file(path, log=lambda *a: None))     # 读过的（现在那份）直接用缓存
 
 
 def mail_import_prices(settings, root, picks, via="desktop", factory=None, check=None):
@@ -965,6 +965,12 @@ def mail_import_prices(settings, root, picks, via="desktop", factory=None, check
                 n = check(p["src"])
             except Exception as e:
                 skipped.append((b["label"], tr("比价读不了这份文件（{0}），要先手动整理表头", e)))
+                try:                          # 留一份给维护的人看到底是什么格式（cache/mail_prices_failed）
+                    fd = os.path.join(app_dir(), "cache", "mail_prices_failed")
+                    os.makedirs(fd, exist_ok=True)
+                    shutil.copy2(p["src"], os.path.join(fd, datetime_now_tag() + "_" + os.path.basename(p["src"])))
+                except Exception:
+                    pass
                 continue
             old_n = None
             if b.get("current") and os.path.exists(os.path.join(folder, b["current"])):
