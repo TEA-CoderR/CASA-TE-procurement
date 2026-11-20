@@ -408,7 +408,7 @@ def test_size_change_text_and_lav_written_as_L():
     assert GR.change("SVELTO 980 ML", "SVELTO 1,03L") == ("980 ml → 1.03 l", True)
     assert GR.change("X 750 ML", "Y 750ML") == ("750 ml", False)
     assert GR.sizes("LYSOFORM LAV.2,43L 54L. COLOR") == [(2430.0, "ml"), (54.0, "lav")]
-    assert GR.sizes("LYSOFORM CASA 1100 MLx2 PZ") == [(1100.0, "ml")]
+    assert GR.sizes("LYSOFORM CASA 1100 MLx2 PZ") == [(1100.0, "ml"), (2.0, "pz")]          # 两瓶装
 
 
 def test_name_diff_marks_only_what_changed():
@@ -769,3 +769,34 @@ def test_card_without_image_click_opens_search():
         assert not c.img.isHidden() and c.img.text() == "没有图片"
     finally:
         QDesktopServices.openUrl = old
+
+
+def test_same_dose_count_and_multipack_ranked_first():
+    """用户 11-20：40 MISURINI 要配 40 MISURINI（不是 130）；980 ML x 3 配 1000 ML x 3；MASTRO LINDO = MASTROLINDO；
+    Griglia 里已经有的替代品也要列出来（标 in_grid）"""
+    assert GR.sizes("LAV. DIXAN CLASSICO 40 MISURINI GR.") == [(40.0, "lav")]
+    assert GR.sizes("DIXAN LAV. 2,7L 52+8L. CLASSICO") == [(2700.0, "ml"), (60.0, "lav")]
+    assert GR.sizes("CHANTECLAIR LAVAT.28 LAVx3 PZ.MUSC.") == [(28.0, "lav"), (3.0, "pz")]
+    rows = [["Cod.Art.", "Codice EAN", "Descrizione prodotto", "Fornitore", "PA MIGLIORE", "MELONI"],
+            ["1", "8015100577545", "LAV. DIXAN CLASSICO 40 MISURINI GR.", "M", 7.8, 7.8],
+            ["2", "8720181389917", "SVELTO PIATTI 980 ML x 3 PZ LIMONE", "M", 4.0, 4.0],
+            ["3", "8001090971470", "MASTRO LINDO 930 ML.LIMONE", "M", 2.0, 2.0],
+            ["4", "8006530506342", "MASTROLINDO 1000 ML LIMONE", "M", 2.1, 2.1],
+            ["5", "8720181389870", "SVELTO PIATTI 980 ML LIMONE", "M", 1.3, 1.3]]
+    g = G.parse_rows(rows)
+    q = {"MEGA CASH": {"8015100581931": {"price": 13.7, "desc": "DIXAN CLASSICO 130 MISURINI GR.7150"},
+                       "8015100577521": {"price": 13.3, "desc": "DIXAN CLASSICO 110 MISURINI GR.6050"},
+                       "8015100580941": {"price": 7.9, "desc": "DIXAN CLASSICO 40 MISURINI GR.2200"},
+                       "8721497047805": {"price": 4.1, "desc": "SVELTO PIATTI 1000 ML x 3 PZ LIMONE"},
+                       "8721497047782": {"price": 1.4, "desc": "SVELTO PIATTI 1000 ML LIMONE"},
+                       "8006530506342": {"price": 2.1, "desc": "MASTROLINDO 1000 ML LIMONE"},
+                       "8720181389870": {"price": 1.3, "desc": "SVELTO PIATTI 980 ML LIMONE"},
+                       "8006530403436": {"price": 2.2, "desc": "MASTRO LINDO SGRASS.CUCINA 800ml LIMONE"}}}
+    fresh = {"MEGA CASH": {"8015100581931"}}            # 130 MISURINI 是这周新上架的：也不能盖过规格
+    res = {r["old"]["ean"]: r["cands"] for r in GR.suggest(g, q, fresh=fresh)}
+    dixan = res["8015100577545"]
+    assert dixan[0]["ean"] == "8015100580941" and dixan[0]["score"] >= GR.SURE
+    assert dixan[0]["score"] - max(c["score"] for c in dixan[1:]) > 0.15
+    assert res["8720181389917"][0]["ean"] == "8721497047805"
+    ml = res["8001090971470"][0]
+    assert ml["ean"] == "8006530506342" and ml.get("in_grid") is True
