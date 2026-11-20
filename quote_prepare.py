@@ -267,7 +267,11 @@ def prepare(src, out_dir, log=None):
 
 
 def _excel_convert(src, log):
-    """.xls 用 Excel / WPS 另存为 .xlsx（公式、格式都留着）；转不了返回 None"""
+    """
+    .xls 用 Excel / WPS 另存为 .xlsx（公式、格式都留着）；转不了返回 None。
+    Excel 有时不肯直接打开邮件里来的 .xls（「Office 检测到此文件存在一个问题…不能打开此文件」= 文件验证没过，
+    11-20 NEW GRIECO Canvass 48）：人手打开是先进「受保护的视图」再点「启用编辑」——程序照这样做一次。
+    """
     try:
         from utils import convert_to_xlsx, is_valid_xlsx
         out = convert_to_xlsx(src)
@@ -275,4 +279,32 @@ def _excel_convert(src, log):
             return out
     except Exception as e:
         log(f"  Excel 转换失败：{e}")
-    return None
+    return _protected_view_convert(src, log)
+
+
+def _protected_view_convert(src, log):
+    try:
+        import win32com.client as win32
+    except Exception:
+        return None
+    xl = None
+    dst = src + ".xlsx"
+    try:
+        xl = win32.DispatchEx("Excel.Application")          # 单独开一个，不动别的 Excel
+        xl.Visible = False
+        xl.DisplayAlerts = False
+        pv = xl.ProtectedViewWindows.Open(os.path.abspath(src))
+        wb = pv.Edit()                                        # =「启用编辑」
+        wb.SaveAs(os.path.abspath(dst), FileFormat=51)
+        wb.Close(False)
+        from utils import is_valid_xlsx
+        return dst if os.path.exists(dst) and is_valid_xlsx(dst) else None
+    except Exception as e:
+        log(f"  受保护视图打开也不行：{e}")
+        return None
+    finally:
+        if xl is not None:
+            try:
+                xl.Quit()
+            except Exception:
+                pass

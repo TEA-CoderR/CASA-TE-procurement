@@ -4452,4 +4452,7 @@ TRANSLATIONS = {
     '主订单的箱数按数据库箱规（门店清单的箱）：每家批发商按件数换算成它的箱数（取最接近的整箱）': ("Main order boxes use the database pack size (store list boxes): converted to each wholesaler's boxes by pieces (nearest whole box)", "I colli dell'ordine principale seguono il database (colli del negozio): convertiti nei colli di ogni grossista a pezzi (collo intero più vicino)"),
     '  {0}：要 {1:g} 件 → {2} {3} 箱 × {4:g} = {5:g} 件': ('  {0}: wants {1:g} pcs → {2} {3} boxes × {4:g} = {5:g} pcs', '  {0}: richiesti {1:g} pz → {2} {3} colli × {4:g} = {5:g} pz'),
     '  {0} 直接读值失败，改用 Excel：{1}': ('  {0}: reading values directly failed, using Excel: {1}', '  {0}: lettura diretta dei valori non riuscita, uso Excel: {1}'),
+    'Excel 打不开这份 .xls，只按数值整理（价格对，原来的颜色和公式没有了）': ('Excel could not open this .xls, prepared with values only (prices are right, original colours and formulas are gone)', "Excel non riesce ad aprire questo .xls, preparato solo con i valori (prezzi corretti, colori e formule originali persi)"),
+    '没能整理成以前的格式，放的是原文件（程序照样读得了）：{0}': ('Could not prepare it in the usual format, the original file was put in (the program can still read it): {0}', 'Impossibile prepararlo nel formato abituale, è stato inserito il file originale (il programma lo legge comunque): {0}'),
+    '已经放进去了，但要注意：': ('Put in, but note:', 'Inseriti, ma attenzione:'),
 }

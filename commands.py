@@ -943,7 +943,7 @@ def mail_import_prices(settings, root, picks, via="desktop", factory=None, check
     tmp = tempfile.mkdtemp(prefix="casate_listini_")
     bak = os.path.join(app_dir(), "cache", "mail_prices_undo", datetime_now_tag())
     try:
-        plan = []
+        plan, notes = [], []
         for b in picks:
             m = b["mail"]
             acc = accs.get((m.get("mailbox") or "").lower())
@@ -957,9 +957,11 @@ def mail_import_prices(settings, root, picks, via="desktop", factory=None, check
                 raise RuntimeError(tr("{0} 的附件下载下来是空的", b["label"]))
             try:                              # 改成操作员以前手动整理好的格式（用户 11-20：他们会在表格里操作）
                 import quote_prepare as QP
-                path, _what = QP.prepare(path, os.path.join(sub, "ok"))
-            except Exception:
-                pass                          # 整理不了就放原文件（程序照样读得了）
+                path, what = QP.prepare(path, os.path.join(sub, "ok"))
+                if "只按值转" in what:
+                    notes.append((b["label"], tr("Excel 打不开这份 .xls，只按数值整理（价格对，原来的颜色和公式没有了）")))
+            except Exception as e:
+                notes.append((b["label"], tr("没能整理成以前的格式，放的是原文件（程序照样读得了）：{0}", e)))
             plan.append({"src": path, "replace": b.get("current"), "auto": True, "_b": b})
         # 比价读得了才放：读不了的、商品比现在那份少一大半的不放（旧的留着）
         check = check or _count_price_items
@@ -1015,6 +1017,7 @@ def mail_import_prices(settings, root, picks, via="desktop", factory=None, check
             json.dump([i for i in ids if i][-200:], f)
         audit(settings.get("user_name") or "", via, "mail_import_prices",
               {"labels": [b["label"] for b in picks]}, {"files": [n for n, _o in done]})
+        undo["notes"] = notes
         return done, undo, skipped
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
