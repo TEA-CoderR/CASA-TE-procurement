@@ -955,6 +955,11 @@ def mail_import_prices(settings, root, picks, via="desktop", factory=None, check
                                  "encoding": b["part"][2], "name": MP.file_name(b)}], sub, factory=factory)[0]
             if os.path.getsize(path) < 200:
                 raise RuntimeError(tr("{0} 的附件下载下来是空的", b["label"]))
+            try:                              # 改成操作员以前手动整理好的格式（用户 11-20：他们会在表格里操作）
+                import quote_prepare as QP
+                path, _what = QP.prepare(path, os.path.join(sub, "ok"))
+            except Exception:
+                pass                          # 整理不了就放原文件（程序照样读得了）
             plan.append({"src": path, "replace": b.get("current"), "auto": True, "_b": b})
         # 比价读得了才放：读不了的、商品比现在那份少一大半的不放（旧的留着）
         check = check or _count_price_items

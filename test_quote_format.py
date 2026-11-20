@@ -134,3 +134,53 @@ def test_unreadable_quote_says_what_headers_it_saw(tmp_path):
     with pytest.raises(ValueError) as e:
         service._read_price_file(p)
     assert "CODICE" in str(e.value) and "COSTO" in str(e.value)
+
+
+def test_prepare_grieco_like_operator_inserts_net_column_and_shifts_formulas(tmp_path, monkeypatch):
+    """原报价（存成 .xlsx、带公式）→ 和操作员整理的一样：表头改名、原净价表头清掉、右边插 PREZZO NETTO，后面的公式跟着挪"""
+    import openpyxl
+    import quote_prepare as QP
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "CANVASS AGGIORNATO"
+    ws.append(["ART. NEW GRIECO", "ORDINE CARTONI", "CODICI EAN", None, None, None, 46, "CANVASS NEW GRIECO",
+               None, None, None, None, None, None, "PREZZO LISTINO", "SCONTO %", "IVA", "PREZZO NETTO",
+               "PREZZO CON IVA", "ORDINE TOTALE"])
+    ws.merge_cells("H1:L1")
+    for i, (ean, o, sc) in enumerate((("3616304240508", 1.45, 0.25), ("8050624487659", 4.2, None)), 2):
+        ws.append([1, None, ean, None, 12, 1, "ART", None, None, None, None, None, None, None, o, sc, 22,
+                   f"=O{i}*(1-P{i})", f"=R{i}*(1+Q{i}%)", f"=(B{i}*E{i}*S{i})"])
+    ws.auto_filter.ref = "A1:T3"
+    ws.column_dimensions["S"].width = 7.1
+    src = str(tmp_path / "Canvass 48 New Grieco.xlsx")
+    wb.save(src)
+    out, what = QP.prepare(src, str(tmp_path / "ok"))
+    assert out.endswith("Canvass 48 New Grieco.xlsx") and out != src and what
+    ws = openpyxl.load_workbook(out).active
+    assert [ws.cell(1, c).value for c in (2, 3, 18, 19, 20, 21)] == \
+        ["ORDINE", "CODICE EAN", None, "PREZZO NETTO", "PREZZO CON IVA", "ORDINE TOTALE"]
+    assert ws["S2"].value == 1.098375 and ws["S3"].value == 4.242
+    assert ws["R2"].value == "=O2*(1-P2)" and ws["T2"].value == "=R2*(1+Q2%)" and ws["U2"].value == "=(B2*E2*T2)"
+    assert ws.auto_filter.ref == "A1:U3" and [str(r) for r in ws.merged_cells.ranges] == ["H1:L1"]
+    assert round(ws.column_dimensions["T"].width, 1) == 7.1
+    # 整理过的再放一次不动
+    assert QP.prepare(out, str(tmp_path / "ok2")) == (out, "")
+    a, pack, _m = _read(out, tmp_path, monkeypatch)
+    assert a == {"3616304240508": 1.098375, "8050624487659": 4.242} and pack["3616304240508"] == 12
+
+
+def test_prepare_petrillo_and_meloni_like_operator(tmp_path, monkeypatch):
+    import openpyxl
+    import quote_prepare as QP
+    raw = _petrillo(tmp_path / "(Prezzi)FlliPetrillo_Base_21_11.xlsx", False)
+    out, _ = QP.prepare(raw, str(tmp_path / "ok"))
+    ws = openpyxl.load_workbook(out).active
+    assert ws["B8"].value == "ORDINE" and ws["H8"].value == "PREZZO NETTO" and ws["J8"].value is None
+    assert ws["H3"].value == 0.0683 and ws["H9"].value == 0.58445541 and ws["P8"].value == "CODICE EAN"
+    assert QP.prepare(out, str(tmp_path / "ok2"))[1] == ""
+    head = ["barcode_pezzo", "articolo", "ARTICOLI.descrizione", "UDV", "Prezzo", "Ordine"]
+    mel = _save(tmp_path / "Listino_01 - Offerte.xlsx", [head, ["8001", "1", "SAPONE", 6, 1.5, None]])
+    out, _ = QP.prepare(mel, str(tmp_path / "ok"))
+    ws = openpyxl.load_workbook(out).active
+    assert [c.value for c in ws[1]] == ["CODICE EAN", "articolo", "ARTICOLI.descrizione", "UDV", "PREZZO NETTO", "ORDINE"]
+    assert ws["E2"].value == 1.5
