@@ -62,6 +62,15 @@ class Hero(QWidget):
         return w
 
 
+def set_qss(w, css):
+    """页面样式表：和上次一样就不再套（套样式表会把整页所有控件重新算一遍样式，几百个控件要零点几秒；
+    2026-11-20 stall.log：比价结果每次切换门店 / 每家比完都重套一遍，界面停 0.6–0.8 秒）"""
+    if w is None or getattr(w, "_qss_last", None) == css:
+        return
+    w.setStyleSheet(css)
+    w._qss_last = css
+
+
 def button(text, fn=None, primary=False, tip="", name=None):
     b = QPushButton(text)
     if primary:

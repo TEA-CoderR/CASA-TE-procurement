@@ -125,6 +125,7 @@ from PySide6.QtCore import Qt, Signal, QObject, QTimer                          
 from PySide6.QtWidgets import (QFrame, QHBoxLayout, QVBoxLayout, QGridLayout, QLabel, QPushButton,   # noqa: E402
                                QWidget, QScrollArea, QMessageBox, QPlainTextEdit, QSizePolicy)
 from theme import T                                                              # noqa: E402
+from page_kit import set_qss as _set_qss
 import result_page as RP                                                         # noqa: E402
 
 
@@ -380,7 +381,7 @@ def build_collect(win, lay):
     sv.addLayout(win._dc_ready)
     sv.addStretch()
     row.addWidget(side, 0, Qt.AlignTop)
-    page.setStyleSheet(qss())
+    _set_qss(page, qss())
 
 
 def _clear(lay):
@@ -397,7 +398,7 @@ def render_collect(win, st, root):
     S = win._S
     tkey = (T("canvas"), T("accent"), T("text"))
     if getattr(win, "_dc_tkey", None) != tkey:              # 样式表只在换颜色后套一次（以前每次刷新都套，很费时间）
-        win._dc_page.setStyleSheet(qss())
+        _set_qss(win._dc_page, qss())
         win._dc_tkey = tkey
         for c in (win._dc_lists, win._dc_prices, win._dc_elim):
             c.restyle()
@@ -596,7 +597,7 @@ def build_compare(win, lay):
                            % T("line"))
     sv.addWidget(win.feed, 1)
     row.addWidget(side)
-    page.setStyleSheet(qss())
+    _set_qss(page, qss())
 
 
 def compare_rows(batch, queue, results, current, running, info):
@@ -640,7 +641,7 @@ def render_compare(win):
     S = win._S
     tkey = (T("canvas"), T("accent"), T("text"))
     if getattr(win, "_cp_tkey", None) != tkey:
-        win._cp_page.setStyleSheet(qss())
+        _set_qss(win._cp_page, qss())
         win._cp_tkey = tkey
         win._cp_sig = None
     batch = (S.get("wholesale_batch") or {}).get("stores") or {}
@@ -802,14 +803,14 @@ def build_send(win, lay):
     win._sd_btn.setEnabled(False)
     sv.addWidget(win._sd_btn)
     row.addWidget(side)
-    page.setStyleSheet(qss())
+    _set_qss(page, qss())
 
 
 def refresh_send(win):
     """切到第 4 步时：后台读一次订单跟踪（共享文件夹），读好了画列表"""
     if not hasattr(win, "_sd_groups"):
         return
-    win._sd_page.setStyleSheet(qss())
+    _set_qss(win._sd_page, qss())
     S = win._S
 
     def work():

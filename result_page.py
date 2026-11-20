@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (QFrame, QHBoxLayout, QVBoxLayout, QGridLayout, QL
                                QSizePolicy)
 
 from theme import T, NUM_FONT
+from page_kit import set_qss as _set_qss
 from i18n import tr
 
 PALETTE = ("accent", "cyan", "violet", "ok", "warn", "err")
@@ -275,7 +276,7 @@ def qss():
 def build(win, lay, hold):
     """在比价结果页里搭新版面。win = MainWindow；lay = 页面的竖排；hold = 藏起来放老控件的容器"""
     page = lay.parentWidget()
-    page.setStyleSheet(qss())
+    _set_qss(page, qss())
     win._res_qss_page = page
     from erp_widgets import EmptyState
     win.res_empty = EmptyState("result", tr("还没有比价结果"), tr("比完一家门店，这里显示分配结果；以前的结果在「历史记录」里打开"))
@@ -500,7 +501,7 @@ def _moq_text(r):
 def fill(win, s):
     page = getattr(win, "_res_qss_page", None)
     if page is not None:
-        page.setStyleSheet(qss())
+        _set_qss(page, qss())
     win.res_empty.hide()
     win.res_body.show()
     st = s.get("state") or {}

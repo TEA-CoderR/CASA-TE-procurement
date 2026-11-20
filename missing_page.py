@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (QFrame, QHBoxLayout, QVBoxLayout, QLabel, QPushBu
                                QScrollArea, QButtonGroup)
 
 from theme import T
+from page_kit import set_qss as _set_qss
 from i18n import tr
 import result_page as RP
 
@@ -252,7 +253,7 @@ def build(win, lay, hold):
     foot.addWidget(win.btn_web)
     rv.addLayout(foot)
     row.addWidget(right, 1)
-    page.setStyleSheet(qss())
+    _set_qss(page, qss())
 
 
 def _set_filter(win, k):
@@ -270,7 +271,7 @@ def render(win, results):
     items.sort(key=lambda x: -x["best"])
     win._miss_items = items
     win._miss_sel = 0
-    win._miss_page.setStyleSheet(qss())
+    _set_qss(win._miss_page, qss())
     win._miss_body.setVisible(bool(items))
     win.miss_empty.setVisible(not items)
     _render_list(win)

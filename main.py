@@ -3726,6 +3726,8 @@ class MainWindow(QMainWindow):
         key, text = self.NAV[i]
         if key == "log" and getattr(self, "_log_dirty", False):
             QTimer.singleShot(0, self._render_log)
+        if key == "history" and getattr(self, "_hist_dirty", False):
+            __import__("history_page").render(self, force=True)
         rid = self._rail_of(key)
         rail = {r: (t, p) for r, t, _i, p in self.RAIL}
         self.rail_btns[rid].setChecked(True)
@@ -3848,7 +3850,8 @@ class MainWindow(QMainWindow):
         if key in mods:
             pg = getattr(self, mods[key][0], None)
             if pg is not None:
-                pg.setStyleSheet(__import__(mods[key][1]).qss())
+                from page_kit import set_qss
+                set_qss(pg, __import__(mods[key][1]).qss())
         if key == "search" and hasattr(self, "_miss_items"):
             __import__("missing_page")._render_list(self)
         if key == "log":
@@ -4224,6 +4227,7 @@ class MainWindow(QMainWindow):
             __import__("deter_steps").render_compare(self)
         if i == 3:
             self._embed_result()
+            QTimer.singleShot(0, self._fill_result_now)
         if i == 4:
             __import__("deter_steps").refresh_send(self)
         self.cmp_stack.setCurrentIndex(i)
@@ -6354,6 +6358,20 @@ class MainWindow(QMainWindow):
             if hasattr(self, "_hist_days"):
                 self._hist_sel = s.get("history_id") or self._hist_sel
                 __import__("history_page").render(self)
+        self._res_fill_due = s
+        host = getattr(self, "_res_wrap", None)
+        if host is None:
+            keys = [k for k, _ in self.NAV]
+            host = self.stack.widget(keys.index("result")) if "result" in keys else None
+        if host is None or host.isVisible():
+            self._fill_result_now()
+
+    def _fill_result_now(self):
+        """比价结果页面（门店胶囊、批发商卡…）：看不见时只记下来，切到第 4 步再画（2026-11-20 stall.log）"""
+        s = getattr(self, "_res_fill_due", None)
+        if s is None:
+            return
+        self._res_fill_due = None
         try:
             __import__("result_page").fill(self, s)
         except Exception as e:

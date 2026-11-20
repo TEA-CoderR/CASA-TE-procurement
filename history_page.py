@@ -13,6 +13,7 @@ from PySide6.QtGui import QPainter, QColor
 from PySide6.QtWidgets import (QFrame, QHBoxLayout, QVBoxLayout, QLabel, QPushButton, QWidget, QLineEdit, QComboBox)
 
 from theme import T
+from page_kit import set_qss as _set_qss
 from i18n import tr
 import result_page as RP
 
@@ -135,7 +136,7 @@ def qss():
 
 def build(win, lay):
     page = lay.parentWidget()
-    page.setStyleSheet(qss())
+    _set_qss(page, qss())
     win._hist_page = page
     win._hist_store, win._hist_period, win._hist_sel = None, 3, None
     row = QHBoxLayout()
@@ -264,11 +265,17 @@ def _day_name(d, now):
     return lab
 
 
-def render(win):
-    """按门店 / 时间 / 搜索重新排一遍（refresh_history 读完记录后调）"""
+def render(win, force=False):
+    """按门店 / 时间 / 搜索重新排一遍（refresh_history 读完记录后调）。
+    页面没在显示时只记下来（_hist_dirty），切过去再画（2026-11-20：每家比完 / 切换门店都重画，界面停 0.7 秒）"""
     if not hasattr(win, "_hist_days"):
         return
-    win._hist_page.setStyleSheet(qss())
+    page = getattr(win, "_hist_page", None)
+    if not force and page is not None and not page.isVisible():
+        win._hist_dirty = True
+        return
+    win._hist_dirty = False
+    _set_qss(win._hist_page, qss())
     runs = getattr(win, "hist_runs", []) or []
     now = datetime.now()
     # 左边门店

@@ -13,6 +13,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (QFrame, QHBoxLayout, QVBoxLayout, QLabel, QPushButton, QWidget, QLineEdit, QButtonGroup)
 
 from theme import T
+from page_kit import set_qss as _set_qss
 from i18n import tr
 import result_page as RP
 
@@ -169,7 +170,7 @@ def build(win, lay):
     win.log_view.setMinimumHeight(0)
     cv.addWidget(win.log_view, 1)
     mid.addWidget(card, 1)
-    page.setStyleSheet(qss())
+    _set_qss(page, qss())
 
 
 def _set_mod(win, n):
