@@ -4,7 +4,7 @@
 """
 import json
 
-COMPANY_DEFAULTS_VER = 20          # v3.3.24 发布时同步
+COMPANY_DEFAULTS_VER = 21          # v3.3.25 发布时同步
 
 COMPANY_DEFAULTS = json.loads(r'''
 {
@@ -95,10 +95,10 @@ COMPANY_DEFAULTS = json.loads(r'''
    12,
    13,
    14,
-   443332,
    473160,
    354034,
-   498903
+   498903,
+   443332
   ],
   "new_columns_ver": 2,
   "new_shown_1": true,
@@ -111,7 +111,7 @@ COMPANY_DEFAULTS = json.loads(r'''
    "14": 132,
    "2": 427,
    "354034": 84,
-   "443332": 106,
+   "443332": 84,
    "473160": 84,
    "498903": 84,
    "5": 111,
@@ -155,10 +155,10 @@ COMPANY_DEFAULTS = json.loads(r'''
    13,
    14,
    15,
-   443332,
    473160,
    354034,
-   498903
+   498903,
+   443332
   ],
   "price_columns_ver": 2,
   "price_shown_1": true,
@@ -172,7 +172,7 @@ COMPANY_DEFAULTS = json.loads(r'''
    "2": 190,
    "3": 0,
    "354034": 84,
-   "443332": 106,
+   "443332": 84,
    "473160": 84,
    "498903": 84,
    "5": 179,
@@ -756,12 +756,12 @@ COMPANY_DEFAULTS = json.loads(r'''
  },
  "supplier_names": {
   "(Prezzi)FlliPetrillo_Base_07_11.xls": "petrillo",
-  "(Prezzi)FlliPetrillo_Base_14_11.xlsx": "PETRILLO",
   "(Prezzi)FlliPetrillo_Base_17_10.xlsx": "PETRILLO",
+  "(Prezzi)FlliPetrillo_Base_21_11.xlsx": "PETRILLO",
   "Canvass 43 New Grieco(1).xlsx": "NEW GRIECO",
   "Canvass 46 New Grieco.xls": "NEW GRIECO",
-  "Canvass 47 New Grieco.xlsx": "NEW GRIECO",
-  "Listino_01 - Offerta.xlsx": "MELONI",
+  "Canvass 48 New Grieco.xlsx": "NEW GRIECO",
+  "Listino_01 - Offerte.xlsx": "MELONI",
   "Listino_01 - Offerte(1).xlsx": "MELONI",
   "Ordine FlliPetrillo Foiano 1810.xlsx": "Petrillo",
   "Ordine Mega Cash Foiano 1810.xlsx": "MEGA CASH",
