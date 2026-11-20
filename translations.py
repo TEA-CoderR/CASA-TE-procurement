@@ -4455,4 +4455,5 @@ TRANSLATIONS = {
     'Excel 打不开这份 .xls，只按数值整理（价格对，原来的颜色和公式没有了）': ('Excel could not open this .xls, prepared with values only (prices are right, original colours and formulas are gone)', "Excel non riesce ad aprire questo .xls, preparato solo con i valori (prezzi corretti, colori e formule originali persi)"),
     '没能整理成以前的格式，放的是原文件（程序照样读得了）：{0}': ('Could not prepare it in the usual format, the original file was put in (the program can still read it): {0}', 'Impossibile prepararlo nel formato abituale, è stato inserito il file originale (il programma lo legge comunque): {0}'),
     '已经放进去了，但要注意：': ('Put in, but note:', 'Inseriti, ma attenzione:'),
+    '正在整理报价格式…': ('Preparing the price list format…', 'Preparazione del formato del listino…'),
 }

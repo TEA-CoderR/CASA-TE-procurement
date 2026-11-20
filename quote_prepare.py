@@ -93,9 +93,11 @@ def make_plan(ws, path=""):
     else:                                                   # MELONI 和别的：只改表头
         rename("BARCODE_PEZZO", "CODICE EAN")
         rename("BARCODE PEZZO", "CODICE EAN")
+        rename("CODICE_A_BARRE", "CODICE EAN")             # MEGA CASH 原文件（11-20 用户手动放进来的）
+        rename("CODICE A BARRE", "CODICE EAN")
         if "PREZZO NETTO" not in col_of:
             rename("PREZZO", "PREZZO NETTO")
-        for o in ("ORD.", "ORD", "ORDINE CARTONI"):
+        for o in ("ORD.", "ORD", "ORDINE CARTONI", "QUANTITA"):
             if "ORDINE" not in col_of:
                 rename(o, "ORDINE")
         if not sets:

@@ -1641,7 +1641,7 @@ def _write_missing_report(distribuire_path, rows, assignment):
 _DESC_HEADS = ("DESCRIZIONE", "DESCRIPTION", "ARTICOLO", "PRODOTTO", "DENOMINAZIONE", "NOME")
 
 
-QUOTE_MATRIX_VER = 2    # 比价读报价的规则改了就加 1
+QUOTE_MATRIX_VER = 3    # 比价读报价的规则改了就加 1
 
 
 def _quote_key(path, ver):
@@ -1721,7 +1721,7 @@ def quote_matrix(path, log):
     return out
 
 
-PRICE_CACHE_VER = 6     # 读报价的规则改了（例如找列的办法）就加 1，旧的缓存自动作废
+PRICE_CACHE_VER = 7     # 读报价的规则改了（例如找列的办法）就加 1，旧的缓存自动作废
 
 
 def _price_cache_path(path):

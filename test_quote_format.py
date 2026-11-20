@@ -184,3 +184,21 @@ def test_prepare_petrillo_and_meloni_like_operator(tmp_path, monkeypatch):
     ws = openpyxl.load_workbook(out).active
     assert [c.value for c in ws[1]] == ["CODICE EAN", "articolo", "ARTICOLI.descrizione", "UDV", "PREZZO NETTO", "ORDINE"]
     assert ws["E2"].value == 1.5
+
+
+def test_mega_cash_original_headers_read_and_prepared(tmp_path, monkeypatch):
+    """MEGA CASH 原文件：codice_a_barre / prezzo / quantita（11-20 用户手动放进来、程序认不出）"""
+    import openpyxl
+    import quote_prepare as QP
+    rows = [[], [], [None, "Cliente: ", "Cliente", "____________"],
+            [None, None, None, "i prezzi offerta sono in grassetto", None, None, None, None, "Totale"],
+            [None, "codice_a_barre", "codice", "descrizione_articolo", "pezzi_x_cartone", "cartoni_x_stra",
+             "strati_x_pal", "prezzo", "quantita", "offerta", "Importo"],
+            [None, "8053482177625", "0000000443692", "ALBERO MARZAPANE", 6, 6, 32, 11.25, 0, "NO", "=I6*H6*E6"]]
+    p = _save(tmp_path / "formattato_059603.xlsx", rows)
+    a, pack, m = _read(p, tmp_path, monkeypatch)
+    assert a == {"8053482177625": 11.25} and pack == {"8053482177625": 6} and m["ok"]
+    out, _ = QP.prepare(p, str(tmp_path / "ok"))
+    ws = openpyxl.load_workbook(out).active
+    assert [ws.cell(5, c).value for c in (2, 8, 9)] == ["CODICE EAN", "PREZZO NETTO", "ORDINE"]
+    assert ws["K6"].value == "=I6*H6*E6"

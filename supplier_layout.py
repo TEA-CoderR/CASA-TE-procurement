@@ -17,7 +17,7 @@ from openpyxl.utils import get_column_letter, column_index_from_string
 PACK_HEADERS = {
     "PZ", "UDV", "PZ*COLLI", "PZ * COLLI", "PZ X COLLI", "PZ X COLLO", "PZ/COLLO", "PZ COLLO",
     "PZ/CT", "PZ X CT", "PZ.CONF", "PZ CONF", "PZ/CONF", "PEZZI", "PEZZI X CARTONE",
-    "PEZZI PER COLLO", "PEZZI X COLLO", "CONF", "CONFEZIONE", "CONFEZIONI PER CARTONE",
+    "PEZZI PER COLLO", "PEZZI X COLLO", "PEZZI_X_CARTONE", "CONF", "CONFEZIONE", "CONFEZIONI PER CARTONE",
     "QTA CONF", "Q.TA CONF", "QTA X CONF", "IMBALLO", "PZ IMBALLO",
 }
 # 表头里有这些词的列是价格/金额，不会是件数
