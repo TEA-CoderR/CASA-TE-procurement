@@ -744,3 +744,28 @@ def test_candidates_grouped_by_wholesaler_and_image_search_link():
     assert [c["ean"] for c in D.cands_of(cands, "PETRILLO")] == ["1", "2"]
     assert len(D.cands_of(cands, None)) == 4
     assert D.search_url(" 8015100578382 ").endswith("tbm=isch&q=8015100578382")
+
+
+def test_card_without_image_click_opens_search():
+    """没图片的商品卡：只写「没有图片」，点一下真的打开浏览器搜条码（以前被 product_images 的点击盖掉、没反应）"""
+    import pytest
+    pytest.importorskip("PySide6.QtTest")
+    from PySide6.QtWidgets import QApplication
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+    from PySide6.QtGui import QDesktopServices
+    import griglia_replace_dialog as D
+    _app = QApplication.instance() or QApplication([])
+    opened = []
+    old = QDesktopServices.openUrl
+    QDesktopServices.openUrl = staticmethod(lambda u: opened.append(u.toString()))
+    try:
+        c = D._Card("x", {"show_images": False})
+        c.set("8001280307621", "NAME", "meta")
+        assert c.img.text() == "没有图片"
+        QTest.mouseClick(c.img, Qt.LeftButton)
+        assert opened and opened[0].endswith("q=8001280307621")
+        c.img._img_cb("8001280307621")          # 下载完没图：框还在
+        assert not c.img.isHidden() and c.img.text() == "没有图片"
+    finally:
+        QDesktopServices.openUrl = old

@@ -347,6 +347,7 @@ class _Card(QFrame):
         self.cap.setObjectName("Faint")
         v.addWidget(self.cap)
         self.img = _ImgLabel(self)
+        self.img._img_click = True        # 不要 product_images 自己的「点一下放大」（会盖掉这里的点击：没图时点了没反应）
         self.img.setFixedSize(104, 104)
         self.img.setAlignment(Qt.AlignCenter)
         v.addWidget(self.img, 0, Qt.AlignHCenter)
@@ -373,6 +374,22 @@ class _Card(QFrame):
         self.name.setText(t)
         self.name.setStyleSheet(f"font-weight:600; color:{T('faint') if faint else T('text')};")
 
+    def _paint_img(self):
+        """有图：图 + 点一下放大；没图：灰字「没有图片」虚线框，点一下在浏览器里按条码搜图片"""
+        import product_images as PI
+        pm = PI.store(self.settings).pixmap(PI.norm_ean(self._ean), 100) if self._ean else None
+        if pm is not None:
+            self.img.setPixmap(pm)
+            self.img.setStyleSheet("")
+            self.img.setToolTip(tr("点一下放大看"))
+        else:
+            self.img.clear()
+            self.img.setText(tr("没有图片"))
+            self.img.setStyleSheet(f"color:{T('faint')}; border:1px dashed {T('line')}; border-radius:8px;")
+            self.img.setToolTip(tr("这个条码没有商品图片：点一下在浏览器里按条码搜图片"))
+        self.img.setCursor(Qt.PointingHandCursor)
+        self.img.show()
+
     def has_image(self):
         pm = self.img.pixmap()
         return pm is not None and not pm.isNull()
@@ -394,15 +411,10 @@ class _Card(QFrame):
         self._ean = ean or None
         if ean:
             PI.set_label_image(self.img, ean, 100, self.settings)
-            if self.img.isHidden() or not self.has_image():
-                self.img.setText(tr("没有图片") + "\n" + tr("网上搜索") + " ↗")
-                self.img.setStyleSheet(f"color:{T('accent')}; border:1px dashed {T('line')}; border-radius:8px;")
-                self.img.setToolTip(tr("这个条码没有商品图片：点一下在浏览器里按条码搜图片"))
-            else:
-                self.img.setStyleSheet("")
-                self.img.setToolTip(tr("点一下放大看"))
-            self.img.setCursor(Qt.PointingHandCursor)
-            self.img.show()
+            e = PI.norm_ean(ean)
+            # 图片下载完 product_images 会把没图的框藏起来 → 换成自己的：有图显示、没图写「没有图片」
+            self.img._img_cb = lambda got, e=e: self._paint_img() if got == e and self._ean else None
+            self._paint_img()
         else:
             self.img.setToolTip("")
             self.img.unsetCursor()
