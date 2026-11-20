@@ -817,3 +817,19 @@ def test_same_dose_count_and_multipack_ranked_first():
     assert res["8720181389917"][0]["ean"] == "8721497047805"
     ml = res["8001090971470"][0]
     assert ml["ean"] == "8006530506342" and ml.get("in_grid") is True
+
+
+def test_search_brand_lock_and_exclude_word():
+    """用户 11-20：候选搜索想先按品牌筛 → 品牌从原商品带出来锁定，「-词」排除"""
+    assert GR.brand_of({"name": "SWIFFER DRY 18 PANNI", "brand": ""}) == ("SWIFFER", "SWIFFER")
+    assert GR.brand_of({"name": "HEAD&SHOULDERS SH.250 ML", "brand": "HEAD&SHOULDERS"})[1] == "HEADSHOULDERS"
+    assert GR.brand_of({"name": "SMAC RAME 250 ML.", "brand": "MISTER"}) == ("SMAC", "SMAC")   # Marca 不在名字里 → 第一个词
+    pool_ = [{"ean": "1", "name": "SWIFFER DUSTER 14 PIUMINI"}, {"ean": "2", "name": "SWIFFER DUSTER RICARICA 5"},
+             {"ean": "3", "name": "SWIFFER DRY 18 PANNI"}, {"ean": "4", "name": "VILEDA DUSTER 14"}]
+    ids = lambda r: [c["ean"] for c in r]
+    assert ids(GR.search(pool_, "DUSTER")) == ["1", "2", "4"]
+    assert ids(GR.search(pool_, "DUSTER", ["SWIFFER"])) == ["1", "2"]
+    assert ids(GR.search(pool_, "DUSTER -RICARICA", ["SWIFFER"])) == ["1"]
+    assert ids(GR.search(pool_, "", ["SWIFFER"])) == ["1", "2", "3"]
+    assert ids(GR.search(pool_, "14", ["SWIFFER"])) == ["1"]                 # 短数字 = 规格，不当条码
+    assert ids(GR.search([{"ean": "8001090000014", "name": "X 14"}], "800109")) == ["8001090000014"]

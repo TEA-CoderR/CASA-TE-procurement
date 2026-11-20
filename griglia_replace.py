@@ -351,22 +351,47 @@ def _flat(s):
     return re.sub(r"[^A-Z0-9]", "", s)
 
 
-def search(pool_, q):
+def brand_of(old):
+    """
+    搜索时锁定的品牌（用户 11-20：搜候选想先按品牌筛）：Griglia 的 Marca 在名称里出现就用它，
+    不然用名称第一个词（ANTICA ERB.SH… → ANTICA）。返回 (显示的字, 比较用的字) 或 None
+    """
+    name = _flat(_norm((old or {}).get("name") or ""))
+    b = str((old or {}).get("brand") or "").strip()
+    if len(_flat(_norm(b))) >= 3 and _flat(_norm(b)) in name:
+        return b.upper(), _flat(_norm(b))
+    for w in re.split(r"[^A-Z0-9]+", _norm((old or {}).get("name") or "")):
+        if len(w) >= 3 and not w.isdigit():
+            return w, w
+    return None
+
+
+def search(pool_, q, must=()):
     """
     手动搜（用户 11-09：要模糊一点）：条码开头对上，或者输入的每个词都在某家的写法里出现
-    （不分大小写、标点；粘在一起的也算：「540ml」= 「540 ML」，「ULTIM」= ULTIMATE）
+    （不分大小写、标点；粘在一起的也算：「540ml」= 「540 ML」，「ULTIM」= ULTIMATE）。
+    「-词」= 不要带这个词的（-RICARICA）；must = 一定要有的词（锁定的品牌）
     """
     q = str(q or "").strip()
-    if not q:
+    if not q and not must:
         return []
-    toks = [_flat(t) for t in re.split(r"[\s,;/]+", _norm(q)) if _flat(t)]
+    parts = [t for t in re.split(r"[\s,;/]+", q) if t]
+    toks = [_flat(_norm(t)) for t in parts if not t.startswith("-")]
+    toks = [t for t in toks if t] + [t for t in must if t]
+    nots = [_flat(_norm(t[1:])) for t in parts if t.startswith("-")]
+    nots = [t for t in nots if t]
     out = []
     for c in pool_:
-        if q.isdigit() and c["ean"].startswith(q):
-            out.append(c)
+        if q.isdigit() and len(q) >= 6:          # 条码（短的数字当规格：14、130）
+            if c["ean"].startswith(q):
+                out.append(c)
             continue
         hay = " ".join(_norm(n) for n in (c.get("names") or [c["name"]]))
         flat = _flat(hay)
+        if nots:                                  # 不要的词按词开头比（-50 不排除 750 ML）
+            ws = [w for w in re.split(r"[^A-Z0-9]+", hay) if w]
+            if any(w.startswith(t) for t in nots for w in ws):
+                continue
         if toks and all(t in flat for t in toks):
             out.append(c)
     return out

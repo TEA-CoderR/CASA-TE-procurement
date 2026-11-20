@@ -4461,4 +4461,9 @@ TRANSLATIONS = {
     '点一下放大看': ('Click to enlarge', 'Clicca per ingrandire'),
     '全部候选': ('All candidates', 'Tutti i candidati'),
     '只看 {0} 有的候选（价格写这家的）': ('Only candidates {0} has (showing its price)', 'Solo i candidati di {0} (con il suo prezzo)'),
+    '搜索时只找这个品牌的商品（品牌取自原商品）。要找别的品牌，点一下取消': ('Search only this brand (taken from the original item). Click to turn off and search other brands', 'Cerca solo questa marca (presa dall\'articolo originale). Clicca per disattivare e cercare altre marche'),
+    '输入名称里的词或条码，在这周所有批发商报价里找：\n· 几个词 = 都要有（DUSTER 14）\n· 词前面加 - = 不要（-RICARICA）\n· 结果按和原商品的相似度排': ("Type words from the name or a barcode to search all this week's wholesaler price lists:\n· several words = all must match (DUSTER 14)\n· a - before a word = exclude it (-RICARICA)\n· results sorted by similarity to the original item", "Scrivi parole del nome o un codice a barre per cercare in tutti i listini dei grossisti di questa settimana:\n· più parole = devono esserci tutte (DUSTER 14)\n· - davanti a una parola = escluderla (-RICARICA)\n· risultati ordinati per somiglianza all'articolo originale"),
+    '这个品牌里没有，点掉品牌再搜': ('Not found in this brand: turn off the brand and search again', 'Non trovato in questa marca: disattiva la marca e cerca di nuovo'),
+    '品牌 {0}': ('Brand {0}', 'Marca {0}'),
+    '在 {0} 里搜…': ('Search in {0}…', 'Cerca in {0}…'),
 }

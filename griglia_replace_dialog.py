@@ -534,10 +534,23 @@ class ReplaceDialog(QDialog):
         self.cap.setStyleSheet("font-weight:600;")
         ch.addWidget(self.cap)
         ch.addStretch()
+        # 品牌锁定（用户 11-20：想一个框填品牌、一个框填别的）→ 品牌从原商品自动带出来，点一下取消
+        self._brand = None
+        self.brand_btn = QPushButton("")
+        self.brand_btn.setObjectName("Chip")
+        self.brand_btn.setCheckable(True)
+        self.brand_btn.setChecked(True)
+        self.brand_btn.setCursor(Qt.PointingHandCursor)
+        self.brand_btn.setFocusPolicy(Qt.NoFocus)
+        self.brand_btn.setToolTip(tr("搜索时只找这个品牌的商品（品牌取自原商品）。要找别的品牌，点一下取消"))
+        self.brand_btn.toggled.connect(lambda _: (self._brand_text(), self._fill_cands()))
+        ch.addWidget(self.brand_btn)
         self.q = QLineEdit()
         self.q.setPlaceholderText(tr("在这周报价里搜…"))
         self.q.setClearButtonEnabled(True)
-        self.q.setToolTip(tr("程序找的都不对：输入名称里的词或条码，在这周所有批发商报价（Griglia 里没有的商品）里找"))
+        self.q.setToolTip(tr("输入名称里的词或条码，在这周所有批发商报价里找：\n"
+                             "· 几个词 = 都要有（DUSTER 14）\n· 词前面加 - = 不要（-RICARICA）\n"
+                             "· 结果按和原商品的相似度排"))
         self.q.textChanged.connect(lambda _: self._fill_cands())
         self.q.setMinimumWidth(220)
         ch.addWidget(self.q, 1)
@@ -785,6 +798,11 @@ class ReplaceDialog(QDialog):
         self.q.blockSignals(True)
         self.q.clear()
         self.q.blockSignals(False)
+        self._brand = self.GR.brand_of(old)
+        self.brand_btn.blockSignals(True)
+        self.brand_btn.setChecked(True)
+        self.brand_btn.blockSignals(False)
+        self._brand_text()
         self._sup = None
         self._fill_cands()
 
@@ -822,12 +840,13 @@ class ReplaceDialog(QDialog):
             return
         old = self.rows[i]["old"]
         q = self.q.text().strip()
-        if len(q) >= 2:
-            hits = self.GR.search(self.pool, q)
+        must = [self._brand[1]] if self._brand and self.brand_btn.isChecked() and not (q.isdigit() and len(q) >= 6) else []
+        if len(q) >= 2 or (q and must):
+            hits = self.GR.search(self.pool, q, must)
             cands = sorted((self.GR.rescore(old, c) for c in hits if c["ean"] != old["ean"]), key=lambda c: -c["score"])[:80]
             self.cap.setText(tr("搜到 {0} 个", len(cands)))
             if not cands:
-                it = QListWidgetItem(tr("这周报价里没有"))
+                it = QListWidgetItem(tr("这个品牌里没有，点掉品牌再搜") if must else tr("这周报价里没有"))
                 it.setFlags(Qt.NoItemFlags)
                 self.cands.addItem(it)
                 return
@@ -855,6 +874,15 @@ class ReplaceDialog(QDialog):
                 self.cands.setCurrentItem(it)
         if not cur:
             self.cands.setCurrentItem(none)
+
+    def _brand_text(self):
+        """品牌小按钮：有品牌才显示；占位字跟着变（在 SWIFFER 里搜…）"""
+        b = self._brand
+        self.brand_btn.setVisible(bool(b))
+        if b:
+            self.brand_btn.setText(tr("品牌 {0}", b[0]))
+        on = bool(b) and self.brand_btn.isChecked()
+        self.q.setPlaceholderText(tr("在 {0} 里搜…", b[0]) if on else tr("在这周报价里搜…"))
 
     def _sup_chips(self, cands):
         """候选上面那排批发商小按钮（和现在这批候选一样就不重建）"""
