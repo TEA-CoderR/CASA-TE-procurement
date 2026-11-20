@@ -553,12 +553,19 @@ def parse_scheda(path, overrides=None):
         pages = [(0, ws, cols, hdr)]
         if info.get("pdv"):
             info["pdv"]["cols"] = {ws.title: cols}
+            info["pdv"]["hdr"] = {ws.title: hdr}                  # 每页自己的表头行 / 附加列起始列（订单文件写 GIA…）
+            info["pdv"]["extra_col"] = {ws.title: info["extra_col"]}
             for k, t in enumerate(info["pdv"]["sheets"][1:], 1):
                 c2, h2 = _find_header(wb[t])
                 if not h2:
                     info["warnings"].append(f"{t} 页没有找到表头，这一页没读")
                     continue
                 info["pdv"]["cols"][t] = c2
+                info["pdv"]["hdr"][t] = h2
+                hr2 = next(wb[t].iter_rows(min_row=h2, max_row=h2, values_only=True), ())
+                f2 = [c for c, v in enumerate(hr2, 1) if v not in (None, "") and str(v).strip()]
+                g2 = next((c for c, v in enumerate(hr2, 1) if _norm(v) == "GIA"), None)
+                info["pdv"]["extra_col"][t] = g2 or ((max(f2) + 1) if f2 else len(hr2) + 1)
                 pages.append((k, wb[t], c2, h2))
         for k, ws_, cols_, hdr_ in pages:
             _read_items(info, ws_, cols_, hdr_, k * PDV_ROW_BLOCK, ws_.title if info.get("pdv") else None)
@@ -1790,7 +1797,8 @@ def _write_extra(xml, scheda, rows_vals, headers, row_map):
     start = scheda.get("extra_col") or 12
     cols = scheda["cols"]
     hstyle = _cell_style(xml, f"{_col_letter(cols['colli'])}{hdr}")
-    first = min((it["row"] for it in scheda["items"]), default=hdr + 1)
+    first = min((r for r in (row_map.get(it["row"], it["row"]) for it in scheda["items"]) if r is not None),
+                default=hdr + 1)
     vcol = cols.get("code") or cols.get("ean") or cols["colli"]
     vstyle = _cell_style(xml, f"{_col_letter(vcol)}{first}")
     values = {hdr: {start + i: h for i, h in enumerate(headers)}}
@@ -1903,10 +1911,12 @@ def _set_text_cells(xml, values):
     return xml
 
 
-def write_pdv_file(scheda, sid, lines, out_path, when=None):
+def write_pdv_file(scheda, sid, lines, out_path, when=None, extra=None, headers=None):
     """
     门店采购：一家店一个订单文件。复制 SCHEDA（图片、格式都保留），GRIGLIA 页 Colli 列写这家店的箱数，
     表头填开票抬头（Fatturazione）、送货地址（Luogo di destinazione）、订单号、下单日期（从「Dati Filiali」页取这家店那一行）
+    extra / headers：这家店的附加列（{行号: [值]}，file_extra 整理过的；2026-11-16 用户：和总仓采购一样要 GIA、ULT. ARRIVO…），
+    每页 GRIGLIA 写在它自己表头最后一列后面
     """
     pdv = scheda["pdv"]
     sheets = pdv.get("sheets") or [pdv["sheet"]]
@@ -1920,7 +1930,14 @@ def write_pdv_file(scheda, sid, lines, out_path, when=None):
         cells = {it["row"] - k * PDV_ROW_BLOCK: lines.get(it["row"]) for it in scheda["items"]
                  if it.get("sheet", sheets[0]) == t}
         head = pdv_header_values(dict(pdv, cells=(pdv.get("cells_by_sheet") or {}).get(t) or pdv["cells"]), sid, when)
-        jobs[t] = (_col_letter(cols["colli"]), plain, cells, head)
+        sub = None
+        if extra and headers:
+            its = [it for it in scheda["items"] if it.get("sheet", sheets[0]) == t]
+            sub = (dict(scheda, items=its, cols=cols,
+                        header_row=(pdv.get("hdr") or {}).get(t, scheda["header_row"]),
+                        extra_col=(pdv.get("extra_col") or {}).get(t, scheda.get("extra_col"))),
+                   {it["row"]: it["row"] - k * PDV_ROW_BLOCK for it in its})
+        jobs[t] = (_col_letter(cols["colli"]), plain, cells, head, sub)
     tmp = out_path + ".tmp"
     with zipfile.ZipFile(scheda["path"]) as zin:
         paths = _sheet_paths(zin)
@@ -1929,9 +1946,11 @@ def write_pdv_file(scheda, sid, lines, out_path, when=None):
             for item in zin.infolist():
                 data = zin.read(item.filename)
                 if item.filename in targets:
-                    colli_col, plain_col, cells, head = targets[item.filename]
+                    colli_col, plain_col, cells, head, sub = targets[item.filename]
                     x = _set_cells(data.decode("utf-8"), colli_col, cells, plain_col)
                     x = _set_text_cells(x, head)
+                    if sub:
+                        x = _write_extra(x, sub[0], extra, headers, sub[1])
                     data = x.encode("utf-8")
                 elif item.filename == "xl/workbook.xml":
                     wbx = data.decode("utf-8")
@@ -2074,11 +2093,14 @@ def write_plans(results, out_root, date_tag=None, on_file=None, calc=None):
         os.makedirs(folder, exist_ok=True)
         safe = re.sub(r'[\\/:*?"<>|]', "_", sc["name"])
         if sc.get("pdv"):
-            # 门店采购：一家店一个文件（送货地址、开票抬头各不一样）
+            # 门店采购：一家店一个文件（送货地址、开票抬头各不一样）；附加列和总仓采购一样（GIA、ULT. ARRIVO…）
+            extra = extra_data(sc, calc.get("demand"), calc.get("base"), calc.get("days")) if calc else None
+            heads = extra_headers(calc.get("days")) if calc else None
+            extra, heads = file_extra(extra, heads)
             for sid, st in direct:
                 p = os.path.join(folder, f"Ordine_{safe}_{STORE_SHEETS[sid]}_{date_tag}.xlsx")
                 on_file(n, len(todo), os.path.basename(p))
-                write_pdv_file(sc, sid, st["lines"], p)
+                write_pdv_file(sc, sid, st["lines"], p, extra=(extra or {}).get(sid), headers=heads)
                 written.append((p, sc["name"], STORE_SHEETS[sid], st["colli"], st["amount"], st["status"], sc["path"]))
             continue
         extra = extra_data(sc, calc.get("demand"), calc.get("base"), calc.get("days")) if calc else None

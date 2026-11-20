@@ -326,6 +326,24 @@ class ThumbDelegate(QStyledItemDelegate):
         return QSize(s.width() + self.size + 10, max(s.height(), self.size + 4))
 
 
+def add_thumbs(table, name_col, ean_col, settings=None):
+    """
+    商品列表加小图（用户 11-18「这种列表都放缩略图」）：名称那一格左边画图（条码取 ean_col 那一列），行高跟着图片大小。
+    设置里关了商品图片就不加。手动定宽的名称列加宽一张图的宽度
+    """
+    from PySide6.QtWidgets import QHeaderView
+    s = settings or {}
+    if not s.get("show_images", True):
+        return None
+    d = ThumbDelegate(table, ean_col, None, s)
+    table.setItemDelegateForColumn(name_col, d)
+    table.verticalHeader().setDefaultSectionSize(max(table.verticalHeader().defaultSectionSize(), row_height(s)))
+    hh = table.horizontalHeader()
+    if hh.sectionResizeMode(name_col) == QHeaderView.Interactive:
+        table.setColumnWidth(name_col, table.columnWidth(name_col) + d.size + 10)
+    return d
+
+
 def set_label_image(label, ean, size=150, settings=None):
     """详情栏的大图：有图显示，没图藏起来；图还在下载时，下载完自动补上（只要还是同一个商品）"""
     st = store(settings)

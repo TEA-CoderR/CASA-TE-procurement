@@ -68,7 +68,7 @@ class TransitOrdersDialog(QDialog):
         self.b_recv = QPushButton(tr("✓ 确认收货"))
         self.b_recv.setObjectName("Primary")
         self.b_recv.setToolTip(tr("选中的订单登记为今天已收货，不再计入在途（会先让你确认）"))
-        self.b_part = QPushButton(tr("部分收货…"))
+        self.b_part = QPushButton(tr("部分收货"))
         self.b_part.setToolTip(tr("只到了一部分：登记部分收货并填写缺货说明；订单仍计入在途"))
         self.b_excl = QPushButton(tr("不计入在途"))
         self.b_excl.setToolTip(tr("这张订单没有可用的订单明细（例如电话下单），不参与在途计算；订单状态不变"))

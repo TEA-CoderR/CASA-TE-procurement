@@ -15,8 +15,8 @@ import threading
 import time
 from datetime import datetime
 
-from PySide6.QtCore import Qt, QObject, Signal, QTimer
-from PySide6.QtGui import QColor, QFontMetrics
+from PySide6.QtCore import Qt, QObject, Signal, QTimer, QEvent
+from PySide6.QtGui import QColor, QFontMetrics, QPen
 from PySide6.QtWidgets import (QWidget, QLabel, QPushButton, QLineEdit, QComboBox, QHBoxLayout, QVBoxLayout,
                                QFileDialog, QMessageBox, QSpinBox, QAbstractItemView, QHeaderView, QDialog,
                                QGridLayout, QFrame, QStyledItemDelegate, QAbstractSpinBox, QButtonGroup, QMenu,
@@ -60,7 +60,7 @@ TRANSIT = 31
 # 2026-10-21 第四版：窗口和订货明细一个样子（门店按钮、一行工具条、状态栏），名称显示、供应商和原因收起来（详情栏里有）：
 #   门店 条码 Codice 名称 等级 周期 本店库存 日均 库存够卖 每箱件数 | 清单 判断 确定箱数 确定件数 ✎ 调货 ✎ | 到货后够卖
 _LAYOUT_VER = 10           # 改了默认顺序就加 1（第 9 版起列宽也一起恢复默认）
-_DEFAULT_HIDDEN = [27, 9, 31, 10, 29, 30, 24, 2, 26, 16, 17, 18, 5, 6, 7, 8, 14, 12, 13, 19, 21, 23, 25, 1]
+_DEFAULT_HIDDEN = [27, 9, 10, 29, 30, 24, 2, 26, 16, 17, 18, 5, 6, 7, 8, 14, 12, 13, 19, 21, 23, 25, 1]
 _HIDDEN_VER = 8           # 改了默认藏哪些列就加 1（settings.COMPANY_DEFAULTS 里的 check_cols_hidden 一起改）
 CHANGE_COL, TRANSFER_COL, REASON_COL = 23, 24, 25
 AMOUNT = 29
@@ -113,7 +113,19 @@ def key_tags(x, transit_boxes=0, edited=False):
     out = []
     if not x.get("in_db", True):
         return [(tr("数据库没有"), "err")]
-    if transit_boxes:
+    cut = x.get("transit_cut") or 0
+    if cut and not x.get("sbox"):
+        # 2026-11-19（用户：审核清单逻辑对不上）：本来要订（照清单 / 保护…），扣掉在途以后不用订了 →
+        # 只说这一个原因；以前还挂着「库存少 · 照清单」「缺货保护」，和「不订」自相矛盾
+        out.append((tr("在途 {0:g} 箱 · 已经够了", transit_boxes or cut), "info"))
+        if x.get("promo"):
+            out.append((tr("促销中"), "err"))
+        if edited:
+            out.append((tr("手动改过"), "accent"))
+        return out
+    if cut:
+        out.append((tr("在途 {0:g} 箱 · 少订 {1} 箱", transit_boxes or cut, cut), "info"))
+    elif transit_boxes:
         out.append((tr("在途 {0:g} 箱", transit_boxes), "info"))
     prot = x.get("protect")
     if prot == "new":
@@ -168,10 +180,11 @@ class _ProductDelegate(QStyledItemDelegate):
     选中的行最左边一条蓝线。鼠标停在小图上看大图（借 product_images.ThumbDelegate 的）"""
     SIZE = 34
 
-    def __init__(self, view, ean_col, settings):
+    def __init__(self, view, ean_col, settings, badge=None):
         super().__init__(view)
         import product_images as PI
         self.view, self.ean_col = view, ean_col
+        self.badge = badge            # badge(行号) → (圆点颜色 或 None, 等级)：左边小圆点 = 要审核还没看；条码后面 A / B / C
         self._thumb = PI.ThumbDelegate(view, ean_col, self.SIZE, settings)
         self.store = self._thumb.store
 
@@ -195,6 +208,16 @@ class _ProductDelegate(QStyledItemDelegate):
             p.fillRect(QRectF(r.left(), r.top(), 3, r.height()), QColor(T("accent")))
         ean = idx.sibling(idx.row(), self.ean_col).data() or ""
         name = idx.data(Qt.DisplayRole) or ""
+        dot, tier = None, ""
+        if self.badge is not None:
+            try:
+                dot, tier = self.badge(idx.model().index(idx.row(), 0).data(Qt.UserRole))
+            except Exception:
+                dot, tier = None, ""
+        if dot:                                       # 要审核、还没看过：左边一个小圆点（看过 / 改过就没了）
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor(T(dot)))
+            p.drawEllipse(QRectF(r.left() + 7, r.center().y() - 4, 8, 8))
         box = QRectF(r.left() + 20, r.top() + (r.height() - self.SIZE) / 2, self.SIZE, self.SIZE)
         dpr = w.devicePixelRatioF() if w is not None else None
         pm = self.store.pixmap(ean, self.SIZE, dpr) if self.store.enabled and ean else None
@@ -230,7 +253,39 @@ class _ProductDelegate(QStyledItemDelegate):
         p.setFont(f2)
         p.setPen(QColor(T("faint")))
         p.drawText(QRectF(tx, r.top() + 29, tw, 16), Qt.AlignLeft | Qt.AlignVCenter, str(ean))
+        if tier in ("A", "B", "C"):
+            # 等级小标签不用彩色（2026-11-19 用户问要不要标颜色）：表格里红 / 黄 / 绿 / 蓝 / 紫都已经有意思了
+            # （不订 / 少订 / 照清单 / 多订·在途 / 调货），等级再上色会撞。A 类 = 深色实心白字（最显眼），B 灰框，C 淡
+            ex = tx + QFontMetrics(f2).horizontalAdvance(str(ean)) + (8 if ean else 0)
+            chip = QRectF(ex, r.top() + 30, 18, 14)
+            if chip.right() < r.right() - 4:
+                fg_, bg_ = {"A": ("surface", "text"), "B": ("muted", "surface2"), "C": ("faint", "surface2")}[tier]
+                p.setPen(QPen(QColor(T("line")), 1) if tier != "A" else Qt.NoPen)
+                p.setBrush(QColor(T(bg_)))
+                p.drawRoundedRect(chip, 4, 4)
+                f3 = QFont(opt.font)
+                f3.setPixelSize(10)
+                f3.setBold(True)
+                p.setFont(f3)
+                p.setPen(QColor(T(fg_)))
+                p.drawText(chip, Qt.AlignCenter, tier)
         p.restore()
+
+
+class _KeyHook(QObject):
+    """只装在审核表格上的按键处理（fn(事件) 返回 True = 吃掉这个键）"""
+
+    def __init__(self, fn):
+        super().__init__()
+        self.fn = fn
+
+    def eventFilter(self, obj, ev):
+        if ev.type() == QEvent.KeyPress and not ev.modifiers() & (Qt.ControlModifier | Qt.AltModifier):
+            try:
+                return bool(self.fn(ev))
+            except Exception:
+                return False
+        return False
 
 
 class _NumDelegate(QStyledItemDelegate):
@@ -283,11 +338,13 @@ class _StoreCard(QPushButton):
         from theme import T
         self.name.setText(name)
         done = need == 0 or seen >= need
-        self.badge.setText(tr("已审核") if done else tr("{0} 个待审", need - seen))
+        # 和底部一个说法：要审核 n 个 = 判断不是照清单订的；这里写还有几个没看（以前写「待审」，和「要审核」数字对不上）
+        self.badge.setText(tr("不用审核") if need == 0 else tr("已看完") if done else tr("{0} 个没看", need - seen))
         tone = "ok" if done else "warn"
         self.badge.setStyleSheet(f"background:{T(tone + '_soft')}; color:{T(tone)}; border-radius:10px; padding:0 8px; font-size:11px;")
         self.bar.set(1.0 if need == 0 else seen / need, T("ok") if done else T("accent"))
-        self.sub.setText(tr("共 {0} 个 · 不用审核", total) if need == 0 else tr("已看 {0} / {1} · 改了 {2}", seen, need, edited))
+        self.sub.setText(tr("共 {0} 个 · 都照清单订", total) if need == 0
+                         else tr("要审核 {0} · 已看 {1} · 已改 {2}", need, seen, edited))
         self.setChecked(on)
 
 
@@ -393,7 +450,7 @@ class OrderCheck:
         from erp_widgets import accept_file_drops
         accept_file_drops(self.file_edit, self._dropped, (".xlsx", ".xlsm"), multi=True)
         r1.addWidget(self.file_edit, 1)
-        b2 = QPushButton(tr("选择文件…"))
+        b2 = QPushButton(tr("选择文件"))
         b2.clicked.connect(self.choose_file)
         r1.addWidget(b2)
         b_clr = QPushButton(tr("清空"))
@@ -456,7 +513,7 @@ class OrderCheck:
         algo_row, self.engine, self.algo_info = algo_widgets(self, ui)
         self.algo_info.setWordWrap(True)
         r3.addLayout(algo_row, 1)
-        dbb = QPushButton(tr("数据库设置…"))
+        dbb = QPushButton(tr("数据库设置"))
         dbb.clicked.connect(self.db_settings)
         r3.addWidget(dbb)
         self.btn_run = QPushButton(tr("检查数量"))
@@ -580,7 +637,7 @@ class OrderCheck:
         from PySide6.QtWidgets import QTabWidget
         self.prob = {}
         self._prob_filling = False
-        self.prob_btn = QPushButton()
+        self.prob_btn = __import__("erp_widgets").CountButton("", tone="warn")
         self.prob_btn.setStyleSheet(f"color:{ui.T('warn')};")
         self.prob_btn.clicked.connect(lambda: self._open_prob(None))
         self.prob_btn.hide()
@@ -619,6 +676,8 @@ class OrderCheck:
             t = ui.make_table([tr("门店"), tr("条码"), tr("名称"), tr("供应商"), tr("批发商"), tr("清单箱数"), tr("确定箱数") + " ✎"],
                               stretch_col=2, numeric_cols=(5, 6))
             t.verticalHeader().setDefaultSectionSize(30)
+            import product_images as PI
+            PI.add_thumbs(t, 2, 1, self.settings)
             t.setEditTriggers(QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed |
                               QAbstractItemView.AnyKeyPressed)
             for c, wd in ((0, 90), (1, 130), (3, 170), (4, 86), (5, 76), (6, 110)):
@@ -669,7 +728,7 @@ class OrderCheck:
         hh.setSectionResizeMode(QHeaderView.Interactive)
         hh.setStretchLastSection(False)
         import product_images as PI          # 「商品」那一格：左边商品图（条码在藏起来的条码列），右边名称
-        self.table.setItemDelegateForColumn(_col(3), _ProductDelegate(self.table, _col(2), self.settings))
+        self.table.setItemDelegateForColumn(_col(3), _ProductDelegate(self.table, _col(2), self.settings, self._row_badge))
         self.table.verticalHeader().setDefaultSectionSize(56)
         self._num = _NumDelegate(self.table)
         for c_ in (4, 28, 11):
@@ -735,11 +794,26 @@ class OrderCheck:
         self._forced = set()
         self.cols = ColumnChooser(self.table, self.cfg, "check_cols", _ORDER, lambda: save_settings(self.settings),
                                   _DEFAULT_HIDDEN, ver=_HIDDEN_VER, forced=lambda: self._forced)
-        if self.cfg.get("check_fit2") != _LAYOUT_VER:        # 设计稿的默认列宽：商品铺满，别的固定（之后拖过的照用户的）
-            self.cfg["check_fit2"] = _LAYOUT_VER
-            for cid, wd in ((4, 60), (28, 60), (11, 54), (15, 118), (20, 92), (0, 112), (22, 90)):
+        if not self.cfg.get("check_transit_shown"):      # 2026-11-19：在途箱数默认显示，放在库存后面（只做一次，之后照用户的）
+            self.cfg["check_transit_shown"] = True
+            hid = [f for f in (self.cfg.get("check_cols_hidden") or []) if f != TRANSIT]
+            self.cfg["check_cols_hidden"] = hid
+            self.cols.apply()
+            cur, to = hh.visualIndex(_col(TRANSIT)), hh.visualIndex(_col(4)) + 1
+            if cur > to:
+                hh.moveSection(cur, to)
+            elif cur < to - 1:
+                hh.moveSection(cur, to - 1)
+            self.cfg["check_columns"] = [_ORDER[hh.logicalIndex(v)] for v in range(self.table.columnCount())]
+            save_settings(self.settings)
+        if self.cfg.get("check_fit3") != _LAYOUT_VER:        # 设计稿的默认列宽：商品铺满，别的固定（之后拖过的照用户的）
+            self.cfg["check_fit3"] = _LAYOUT_VER             # 第 3 次（2026-11-19）：多了在途列，数字列收窄一点，1366 宽的屏幕不用左右滚
+            for cid, wd in ((4, 56), (TRANSIT, 56), (28, 56), (11, 52), (15, 106), (20, 82), (0, 110), (22, 90)):
                 self.table.setColumnWidth(_col(cid), wd)
-        hh.setSectionResizeMode(_col(3), QHeaderView.Stretch)
+        self.ctl.set_title(_col(TRANSIT), tr("在途"))         # 表头短一点（鼠标提示写明是箱数）
+        from erp_widgets import FillColumn          # 商品列铺满剩下的宽度（不用 Stretch：拖别的列会「反着走」，2026-11-19）
+        self._fill_prod = FillColumn(self.table, _col(3), min_w=180, last_w=100, cfg=self.cfg,
+                                     key="check_prod_user", save=lambda: save_settings(self.settings))
         hh.setMinimumSectionSize(50)
         self._moves_in, self._moves_out = {}, {}
         self.transfer_ov = {}
@@ -776,6 +850,8 @@ class OrderCheck:
         self._cur_i = None
         self._by_key = {}
         self.table.currentCellChanged.connect(lambda r, c, pr, pc: self._select(r))
+        self._keys = _KeyHook(self._review_keys)         # 审核快捷键（2026-11-19 用户：审核员要能快速审）
+        self.table.installEventFilter(self._keys)
         # ---- 状态栏：显示几个 · 改了几个 · 金额 · 调货 ……  确认，开始比价 ----
         sb = QFrame()
         sb.setObjectName("StatusBar")
@@ -785,6 +861,12 @@ class OrderCheck:
         self.count_lbl = QLabel("")
         self.count_lbl.setObjectName("StatusText")
         sh.addWidget(self.count_lbl, 1)
+        from erp_widgets import CountButton
+        self.btn_next = CountButton(tr("下一个待审商品"), 0)
+        self.btn_next.setToolTip(tr("跳到下一个要审核、还没看过的商品（左边带黄点的）。\n"
+                                    "快捷键：空格 = 下一个待审 · + / − = 确定箱数加减 1 箱 · 0 = 不订 · 退格 = 恢复系统建议 · ↑ ↓ = 上下一个"))
+        self.btn_next.clicked.connect(self.next_todo)
+        sh.addWidget(self.btn_next)
         sh.addWidget(b_s)
         self.btn_confirm = QPushButton(tr("审核完成，去比价") + "  →")
         self.btn_confirm.setObjectName("Primary")
@@ -1053,7 +1135,8 @@ class OrderCheck:
         self.view.blockSignals(False)
         self._replan(render=False)
         self._fill()
-        self.table.horizontalHeader().setSectionResizeMode(_col(3), QHeaderView.Stretch)   # 商品列铺满剩下的宽度
+        QTimer.singleShot(0, self._select_first)         # 一打开就选中第一个商品（右边详情栏不是空的，直接开始审）
+        self._fill_prod.fit()                            # 商品列铺满剩下的宽度（TableSortFilter 第一次填表会关掉最后一列铺满，FillColumn 再打开）
         self._load_transit()                            # 在途列：后台读（检查时一般已经读好，这里直接返回）
         # 不急的：每月销量（查数据库）、商品详情窗口（建窗口 + 连数据库）等界面空下来再做，
         # 不和「后台任务完成」弹窗、打开检查窗口抢时间（2026-11-07 用户：跳过去会卡一会）
@@ -1061,7 +1144,7 @@ class OrderCheck:
         self._m24_token = getattr(self, "_m24_token", 0) + 1
         from erp_widgets import when_idle
         when_idle(self._after_done, quiet_ms=1500)
-        self.summary_row.show()
+        # 摘要行（「打开检查窗口 / 确认，开始比价」）不再显示：审核就在第 2 步里，底部状态栏有同样的按钮（2026-11-19）
         self.window.setWindowTitle(tr("检查门店订货清单 — {0} · {1} 个商品",
                                       "、".join(store_label(k) for k in meta["stores"]), len(rows)))
         done = tr("✔ {0}：{1} 个商品", "、".join(store_label(k) for k in meta["stores"]), len(rows))
@@ -1285,6 +1368,13 @@ class OrderCheck:
         if not x.get("in_db", True):
             return rv
         out = rv + R.review_marks(x.get("target") is not None, x["final"] > 0, self._arrive_days(x), x.get("store_inv"))
+        cut = x.get("transit_cut") or 0
+        if cut:
+            # 在途扣了箱数：写在判断后面（以前「不订」后面挂的是「库存可能不准」，看不出其实是因为货在路上）
+            out.insert(len(rv), ("transit", tr("在途已够") if not x.get("sbox") else tr("扣在途 {0} 箱", cut),
+                                 tr("已经订了、还没到货的 {0} 箱从这次的箱数里扣掉了（上周的单还没到，这次不重复订）", cut)))
+            if not x.get("sbox"):
+                return out                              # 这次不订的原因就是在途，别的提醒不放（详情栏「为什么」里还有）
         cz = x.get("censored")
         if cz:
             out.append(("censored", tr("断货补算"),
@@ -1609,6 +1699,9 @@ class OrderCheck:
         tok = VERDICT_TOKEN.get(kind, "text")
         m_in = self._moves_in.get((sid, code))
         extra = tr("调进 {0} 件 ← {1}", m_in["pieces"], R.STORES.get(m_in["from"], m_in["from"])) if m_in else ""
+        if x.get("transit_cut"):
+            tline = tr("应订 {0} 箱 − 在途 {1} 箱 = {2} 箱", x["sbox"] + x["transit_cut"], x["transit_cut"], x["sbox"])
+            extra = tline + (" · " + extra if extra else "")
         dr.show_decision(vt, tok, self._amount(x), (tr("清单"), x["lbox"]), (tr("确定"), x["fbox"]),
                          tok if kind != "same" else None, extra)
         reasons = "\n".join(["· " + l for l in self._reason_lines(x)] + ["⚠ " + m[2] for m in self._marks(x)] +
@@ -1729,7 +1822,9 @@ class OrderCheck:
         total, tips = 0, []
         for kind, (ti, page, t) in self.prob.items():
             allk = [i for i, x in enumerate(self.rows) if _tab_of(_problem(x)) == kind]
-            idx = [i for i in allk if (sid is None or self.rows[i].get("store") == sid) and
+            # 2026-11-19：个数也按选中的门店算（以前按钮写全部门店的 649，列表里却只有这家店的）
+            allk = [i for i in allk if sid is None or self.rows[i].get("store") == sid]
+            idx = [i for i in allk if
                    (not text or text in f"{self.rows[i].get('code')} {self.rows[i].get('ean')} {self.rows[i].get('name')}".lower())]
             title = _prob_title(kind, len(allk), has_grid)
             self.prob_tabs.setTabText(ti, title)
@@ -1764,7 +1859,8 @@ class OrderCheck:
             if getattr(t, "_hf", None) is not None and t._hf.active():
                 t._hf.reapply()
             t.setColumnHidden(0, len((self.meta or {}).get("stores") or []) < 2)
-        self.prob_btn.setText(tr("⚠ 待核对（{0}）", total))
+        self.prob_btn.setText("⚠ " + tr("待核对"))
+        self.prob_btn.set_count(total)
         self.prob_btn.setToolTip("\n".join(tips) + "\n" + tr("点一下打开"))
         self.prob_btn.setVisible(bool(total))
         self._prob_filling = False
@@ -1978,6 +2074,94 @@ class OrderCheck:
         self._store_changed()
         self._refresh_side()
 
+    def _needs_review(self, x):
+        """
+        「要审核」全程序一个意思（2026-11-19 用户：审核清单逻辑对不上 —— 以前筛选按钮「要审核 0」、左边「95 个待审」、
+        底部「要审核 104」三个数各算各的）：判断不是「照清单订」（多订 / 少订 / 不订 / 调货），或者清单是新加 / 改过的；
+        沿用了上次审核的（review = kept）不用再审
+        """
+        rv = x.get("review")
+        if rv in ("new", "changed"):
+            return True
+        if rv == "kept":
+            return False
+        return self._verdict(x)[0] in ("transfer", "more", "less", "none")
+
+    def _row_badge(self, i):
+        """商品格左边的小圆点（要审核、还没看、也没改 = 黄点）和条码后面的等级"""
+        if i is None or not (0 <= i < len(self.rows)):
+            return None, ""
+        x = self.rows[i]
+        dot = "warn" if (i not in self._seen and not _edited(x) and self._needs_review(x)) else None
+        return dot, str(x.get("tier") or "")
+
+    def _todo_rows(self):
+        """现在看得见的行里：要审核、还没看过也没改过的（按表格现在的顺序）"""
+        return [i for i in self.ctl.visible
+                if i not in self._seen and not _edited(self.rows[i]) and self._needs_review(self.rows[i])]
+
+    def _select_first(self):
+        if self.table.rowCount() and self.table.currentRow() < 0:
+            self.ctl.ensure(0)
+            self.table.setCurrentCell(0, EDIT_COL)
+
+    def next_todo(self):
+        """「下一个待审商品」（空格键）：跳到下一个要审核、还没看的商品，看完了就提示"""
+        todo = self._todo_rows()
+        if not todo:
+            self.win.show_toast(tr("这家门店要审核的商品都看过了"))
+            return
+        cur = self._cur_i
+        vis = self.ctl.visible
+        after = vis.index(cur) + 1 if cur in vis else 0
+        order = {i: n for n, i in enumerate(vis)}
+        nxt = next((i for i in todo if order[i] >= after), todo[0])
+        k = self.ctl.pos.get(nxt)
+        if k is None:
+            return
+        self.ctl.ensure(k)
+        self.table.setCurrentCell(k, EDIT_COL)
+        self.table.scrollTo(self.table.model().index(k, EDIT_COL), QAbstractItemView.PositionAtCenter)
+        self.table.setFocus()
+
+    def _step_box(self, i, n):
+        """键盘改确定箱数（+ / − / 退格恢复系统建议）：和点加减器、双击输入一样"""
+        if i is None or not (0 <= i < len(self.rows)):
+            return
+        x = self.rows[i]
+        n = max(0, int(n))
+        if n == x["fbox"]:
+            return
+        self.freeze_transfers()
+        _set_box(x, n)
+        self._show(i)
+        self._summary()
+        self._plan_timer.start()
+        self._side_timer.start()
+
+    def _review_keys(self, ev):
+        """审核表格的快捷键（不在输入箱数时）：+ / − 改 1 箱 · 0 不订 · 退格 恢复系统建议 · 空格 下一个待审"""
+        if self.table.state() == QAbstractItemView.EditingState:
+            return False
+        i, key = self._cur_i, ev.key()
+        x = self.rows[i] if i is not None and 0 <= i < len(self.rows) else None
+        if key in (Qt.Key_Space,):
+            self.next_todo()
+            return True
+        if x is None:
+            return False
+        if key in (Qt.Key_Plus, Qt.Key_Equal):
+            self._step_box(i, x["fbox"] + 1)
+        elif key in (Qt.Key_Minus, Qt.Key_Underscore):
+            self._step_box(i, x["fbox"] - 1)
+        elif key == Qt.Key_0 and self.table.currentColumn() != EDIT_COL:
+            self._step_box(i, 0)
+        elif key in (Qt.Key_Backspace, Qt.Key_Delete):
+            self._step_box(i, x["sbox"] if x.get("sbox") is not None else x["lbox"])
+        else:
+            return False
+        return True
+
     def _side_data(self):
         """左边门店列表：每家店 要审核几个（判断不是照清单订的 + 新加 / 清单改过的）、看过几个、改了几个"""
         stores = list((self.meta or {}).get("stores") or [])
@@ -1989,7 +2173,7 @@ class OrderCheck:
             except (KeyError, TypeError, ValueError):
                 continue
             d[0] += 1
-            need = self._verdict(x)[0] in ("transfer", "more", "less", "none") or x.get("review") in ("new", "changed")
+            need = self._needs_review(x)
             if need:
                 d[1] += 1
                 if i in self._seen or _edited(x):
@@ -2006,6 +2190,9 @@ class OrderCheck:
 
     def _refresh_side(self):
         if hasattr(self, "side") and self.rows:
+            self.table.viewport().update()            # 商品格的小圆点：看过的去掉
+            if hasattr(self, "btn_next"):
+                self.btn_next.set_count(len(self._todo_rows()))
             data = self._side_data()
             self.side.set_data(data)
             st = getattr(self.win, "cmp_steps", None)
@@ -2065,16 +2252,24 @@ class OrderCheck:
             self.cols.menu(pos)
         elif got == a_order:
             self._reset_cols()
+            self._fill_prod.reset()
         elif got == a_exp:
             self.export()
 
     def _update_view_counts(self, cnt):
-        """「看哪些」下拉框里带上个数：只看多订（12）"""
-        n = {"all": len(self.rows), "changed": sum(cnt.get(k, 0) for k in ("transfer", "more", "less", "none"))}
+        """「看哪些」下拉框 / 筛选按钮带上个数：只看多订（12）。
+        2026-11-19：个数按左边选中的门店算（以前一直是全部门店的，选了 FOIANO 还写「全部 1617」）"""
+        sid = self._store_sel()
+        mine = [x for x in self.rows if sid is None or x.get("store") == sid]
+        cnt = {}
+        for x in mine:
+            k_ = self._verdict(x)[0]
+            cnt[k_] = cnt.get(k_, 0) + 1
+        n = {"all": len(mine), "changed": sum(cnt.get(k, 0) for k in ("transfer", "more", "less", "none"))}
         n.update(cnt)
-        n["phantom"] = sum(1 for x in self.rows if x.get("phantom") and not _problem(x))
-        n["promo"] = sum(1 for x in self.rows if x.get("promo"))
-        n["review"] = sum(1 for x in self.rows if x.get("review") in ("new", "changed"))
+        n["phantom"] = sum(1 for x in mine if x.get("phantom") and not _problem(x))
+        n["promo"] = sum(1 for x in mine if x.get("promo"))
+        n["review"] = sum(1 for x in mine if self._needs_review(x))
         for k in range(self.view.count()):
             key = self.view.itemData(k)
             text = tr(dict(VIEWS)[key])
@@ -2105,8 +2300,9 @@ class OrderCheck:
         from theme import T as _T, NUM_FONT as _NF
         sid = self._store_sel()
         mine = [x for x in self.rows if sid is None or x.get("store") == sid]
-        need = sum(1 for x in mine if self._verdict(x)[0] in ("transfer", "more", "less", "none")
-                   or x.get("review") in ("new", "changed"))
+        need_rows = [i for i, x in enumerate(self.rows) if (sid is None or x.get("store") == sid) and self._needs_review(x)]
+        need = len(need_rows)
+        seen = sum(1 for i in need_rows if i in self._seen or _edited(self.rows[i]))
         ed = sum(1 for x in mine if _edited(x))
         tot = 0.0
         for x in mine:
@@ -2119,8 +2315,8 @@ class OrderCheck:
             return f"<b style=\"font-family:'{_NF}'; color:{_T(c)}\">{v}</b>"
         self.count_lbl.setTextFormat(Qt.RichText)
         self.count_lbl.setText(f"<span style='color:{_T('head')}; font-size:13px'>" +
-                               tr("{0} · 要审核 {1} 个 · 已改 {2} 个 · 估算 {3}",
-                                  R.STORES.get(sid, str(sid)) if sid is not None else tr("全部门店"), b_(need),
+                               tr("{0} · 要审核 {1} 个 · 已看 {2} · 已改 {3} 个 · 估算 {4}",
+                                  R.STORES.get(sid, str(sid)) if sid is not None else tr("全部门店"), b_(need), b_(seen),
                                   b_(ed, "warn" if ed else "text"), b_(f"€{tot:,.0f}")) + "</span>")
         self.count_lbl.setToolTip(tr("显示 {0} / {1} 行 · 已改 {2} 处 · 当前筛选合计 {3:g} 箱 · €{4:,.2f}",
                                      shown, total, n_edit, boxes, amt))
@@ -2139,7 +2335,7 @@ class OrderCheck:
         hide = (view == "changed" and kind not in ("transfer", "more", "less", "none")) or \
             (view in ("transfer", "more", "less", "none") and kind != view) or \
             (view == "phantom" and not x.get("phantom")) or (view == "promo" and not x.get("promo")) or \
-            (view == "review" and x.get("review") not in ("new", "changed"))
+            (view == "review" and not self._needs_review(x))
         return hide or \
                (bool(text) and text not in self._search_text(x))
 
@@ -2173,11 +2369,15 @@ class OrderCheck:
         t.item(k, _col(0)).setToolTip(tip)
         t.item(k, 0).setData(Qt.UserRole, i)
         t.item(k, _col(3)).setToolTip(f"{x['name']}\nEAN {x['ean'] or '—'}")
+        self._style_stock(x, k)
         tri = self._transit_of(x)
         if tri:                                   # 在途：蓝字，鼠标提示哪几张单
             import order_record as REC
             it = t.item(k, _col(TRANSIT))
             it.setForeground(QColor(T("accent")))
+            f = it.font()
+            f.setBold(True)
+            it.setFont(f)
             it.setToolTip(tr("已经订了、还没到货 {0:g} 箱（{1:g} 件）：", tri["colli"], tri["pcs"]) + "\n" + REC.transit_text(tri)
                           + "\n" + tr("双击看订单、标到货"))
         if x.get("promo"):                       # 门店在促销：商品名 / 条码标红
@@ -2192,9 +2392,10 @@ class OrderCheck:
             t.item(k, _col(2)).setToolTip("🏷 " + ptip)
         pk = t.item(k, _col(10))
         if x.get("quote_sup"):
-            same = not x.get("db_pack") or abs(x["pack"] - x["db_pack"]) < 1e-9
-            pk.setToolTip(tr("{0} 的报价：每箱 {1:g} 件", x["quote_sup"], x["pack"]) +
-                          ("" if same else "\n" + tr("数据库箱规是每箱 {0:g} 件", x["db_pack"])))
+            qp = x.get("quote_pack") or x["pack"]
+            same = abs(qp - x["pack"]) < 1e-9
+            pk.setToolTip(tr("每箱 {0:g} 件（数据库箱规，和门店清单一样）", x["pack"]) +
+                          ("" if same else "\n" + tr("{0} 的报价：每箱 {1:g} 件，比价时按件数换算", x["quote_sup"], qp)))
             if not same:
                 pk.setForeground(QColor(T("accent")))
         elif x.get("pack"):
@@ -2241,6 +2442,46 @@ class OrderCheck:
             st.setToolTip(dict(PROB_KINDS_TIPS()).get(_problem(x), "") + ("\n" + _issue_text(x) if _issue(x) else ""))
         self._style_edit(i, k)
 
+    def _style_stock(self, x, k):
+        """库存 / 月销两格的颜色（2026-11-19 用户：重要数据用颜色突出）：
+        库存 ≤ 0 红字加粗（缺货）· 够卖不到一个订货周期 黄字 · 够卖很久 淡色；月销 0 淡色、A 类商品加粗"""
+        T = self.ui.T
+        t = self.table
+        it = t.item(k, _col(4))
+        if it is not None and x.get("in_db", True):
+            inv = x.get("store_inv")
+            cyc = float(x.get("cycle") or 0)
+            cv = _cover_now(x)
+            tok, tip, bold = "text", "", False
+            if isinstance(inv, (int, float)) and inv <= 0:
+                tok, bold = "err", True
+                tip = tr("缺货：本店库存 {0:g} 件", inv) if inv < 0 else tr("缺货：本店没有库存")
+            elif cyc and cv < cyc:
+                tok, tip = "warn", tr("库存只够卖 {0} 天，不到一个订货周期（{1:g} 天）", _days(cv), cyc)
+            elif cv == float("inf") or (cyc and cv > 3 * cyc):
+                tok = "faint"
+                tip = tr("库存够卖很久（{0}）", tr("没有销量") if cv == float("inf") else tr("{0} 天", _days(cv)))
+            it.setData(Qt.ForegroundRole, QColor(T(tok)) if tok != "text" else None)
+            if bold:
+                f = it.font()
+                f.setBold(True)
+                it.setFont(f)
+            if tip:
+                it.setToolTip(tip)
+        ms = t.item(k, _col(28))
+        if ms is not None:
+            try:
+                m = float(str(ms.text()).replace(",", "") or 0)
+            except ValueError:
+                m = None
+            if m is not None and m <= 0:
+                ms.setForeground(QColor(T("faint")))
+            elif x.get("tier") == "A":
+                f = ms.font()
+                f.setBold(True)
+                ms.setFont(f)
+                ms.setToolTip(tr("A 类：本店卖得最多的商品，不能断货"))
+
     def _after_info(self, x):
         """订后够卖那一格：(文字, 颜色, 鼠标提示)。不订的显示现在的库存够卖几天"""
         if not x.get("in_db", True):
@@ -2284,7 +2525,10 @@ class OrderCheck:
         f.setBold(x["fbox"] > 0)
         c.setFont(f)
         changed = _edited(x)
-        c.setForeground(QColor(T("warn") if changed else T("accent") if x["fbox"] > 0 else T("faint")))
+        # 确定箱数的颜色 = 和门店清单比（和「判断」同一套颜色）：一样 黑 · 少订 黄 · 不订 红 · 多订 蓝；手动改过 黄底
+        fb, lb = int(x["fbox"]), int(x.get("lbox") or 0)
+        tok = ("faint" if not lb else "err") if fb == 0 else "warn" if fb < lb else "accent" if fb > lb else None
+        c.setData(Qt.ForegroundRole, QColor(T(tok)) if tok else None)    # 一样的不写死颜色（换深浅色时跟着主题）
         c.setBackground(QColor(T("warn_soft")) if changed else QColor(0, 0, 0, 0))
         c.setToolTip((tr("手动改过：系统建议 {0:,} 箱", x["sbox"]) if x.get("sbox") is not None else
                       tr("手动改过：门店清单 {0:,} 箱", x["lbox"])) if changed else tr("双击修改箱数，0 = 不订"))
@@ -2315,6 +2559,18 @@ class OrderCheck:
             self._fill_row(i, k)
         finally:
             self._filling = was
+
+    def restyle(self):
+        """换深浅色：表格每一行的颜色、右边详情栏、左边门店卡重新画（数据不重读）"""
+        if not self.rows or not hasattr(self, "ctl"):
+            return
+        self._refresh_rows(list(self.ctl.visible))
+        if hasattr(self, "drawer"):
+            self.drawer._paint_static()
+            if self._cur_i is not None:
+                self._show_drawer(self._cur_i)
+        self._refresh_side()
+        self._summary()
 
     def _refresh_rows(self, idx):
         """只重画这几行（改一个调货不用整张表重画）；很多行时：看得见的马上画，其余的一批批重画"""

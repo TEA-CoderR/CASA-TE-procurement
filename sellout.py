@@ -11,9 +11,11 @@ SELL OUT 分析（进销存，2026-11-16 用户：照 ERP「进销存报表」�
             调货没有进价 → 按这个商品这段时间 CA 的平均进价算，没有就用销售记录的进价，再没有用商品表的 PrezzoForn
   销售      vendite_list_<门店>：销量 Qta，销售额 = TotRighe − TotCodIva（不含税），成本 = TotAcquisto
   销售率    件数 = 销售量 ÷ 采购量；金额 = 销售额 ÷ 采购额
-  销采率    差额 = 销售额 − 采购额；差额率 = 差额 ÷ 销售额
-  毛利      毛利额 = 销售额 − 成本；毛利率 = 毛利额 ÷ 销售额
-  剩余库存  剩余量 = 采购量 − 销售量；剩余额 = 剩余量 × 平均进价（和模板一样，是这批货还剩多少，不是现在的库存）
+  销采率    差额 = 销售额 − 采购额；差额率 = 差额 ÷ 销售额（这段时间没有采购量的商品空着；合计 = 全部销售额 − 全部采购额）
+  毛利      毛利额 = 销售额 − 销售记录的成本；毛利率 = 毛利额 ÷ 销售额
+  剩余库存  剩余量 = 采购量 − 销售量；剩余额 = 剩余量 × 平均进价（采购量 ≤ 0 的商品空着，不算进合计）
+  采购额    每行入库都按那一行的进价 Prezzo_A（调货 CI / UI 也有自己的进价）；那一行没有进价才按 CA 平均进价补
+  2026-11-19 和 ERP「进销存报表」逐行对过（DUE ESSE 01/08–16/11、SAIS 01/01–16/11 · FOIANO）
 
 分类：ERP 的 categorie 只有两级（Categoria 大类 / Sottocategoria 小类）。小类的名字多半写成「中类 - 小类」
 （例：FESTE SPECIALI - ACC.CARNEVALE E HALLOWEEN、CAFFETTIERE E ACCESSORI - BOLLITORI）→ 按第一个「 - 」拆成中类和小类；
@@ -27,8 +29,9 @@ WAREHOUSE = 0
 ALL_SCOPE = (0, 1, 2, 3, 4, 5)
 NAMES = dict(STORES)
 NAMES[WAREHOUSE] = "BMS"
-PURCHASE_TYPES = ("CA", "CI", "UI")
-SUMS = ("stock", "pq", "pv", "sq", "sv", "cost", "rem_v")
+PURCHASE_TYPES = ("CA", "CI", "UI", "MG")     # MG：ERP 进销存报表也算进货（2026-11-19 对过 FOIANO：差的 8 件就是 MG）
+# 合计时直接相加的字段（剩余按每个商品算好再加，采购量 ≤ 0 的不算，和 ERP 合计行一样）
+SUMS = ("stock", "pq", "pv", "sq", "sv", "cost", "rem_q", "rem_v")
 GROUPS = ("item", "sup", "cat", "mid", "small", "store")
 CHUNK = 1500
 _DASH = re.compile(r"\s+-\s+")
@@ -311,21 +314,30 @@ def _blank():
     return {"stock": 0.0, "pq": 0.0, "pv": 0.0, "sq": 0.0, "sv": 0.0, "cost": 0.0}
 
 
-def metrics(r):
-    """一行的合计 → 加上平均进价 / 售价、销售率、差额率、毛利、剩余（r 里要有 stock pq pv sq sv cost；rem_v 可以先给）"""
+def metrics(r, agg=False):
+    """
+    一行 → 平均进价 / 售价、销售率、差额、毛利、剩余（照 ERP 进销存报表）。
+    agg=False（一个商品 / 一家店的一个商品）：采购量 ≤ 0 的 剩余空着（None），没有采购量的差额空着，不算进合计。
+    agg=True（合计、按供应商 / 分类 / 门店合计）：剩余用加好的 rem_q / rem_v，差额 = 销售额 − 采购额。
+    """
     pq, pv, sq, sv, cost = r["pq"], r["pv"], r["sq"], r["sv"], r["cost"]
     r["p_avg"] = pv / pq if pq else None
     r["s_avg"] = sv / sq if sq else None
     r["rate_q"] = sq / pq if pq > 0 else None
     r["rate_v"] = sv / pv if pv > 0 else None
-    r["diff"] = sv - pv
-    r["diff_rate"] = (sv - pv) / sv if sv else None
-    r["profit"] = sv - cost
-    r["margin"] = (sv - cost) / sv if sv else None
-    r["rem_q"] = pq - sq
-    if "rem_v" not in r:
-        unit = r["p_avg"] if r["p_avg"] is not None else (cost / sq if sq else 0.0)
-        r["rem_v"] = r["rem_q"] * unit
+    if not agg:
+        bought = pq > 0
+        if not bought:
+            r["p_avg"] = None                         # 采购量 ≤ 0（只有调出 / 退货）：ERP 平均进价空着
+        r["rem_q"] = pq - sq if bought else None
+        r["rem_v"] = (pq - sq) * r["p_avg"] if bought else None
+        r["diff"] = sv - pv if pq else None           # 有采购（负的也算）才写差额，ERP 一样
+        r["diff_rate"] = r["diff"] / sv if r["diff"] is not None and sv else None
+    else:
+        r["diff"] = sv - pv                           # 合计 = 全部销售额 − 全部采购额（ERP 合计行一样）
+        r["diff_rate"] = r["diff"] / sv if sv else None
+    r["profit"] = sv - cost                           # 毛利 = 销售额 − 销售记录的成本 TotAcquisto（退货行是负的、抵掉）
+    r["margin"] = r["profit"] / sv if sv else None
     return r
 
 
@@ -380,7 +392,7 @@ def build(raw):
             a = ca.setdefault(c, [0.0, 0.0])
             a[0] += v
             a[1] += qp
-    other, pdays = {}, {}
+    other, pdays, days_by = {}, {}, {}           # days_by：{地点: {日期: [销量, 销售额, 进货量, 进货额]}}（切门店时用）
 
     def unit(c):
         if c in ca and ca[c][1]:
@@ -401,13 +413,16 @@ def build(raw):
             other[t] = other.get(t, 0.0) + q
             continue
         r = row(c)
-        val = v + (q - qp) * unit(c) if t == "CA" else q * unit(c)
+        val = v + (q - qp) * unit(c)                  # 有进价的行按自己的进价（调货行也有），没有的按 CA 平均进价补
         x = per(r, s)
         x["pq"] += q
         x["pv"] += val
         a = pdays.setdefault(d, [0.0, 0.0])
         a[0] += q
         a[1] += val
+        b = days_by.setdefault(s, {}).setdefault(d, [0.0, 0.0, 0.0, 0.0])
+        b[2] += q
+        b[3] += val
     # 库存
     for c, g in raw["stock"].items():
         if any(g.get(s) for s in scope) or c in rows:
@@ -419,20 +434,21 @@ def build(raw):
     for c, r in rows.items():
         for k in ("stock", "pq", "pv", "sq", "sv", "cost"):
             r[k] = sum(x[k] for x in r["per"].values())
-        for s, x in r["per"].items():
-            unit_ = (x["pv"] / x["pq"]) if x["pq"] else (r["pv"] / r["pq"] if r["pq"] else
-                                                       (x["cost"] / x["sq"] if x["sq"] else 0.0))
-            x["rem_v"] = (x["pq"] - x["sq"]) * unit_
+        for x in r["per"].values():
+            metrics(x)
         metrics(r)
         r["bucket"] = bucket(r)
         out.append(r)
     out.sort(key=lambda r: -r["sv"])
     sdays = {}
-    for res in raw["sales"].values():
+    for sid, res in raw["sales"].items():
         for d, (q, rev) in res["days"].items():
             a = sdays.setdefault(d, [0.0, 0.0])
             a[0] += q
             a[1] += rev
+            b = days_by.setdefault(sid, {}).setdefault(d, [0.0, 0.0, 0.0, 0.0])
+            b[0] += q
+            b[1] += rev
     days = []
     d = raw["start"]
     while d <= raw["end"]:
@@ -441,18 +457,61 @@ def build(raw):
         pq, pv = pdays.get(k, (0.0, 0.0))
         days.append((d, sq, sv, pq, pv))
         d += timedelta(days=1)
-    return {"rows": out, "days": days, "other_types": other, "start": raw["start"], "end": raw["end"],
-            "scope": raw["scope"], "filters": raw.get("filters") or {}}
+    return {"rows": out, "days": days, "days_by": days_by, "other_types": other, "start": raw["start"],
+            "end": raw["end"], "scope": raw["scope"], "filters": raw.get("filters") or {}}
+
+
+ITEM_KEYS = ("code", "ean", "name", "sup", "sup_name", "cat", "sub", "cat_name", "mid", "small", "forn")
+
+
+def view(res, stores):
+    """
+    查一次「全部」以后，切到几家门店看（2026-11-16 用户：点门店直接切换，不再重新读数据库）：
+    每个商品只加这几家的数字（res 里每行的 per[门店]），重新算平均价 / 销售率 / 剩余，每天的走势也只加这几家。
+    这几家里没进没卖没库存的商品不列。stores 空 = 全部（原样返回）。
+    和直接按这几家查数据库结果一样（调货一进一出照样在这几家之间抵掉）。
+    """
+    want = tuple(s for s in res["scope"] if s in set(stores or ()))
+    if not want or want == tuple(res["scope"]):
+        return res
+    rows = []
+    for r in res["rows"]:
+        per = {s: r["per"][s] for s in want if s in r["per"]}
+        if not per or not any(x.get(k) for x in per.values() for k in ("stock", "pq", "sq")):
+            continue
+        d = {k: r.get(k) for k in ITEM_KEYS}
+        for k in ("stock", "pq", "pv", "sq", "sv", "cost"):
+            d[k] = sum(x[k] for x in per.values())
+        d["per"] = per
+        metrics(d)
+        d["bucket"] = bucket(d)
+        rows.append(d)
+    rows.sort(key=lambda r: -r["sv"])
+    by = res.get("days_by") or {}
+    days = []
+    for day, *_rest in res["days"]:
+        k = day.isoformat()
+        a = [0.0, 0.0, 0.0, 0.0]
+        for s in want:
+            b = (by.get(s) or {}).get(k)
+            if b:
+                for i in range(4):
+                    a[i] += b[i]
+        days.append((day, a[0], a[1], a[2], a[3]))
+    return dict(res, rows=rows, days=days, scope=want)
+
+
+def _zero():
+    return {k: 0.0 for k in SUMS}
 
 
 def total(rows):
-    t = _blank()
-    t["rem_v"] = 0.0
+    t = _zero()
     for r in rows:
         for k in SUMS:
             t[k] += r.get(k) or 0.0
     t["n"] = len(rows)
-    return metrics(t)
+    return metrics(t, agg=True)
 
 
 GROUP_LABEL = {"item": "商品", "sup": "供应商", "cat": "大类", "mid": "中类", "small": "小类", "store": "门店"}
@@ -466,14 +525,14 @@ def group(rows, by):
     if by == "store":
         for r in rows:
             for s, x in r["per"].items():
-                a = g.setdefault(s, dict(_blank(), rem_v=0.0, key=s, name=NAMES.get(s, str(s)), n=0, codes=set()))
+                a = g.setdefault(s, dict(_zero(), key=s, name=NAMES.get(s, str(s)), n=0, codes=set()))
                 for k in SUMS:
                     a[k] += x.get(k) or 0.0
                 a["codes"].add(r["code"])
         out = []
         for s, a in sorted(g.items()):
             a["n"] = len(a.pop("codes"))
-            out.append(metrics(a))
+            out.append(metrics(a, agg=True))
         out.sort(key=lambda r: -r["sv"])
         return out
     for r in rows:
@@ -485,13 +544,13 @@ def group(rows, by):
             key, name = (r["cat"], r["mid"]), r["mid"] or "—"
         else:
             key, name = (r["cat"], r["sub"]), r["small"] or r["mid"] or "—"
-        a = g.setdefault(key, dict(_blank(), rem_v=0.0, key=key, name=name, n=0, cat_name=r["cat_name"],
+        a = g.setdefault(key, dict(_zero(), key=key, name=name, n=0, cat_name=r["cat_name"],
                                    mid=r["mid"] if by in ("mid", "small") else "",
                                    small=r["small"] if by == "small" else ""))
         for k in SUMS:
             a[k] += r.get(k) or 0.0
         a["n"] += 1
-    out = [metrics(a) for a in g.values()]
+    out = [metrics(a, agg=True) for a in g.values()]
     out.sort(key=lambda r: -r["sv"])
     return out
 
@@ -502,7 +561,7 @@ def bucket_counts(rows):
     for r in rows:
         a = c[r["bucket"]]
         a[0] += 1
-        a[1] += r["rem_v"]
+        a[1] += r["rem_v"] or 0.0
     return [(k, n, t, c[k][0], c[k][1]) for k, n, t in BUCKETS]
 
 
@@ -547,7 +606,7 @@ def store_rows(rows, sid):
         if not x or not any(x.get(k) for k in ("stock", "pq", "sq")):
             continue
         d = {k: r.get(k) for k in ("code", "ean", "name", "sup", "sup_name", "cat", "sub", "cat_name", "mid", "small")}
-        for k in ("stock", "pq", "pv", "sq", "sv", "cost", "rem_v"):
+        for k in ("stock", "pq", "pv", "sq", "sv", "cost"):
             d[k] = x.get(k) or 0.0
         metrics(d)
         d["bucket"] = bucket(d)

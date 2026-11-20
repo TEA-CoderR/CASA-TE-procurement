@@ -505,7 +505,7 @@ class TrackingPage:
         self.empty = EmptyState("tracking", tr("选择共享文件夹"),
                                 tr("放 PIANO ACQUISTO MESILE 的那个共享文件夹（Synology Drive）。程序会在里面建一个「{0}」文件夹放订单记录，并从 Excel 导入",
                                    OT.DATA_DIR))
-        b = QPushButton(tr("选择共享文件夹…"))
+        b = QPushButton(tr("选择共享文件夹"))
         b.setObjectName("Primary")
         b.clicked.connect(self.choose_folder)
         self.empty.buttons.addWidget(b)
@@ -1621,7 +1621,7 @@ class TrackingPage:
         e_dir, e_x, e_me = QLineEdit(self.cfg.get("folder") or ""), QLineEdit(self._excel()), QLineEdit(self._me())
         for e in (e_dir, e_x):
             e.setMinimumWidth(420)
-        b_dir, b_x = QPushButton(tr("选择…")), QPushButton(tr("选择…"))
+        b_dir, b_x = QPushButton(tr("选择")), QPushButton(tr("选择"))
         b_dir.clicked.connect(lambda: e_dir.setText(QFileDialog.getExistingDirectory(dlg, tr("选择共享文件夹"), e_dir.text()) or e_dir.text()))
         b_x.clicked.connect(lambda: e_x.setText(QFileDialog.getOpenFileName(dlg, tr("选择 Excel"), e_x.text(),
                                                                              tr("Excel 文件 (*.xlsx *.xlsm)"))[0] or e_x.text()))
@@ -1633,7 +1633,7 @@ class TrackingPage:
         g.addWidget(b_x, 1, 2)
         e_rec = QLineEdit(REC.record_root(self.settings))
         e_rec.setMinimumWidth(420)
-        b_rec = QPushButton(tr("选择…"))
+        b_rec = QPushButton(tr("选择"))
         b_rec.clicked.connect(lambda: e_rec.setText(QFileDialog.getExistingDirectory(dlg, tr("选择订单明细文件夹"), e_rec.text()) or e_rec.text()))
         g.addWidget(tip_label(tr("订单明细"), tr("历史订单文件（RECORD ORDINE）：01–05 门店自己订的，06 总仓，07 DETERSIVO。"
                                               "用来看没到货的单订了哪些商品（在途）")), 2, 0)
@@ -1945,7 +1945,7 @@ class TrackingPage:
             self.drawer.restyle()
             self._update_src()
         if self.st is not None and self.rows:
-            self.refresh()
+            self.update_view()      # 只按新颜色重画（11-18：以前 refresh() 重新算全部订单 + 读在途，换颜色卡几秒）
 
 
 class _OptDate(QWidget):
@@ -2194,6 +2194,8 @@ class RecordLinesDialog(QDialog):
         hh.setStretchLastSection(False)
         for c, (_f, _h, wd) in enumerate(self.COLS):
             self.t.setColumnWidth(c, wd)
+        import product_images as PI
+        PI.add_thumbs(self.t, 3, 1, getattr(page, "settings", None))
         from erp_widgets import TableSortFilter, fit_to_screen
         import settings as ST
         self.ctl = TableSortFilter(self.t, lambda: len(self.rows), self._text, self._fill, key=self._key,

@@ -420,8 +420,8 @@ def test_name_diff_marks_only_what_changed():
     assert "".join(t for t, _k in GR.diff_tokens("A 40 LAV.X", "B")) == "A 40 LAV.X"
 
 
-def test_struck_items_get_replacements_and_are_replaced_in_place():
-    """用户 11-11：Griglia 里划线的商品也要找替代；替换时划线的那一行直接改成新商品、去掉划线，不再挪"""
+def test_struck_items_get_replacements_and_old_row_moved_to_bottom():
+    """用户 11-11：Griglia 里划线的商品也要找替代；11-18：替换时和别的一样——这一行换成新商品，旧商品抄到最下面划线"""
     g = _grid("x.xlsx")
     sv = g["items"].pop("8002222000017")                  # SVELTO 980 当成划线的（第 5 行）
     g["struck"] = {sv["ean"]: sv}
@@ -431,13 +431,14 @@ def test_struck_items_get_replacements_and_are_replaced_in_place():
     assert c["ean"] == "8002222000024"
     assert all(r["old"]["ean"] != "8002222000017" for r in GR.suggest(g, QUOTES))   # 不算「都不做了」
     plan = GR.plan_rows(g, [(out[0]["old"], c)])
-    assert plan[0][3] == "inplace"
+    assert plan[0][3] == "move"
     ws = _sheet()
     done = GR.write_rows("x.xlsx", g, plan, excel=_Excel(ws))
-    assert done == [("8002222000017", 5, None)]
-    assert ws.v[(5, 2)] == "8002222000024" and ws.v.get((8, 2)) is None       # 原地改、没往下抄
+    assert done == [("8002222000017", 5, 8)]
+    assert ws.v[(5, 2)] == "8002222000024"                                     # 这一行换成新商品
+    assert ws.v[(8, 2)] == "8002222000017"                                     # 旧商品抄到最下面
     assert _font(ws, 5, "Strikethrough") is False
-    assert "8002222000017" in ws.comments[(5, 2)]
+    assert _font(ws, 8, "Strikethrough") is True
     # 划线的商品、新商品 Griglia 里已有：Excel 不动，只记录
     pool = GR.pool(g, QUOTES)
     have = next(x for x in pool if x["ean"] == "8004444000013")
@@ -649,3 +650,84 @@ def test_checked_order_writes_substitute_ean_and_its_code():
     head = [c.value for c in ws[1]]
     row = dict(zip(head, [c.value for c in ws[2]]))
     assert n == 1 and row["CODICE EAN"] == "8009999000011" and row["COLLI"] == 2 and str(row["CodArticolo"]) == "205"
+
+
+def test_restore_old_rows_from_backup_to_bottom_struck():
+    """用户 11-18：以前原地换掉的 Griglia 已停用商品，从备份里把原商品抄回最下面划线"""
+    g = _grid("x.xlsx")
+    g["header_row"] = 3
+    cur = _sheet()
+    cur.v[(5, 2)], cur.v[(5, 3)] = "8002222000024", "SVELTO PIATTI LIMONE 1000 ML"   # 第 5 行已经原地换成新商品
+    bk_old, bk_new = _sheet(), _sheet()
+    bk_new.v[(5, 2)] = "8002222000024"                                              # 替换以后的备份：没有原商品
+    books = {"g.xlsx": cur, "b2.xlsx": bk_new, "b1.xlsx": bk_old}
+
+    class Ex:
+        def __init__(self):
+            self.saved = False
+            ex = self
+
+            class WB:
+                def __init__(self, ws):
+                    self.ws = ws
+
+                def Worksheets(self, _n):
+                    return self.ws
+
+                def Save(self):
+                    ex.saved = True
+
+                def Close(self, SaveChanges=False):
+                    pass
+            self.Workbooks = type("W", (), {"Open": lambda _s, p, ReadOnly=False: WB(books[os.path.basename(p)])})()
+    found = GR.find_in_backups(["b2.xlsx", "b1.xlsx"], g, ["8002222000017", "8009999999999"], excel=Ex())
+    assert found == {"8002222000017": ("b1.xlsx", 5)}
+    ex, ops, info = Ex(), [], {}
+    done = GR.restore_rows("g.xlsx", g, [("8002222000017", "8002222000024", "b1.xlsx", 5)], excel=ex, ops=ops, info=info)
+    assert info == {"8002222000017": (1.5, "F.LLI PETRILLO SRL")}                     # 原价格 / 原供应商从备份那一行读
+    # Fornitore 空着（Griglia 已停用的常这样）→ 几家批发商里最便宜的
+    assert GR.old_price_sup({"best": 2.49, "supplier": "", "prices": {"MELONI": 2.49, "MEGA CASH": 2.68}}) == (2.49, "MELONI")
+    assert ex.saved and done == [("8002222000017", 8)] and ops == [("append", 8)]
+    assert cur.v[(8, 2)] == "8002222000017" and cur.v[(8, 3)] == "SVELTO PIATTI LIMONE 980 ML" and cur.v[(8, 1)] == "102"
+    assert cur.v[(5, 2)] == "8002222000024"                                         # 新商品那一行不动
+    assert _font(cur, 8, "Strikethrough") is True and "8002222000024" in cur.comments[(8, 2)]
+    # 已经有了就不再加
+    ex2 = Ex()
+    assert GR.restore_rows("g.xlsx", g, [("8002222000017", None, "b1.xlsx", 5)], excel=ex2) == [] and not ex2.saved
+    done_log = {"8002222000017": {"new": "8002222000024", "row": 5, "moved_to": None},
+                "8001111000014": {"new": "x", "row": 4, "moved_to": 9}}
+    assert GR.missing_old_rows(done_log, {"items": {}, "struck": {}}) == ["8002222000017"]
+    assert GR.missing_old_rows(done_log, {"items": {}, "struck": {"8002222000017": {}}}) == []
+
+
+def test_restore_old_command_records_row():
+    import commands as CMD
+    work, bdir = tempfile.mkdtemp(), tempfile.mkdtemp()
+    p = os.path.join(work, "SCHEDA.xlsx")
+    _xlsx(p)
+    _xlsx(os.path.join(bdir, "SCHEDA_20261118_104300.xlsx"))
+    g = _grid(p)
+    g["header_row"] = 3
+    GR.save_done(work, {"8002222000017": {"new": "8002222000024", "row": 5, "moved_to": None, "struck": True}})
+    cur, bk = _sheet(), _sheet()
+    cur.v[(5, 2)] = "8002222000024"
+
+    class WB:
+        def __init__(self, ws):
+            self.ws = ws
+
+        def Worksheets(self, _n):
+            return self.ws
+
+        def Save(self):
+            pass
+
+        def Close(self, SaveChanges=False):
+            pass
+    ex = type("E", (), {})()
+    ex.Workbooks = type("W", (), {"Open": lambda _s, path, ReadOnly=False:
+                                  WB(bk if "_2026" in os.path.basename(path) else cur)})()
+    res = CMD.griglia_restore_old(g, ["8002222000017"], by="t", excel=ex, backup_dir=bdir)
+    assert res["restored"] == [("8002222000017", 8)] and res["missing"] == []
+    r = GR.load_done(work)["8002222000017"]
+    assert r["restored_to"] == 8 and r["moved_to"] == 8

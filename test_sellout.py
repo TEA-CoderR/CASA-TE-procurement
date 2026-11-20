@@ -198,3 +198,55 @@ def test_preset_ranges():
     assert S.preset_range("last_month", t) == (date(2026, 10, 1), date(2026, 10, 31))
     assert S.preset_range("d30", t)[0] == date(2026, 10, 18)
     assert S.preset_range("custom", t) is None
+
+
+def test_switching_store_view_equals_querying_that_store(monkeypatch):
+    """查一次全部，点门店切换（不再读数据库）= 直接按那几家门店查的结果"""
+    full = _run(monkeypatch)
+    for stores in ([1], [2], [1, 2], [0, 1]):
+        v = S.view(full, stores)
+        q = _run(monkeypatch, stores=stores)
+        key = lambda rows: {r["code"]: (r["stock"], r["pq"], round(r["pv"], 6), r["sq"], round(r["sv"], 6),
+                                        round(r["cost"], 6), r["bucket"]) for r in rows}
+        assert key(v["rows"]) == key(q["rows"]), stores
+        assert [(d, round(a, 6), round(b, 6), round(c, 6), round(e, 6)) for d, a, b, c, e in v["days"]] == \
+               [(d, round(a, 6), round(b, 6), round(c, 6), round(e, 6)) for d, a, b, c, e in q["days"]], stores
+        assert v["scope"] == q["scope"]
+    assert S.view(full, []) is full and S.view(full, list(S.ALL_SCOPE)) is full
+
+
+def test_erp_formulas_margin_at_sales_cost_and_no_purchase_rows_blank():
+    """2026-11-19 和 ERP 进销存报表逐行对过（DUE ESSE、SAIS · FOIANO）：毛利 = 销售额 − 销售成本；
+    采购量 ≤ 0 的剩余空着、不算进合计；差额有采购（负的也算）才写，合计 = 全部销售额 − 全部采购额"""
+    a = S.metrics(dict(stock=3, pq=88, pv=751.87, sq=178, sv=1780.84, cost=1514.34))     # SAIS 194835 VENTILATORE
+    assert abs(a["profit"] - 266.50) < 1e-6 and a["rem_q"] == -90 and abs(a["rem_v"] + 90 * 751.87 / 88) < 1e-6
+    assert abs(a["diff"] - 1028.97) < 1e-6
+    b = S.metrics(dict(stock=37, pq=0, pv=0.0, sq=90, sv=82.88, cost=45.0))              # 没进货
+    assert abs(b["profit"] - 37.88) < 1e-9
+    assert b["rem_q"] is None and b["rem_v"] is None and b["diff"] is None and b["diff_rate"] is None
+    c = S.metrics(dict(stock=5, pq=-25, pv=-137.5, sq=68, sv=484.85, cost=390.5))        # SAIS 174331 只有调出
+    assert c["p_avg"] is None and c["rem_q"] is None and abs(c["diff"] - 622.35) < 1e-6
+    t = S.total([a, b, c])
+    assert t["rem_q"] == -90 and abs(t["diff"] - (t["sv"] - t["pv"])) < 1e-9
+    assert abs(t["profit"] - (266.50 + 37.88 + 94.35)) < 1e-6
+    assert "MG" in S.PURCHASE_TYPES
+
+
+def test_margin_is_sales_minus_recorded_cost_returns_subtract():
+    """2026-11-19 诊断 56：S.FILIPPO PANTOFOLA 每笔 TotAcquisto 3.030 → 18 件 54.54，毛利 39.40 和 ERP 一样；
+    TAZZONE 卖 2 退 2 再卖 2：成本 5.50 −2.75 −2.75 +2.75 +2.75 = 5.50（ERP 报表把退货成本当正的加，写 16.50，是 ERP 的错）"""
+    a = S.metrics(dict(stock=0, pq=18, pv=54.45, sq=18, sv=93.94, cost=54.54))
+    assert abs(a["profit"] - 39.40) < 1e-6
+    b = S.metrics(dict(stock=0, pq=12, pv=33.0, sq=2, sv=10.31, cost=5.50))
+    assert abs(b["profit"] - 4.81) < 1e-6
+
+
+def test_transfer_rows_use_their_own_price(monkeypatch):
+    """ERP 调货行（CI / UI）按那一行自己的进价算采购额，没有进价才按 CA 平均进价"""
+    raw = {"start": date(2026, 10, 1), "end": date(2026, 10, 2), "scope": (1,), "tree": {"subs": {}, "cats": {}},
+           "sales": {}, "stock": {}, "prods": {}, "sups": {}, "filters": {},
+           "purch": [("2026-10-01", 9, 0, "CA", 10.0, 70.0, 10.0),          # 仓库 CA 10 件 @7
+                     ("2026-10-01", 9, 1, "CI", 4.0, 34.0, 4.0),            # 调入 4 件，自己的进价 8.5
+                     ("2026-10-02", 9, 1, "CI", 2.0, 0.0, 0.0)]}            # 没有进价 → CA 平均 7
+    r = S.build(raw)["rows"][0]
+    assert r["pq"] == 6 and abs(r["pv"] - (34.0 + 2 * 7.0)) < 1e-9

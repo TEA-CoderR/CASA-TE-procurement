@@ -11,11 +11,12 @@ import os
 import time
 import threading
 
-from PySide6.QtCore import Qt, QObject, Signal, QTimer, QRectF, QPointF, QSize
-from PySide6.QtGui import QColor, QPainter, QPen, QFont
+from PySide6.QtCore import Qt, QObject, Signal, QTimer, QRectF, QPointF, QSize, QEvent, QEventLoop
+from PySide6.QtGui import QKeySequence
+from PySide6.QtGui import QColor, QPainter, QPen, QFont, QFontMetrics
 from PySide6.QtWidgets import (QToolTip, QWidget, QFrame, QLabel, QPushButton, QHBoxLayout, QVBoxLayout, QDialog,
                                QProgressBar, QStyledItemDelegate, QSizePolicy, QMainWindow, QStyleOptionViewItem,
-                               QStyle, QApplication)
+                               QStyle, QApplication, QTableView, QHeaderView)
 
 from i18n import tr
 from theme import T, NUM_FONT, icon
@@ -129,6 +130,69 @@ class BusyDialog(QDialog):
         return box.get("r"), box.get("e")
 
 
+class StepsDialog(QDialog):
+    """
+    界面线程里一步步做、每步都要动界面的活（换深浅色：套样式、刷新每一页…）：
+    一个有百分比的进度条 + 现在做哪一步；每步之间让界面画一下（进度条看得见在走）。
+    StepsDialog.run(parent, "正在换颜色", [(说明, 函数), …], on_done)。
+    设计规范（用户 11-18）：凡是会卡住的地方都要有进度条 —— 能放后台线程的用 BusyDialog / TaskDialog，
+    只能在界面线程做的拆成几步用它。
+    """
+    def __init__(self, parent, title, n):
+        super().__init__(parent)
+        self.setObjectName("Dialog")
+        self.setWindowTitle(title)
+        self.setModal(True)
+        self.setMinimumWidth(380)
+        self.setWindowFlag(Qt.WindowCloseButtonHint, False)
+        v = QVBoxLayout(self)
+        v.setContentsMargins(22, 18, 22, 18)
+        v.setSpacing(10)
+        self.lab = QLabel(title)
+        v.addWidget(self.lab)
+        self.bar = QProgressBar()
+        self.bar.setRange(0, max(1, n))
+        self.bar.setTextVisible(False)
+        self.bar.setFixedHeight(6)
+        v.addWidget(self.bar)
+
+    def reject(self):
+        pass
+
+    def step(self, i, text):
+        self.lab.setText(text)
+        self.bar.setValue(i)
+        self.repaint()
+        QApplication.processEvents(QEventLoop.ExcludeUserInputEvents)   # 只画界面，不处理点击 / 按键
+
+    @staticmethod
+    def run(parent, title, steps, on_done=None, show=True):
+        """按顺序做完 steps（同步，做完才返回）；一步出错记下来接着做下一步"""
+        dlg = StepsDialog(parent, title, len(steps)) if show and steps else None
+        if dlg is not None:
+            task_started(id(dlg), title)
+            dlg.show()
+            dlg.step(0, title)
+        errors = []
+        for i, (text, fn) in enumerate(steps):
+            if dlg is not None:
+                dlg.step(i, f"{title} · {text}")
+            try:
+                fn()
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                errors.append((text, e))
+        if dlg is not None:
+            dlg.step(len(steps), title)
+            task_ended(id(dlg))
+            dlg.hide()
+            dlg.deleteLater()
+        if on_done:
+            on_done(errors)
+        return errors
+
+
 def open_file(parent, path, label=None):
     """用系统默认程序（Excel）打开文件，打开的这几秒显示「正在打开」；打不开弹提示。返回 True = 已打开"""
     import sys
@@ -149,6 +213,62 @@ def open_file(parent, path, label=None):
         QMessageBox.warning(parent, tr("打开订单文件"), tr("打开失败：{0}", err))
         return False
     return True
+
+
+class CountButton(QPushButton):
+    """
+    按钮 + 右边一个数字小徽章（用户 11-18：「差异商品（209）」这种写法不正式）。
+    CountButton(tr("差异商品"), 209)；set_count(n) 改数字（None / 0 = 不显示徽章，show_zero=True 时 0 也显示）。
+    """
+    def __init__(self, text="", count=None, tone="accent", parent=None, show_zero=False):
+        super().__init__(text, parent)
+        self._n, self._tone, self._zero, self._css = None, tone, show_zero, ""
+        self.set_count(count)
+
+    def setStyleSheet(self, css):          # 自己的样式（例如字的颜色）和徽章要的右边留白合在一起
+        self._css = css or ""
+        self._apply_css()
+
+    def _apply_css(self):
+        pad = f"padding-right:{self._badge()[0] + 22}px;" if self._n is not None else ""
+        super().setStyleSheet(self._css + (" " if self._css and pad else "") + pad)
+
+    def set_count(self, n, tone=None):
+        if tone:
+            self._tone = tone
+        self._n = n if (n is not None and n != "" and (n or self._zero)) else None
+        self._apply_css()
+        self.update()
+
+    def count(self):
+        return self._n
+
+    def _badge(self):
+        f = QFont(self.font())
+        f.setPointSizeF(max(7.0, (f.pointSizeF() if f.pointSizeF() > 0 else 9.0) - 1.0))
+        f.setBold(True)
+        return QFontMetrics(f).horizontalAdvance(f"{self._n:,}" if isinstance(self._n, int) else str(self._n)) + 14, f
+
+    def paintEvent(self, e):
+        super().paintEvent(e)
+        if self._n is None:
+            return
+        w, f = self._badge()
+        h = 18
+        r = QRectF(self.width() - w - 12, (self.height() - h) / 2, w, h)
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        primary = self.objectName() == "Primary"
+        col = QColor(T("on_accent") if primary else T(self._tone if self.isEnabled() else "faint"))
+        bg = QColor(col)
+        bg.setAlpha(60 if primary else 34)
+        p.setPen(Qt.NoPen)
+        p.setBrush(bg)
+        p.drawRoundedRect(r, h / 2, h / 2)
+        p.setPen(col)
+        p.setFont(f)
+        p.drawText(r, Qt.AlignCenter, f"{self._n:,}" if isinstance(self._n, int) else str(self._n))
+        p.end()
 
 
 # =====================================================================
@@ -763,6 +883,7 @@ class BgTaskPill(QPushButton):
         self.setMaximumWidth(280)
         self.clicked.connect(self._open)
         self._pct, self._text = 0.0, ""
+        self._manual = None              # 界面线程自己分步做的活（打开程序时准备页面）：(文字, 百分比, 说明)
         self.timer = QTimer(self, interval=700, timeout=self._refresh)
         self.hide()
         BgTaskPill._all.append(self)
@@ -776,8 +897,27 @@ class BgTaskPill(QPushButton):
             except RuntimeError:              # 窗口已经关了
                 cls._all.remove(p)
 
+    def set_manual(self, text, pct, tip=""):
+        """没有任务窗口、界面线程一步步做的活（打开程序时一页页准备）：在这里显示进度；text=None 去掉"""
+        self._manual = None if text is None else (text, pct, tip)
+        self._refresh()
+        if self._manual is not None:
+            self.repaint()               # 马上画出来（下一步又要占着界面线程）
+
     def _refresh(self):
         tasks = [d for d in BG_TASKS if not d.is_done]
+        if not tasks and self._manual is not None:
+            self.timer.stop()
+            text, pct, tip = self._manual
+            if text != self._text:
+                fm = self.fontMetrics()
+                self.setFixedWidth(max(150, min(280, fm.horizontalAdvance(text) + 46)))
+            self._text, self._pct = text, pct
+            self.setToolTip(tip)
+            self.update()
+            if not self.isVisible():
+                self.show()
+            return
         if not tasks:
             self.timer.stop()
             self.hide()
@@ -1159,7 +1299,6 @@ class StepperDelegate(QStyledItemDelegate):
         view.viewport().installEventFilter(self)
 
     def eventFilter(self, obj, ev):
-        from PySide6.QtCore import QEvent
         if ev.type() == QEvent.Leave and self._hover is not None:     # 鼠标离开表格：去掉悬停效果
             self._hover = None
             obj.setCursor(Qt.ArrowCursor)
@@ -1718,9 +1857,9 @@ class CopyHelper(QObject):
       · 自己画出来的控件（起订量进度条等）：右键「复制」，控件提供 copy_text() 方法
     不想让某个控件里的文字可选：给它或它的上级设属性 noTextSelect=True。"""
 
+    TYPES = (QEvent.Show, QEvent.KeyPress, QEvent.ContextMenu)
+
     def eventFilter(self, obj, ev):
-        from PySide6.QtCore import QEvent
-        from PySide6.QtGui import QKeySequence
         t = ev.type()
         if t == QEvent.Show and isinstance(obj, QLabel):
             self._make_selectable(obj)
@@ -1916,7 +2055,7 @@ class DropZone(QFrame):
         top.addWidget(self.title)
         top.addWidget(self.count)
         top.addStretch()
-        self.btn_pick = QPushButton(tr("选择文件…"))
+        self.btn_pick = QPushButton(tr("选择文件"))
         self.btn_pick.setObjectName("Link")
         self.btn_pick.setCursor(Qt.PointingHandCursor)
         self.btn_pick.clicked.connect(self._pick)
@@ -1971,7 +2110,12 @@ class DropZone(QFrame):
             more.setObjectName("Faint")
             self.list_box.addWidget(more)
         self.count.setText(tr("{0} 个", len(files)) if files else "")
-        self.hint.setText(note or tr("把文件拖到这里"))
+        # 界面要简洁（2026-11-16）：说明放进标题的鼠标提示（标题后面 ⓘ），格子里只在空着时写一句「拖到这里」
+        if note:
+            self.title.setText(self.title_text + "  ⓘ")
+            self.title.setToolTip(note)
+        self.hint.setText(tr("把文件拖到这里"))
+        self.hint.setVisible(not files)
 
     def _pick(self):
         from PySide6.QtWidgets import QFileDialog
@@ -2064,19 +2208,21 @@ def remember_columns(table, cfg, key, fields, save, ver=1):
     返回 reset()：恢复默认顺序
     """
     hh = table.horizontalHeader()
+    table.setProperty("_cols_remembered", True)        # 全程序的 WidthMemory 不再管这张表
     hh.setSectionsMovable(True)
     hh.setFirstSectionMovable(True)
-    col_of = {f: c for c, f in enumerate(fields)}
+    # 列编号可以是数字也可以是名字（「old_name」这种）：一律按文字比（用户 11-18：拖过的列宽下次打开没记住——名字当编号的表以前读不回来）
+    col_of = {str(f): c for c, f in enumerate(fields)}
     if cfg.get(key + "_columns_ver") != ver:
         cfg.pop(key + "_columns", None)
         cfg[key + "_columns_ver"] = ver
         save()
     hh.blockSignals(True)
     for f, wd in (cfg.get(key + "_widths") or {}).items():
-        c = col_of.get(int(f)) if str(f).lstrip("-").isdigit() else None
+        c = col_of.get(str(f))
         if c is not None and wd and wd > 20:
             table.setColumnWidth(c, int(wd))
-    order = [int(f) for f in (cfg.get(key + "_columns") or []) if str(f).lstrip("-").isdigit() and int(f) in col_of]
+    order = [str(f) for f in (cfg.get(key + "_columns") or []) if str(f) in col_of]
     for v, f in enumerate(order):
         cur = hh.visualIndex(col_of[f])
         if cur != v and cur >= 0:
@@ -2109,6 +2255,78 @@ def remember_columns(table, cfg, key, fields, save, ver=1):
     return reset
 
 
+class FillColumn(QObject):
+    """
+    让一列（通常是「商品」名称列）铺满表格剩下的宽度，但拖别的列宽时方向是对的。
+    2026-11-19（用户：审核清单的列拖动是反的）：以前用 QHeaderView.Stretch —— 铺满的列在左边时，
+    往右拖别的列的右边线，铺满的列跟着变窄，那条边线留在原地、这一列反而往左长，看起来就是「反的」。
+    现在：这一列是普通可拖的列，只在表格变大变小（窗口缩放、侧栏开关）时重新算它的宽度；
+    最后一列铺满（setStretchLastSection），拖宽别的列时右边的列往右挪、最后一列变窄，和 Excel 一样。
+    用户自己拖了这一列的宽度以后就不再自动改它（下次打开照用户拖的）。
+    """
+
+    def __init__(self, table, col, min_w=220, last_w=110, cfg=None, key=None, save=None):
+        super().__init__(table)
+        self.t, self.col, self.min_w, self.last_w = table, col, min_w, last_w
+        self.cfg, self.key, self.save = cfg, key, save
+        self.user = bool(cfg is not None and key and cfg.get(key))
+        self._busy = False
+        hh = table.horizontalHeader()
+        hh.setSectionResizeMode(col, QHeaderView.Interactive)
+        hh.setStretchLastSection(True)
+        hh.sectionResized.connect(self._resized)
+        table.viewport().installEventFilter(self)
+
+    def _resized(self, c, _old, _new):
+        if c == self.col and not self._busy and QApplication.mouseButtons() & Qt.LeftButton:
+            self.user = True                  # 用户自己拖了：以后不再自动铺满（记在设置里，下次打开也照用户的）
+            if self.cfg is not None and self.key and not self.cfg.get(self.key):
+                self.cfg[self.key] = True
+                if self.save:
+                    self.save()
+
+    def reset(self):
+        """恢复默认列宽时：又变回自动铺满"""
+        self.user = False
+        if self.cfg is not None and self.key:
+            self.cfg.pop(self.key, None)
+        self.fit()
+
+    def eventFilter(self, obj, ev):
+        if ev.type() == QEvent.Resize and ev.size().width() != ev.oldSize().width() \
+                and not QApplication.mouseButtons() & Qt.LeftButton:     # 只管表格变宽变窄（拖列时出现滚动条不算）
+            QTimer.singleShot(0, self.fit)
+        return False
+
+    def fit(self, force=False):
+        try:
+            t, hh = self.t, self.t.horizontalHeader()
+            hh.setStretchLastSection(True)            # 表格第一次填好时 TableSortFilter 会关掉它，这里再打开
+            if (self.user and not force) or t.isColumnHidden(self.col):
+                return
+            vis = [hh.logicalIndex(v) for v in range(t.columnCount())]
+            vis = [c for c in vis if not t.isColumnHidden(c)]
+            if not vis:
+                return
+            last = vis[-1]
+            others = sum(t.columnWidth(c) for c in vis if c not in (self.col, last))
+            if last != self.col:
+                others += self.last_w
+                if t.columnWidth(last) != self.last_w:      # 最后一列先放回默认宽（铺满时会再变宽，但不会自己变窄）
+                    self._busy = True
+                    hh.setStretchLastSection(False)
+                    t.setColumnWidth(last, self.last_w)
+                    hh.setStretchLastSection(True)
+                    self._busy = False
+            w = max(self.min_w, t.viewport().width() - others)
+            if w != t.columnWidth(self.col):
+                self._busy = True
+                t.setColumnWidth(self.col, w)
+                self._busy = False
+        except RuntimeError:
+            pass
+
+
 def fit_to_screen(w, margin=12):
     """窗口比屏幕（可用区域，去掉任务栏）大、或者跑到屏幕外面时：缩小并挪回屏幕里"""
     from PySide6.QtGui import QGuiApplication
@@ -2133,10 +2351,9 @@ def fit_to_screen(w, margin=12):
 
 class ScreenFit(QObject):
     """全程序：每个对话框 / 小窗口打开时都检查一次，不会比屏幕大、不会跑出屏幕（按钮被挡住就点不到了）"""
+    TYPES = (QEvent.Show,)
 
     def eventFilter(self, obj, ev):
-        from PySide6.QtCore import QEvent
-        from PySide6.QtWidgets import QMainWindow
         if ev.type() == QEvent.Show and isinstance(obj, (QDialog, QMainWindow)) and obj.isWindow() \
                 and not obj.isMaximized() and not obj.isFullScreen():
             def later(o=obj):
@@ -2147,6 +2364,160 @@ class ScreenFit(QObject):
                     pass
             QTimer.singleShot(0, later)
         return False
+
+
+
+class AppEventHub(QObject):
+    """
+    全程序只装这一个事件过滤器（2026-11-18，用户：打开程序、换深浅色都很卡）。
+    以前装了 5 个（滚轮防误触、复制、窗口不超出屏幕、列宽记住、记最后点的按钮），每个界面事件
+    （换颜色时几万个）都要进 5 次 Python，还在里面 import → 很卡。现在：先按事件类型查一下表，
+    只有要管的类型才交给对应的那几个；换深浅色时 pause()，样式刷新期间一个都不进。
+    add(处理者, 事件类型) —— 处理者有 eventFilter(obj, ev) 方法、返回 True = 吃掉这个事件。
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.routes = {}
+        self.paused = 0
+
+    def add(self, handler, types=None):
+        for t in (types if types is not None else handler.TYPES):
+            self.routes.setdefault(t, []).append(handler.eventFilter)
+        return handler
+
+    def pause(self):
+        self.paused += 1
+
+    def resume(self):
+        self.paused = max(0, self.paused - 1)
+
+    def eventFilter(self, obj, ev):
+        if self.paused:
+            return False
+        fns = self.routes.get(ev.type())
+        if not fns:
+            return False
+        for fn in fns:
+            try:
+                if fn(obj, ev):
+                    return True
+            except RuntimeError:          # 控件刚被删掉
+                pass
+        return False
+
+class WidthMemory(QObject):
+    """
+    全程序的表格：拖过的列宽都记住，下次打开照旧（用户 11-18「每次我拖动了列宽都要记住」）。
+    已经用 remember_columns 自己记的表格不管。别的表格第一次有内容时把「按内容自动宽」的列改成可以拖
+    （宽度按内容，最宽 420），用户拖了就记在 cfg[表格的名字] = {列号: 宽度}；
+    表格的名字 = 窗口类名 + 列名（同一个窗口里几张表按列名分开）。
+    """
+    MAX_W = 420
+
+    def __init__(self, parent, cfg, save):
+        super().__init__(parent)
+        self.cfg, self.save = cfg, save
+        self._timer = QTimer(self)
+        self._timer.setSingleShot(True)
+        self._timer.setInterval(500)
+        self._timer.timeout.connect(self.save)
+
+    @staticmethod
+    def key_of(t):
+        m = t.model()
+        if m is None:
+            return None
+        heads = [str(m.headerData(c, Qt.Horizontal) or "") for c in range(m.columnCount())]
+        if not any(heads):
+            return None
+        try:
+            w = t.window().__class__.__name__
+        except Exception:
+            w = ""
+        return w + "|" + "|".join(heads)
+
+    TYPES = (QEvent.Show,)
+
+    def eventFilter(self, obj, ev):
+        if ev.type() == QEvent.Show and isinstance(obj, QTableView) and not obj.property("_wm_on") \
+                and not obj.property("_cols_remembered"):
+            obj.setProperty("_wm_on", True)
+            QTimer.singleShot(0, lambda t=obj: self._attach(t))
+        return False
+
+    def _attach(self, t):
+        try:
+            if t.property("_cols_remembered") or t.model() is None:
+                return
+            m, hh = t.model(), t.horizontalHeader()
+        except RuntimeError:
+            return
+        st = {"key": None, "busy": False}
+
+        def check():
+            try:
+                if t.property("_cols_remembered"):
+                    return
+                self._apply(t, st)
+            except RuntimeError:
+                pass
+
+        later = QTimer(t)
+        later.setSingleShot(True)
+        later.setInterval(0)
+        later.timeout.connect(check)
+        for sig in (m.rowsInserted, m.modelReset, m.layoutChanged, m.columnsInserted):
+            sig.connect(lambda *_: later.start())
+        hh.sectionResized.connect(lambda c, _o, w: self._resized(t, st, c, w))
+        check()
+
+    def _apply(self, t, st):
+        from PySide6.QtWidgets import QHeaderView
+        hh = t.horizontalHeader()
+        key = self.key_of(t)
+        if key is None:
+            return
+        saved = self.cfg.get(key) or {}
+        # 只改「按内容自动宽」的列；铺满剩下宽度的那一列（Stretch）照旧铺满，拖它旁边的列它跟着变
+        auto = [c for c in range(t.model().columnCount()) if hh.sectionResizeMode(c) == QHeaderView.ResizeToContents]
+        if key == st["key"] and not auto:
+            return
+        if not auto and not saved:
+            st["key"] = key
+            return
+        if auto and not saved and t.model().rowCount() == 0:
+            return                                   # 等有内容了再按内容定宽度
+        st["busy"] = True
+        try:
+            for c in auto:
+                hh.setSectionResizeMode(c, QHeaderView.Interactive)
+            for c in auto:
+                if str(c) in saved:
+                    continue
+                t.resizeColumnToContents(c)
+                t.setColumnWidth(c, min(max(t.columnWidth(c), 56), self.MAX_W))
+            for c, w in saved.items():
+                try:
+                    c = int(c)
+                except ValueError:
+                    continue
+                if 0 <= c < t.model().columnCount() and w and w > 20 \
+                        and hh.sectionResizeMode(c) == QHeaderView.Interactive:
+                    t.setColumnWidth(c, int(w))
+        finally:
+            st["busy"] = False
+        st["key"] = key
+
+    def _resized(self, t, st, c, w):
+        from PySide6.QtWidgets import QApplication
+        if st["busy"] or t.property("_cols_remembered") or not (QApplication.mouseButtons() & Qt.LeftButton):
+            return
+        key = self.key_of(t)
+        if key is None or w <= 20:
+            return
+        self.cfg.setdefault(key, {})[str(c)] = int(w)
+        self._timer.start()
 
 
 class ColumnChooser(QObject):
@@ -3236,3 +3607,22 @@ EXCEL_WORKER = _ExcelWorker()
 def run_excel_job(fn):
     """把要用 Excel 的后台活排进同一条线程（不阻塞界面，按顺序一件件做）"""
     EXCEL_WORKER.submit(fn)
+
+
+def excel_call(fn):
+    """在后台线程里（例如 BusyDialog.run 的 func）调用：交给 Excel 那条线程做完再返回结果（出错照样抛出）。
+    别在界面线程、也别在 Excel 那条线程自己里面调用"""
+    ev, box = threading.Event(), {}
+
+    def job():
+        try:
+            box["r"] = fn()
+        except BaseException as e:
+            box["e"] = e
+        finally:
+            ev.set()
+    EXCEL_WORKER.submit(job)
+    ev.wait()
+    if "e" in box:
+        raise box["e"]
+    return box.get("r")

@@ -13,7 +13,7 @@ import logging
 import threading
 from datetime import datetime
 
-from PySide6.QtCore import Qt, QObject, Signal, QTimer, QRectF, QSize, QByteArray, QPointF, QPoint
+from PySide6.QtCore import Qt, QObject, Signal, QTimer, QRectF, QSize, QByteArray, QPointF, QPoint, QEvent
 
 
 def _skip_pyside_source_scan():
@@ -103,9 +103,11 @@ file_logger = _setup_file_logger()
 # =====================================================================
 import theme
 from theme import T, build_qss, icon, app_icon, UI_FONT, NUM_FONT, ICONS, THEMES
-if not settings.get("ui_dark_v2"):          # 2026-11-15 用户：新界面先用深色（顶栏可以切回浅色），每台电脑只换一次
-    settings["theme"] = "dark"
+if not settings.get("ui_light_v3"):         # 2026-11-19 用户：以后以浅色为主（可以切深色），每台电脑只换一次
+    settings["theme"] = "light"
+    settings["theme_follow"] = False
     settings["ui_dark_v2"] = True
+    settings["ui_light_v3"] = True
     try:
         save_settings(settings)
     except Exception:
@@ -665,13 +667,14 @@ class Bridge(QObject):
 # 起订规则编辑
 # =====================================================================
 class RuleDialog(QDialog):
-    def __init__(self, parent, rule, supplier_files):
+    def __init__(self, parent, rule, supplier_files, compact=False):
         super().__init__(parent)
         self.setWindowTitle(tr("起订规则"))
-        self.setMinimumWidth(500)
+        if not compact:
+            self.setMinimumWidth(500)
         self.result_rule = None
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(24, 22, 24, 18)
+        lay.setContentsMargins(*((20, 16, 20, 8) if compact else (24, 22, 24, 18)))
         lay.setSpacing(14)
 
         title = QLabel(tr("编辑起订规则") if rule.get("keyword") else tr("新增起订规则"))
@@ -722,16 +725,16 @@ class RuleDialog(QDialog):
 
         # 条件：达到起订箱数 / 达到起订金额 / 都要达到
         mode_box = QHBoxLayout()
-        self.m_colli = QRadioButton(tr("达到起订箱数"))
-        self.m_amount = QRadioButton(tr("达到起订金额"))
+        self.m_colli = QRadioButton(tr("箱数") if compact else tr("达到起订箱数"))
+        self.m_amount = QRadioButton(tr("金额") if compact else tr("达到起订金额"))
         self.m_all = QRadioButton(tr("都要达到"))
         self.mode_group = QButtonGroup(self)
         for b in (self.m_colli, self.m_amount, self.m_all):
             self.mode_group.addButton(b)
         old_mode = rule.get("mode", "all")
         {"colli": self.m_colli, "amount": self.m_amount, "all": self.m_all}.get(old_mode, self.m_all).setChecked(True)
-        mode_box.addWidget(QLabel(tr("条件")))
-        mode_box.addSpacing(30)
+        mode_box.addWidget(QLabel(tr("起订按") if compact else tr("条件")))
+        mode_box.addSpacing(12 if compact else 30)
         mode_box.addWidget(self.m_colli)
         mode_box.addWidget(self.m_amount)
         mode_box.addWidget(self.m_all)
@@ -1140,6 +1143,8 @@ class FillItemsDialog(QDialog):
         hh.setStretchLastSection(False)
         for c, wd in enumerate(self.WIDTHS):
             self.table.setColumnWidth(c, wd)
+        import product_images as PI
+        PI.add_thumbs(self.table, 0, 1, settings)
         self.table.setTextElideMode(Qt.ElideRight)
         self.table.horizontalHeaderItem(5).setToolTip(tr("库存够卖 = 本店库存 ÷ 日均（账面库存是负数时按 0 算）"))
         self.table.horizontalHeaderItem(10).setToolTip(tr("订后够卖 =（本店库存 + 已订和加的箱数 × 每箱件数）÷ 日均"))
@@ -1549,6 +1554,8 @@ class ManualDialog(QDialog):
         self.table.setEditTriggers(QAbstractItemView.DoubleClicked | QAbstractItemView.SelectedClicked)
         self.table.cellClicked.connect(self._cell_clicked)
         self.table.setItemDelegateForColumn(6, SupplierComboDelegate(self))
+        import product_images as PI
+        PI.add_thumbs(self.table, 2, 1, settings)
         self.qty_stepper = None
         if edit_mode:                                # 箱数：− / ＋ 点一下改 1，点中间照旧输入
             from erp_widgets import StepperDelegate
@@ -1591,7 +1598,7 @@ class ManualDialog(QDialog):
         btns.addWidget(b_base)
         btns.addWidget(b_auto)
         if edit_mode and rules:
-            b_fill = QPushButton(tr("加商品凑单…"))
+            b_fill = QPushButton(tr("加商品凑单"))
             b_fill.setToolTip(tr("没达到起订条件的供应商：不换供应商，从它的报价里挑商品多订（订单里已有的多订几箱，或者加这次没订、但卖得快的商品），和总仓采购的加商品凑单一样"))
             b_fill.clicked.connect(self.add_items)
             btns.addWidget(b_fill)
@@ -1697,6 +1704,18 @@ class ManualDialog(QDialog):
             it = self.table.item(k, 6)
             it.setFlags(it.flags() | Qt.ItemIsEditable)
             it.setToolTip(tr("点击选择其他供应商"))
+        if c and r.get("base_pack") and (r.get("colli") or {}).get(c):
+            # 主订单是数据库箱规的箱：这家按件数换算成它自己的箱（2026-11-19）
+            pk = float((r.get("packs") or {}).get(c) or 1)
+            got, need = r["colli"][c] * pk, float(r.get("need") or 0)
+            it = self.table.item(k, 6)
+            tip = tr("门店要 {0:g} 件（{1:g} 箱 × {2:g}）→ {3} 订 {4} 箱 × {5:g} = {6:g} 件",
+                     need, float(r.get("qty") or 0), float(r["base_pack"]), short(c), r["colli"][c], pk, got)
+            if r.get("unfit"):
+                tip += "\n" + tr("箱规太大、没有自动选的：{0}", "、".join(short(s_) for s_ in r["unfit"]))
+            it.setToolTip((it.toolTip() + "\n" if n_offers > 1 else "") + tip)
+            if abs(got - need) > 1e-9:
+                it.setForeground(QColor(T("warn")))
         if c != b:
             for col in range(self.table.columnCount()):
                 self.table.item(k, col).setBackground(QColor(T("accent_soft")))
@@ -1997,6 +2016,8 @@ class MissingDialog(QDialog):
         self.table = make_table([tr("行"), "EAN", "ARTICOLO", "Codice Fornitore", tr("供应商"), qh, tr("原因"),
                                  tr("有报价的供应商"), tr("库存够卖（天）")],
                                 stretch_col=2, numeric_cols=(0, 5, 8))
+        import product_images as PI
+        PI.add_thumbs(self.table, 2, 1, settings)
         self.table.horizontalHeaderItem(5).setToolTip(
             tr("主订单里这个商品要订的数量（箱数；主订单按件数订货时是件数）——就是这次买不到的量，不是库存"))
         self.table.horizontalHeaderItem(3).setToolTip(tr("供应商自己的货号（数据库商品表里登记的）"))
@@ -2426,6 +2447,8 @@ class ScenarioDiffDialog(QDialog):
         if self.c_cover:
             heads.append(tr("库存够卖（天）"))
         self.table = make_table(heads, stretch_col=1, numeric_cols=(2, self.c_gap) + ((self.c_cover,) if self.c_cover else ()))
+        import product_images as PI
+        PI.add_thumbs(self.table, 1, 0, settings)
         if self.c_cover:
             self.kind.addItem(tr("只看买不到、店里又不够卖一周的"), "urgent")
             self.table.horizontalHeaderItem(self.c_cover).setToolTip(
@@ -2598,7 +2621,8 @@ class ScenarioDialog(QDialog):
         head.addWidget(t)
         head.addStretch()
         diff = (results[0].get("diff") if results else None) or []
-        self.b_diff = QPushButton(tr("差异商品（{0}）", len(diff)))
+        from erp_widgets import CountButton
+        self.b_diff = CountButton(tr("差异商品"), len(diff))
         self.b_diff.setToolTip(tr("在不同方案里分给了不同供应商、或者买不到的商品，逐个对比"))
         self.b_diff.setEnabled(bool(diff))
         self.b_diff.clicked.connect(lambda: ScenarioDiffDialog(self, results, diff).exec())
@@ -3051,11 +3075,18 @@ class MainWindow(QMainWindow):
         if self._startup_done:
             return
         todo = [i for i, pg in enumerate(self.pages) if pg is None and self.NAV[i][0] not in self.LAZY_PAGES]
+        total = sum(1 for k, _ in self.NAV if k not in self.LAZY_PAGES)
         if todo:
+            done = total - len(todo)
+            nm = self._tab_label(self.NAV[todo[0]][0])
+            self.bg_pill.set_manual(tr("正在准备页面 {0}/{1}", done + 1, total), 100.0 * done / max(1, total),
+                                    tr("打开程序后一页页准备，现在：{0}\n准备好以前点别的页面会先等它准备完", nm))
             self._build_page(todo[0])
             QTimer.singleShot(0, self._build_next)
             return
+        self.bg_pill.set_manual(tr("正在准备页面 {0}/{1}", total, total), 100.0, "")
         self._finish_startup()
+        self.bg_pill.set_manual(None, 0)
 
     def _log_boot_times(self, steps):
         """启动用时写进日志（只写给维护的人看，不翻译）：总共多久、窗口什么时候出来的、每页建了多久、收尾每一步"""
@@ -3072,10 +3103,14 @@ class MainWindow(QMainWindow):
         """要用到别的页面了（切页面、快捷键、从别处调过来）：没建完的一次建完"""
         if self._startup_done:
             return
-        for i, pg in enumerate(self.pages):
-            if pg is None and self.NAV[i][0] not in self.LAZY_PAGES:
-                self._build_page(i)
-        self._finish_startup()
+        from erp_widgets import StepsDialog
+        todo = [i for i, pg in enumerate(self.pages) if pg is None and self.NAV[i][0] not in self.LAZY_PAGES]
+        steps = [(self._tab_label(self.NAV[i][0]), lambda i=i: self._build_page(i)) for i in todo]
+        steps.append((tr("收尾"), self._finish_startup))
+        # 页面还没准备完就点了别的页面：一次准备完，看得见进度（11-18 设计规范：会卡的地方都要有进度条）
+        StepsDialog.run(self, tr("正在准备页面"), steps, show=self.isVisible() and len(steps) > 2)
+        if hasattr(self, "bg_pill"):
+            self.bg_pill.set_manual(None, 0)
 
     def _finish_startup(self):
         if self._startup_done:
@@ -3606,6 +3641,8 @@ class MainWindow(QMainWindow):
                 self.show_toast(tr("⚠ 数据库数据只到 {0}（{1} 天没同步）", upto.strftime("%d/%m"), late))
             except Exception:
                 pass
+        if hasattr(self, "_log_health"):
+            __import__("log_page")._health(self)
         if hasattr(self, "dashboard"):
             self.dashboard.set_db(ok)
         if hasattr(self, "settings_page"):
@@ -3670,12 +3707,27 @@ class MainWindow(QMainWindow):
 
     def go(self, i):
         """i = 页面在 NAV 里的位置"""
+        if self.NAV[i][0] == "result" and getattr(self, "_redirecting", False) is False:
+            # 比价结果是 DETERSIVO 的第 4 步（2026-11-18）：到 DETERSIVO 页、切到那一步
+            self._redirecting = True
+            try:
+                self.go_page("order")
+                self._cmp_show(3)
+            finally:
+                self._redirecting = False
+            return
         if not self._startup_done and self.NAV[i][0] != "home":
             self._ensure_all()
         if self.pages[i] is None:
             self._build_page(i)
+        if self.NAV[i][0] in getattr(self, "_theme_due", ()):      # 换过颜色以后第一次来这一页：先刷新颜色
+            self._restyle_key(self.NAV[i][0])
         self.stack.setCurrentIndex(i)
         key, text = self.NAV[i]
+        if key == "log" and getattr(self, "_log_dirty", False):
+            QTimer.singleShot(0, self._render_log)
+        if key == "history" and getattr(self, "_hist_dirty", False):
+            __import__("history_page").render(self, force=True)
         rid = self._rail_of(key)
         rail = {r: (t, p) for r, t, _i, p in self.RAIL}
         self.rail_btns[rid].setChecked(True)
@@ -3699,7 +3751,7 @@ class MainWindow(QMainWindow):
         self.top_title.setText(title + ("  ⓘ" if getattr(self, "_page_tips", {}).get(key) else ""))
         own = deter                                # 设计稿：DETERSIVO 页顶栏右边只有「设置」（+ 里面几页的入口）
         self.top_deter_back.setVisible(deter and key != "order")
-        self.top_deter_res.setVisible(key == "order")
+        self.top_deter_res.setVisible(False)          # 比价结果现在是第 4 步，顶栏不再单独放
         self.top_deter_more.setVisible(deter)
         tw = getattr(getattr(self, "tracking", None), "top_widget", None) if key == "tracking" else None
         for k in range(self.top_slot_lay.count()):
@@ -3722,13 +3774,44 @@ class MainWindow(QMainWindow):
         if key == "order" and hasattr(self, "price_mail"):
             self.price_mail.maybe_check(self.ws_root())      # 后台看邮件里有没有新报价（30 分钟最多一次）
 
+    # 每一页的「页面对象」（有 restyle()）：换颜色时只马上刷新正在看的这一页，别的页第一次切过去时再刷新
+    PAGE_OBJ = {"home": "dashboard", "store_orders": "store_orders", "store_pdv": "store_pdv",
+                "settings": "settings_page", "order": "order_check", "distribution": "distribution",
+                "import": "import_page", "griglia": "griglia_page", "tracking": "tracking",
+                "volantino": "volantino", "sellout": "sellout"}
+
     def apply_theme(self, qss=True):
+        """
+        换深浅色 / 主色（2026-11-18 用户：换颜色会卡住、还没有进度条）：
+        ① 套全局样式时把全程序的事件过滤器（AppEventHub）停掉 —— 以前几万个刷新事件每个都进 5 次 Python；
+        ② 只马上刷新顶栏 / 图标栏和正在看的这一页，别的页记在 _theme_due，切过去时（go）再刷新；
+        ③ 一步步做，进度窗口看得见（StepsDialog）。
+        """
         if not getattr(self, "_startup_done", True):
             return                                       # 页面还没建完：建完时会套一次
         theme.set_theme(settings.get("theme", "dark"))
+        cur = self.NAV[self.stack.currentIndex()][0]
+        self._theme_due = {k for k, _ in self.NAV}
+        steps = []
         if qss:
+            steps.append((tr("套用新颜色"), self._theme_qss))
+        steps.append((tr("顶栏和图标栏"), self._theme_chrome))
+        steps.append((self._tab_label(cur), lambda: self._restyle_key(cur)))
+        from erp_widgets import StepsDialog
+        StepsDialog.run(self, tr("正在换颜色"), steps, show=qss and self.isVisible())
+
+    def _theme_qss(self):
+        hub = getattr(QApplication.instance(), "_event_hub", None)
+        if hub is not None:
+            hub.pause()
+        try:
             QApplication.instance().setStyleSheet(build_qss())
             theme.refresh_frozen()
+        finally:
+            if hub is not None:
+                hub.resume()
+
+    def _theme_chrome(self):
         self._paint_rail()
         dark = settings.get("theme") == "dark"
         self.theme_btn.setIcon(icon("sun" if dark else "moon", T("muted"), 16))
@@ -3737,23 +3820,50 @@ class MainWindow(QMainWindow):
         self.search_icon.setPixmap(icon("search", T("muted"), 15).pixmap(15, 15))
         self.bell_dot.setStyleSheet(f"background:{T('err')}; border-radius:4px; border:1px solid {T('side')};")
         self._set_db_state(getattr(self, "_db_ok", None))
-        for pg in (getattr(self, "dashboard", None), getattr(self, "store_orders", None), getattr(self, "store_pdv", None),
-                   getattr(self, "settings_page", None), getattr(self, "order_check", None),
-                   getattr(self, "distribution", None), getattr(self, "import_page", None),
-                   getattr(self, "griglia_page", None), getattr(self, "tracking", None), getattr(self, "agent_panel", None),
-                   getattr(self, "volantino", None), getattr(self, "sellout", None)):
-            if pg is not None and hasattr(pg, "restyle"):
-                pg.restyle()
-        for b in (self.banner_folder, self.banner_result, self.banner_rules):
-            if b.isVisible():
-                b.restyle()
-        self.btn_folder.setIcon(icon("folder", T("text")))
-        self.gauge.update()
-        self._render_log()
+        ap = getattr(self, "agent_panel", None)
+        if ap is not None and hasattr(ap, "restyle"):
+            ap.restyle()
         self._dark_titlebar()
-        if self.last_summary:
+
+    def _restyle_key(self, key):
+        """刷新一页的颜色（页面自己画的颜色、指标卡小图标…）；全局样式已经套过了"""
+        due = getattr(self, "_theme_due", None)
+        if due is not None:
+            due.discard(key)
+        if key == "order" and "result" in (due or ()):
+            self._restyle_key("result")               # 比价结果放在 DETERSIVO 第 4 步里
+        keys = [k for k, _ in self.NAV]
+        i = keys.index(key) if key in keys else -1
+        if i < 0 or self.pages[i] is None:
+            return
+        obj = getattr(self, self.PAGE_OBJ.get(key, ""), None) if key in self.PAGE_OBJ else None
+        if obj is not None and hasattr(obj, "restyle"):
+            obj.restyle()
+        if key == "order":
+            for b in (self.banner_folder, self.banner_result, self.banner_rules):
+                if b.isVisible():
+                    b.restyle()
+            self.btn_folder.setIcon(icon("folder", T("text")))
+            self.gauge.update()
+        mods = {"result": ("_res_qss_page", "result_page"), "history": ("_hist_page", "history_page"),
+                "search": ("_miss_page", "missing_page"), "log": ("_log_page", "log_page")}
+        if key in mods:
+            pg = getattr(self, mods[key][0], None)
+            if pg is not None:
+                from page_kit import set_qss
+                set_qss(pg, __import__(mods[key][1]).qss())
+        if key == "search" and hasattr(self, "_miss_items"):
+            __import__("missing_page")._render_list(self)
+        if key == "log":
+            self._render_log()
+        if key == "result" and self.last_summary:
             self.show_summary(self.last_summary)
-        self.refresh_rules_table()
+        if key == "rules":
+            self.refresh_rules_table()
+        from page_kit import Stat
+        host = self._res_wrap if key == "result" and getattr(self, "_res_wrap", None) is not None else self.stack.widget(i)
+        for st in host.findChildren(Stat):     # 指标卡的小图标颜色
+            st.restyle()
 
     def _dark_titlebar(self):
         if sys.platform != "win32":
@@ -3861,7 +3971,9 @@ class MainWindow(QMainWindow):
         outer = QVBoxLayout(w)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
-        self.cmp_steps = FlowBar([(tr("收集文件"), ""), (tr("审核清单"), ""), (tr("比价分配"), ""), (tr("下单发送"), "")])
+        # 2026-11-18（用户）：五步 —— 比价结果也是一步（看完没问题再下单发送）
+        self.cmp_steps = FlowBar([(tr("收集文件"), ""), (tr("审核清单"), ""), (tr("比价分配"), ""), (tr("比价结果"), ""),
+                                  (tr("下单发送"), "")])
         self.cmp_steps.setToolTip(tr("几家批发商卖的商品差不多：按最低价给每个商品选供应商，帮有起订量的供应商凑单，把订购数量写回各家报价文件。点一步看那一步"))
         self.cmp_steps.clicked.connect(self._cmp_show)
         outer.addWidget(self.cmp_steps)
@@ -3869,8 +3981,12 @@ class MainWindow(QMainWindow):
         outer.addWidget(self.cmp_stack, 1)
         p0 = QWidget()
         lay = QVBoxLayout(p0)
-        lay.setContentsMargins(28, 22, 28, 28)
-        lay.setSpacing(16)
+        lay.setContentsMargins(28, 18, 28, 22)
+        lay.setSpacing(14)
+        self._S = settings
+        import deter_steps as DS
+        hold0 = QWidget(p0)                   # 老的工作文件夹卡 / 三个拖放区藏在这里（refresh_ws 照旧填，老代码照用）
+        hold0.hide()
 
         # ---- 工作文件夹：固定一个，程序自动建好四个子文件夹（见 workspace.py）----
         p1 = Panel(tr("工作文件夹"))
@@ -3885,7 +4001,7 @@ class MainWindow(QMainWindow):
         b_open.clicked.connect(lambda: open_path(self.ws_root()))
         self.btn_folder = b_open
         row.addWidget(b_open)
-        b_move = QPushButton(tr("换位置…"))
+        b_move = QPushButton(tr("更改位置"))
         b_move.setObjectName("Link")
         b_move.clicked.connect(self.change_ws_root)
         row.addWidget(b_move)
@@ -3929,13 +4045,13 @@ class MainWindow(QMainWindow):
         self.zone_elim.files_dropped.connect(self._drop_eliminare)
         p1.lay.addLayout(zones)
         zr = QHBoxLayout()
-        b_miss = QPushButton(tr("上周没到的…"))
+        b_miss = QPushButton(tr("上周未到货"))
         b_miss.setObjectName("Link")
         b_miss.setToolTip(tr("列出每家店上一次的 DETERSIVO 订单，勾上还没到货的 → 自动变成这家店的扣减文件（不用再手动放）"))
         b_miss.clicked.connect(self.open_deter_arrival)
         zr.addWidget(b_miss)
         zr.addStretch()
-        b_chk = QPushButton(tr("报价表和数据库对比…"))
+        b_chk = QPushButton(tr("报价与数据库核对"))
         b_chk.setObjectName("Link")
         b_chk.setToolTip(tr("只读检查：报价表里的商品数据库有没有、登记的供应商对不对、进价和箱规一样不一样"))
         b_chk.clicked.connect(self.check_prices_vs_db)
@@ -3943,7 +4059,8 @@ class MainWindow(QMainWindow):
         p1.lay.addLayout(zr)
         self.banner_folder = Banner()
         p1.lay.addWidget(self.banner_folder)
-        lay.addWidget(p1)
+        p1.setParent(hold0)
+        DS.build_collect(self, lay)            # 设计稿「收集文件」：三张能拖文件进来的卡 + 准备好了吗
 
         # ---- 一个按钮：检查门店清单 → 确认 → 自动一家一家比价 ----
         foot0 = QFrame()                      # 设计稿：底部一条，左边写现在的状态，右边一个主按钮
@@ -3966,7 +4083,6 @@ class MainWindow(QMainWindow):
         self._oc_panel = oc_panel
         lay.addWidget(self.order_check.msg)
         lay.addWidget(self.order_check.summary_row)
-        lay.addStretch()
         p0box = QWidget()
         p0v = QVBoxLayout(p0box)
         p0v.setContentsMargins(0, 0, 0, 0)
@@ -4006,8 +4122,10 @@ class MainWindow(QMainWindow):
         # ---- 第 3 步：比价分配（进度 + 处理过程）----
         p2 = QWidget()
         lay = QVBoxLayout(p2)
-        lay.setContentsMargins(28, 22, 28, 28)
+        lay.setContentsMargins(28, 20, 28, 24)
         lay.setSpacing(16)
+        hold2 = QWidget(p2)
+        hold2.hide()
 
         # 这一批的门店：比完的点一下看结果（放在第 4 步）
         self.batch_box = QWidget()
@@ -4041,58 +4159,102 @@ class MainWindow(QMainWindow):
         self.bar.setFixedHeight(8)
         pcol.addWidget(self.bar)
         run.addLayout(pcol, 1)
-        lay.addSpacing(6)
-        lay.addLayout(run)
-        lay.addSpacing(6)
-
-        p3 = Panel(tr("处理过程"))
+        hold2.setLayout(run)
         self.feed = QTextEdit()
         self.feed.setReadOnly(True)
-        self.feed.setMinimumHeight(160)
-        p3.lay.addWidget(self.feed)
-        lay.addWidget(p3, 1)
+        DS.build_compare(self, lay)            # 设计稿「比价分配」：进度大卡 + 每家门店一行 + 右边正在做
         self.cmp_stack.addWidget(p2)
 
-        # ---- 第 4 步：下单发送（这一批每家店的结果 + 去发订单）----
+        # ---- 第 4 步：比价结果（「比价结果」页面整页放进来，_embed_result）----
+        self._res_slot = QWidget()
+        self._res_slot_lay = QVBoxLayout(self._res_slot)
+        self._res_slot_lay.setContentsMargins(0, 0, 0, 0)
+        self._res_slot_lay.setSpacing(0)
+        self.cmp_stack.addWidget(self._res_slot)
+
+        # ---- 第 5 步：下单发送（设计稿：这一批的订单按供应商分组 + 右边订单邮件）----
+        p4box = QWidget()
+        p4v = QVBoxLayout(p4box)
+        p4v.setContentsMargins(0, 0, 0, 0)
+        p4v.setSpacing(0)
         p4 = QWidget()
         lay = QVBoxLayout(p4)
-        lay.setContentsMargins(28, 22, 28, 28)
-        lay.setSpacing(16)
-        pd = Panel(tr("这一批的门店"))
-        pd.setToolTip(tr("点一家门店切换过去看它的比价结果"))
-        pd.lay.addWidget(self.batch_box)
+        lay.setContentsMargins(28, 20, 28, 20)
+        lay.setSpacing(14)
+        hold4 = QWidget(p4)
+        hold4.hide()
+        h4 = QVBoxLayout(hold4)
+        h4.addWidget(self.batch_box)
         self.done_note = QLabel(tr("比价完成后，每家店的结果在这里"))
-        self.done_note.setObjectName("Faint")
-        pd.lay.addWidget(self.done_note)
-        lay.addWidget(pd)
-        acts = QHBoxLayout()
+        h4.addWidget(self.done_note)
+        DS.build_send(self, lay)
+        p4v.addWidget(p4, 1)
+        foot4 = QFrame()
+        foot4.setObjectName("StatusBar")
+        acts = QHBoxLayout(foot4)
+        acts.setContentsMargins(28, 12, 28, 12)
         acts.setSpacing(10)
-        b_res = QPushButton(tr("查看比价结果"))
-        b_res.clicked.connect(lambda: self.go_page("result"))
+        n4 = QLabel(tr("发之前会再列一遍发给谁、几封"))
+        n4.setObjectName("Faint")
+        acts.addWidget(n4)
+        acts.addStretch()
+        b_res = QPushButton("← " + tr("比价结果"))
+        b_res.clicked.connect(lambda: self._cmp_show(3))
         b_rep = QPushButton(tr("门店报告"))
         b_rep.clicked.connect(lambda: self.open_store_report())
-        b_send = QPushButton(tr("去发送订单") + "  →")
-        b_send.setObjectName("Primary")
-        b_send.setToolTip(tr("程序生成的订单在采购订单跟踪里是「待登记」：双击审核邮件后发给供应商"))
-        b_send.clicked.connect(lambda: self.go_page("tracking"))
-        acts.addWidget(b_res)
-        acts.addWidget(b_rep)
-        acts.addStretch()
-        acts.addWidget(b_send)
-        lay.addLayout(acts)
-        lay.addStretch()
-        self.cmp_stack.addWidget(p4)
+        b_trk = QPushButton(tr("订单跟踪"))
+        b_trk.setToolTip(tr("发出去以后在采购订单跟踪里看确认 / 发货 / 到货"))
+        b_trk.clicked.connect(lambda: self.go_page("tracking"))
+        self._sd_all = __import__("erp_widgets").CountButton(tr("全部发送"))
+        self._sd_all.setObjectName("Primary")
+        self._sd_all.setMinimumHeight(40)
+        self._sd_all.setEnabled(False)
+        self._sd_all.clicked.connect(lambda: DS.send_all(self))
+        for b_ in (b_res, b_rep, b_trk, self._sd_all):
+            acts.addWidget(b_)
+        p4v.addWidget(foot4)
+        self.cmp_stack.addWidget(p4box)
         self._cmp_show(0)
         return w
 
     def _cmp_show(self, i):
-        """DETERSIVO 四步：切到第 i 步那一屏（顶上蓝线跟着）"""
+        """DETERSIVO 五步：切到第 i 步那一屏（顶上蓝线跟着）：0 收集文件 · 1 审核清单 · 2 比价分配 · 3 比价结果 · 4 下单发送"""
         if not hasattr(self, "cmp_stack"):
             return
         if i == 1:
             self._review_stack.setCurrentIndex(1 if self.order_check.rows else 0)
+        if i == 2:
+            __import__("deter_steps").render_compare(self)
+        if i == 3:
+            self._embed_result()
+            QTimer.singleShot(0, self._fill_result_now)
+        if i == 4:
+            __import__("deter_steps").refresh_send(self)
         self.cmp_stack.setCurrentIndex(i)
         self.cmp_steps.set_shown(i)
+
+    def _embed_result(self):
+        """「比价结果」页面放进 DETERSIVO 第 4 步（只做一次；以后 go_page("result") 都跳到这一步）"""
+        if getattr(self, "_res_wrap", None) is not None or not hasattr(self, "_res_slot_lay"):
+            return
+        keys = [k for k, _ in self.NAV]
+        i = keys.index("result")
+        if self.pages[i] is None:
+            self._build_page(i)
+        wrap = self.stack.widget(i)
+        self.stack.removeWidget(wrap)
+        self.stack.insertWidget(i, QWidget())          # 原位置留个空页（页面编号不变）
+        self._res_slot_lay.addWidget(wrap)
+        wrap.show()
+        self._res_wrap = wrap
+
+    def _to_send_step(self):
+        """比价结果看完 →「去发送订单」：第 4 步打勾，到第 5 步"""
+        if hasattr(self, "cmp_steps"):
+            self.cmp_steps.set_state(3, "done", "")
+            self.cmp_steps.set_current(4)
+        self.go_page("order")
+        self._cmp_show(4)
 
     def _fact(self, label, value):
         col = QVBoxLayout()
@@ -4107,121 +4269,74 @@ class MainWindow(QMainWindow):
 
     # ---------- 页面：分配结果 ----------
     def _page_result(self):
+        """比价结果（2026-11-16 照设计稿「⑩ 比价结果」重做，版面在 result_page.py）。
+        老的指标卡 / 方案表 / 起订量条 / 各供应商采购量表照旧建，放在藏起来的 _res_hold 里，别的代码照用"""
+        from page_kit import Stat, Card, button
+        from erp_widgets import RowSorter, HeaderFilter
+        import result_page as RP
         w, lay = self._page(tr("分配结果"), tr("最近一次处理的结果；以前的结果在「历史记录」里打开。起订量调整的每一行明细写在主订单的 AC 列。"))
+        hold = QWidget(w)
+        hold.hide()
+        self._res_hold = hold
+        hl = QVBoxLayout(hold)
+        self.btn_missing = button(tr("缺失商品"), self.show_missing)
+        self.btn_transfers = button(tr("调货单"), self.show_transfers)
+        self.btn_edit = button(tr("修改分配"), self.edit_allocation,
+                               tip=tr("已经写入以后，还可以改商品的供应商并重新写回文件"))
+        self.btn_edit.setEnabled(False)
+
+        class _Act:                                   # 老代码 btn_backup.setEnabled 照用
+            def setEnabled(self, _v):
+                pass
+        self.btn_backup = _Act()
+        self.k_rows, self.k_priced, self.k_missing = Stat(tr("商品行")), Stat(tr("有报价")), Stat(tr("没有报价"))
+        self.k_changes, self.k_amount, self.k_cost, self.k_time = (Stat(tr("改了供应商")), Stat(tr("采购金额")),
+                                                                   Stat(tr("比只按最低价多花")), Stat(tr("用时")))
+        self.res_hero = __import__("page_kit").Hero("")
         self.banner_result = Banner()
-        lay.addWidget(self.banner_result)
+        for x in (self.btn_missing, self.btn_transfers, self.k_rows, self.k_priced, self.k_missing, self.k_changes,
+                  self.k_amount, self.k_cost, self.k_time, self.res_hero, self.banner_result):
+            hl.addWidget(x)
 
-        kpis = QHBoxLayout()
-        kpis.setSpacing(12)
-        self.k_rows = Kpi(tr("商品行"))
-        self.k_priced = Kpi(tr("有报价"))
-        self.k_missing = Kpi(tr("没有报价"))
-        self.k_changes = Kpi(tr("改了供应商的商品"))
-        self.k_cost = Kpi(tr("比只按最低价多花"))
-        self.k_time = Kpi(tr("用时"))
-        for k in (self.k_rows, self.k_priced, self.k_missing, self.k_changes, self.k_time):     # 「比只按最低价多花」不放了
-            kpis.addWidget(k)
-        lay.addLayout(kpis)
-        # 「没有报价」那张卡可以点开看缺失商品列表
-        self.k_missing.setCursor(Qt.PointingHandCursor)
-        self.k_missing.setToolTip(tr("点开看缺了哪些商品（可以排序、筛选、导出）"))
-        self.k_missing.mousePressEvent = lambda _e: self.show_missing()
-
-        self.scen_panel = Panel(tr("方案对比"))
-        self.scen_panel.setToolTip(tr("✔ 是选用的方案。点「缺失商品」的数字看缺了哪些商品；鼠标停在左边的项目上看说明。"))
+        self.scen_panel = Card(tr("方案对比"), tr("✔ 是选用的方案。点「缺失商品」的数字看缺了哪些商品；鼠标停在左边的项目上看说明。"))
         self.scen_table = make_table([""], stretch_col=None)
         self.scen_table.setSelectionBehavior(QAbstractItemView.SelectItems)
         self.scen_table.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.scen_table.setMinimumHeight(200)
         self.scen_table.cellClicked.connect(self._scen_clicked)
-        self.scen_panel.lay.addWidget(self.scen_table)
-        # 换方案：不重算，直接改用当时算好的另一个方案
+        self.scen_panel.v.addWidget(self.scen_table)
         self.scen_switch = QWidget()
         self.scen_switch_lay = QHBoxLayout(self.scen_switch)
         self.scen_switch_lay.setContentsMargins(0, 4, 0, 0)
         self.scen_switch_lay.setSpacing(8)
-        self.scen_panel.lay.addWidget(self.scen_switch)
-        lay.addWidget(self.scen_panel)
-        self.scen_panel.hide()
-
-        pg = Panel(tr("起订量"))
+        self.scen_panel.v.addWidget(self.scen_switch)
+        hl.addWidget(self.scen_panel)
         self.gauge = MinOrderGauge()
-        self.gauge.setToolTip(tr("浅色条：只按最低价时的量　实色条：最终下单量　竖线：起订线"))
-        pg.lay.addWidget(self.gauge)
-        lay.addWidget(pg)
-
-        pt = Panel(tr("各供应商采购量"))
-        pt.setToolTip(tr("「最低价」是只按最低价分配时的量，「最终」是凑单 / 你的决定 / 手动调整之后实际写入的量。"))
+        hl.addWidget(self.gauge)
         self.sum_table = make_table([tr("供应商文件"), tr("商品数"), tr("最低价箱数"), tr("最终箱数"), tr("箱数变化"),
                                      tr("最低价金额 €"), tr("最终金额 €"), tr("金额变化 €"), tr("起订条件"), tr("状态")],
                                     stretch_col=None, numeric_cols=(1, 2, 3, 4, 5, 6, 7))
-        self.sum_table.horizontalHeader().setStretchLastSection(True)
         self.sum_table.setItemDelegateForColumn(9, StatusDelegate(self.sum_table))
-        self.sum_table.setMinimumHeight(240)
-        from erp_widgets import RowSorter
-        self.sum_sorter = RowSorter(self.sum_table, pin_last=True)          # 合计行永远在最后
-        pt.lay.addWidget(self.sum_table)
-        acts = QHBoxLayout()
-        b1 = QPushButton(tr("打开主订单"))
-        b1.setObjectName("Primary")
-        b1.clicked.connect(self.open_main_order)
-        b2 = QPushButton(tr("打开供应商文件夹"))
-        b2.clicked.connect(self.open_supplier_folder)
-        self.btn_missing = QPushButton(tr("缺失商品"))
-        self.btn_missing.clicked.connect(self.show_missing)
-        self.btn_transfers = QPushButton(tr("调货单"))
-        self.btn_transfers.setToolTip(tr("从其他门店调货的商品（要的件数远小于一箱时，调别的门店多出来的货，少订一箱）"))
-        self.btn_transfers.clicked.connect(self.show_transfers)
-        self.btn_transfers.hide()
-        self.btn_backup = QPushButton(tr("打开备份"))
-        self.btn_backup.clicked.connect(lambda: self.last_summary and open_path(self.last_summary.get("backup_dir")))
-        self.btn_backup.setEnabled(False)
-        self.btn_edit = QPushButton(tr("修改分配…"))
-        self.btn_edit.setToolTip(tr("已经写入以后，还可以改商品的供应商并重新写回文件"))
-        self.btn_edit.clicked.connect(self.edit_allocation)
-        self.btn_edit.setEnabled(False)
-        acts.addWidget(b1)
-        acts.addWidget(self.btn_edit)
-        acts.addWidget(self.btn_missing)
-        b_rep = QPushButton(tr("门店报告"))
-        b_rep.setToolTip(tr("发给门店的意大利文报告（非 Griglia 商品，下次别加）：检查清单确认时生成在这家店的比价文件夹里"))
-        b_rep.clicked.connect(self.open_store_report)
-        acts.addWidget(b_rep)
-        acts.addWidget(self.btn_transfers)
-        acts.addWidget(b2)
-        acts.addWidget(self.btn_backup)
-        acts.addStretch()
-        pt.lay.addLayout(acts)
-        lay.addWidget(pt)
+        self.sum_sorter = RowSorter(self.sum_table, pin_last=True)
+        hl.addWidget(self.sum_table)
 
-        pc = Panel()
-        top = QHBoxLayout()
-        self.chg_title = QLabel(tr("改了供应商的商品"))
-        self.chg_title.setObjectName("PanelTitle")
-        top.addWidget(self.chg_title)
-        top.addStretch()
         self.chg_filter = QLineEdit()
         self.chg_filter.setPlaceholderText(tr("筛选 EAN、品名或供应商"))
         self.chg_filter.setFixedWidth(240)
+        self.chg_filter.setClearButtonEnabled(True)
         self.chg_filter.textChanged.connect(self._filter_changes)
-        top.addWidget(self.chg_filter)
-        b = QPushButton(tr("导出 Excel"))
-        b.clicked.connect(self.export_changes)
-        top.addWidget(b)
-        pc.lay.addLayout(top)
         self.chg_table = make_table([tr("行"), "EAN", "ARTICOLO", tr("箱数"), tr("原供应商"), tr("原件价"), tr("新供应商"), tr("新件价"),
                                      tr("多花 €"), tr("原因")], stretch_col=2, numeric_cols=(0, 3, 5, 7, 8))
         self.chg_table.setItemDelegateForColumn(9, StatusDelegate(self.chg_table))
-        self.chg_table.setMinimumHeight(320)
+        import product_images as PI
+        PI.add_thumbs(self.chg_table, 2, 1, settings)
+        self.chg_table.setMinimumHeight(260)
         self.chg_sorter = RowSorter(self.chg_table)
-        from erp_widgets import HeaderFilter          # 右键表头按列筛选（和搜索框一起生效）
         self.chg_hf = HeaderFilter(self.chg_table, apply=lambda: self._filter_changes(self.chg_filter.text()),
                                    sorter=self.chg_sorter, base_hidden=lambda r: self._chg_base(r))
-        pc.lay.addWidget(self.chg_table)
-        self.chg_empty = QLabel(tr("没有改动"))
+        self.chg_empty = QLabel(tr("全部按最低价，没有换供应商的商品"))
         self.chg_empty.setObjectName("Muted")
-        pc.lay.addWidget(self.chg_empty)
-        lay.addWidget(pc)
+        RP.build(self, lay, hold)
         lay.addStretch()
         return w
 
@@ -4273,72 +4388,46 @@ class MainWindow(QMainWindow):
 
     # ---------- 页面：历史记录 ----------
     def _page_history(self):
+        """历史记录（2026-11-16 照设计稿「⑫ 历史记录」重做，版面在 history_page.py）。
+        老的 hist_tree（藏着）照旧填，view_history / delete_history 用 history_page 选中的那条（_hist_sel）"""
+        from page_kit import Hero
+        import history_page as HP
         w, lay = self._page(tr("历史记录"), tr("每次处理和修改分配后自动保存一份结果，关掉程序以后也能随时打开查看。双击一行打开。"))
-        top = QHBoxLayout()
+        hold = QWidget(w)
+        hold.hide()
+        hl = QVBoxLayout(hold)
+        self.hist_hero = Hero("")
+        hl.addWidget(self.hist_hero)
         self.hist_filter = QLineEdit()
-        self.hist_filter.setPlaceholderText(tr("筛选文件夹或主订单名"))
-        self.hist_filter.setFixedWidth(260)
-        self.hist_filter.textChanged.connect(self._filter_history)
-        top.addWidget(self.hist_filter)
-        top.addStretch()
-        kl = QLabel(tr("保留"))
-        kl.setObjectName("Muted")
-        top.addWidget(kl)
+        self.hist_filter.setPlaceholderText(tr("搜门店、主订单、供应商"))
+        self.hist_filter.setClearButtonEnabled(True)
+        self.hist_filter.setMinimumHeight(36)
         self.keep_box = QComboBox()
-        self.keep_box.setMinimumWidth(120)
+        self.keep_box.setToolTip(tr("历史记录保留多久：更早的自动删除（只删记录，不动订单和供应商文件）"))
         for days, label in history.KEEP_OPTIONS:
-            self.keep_box.addItem(tr(label), days)
+            self.keep_box.addItem(tr("保留 {0}", tr(label)) if days else tr(label), days)
         idx = self.keep_box.findData(int(settings.get("history_keep_days", history.DEFAULT_KEEP_DAYS)))
         self.keep_box.setCurrentIndex(max(0, idx))
         self.keep_box.currentIndexChanged.connect(self._set_keep)
-        top.addWidget(self.keep_box)
-        lay.addLayout(top)
-
-        p = Panel()
-        # 按「日期 · 门店」一条一条列出；有多方案对比的，下面一行一个方案，✔ 是选用的方案
         from PySide6.QtWidgets import QTreeWidget
         self.hist_tree = QTreeWidget()
         self.hist_tree.setColumnCount(len(HIST_COLS))
-        self.hist_tree.setHeaderLabels([tr(c) for c in HIST_COLS])
-        self.hist_tree.setRootIsDecorated(True)
-        self.hist_tree.setUniformRowHeights(True)
-        self.hist_tree.setAllColumnsShowFocus(True)
-        self.hist_tree.setSelectionMode(QAbstractItemView.ExtendedSelection)
-        self.hist_tree.setMinimumHeight(460)
-        hh = self.hist_tree.header()
-        hh.setSectionResizeMode(QHeaderView.ResizeToContents)
-        hh.setSectionResizeMode(len(HIST_COLS) - 1, QHeaderView.Stretch)
-        hh.setStretchLastSection(True)
-        self.hist_tree.itemDoubleClicked.connect(lambda *_: self.view_history())
-        p.lay.addWidget(self.hist_tree)
-        self.hist_empty = QLabel(tr("还没有记录"))
-        self.hist_empty.setObjectName("Muted")
-        p.lay.addWidget(self.hist_empty)
-        acts = QHBoxLayout()
-        b = QPushButton(tr("打开查看"))
-        b.setObjectName("Primary")
-        b.clicked.connect(self.view_history)
-        acts.addWidget(b)
-        b = QPushButton(tr("打开这次的文件夹"))
-        b.clicked.connect(self.open_history_folder)
-        acts.addWidget(b)
-        b = QPushButton(tr("删除选中"))
-        b.setObjectName("Danger")
-        b.setToolTip(tr("按住 Ctrl 或 Shift 可以一次选多条"))
-        b.clicked.connect(self.delete_history)
-        acts.addWidget(b)
-        b = QPushButton(tr("清空全部"))
-        b.setObjectName("Danger")
-        b.clicked.connect(self.clear_history)
-        acts.addWidget(b)
-        acts.addStretch()
+        hl.addWidget(self.hist_tree)
+        from erp_widgets import EmptyState
+        self.hist_empty = EmptyState("history", tr("还没有记录"), tr("每次比价、修改分配后自动存一份"))
         self.hist_info = QLabel()
-        self.hist_info.setObjectName("Faint")
-        acts.addWidget(self.hist_info)
-        p.lay.addLayout(acts)
-        lay.addWidget(p)
-        lay.addStretch()
+        HP.build(self, lay)
         return w
+
+    def _hist_menu(self, pos):
+        """右键（和页头按钮一样的操作，只是快捷方式）"""
+        from PySide6.QtWidgets import QMenu
+        m = QMenu(self)
+        m.addAction(tr("打开查看"), self.view_history)
+        m.addAction(tr("打开这次的文件夹"), self.open_history_folder)
+        m.addSeparator()
+        m.addAction(tr("删除选中"), self.delete_history)
+        m.exec(self.hist_tree.viewport().mapToGlobal(pos))
 
     def refresh_history(self):
         if not hasattr(self, "hist_tree"):
@@ -4418,8 +4507,12 @@ class MainWindow(QMainWindow):
         mb = history.disk_usage() / 1024 / 1024
         self.hist_info.setText(tr("共 {0} 条，占用 {1:.1f} MB，{2}", len(runs), mb,
                                   tr("超过 {0} 天的自动删除", keep) if keep else tr("永久保留")))
+        stores = sorted({e.get("store") for e in runs if e.get("store")})
+        self.hist_hero.set_sub(tr("{0} 次比价 · {1} 家门店 · 占用 {2:.1f} MB · {3}", len(runs), len(stores), mb,
+                                  tr("超过 {0} 天的自动删除", keep) if keep else tr("永久保留")))
         self._filter_history(self.hist_filter.text())
         self._mark_shown_history()
+        __import__("history_page").render(self)
 
     def _mark_shown_history(self):
         """历史里把结果页正在显示的那条标出来（底色）"""
@@ -4444,6 +4537,9 @@ class MainWindow(QMainWindow):
 
     def _picked_history(self):
         runs = getattr(self, "hist_runs", [])
+        sel = getattr(self, "_hist_sel", None)              # 新版历史页：右边详情那一条
+        if sel is not None:
+            return [e for e in runs if e.get("id") == sel][:1]
         out, seen = [], set()
         for it in self.hist_tree.selectedItems():
             idx = it.data(0, Qt.UserRole)
@@ -4539,128 +4635,115 @@ class MainWindow(QMainWindow):
 
     # ---------- 页面：缺失查找 ----------
     def _page_missing(self):
-        w, lay = self._page(tr("缺失查找"), tr("对没有供应商报价的商品，在供应商文件里按条码前缀和品名找可能的替代品。需要先完成一次订单处理。"))
-        bar = QHBoxLayout()
-        bar.setSpacing(12)
-        bar.addWidget(QLabel(tr("匹配阈值")))
+        """缺失查找（2026-11-16 重排）：页头（结果一句话）+ 右边 开始查找 · ⋯；卡片标题行放 搜索 · 匹配阈值 · 网络搜索"""
+        from page_kit import Hero, Card, button, more_menu
+        tip = tr("对没有供应商报价的商品，在供应商文件里按条码前缀和品名找可能的替代品。需要先完成一次订单处理。")
+        w, lay = self._page(tr("缺失查找"), tip)
+        hero = Hero(tr("缺失查找"), tr("还没有查找结果。"), tip=tip)
+        self.miss_status = hero.sub
+        self.btn_find = button(tr("开始查找"), self.run_missing, primary=True)
+        self.btn_web = button(tr("网络搜索选中行"), self.run_web, tip=tr("只搜表里选中的几行（网络搜索比较慢）"))
+        hold = QWidget(w)
+        hold.hide()
+        hero.setParent(hold)
+
+        p = Card(tr("没有报价的商品"))
+        self.miss_filter = QLineEdit()
+        self.miss_filter.setPlaceholderText(tr("筛选 EAN 或品名"))
+        self.miss_filter.setFixedWidth(220)
+        self.miss_filter.setClearButtonEnabled(True)
+        self.miss_filter.textChanged.connect(self._filter_missing)
+        p.add_head(self.miss_filter)
+        lt = QLabel(tr("匹配阈值") + "  ⓘ")
+        lt.setObjectName("Muted")
+        lt.setToolTip(tr("0 到 1，越大越严格"))
+        p.add_head(lt)
         self.thr = QDoubleSpinBox()
         self.thr.setFixedWidth(80)
         self.thr.setRange(0.1, 1.0)
         self.thr.setSingleStep(0.05)
         self.thr.setValue(float(settings.get("match_threshold", 0.6)))
         self.thr.setToolTip(tr("0 到 1，越大越严格"))
-        bar.addWidget(self.thr)
-        self.t_web = Toggle(tr("同时网络搜索（较慢）"), settings.get("use_web", False))
-        bar.addWidget(self.t_web)
-        bar.addStretch()
-        self.btn_find = QPushButton(tr("开始查找"))
-        self.btn_find.setObjectName("Primary")
-        self.btn_find.clicked.connect(self.run_missing)
-        self.btn_web = QPushButton(tr("网络搜索选中行"))
-        self.btn_web.clicked.connect(self.run_web)
-        b_exp = QPushButton(tr("导出 Excel"))
-        b_exp.clicked.connect(self.export_missing)
-        bar.addWidget(self.btn_find)
-        bar.addWidget(self.btn_web)
-        bar.addWidget(b_exp)
-        lay.addLayout(bar)
-
-        p = Panel()
-        top = QHBoxLayout()
-        self.miss_status = QLabel(tr("还没有查找结果。"))
-        self.miss_status.setObjectName("Muted")
-        self.miss_filter = QLineEdit()
-        self.miss_filter.setPlaceholderText(tr("筛选 EAN 或品名"))
-        self.miss_filter.setFixedWidth(240)
-        self.miss_filter.textChanged.connect(self._filter_missing)
-        top.addWidget(self.miss_status, 1)
-        top.addWidget(self.miss_filter)
-        p.lay.addLayout(top)
+        p.add_head(self.thr)
+        self.t_web = Toggle(tr("网络搜索"), settings.get("use_web", False))
+        self.t_web.setToolTip(tr("开始查找时同时上网搜（较慢）"))
+        p.add_head(self.t_web)
         self.miss_table = make_table(["EAN", "ARTICOLO", tr("数量"), tr("综合匹配"), tr("品名匹配"), tr("网络搜索结果"),
                                       tr("搜索时间"), tr("可能的替代品")], stretch_col=7, numeric_cols=(2, 3, 4))
         self.miss_table.setMinimumHeight(460)
         self.miss_table.setWordWrap(True)
-        from erp_widgets import RowSorter
+        from erp_widgets import RowSorter, HeaderFilter
         self.miss_sorter = RowSorter(self.miss_table)
-        from erp_widgets import HeaderFilter          # 右键表头按列筛选（和搜索框一起生效）
         self.miss_hf = HeaderFilter(self.miss_table, apply=lambda: self._filter_missing(self.miss_filter.text()),
                                     sorter=self.miss_sorter, base_hidden=lambda r: self._miss_base(r))
-        p.lay.addWidget(self.miss_table)
-        lay.addWidget(p, 1)
+        p.v.addWidget(self.miss_table, 1)
+        from erp_widgets import EmptyState
+        self.miss_empty = EmptyState("search", tr("还没有查找结果"), tip)
+        b = button(tr("开始查找"), self.run_missing, primary=True)
+        self.miss_empty.buttons.addWidget(b)
+        p.v.addWidget(self.miss_empty, 1)
+        self.miss_table.hide()
+        p.setParent(hold)
+        __import__("missing_page").build(self, lay, hold)
         return w
 
     # ---------- 页面：起订量 ----------
     def _page_rules(self):
-        w, lay = self._page(tr("起订量"), tr("按最低价分到的货不够某家起订量时，程序自动算出最省钱的凑单方案。凑单多花超过「手动调整线」会打开手动调整窗口；超过「放弃供应商线」、或者凑单比放弃这家还贵时，会弹窗问你继续凑单还是放弃。修改后自动保存。"))
-        top = QHBoxLayout()
-        self.t_min2 = Toggle(tr("启用起订量凑单（关闭后只按最低价选供应商）"), settings.get("min_order_enabled", True))
+        """起订规则（2026-11-16 重排）：页头（几家 · 几家启用 · 几家这次对上文件）+ 新增规则；
+        「凑单」卡两个开关；「供应商规则」卡标题行放 编辑 · 启用 / 停用 · 删除"""
+        from page_kit import Hero, Card, button
+        tip = tr("按最低价分到的货不够某家起订量时，程序自动算出最省钱的凑单方案。凑单多花超过「手动调整线」会打开手动调整窗口；超过「放弃供应商线」、或者凑单比放弃这家还贵时，会弹窗问你继续凑单还是放弃。修改后自动保存。")
+        w, lay = self._page(tr("起订量"), tip)
+        self.rules_hero = Hero(tr("起订规则"), " ", tip=tip)
+        self.banner_rules = Banner()
+
+        hold = QWidget(w)
+        hold.hide()
+        self.rules_hero.setParent(hold)
+        self.t_min2 = Toggle(tr("起订量凑单"), settings.get("min_order_enabled", True))
+        self.t_min2.setToolTip(tr("关闭后只按最低价选供应商，不管起订量"))
         self.t_min2.toggled.connect(lambda on: self.t_min.setChecked(on))
-        top.addWidget(self.t_min2)
-        top.addSpacing(24)
+        self.t_min2.toggled.connect(lambda _on: self.refresh_rules_table())
         self.t_partial = Toggle(tr("允许部分商品不采购"), settings.get("allow_partial_purchase", False))
         self.t_partial.setToolTip(tr("关闭（默认）：所有商品都必须订到，只有某家有货的商品，不能因为放弃这家而不买。\n打开：可以放弃起订供应商，只有它有货的商品这次就不采购。"))
         self.t_partial.toggled.connect(lambda on: (settings.__setitem__("allow_partial_purchase", on),
                                                    save_settings(settings),
                                                    self.show_toast(tr("已允许部分商品不采购") if on else tr("所有商品都必须采购"))))
-        top.addWidget(self.t_partial)
-        top.addStretch()
-        add = QPushButton(tr("新增供应商规则"))
-        add.setObjectName("Primary")
-        add.clicked.connect(self.add_rule)
-        top.addWidget(add)
-        lay.addLayout(top)
-        self.banner_rules = Banner()
-        lay.addWidget(self.banner_rules)
-
-        p = Panel()
         self.rules_table = make_table([tr("供应商"), tr("文件名关键字"), tr("起订条件"), tr("手动调整线"), tr("放弃供应商线"), tr("本次匹配的文件"), tr("状态")],
                                       stretch_col=5)
-        self.rules_table.setItemDelegateForColumn(6, StatusDelegate(self.rules_table))
-        self.rules_table.setMinimumHeight(300)
-        self.rules_table.doubleClicked.connect(lambda _: self.edit_rule())
+        self.rules_table.setParent(hold)
         from erp_widgets import RowSorter
         self.rules_sorter = RowSorter(self.rules_table)
-        p.lay.addWidget(self.rules_table)
-        acts = QHBoxLayout()
-        for text, fn, name in [(tr("编辑"), self.edit_rule, None), (tr("启用 / 停用"), self.toggle_rule, None),
-                               (tr("删除"), self.delete_rule, "Danger")]:
-            b = QPushButton(text)
-            if name:
-                b.setObjectName(name)
-            b.clicked.connect(fn)
-            acts.addWidget(b)
-        acts.addStretch()
-        self.rules_table.setToolTip(tr("双击一行也可以编辑。设置文件：{0}", SETTINGS_PATH))
-        p.lay.addLayout(acts)
-        lay.addWidget(p)
-        lay.addStretch()
+        __import__("rules_page").build(self, lay)
         return w
 
     # ---------- 页面：日志 ----------
     def _page_log(self):
-        w, lay = self._page(tr("运行日志"), tr("本次打开程序以来的全部记录。完整历史在日志文件里。"))
-        bar = QHBoxLayout()
-        self.log_btns = QButtonGroup(self)
-        for i, (key, text) in enumerate([("all", tr("全部")), ("warn", tr("提醒和错误")), ("err", tr("只看错误"))]):
-            b = QPushButton(text)
-            b.setCheckable(True)
-            b.setChecked(i == 0)
-            b.clicked.connect(lambda _=False, k=key: self._set_log_filter(k))
-            self.log_btns.addButton(b)
-            bar.addWidget(b)
-        bar.addStretch()
-        b1 = QPushButton(tr("清空"))
-        b1.clicked.connect(self._clear_log)
-        b2 = QPushButton(tr("打开日志文件"))
-        b2.clicked.connect(lambda: open_path(os.path.abspath(os.path.join(LOG_DIR, LOG_FILE))))
-        bar.addWidget(b1)
-        bar.addWidget(b2)
-        lay.addLayout(bar)
+        """运行日志（2026-11-16 重排）：页头（几条 · 几个提醒 · 几个错误）+ 右边 全部 / 提醒和错误 / 只看错误 · ⋯；等宽字的日志卡片"""
+        from page_kit import Hero, Card, Seg, more_menu
+        tip = tr("本次打开程序以来的全部记录。完整历史在日志文件里。")
+        w, lay = self._page(tr("运行日志"), tip)
+        self.log_hero = Hero(tr("运行日志"), " ", tip=tip)
+        self.log_seg = Seg([("all", tr("全部")), ("warn", tr("提醒和错误")), ("err", tr("只看错误"))], "all")
+        self.log_seg.changed.connect(self._set_log_filter)
+        self.log_btns = self.log_seg.group
+        self.log_hero.add(self.log_seg)
+        more, _a = more_menu([(tr("打开日志文件"), lambda: open_path(os.path.abspath(os.path.join(LOG_DIR, LOG_FILE))), None),
+                              None,
+                              (tr("清空"), self._clear_log, tr("只清空这里显示的，日志文件不动"))])
+        self.log_hero.add(more)
+        hold = QWidget(w)
+        hold.hide()
+        self.log_hero.setParent(hold)
         self.log_view = QTextEdit()
+        self.log_view.setObjectName("LogView")
         self.log_view.setReadOnly(True)
-        self.log_view.setMinimumHeight(560)
-        lay.addWidget(self.log_view, 1)
+        __import__("log_page").build(self, lay)
+        QTimer.singleShot(0, self._render_log)
         return w
+
+    def _open_log_file(self):
+        open_path(os.path.abspath(os.path.join(LOG_DIR, LOG_FILE)))
 
     # ---------- 日志 ----------
     def log(self, msg):
@@ -4702,20 +4785,37 @@ class MainWindow(QMainWindow):
         for msg in q:
             for line in msg.split("\n"):
                 lvl = log_level(line)
-                self.log_entries.append((lvl, line))
-                if self._log_visible(lvl):
-                    log_html.append(self._fmt_line(lvl, line))
+                self.log_entries.append((lvl, line, datetime.now()))
                 if line.strip() and not set(line.strip()) <= {"="}:
                     self.feed_entries.append((lvl, line))
                     feed_html.append(self._fmt_line(lvl, line))
         for lst, n in ((self.log_entries, 20000), (self.feed_entries, 5000)):
             if len(lst) > n:
                 del lst[:len(lst) - n]
-        if log_html:
-            self.log_view.append("<br>".join(log_html))
+        lp = getattr(self, "_log_page", None)
+        if lp is not None and lp.isVisible():
+            __import__("log_page").render(self)
+        else:
+            self._log_dirty = True
         if feed_html:
             self.feed.append("<br>".join(feed_html))
             self.feed.moveCursor(QTextCursor.End)
+        self._log_counts()
+
+    def _log_counts(self):
+        """运行日志页头：几条 · 几个提醒 · 几个错误；分段按钮上也写个数"""
+        if not hasattr(self, "log_hero"):
+            return
+        n_w = sum(1 for e in self.log_entries if e[0] == "warn")
+        n_e = sum(1 for e in self.log_entries if e[0] == "err")
+        sub = tr("本次打开以来 {0} 条", len(self.log_entries))
+        if n_w:
+            sub += f" · <span style='color:{T('warn')}'>" + tr("提醒 {0}", n_w) + "</span>"
+        if n_e:
+            sub += f" · <span style='color:{T('err')}'>" + tr("错误 {0}", n_e) + "</span>"
+        self.log_hero.set_sub(sub)
+        self.log_seg.set_text("warn", tr("提醒和错误") + (f"  {n_w + n_e}" if n_w + n_e else ""))
+        self.log_seg.set_text("err", tr("只看错误") + (f"  {n_e}" if n_e else ""))
 
     def _log_visible(self, lvl):
         return self.log_filter == "all" or (self.log_filter == "warn" and lvl in ("warn", "err")) or \
@@ -4728,14 +4828,16 @@ class MainWindow(QMainWindow):
     def _render_log(self):
         if not hasattr(self, "log_view"):
             return
-        self.log_view.setHtml("<br>".join(self._fmt_line(l, t) for l, t in self.log_entries if self._log_visible(l)))
-        self.log_view.moveCursor(QTextCursor.End)
+        self._log_dirty = False
+        if not __import__("log_page").render(self):
+            self.log_view.setHtml("<br>".join(self._fmt_line(e[0], e[1]) for e in self.log_entries if self._log_visible(e[0])))
+            self.log_view.moveCursor(QTextCursor.End)
         self.feed.setHtml("<br>".join(self._fmt_line(l, t) for l, t in self.feed_entries))
         self.feed.moveCursor(QTextCursor.End)
 
     def _clear_log(self):
         self.log_entries.clear()
-        self.log_view.clear()
+        self._render_log()
 
     # ---------- 文件夹 ----------
     # ---------- 工作文件夹（workspace.py）：固定一个根目录，四个子文件夹程序建好 ----------
@@ -4854,6 +4956,10 @@ class MainWindow(QMainWindow):
             ready = bool(n_l) and bool(st["prices"])
             self.cmp_steps.set_state(0, "done" if ready else "now", tr("{0} 份清单 · {1} 家报价", n_l, len(st["prices"])))
             self.cmp_steps.set_state(1, "now" if ready else "todo", "")
+        try:
+            __import__("deter_steps").render_collect(self, st, root)
+        except Exception as e:
+            file_logger.error(f"收集文件页刷新失败：{e}")
 
     def _busy_drop(self):
         if self.running:
@@ -5126,6 +5232,7 @@ class MainWindow(QMainWindow):
         self._batch_results = []
         self._in_batch = True
         self._batch_bg = False
+        self._batch_info = {}
         if msg:
             self.banner_folder.show_msg(msg, "warn" if warn else "ok")
         self.refresh_ws()
@@ -5141,12 +5248,14 @@ class MainWindow(QMainWindow):
             return
         folder = q.pop(0)
         self._switch_folder(folder, load=False)
+        QTimer.singleShot(50, lambda: __import__("deter_steps").render_compare(self))
         if not self.start(auto=True):
             self._batch_results.append((os.path.basename(folder), False, tr("没能开始")))
             QTimer.singleShot(0, self._run_next_in_batch)
 
     def _finish_batch(self):
         self._in_batch = False
+        QTimer.singleShot(0, lambda: __import__("deter_steps").render_compare(self))
         res = getattr(self, "_batch_results", []) or []
         ok = [n for n, good, _ in res if good]
         bad = [f"{n}（{why}）" for n, good, why in res if not good]
@@ -5156,18 +5265,21 @@ class MainWindow(QMainWindow):
         msg += "。" + tr("点下面的门店看各家的结果。")
         self.banner_folder.show_msg(msg, "warn" if bad else "ok")
         self.refresh_folder()
-        self.cmp_steps.set_state(3, "done" if ok else "todo", "")
+        # 比完先看比价结果（用户 11-18：确定没问题再去下单发送）；第 4 步「下单发送」等用户自己点过去
+        self.cmp_steps.set_state(4, "todo", "")
+        if ok:
+            self.cmp_steps.set_state(2, "done", "")
+            self.cmp_steps.set_current(3)
         bg = getattr(self, "_batch_bg", False)
         self._batch_bg = False
         if ok and bg:                                   # 点过「后台运行」：问要不要回去看结果
             from erp_widgets import ask_return
             ask_return(self, type("_Bg", (), {"in_background": True})(), msg.split("。")[0],
-                       lambda: (self.go_page("order"), self._cmp_show(3)))
+                       lambda: self.go_page("result"))
             return
         self.show_toast(msg.split("。")[0])
         if ok:
-            self.go_page("order")
-            self._cmp_show(3)
+            self.go_page("result")
 
     def _refresh_batch(self, path):
         """① 下面一行：这一批的门店（点了切换总文件夹），每家显示「待比价 / 已比价」"""
@@ -5273,7 +5385,7 @@ class MainWindow(QMainWindow):
         self.t_min = Toggle(tr("起订量凑单"), settings.get("min_order_enabled", True))
         self.t_min.toggled.connect(lambda on: (settings.__setitem__("min_order_enabled", on),
                                                save_settings(settings), self.refresh_rule_line(),
-                                               self.t_min2.setChecked(on)))
+                                               self.t_min2.setChecked(on), self.refresh_rules_table()))
         self.t_backup.toggled.connect(lambda on: (settings.__setitem__("auto_backup", on), save_settings(settings)))
         self.t_review = Toggle(tr("写入前人工确认分配"), settings.get("review_before_write", False))
         self.t_review.setToolTip(tr("打开后，每次写入文件前都会先打开「手动调整供应商」窗口让你检查"))
@@ -5289,7 +5401,7 @@ class MainWindow(QMainWindow):
         btns.setSpacing(8)
         b_scen = QPushButton(tr("管理方案"))
         b_scen.clicked.connect(self.edit_scenarios)
-        b_tr = QPushButton(tr("门店间调货…"))
+        b_tr = QPushButton(tr("门店间调货"))
         b_tr.setToolTip(tr("DETERSIVO采购的门店间调货（和总仓采购分开设，默认不启用）"))
         b_tr.clicked.connect(self.edit_transfers)
         b_names = QPushButton(tr("供应商名称"))
@@ -5910,6 +6022,9 @@ class MainWindow(QMainWindow):
     def _on_progress(self, pct, text):
         self.bar.setValue(pct)
         self.stage.setText(text)
+        if time.time() - getattr(self, "_cp_last", 0) > 0.4:      # 第 3 步每家门店那几行（别画得太勤）
+            self._cp_last = time.time()
+            __import__("deter_steps").render_compare(self)
         dlg = getattr(self, "_cmp_task", None)
         if dlg is not None and not dlg.is_done:
             i = max(k for k, (lo, _) in enumerate(CMP_STAGES) if pct >= lo)
@@ -5957,21 +6072,25 @@ class MainWindow(QMainWindow):
             return
         self.bar.setValue(100)
         self.stage.setText(tr("{0} 比价完成，主订单和供应商文件已保存", store))
+        sups = summary.get("suppliers") or []
+        self.__dict__.setdefault("_batch_info", {})[store] = (
+            sum(sp.get("amount") or 0 for sp in sups), summary.get("total_rows") or 0, summary.get("priced_rows") or 0,
+            sum(1 for sp in sups if (sp.get("colli") or 0) > 0), summary.get("missing") or 0, summary.get("elapsed"))
         self.last_summary = summary
         self.show_summary(summary)
         self.refresh_history()
         self.cmp_steps.set_current(3)
         self.cmp_steps.set_state(2, "done", "")
+        self.cmp_steps.set_state(4, "todo", "")
         if batch:
             self._batch_results.append((store, True, ""))
             self._refresh_batch(self.folder_edit.text().strip())
             QTimer.singleShot(300, self._run_next_in_batch)
             return
-        self.cmp_steps.set_state(3, "done", "")
         self.refresh_folder()
         from erp_widgets import ask_return
         ask_return(self, dlg, tr("{0} 比价完成", store),
-                   lambda: (self.go_page("order"), self._cmp_show(3), self.show_toast(tr("{0} 比价完成", store))))
+                   lambda: (self.go_page("result"), self.show_toast(tr("{0} 比价完成", store))))
 
     def show_transfers(self, *_):
         s = self.last_summary or {}
@@ -6011,8 +6130,9 @@ class MainWindow(QMainWindow):
         st = s.get("state") or {}
         if can_switch_scenario(s):
             import scenarios as SC
+            from erp_widgets import CountButton
             diff = SC.diff_items(st.get("rows") or [], st["scenario_assigns"], st.get("labels") or {})
-            bd = QPushButton(tr("差异商品（{0}）", len(diff)))
+            bd = CountButton(tr("差异商品"), len(diff))
             bd.setEnabled(bool(diff))
             bd.clicked.connect(lambda: ScenarioDiffDialog(self, res, diff).exec())
             self.scen_switch_lay.addWidget(bd)
@@ -6097,6 +6217,40 @@ class MainWindow(QMainWindow):
         extra = mo.get("extra_cost", 0) or 0
         self.k_cost.set(f"€{extra:,.2f}", T("warn") if extra > 0.005 else None)       # 不显示了（用户说没意义），留着不出错
         self.k_time.set(tr("{0:.0f} 秒", s.get('elapsed', 0)))
+        self.k_missing.set_tone("warn" if s.get("missing") else "ok")
+        self.k_missing.set(f"{s.get('missing', 0):,}", T("warn") if s.get("missing") else None,
+                           sub=tr("点开看缺了哪些") if s.get("missing") else tr("全部都有报价"))
+        tr_rows = s.get("total_rows", 0) or 0
+        self.k_priced.set(f"{s.get('priced_rows', 0):,}",
+                          sub=tr("占 {0:.0f}%", 100 * (s.get("priced_rows", 0) or 0) / tr_rows) if tr_rows else " ")
+        self.k_changes.set(f"{n_ch:,}", sub=tr("为了起订量 / 手动调整") if n_ch else tr("全部按最低价"))
+        sups0 = s.get("suppliers", []) or []
+        amt = sum(sp.get("amount", 0) or 0 for sp in sups0)
+        self.k_amount.set(f"€{amt:,.0f}", sub=tr("{0} 家供应商", sum(1 for sp in sups0 if (sp.get("colli") or 0) > 0)))
+        try:
+            from history import _store_of
+            store = _store_of(s)
+        except Exception:
+            store = ""
+        hm = (s.get("_history") or {}).get("time") or ""
+        try:
+            when = datetime.strptime(hm[:16], "%Y-%m-%d %H:%M") if hm else None
+        except ValueError:
+            when = None
+        if when is None:
+            try:
+                when = datetime.fromtimestamp(os.path.getmtime((s.get("state") or {}).get("ordine_file") or ""))
+            except (OSError, TypeError):
+                when = None
+        self.res_hero.set_title(" · ".join(x for x in (store, f"{when:%d/%m}" if when else "") if x)
+                                or tr("比价结果"))
+        sub = [s.get("main_file") or ""]
+        if s.get("scenario"):
+            sub.append(tr("方案：{0}", tr(s["scenario"])))
+        sub.append(tr("用时 {0:.0f} 秒", s.get("elapsed", 0)))
+        if s.get("history_id") and not self._is_current(s):
+            sub.append(f"<span style='color:{T('warn')}'>" + tr("历史记录 · 只能查看") + "</span>")
+        self.res_hero.set_sub(" · ".join(x for x in sub if x))
 
         msgs, kind = [], "ok"
         current = self._is_current(s)
@@ -6201,6 +6355,27 @@ class MainWindow(QMainWindow):
                                  else tr("只能修改每个文件夹最近一次的分配"))
         if hasattr(self, "hist_tree"):
             self._mark_shown_history()
+            if hasattr(self, "_hist_days"):
+                self._hist_sel = s.get("history_id") or self._hist_sel
+                __import__("history_page").render(self)
+        self._res_fill_due = s
+        host = getattr(self, "_res_wrap", None)
+        if host is None:
+            keys = [k for k, _ in self.NAV]
+            host = self.stack.widget(keys.index("result")) if "result" in keys else None
+        if host is None or host.isVisible():
+            self._fill_result_now()
+
+    def _fill_result_now(self):
+        """比价结果页面（门店胶囊、批发商卡…）：看不见时只记下来，切到第 4 步再画（2026-11-20 stall.log）"""
+        s = getattr(self, "_res_fill_due", None)
+        if s is None:
+            return
+        self._res_fill_due = None
+        try:
+            __import__("result_page").fill(self, s)
+        except Exception as e:
+            file_logger.error(f"result page fill failed: {e}", exc_info=True)
 
     # ---------- 起订规则 ----------
     def refresh_rules_table(self):
@@ -6229,12 +6404,37 @@ class MainWindow(QMainWindow):
                           color=T("faint") if not r.get("enabled", True) else None)
             t.item(i, 0).setData(Qt.UserRole, i)          # 排序后也能找到是第几条规则
         self.rules_sorter.apply()
+        if hasattr(self, "rules_hero"):
+            on = [r for r in rules if r.get("enabled", True)]
+            sub = tr("{0} 家供应商 · {1} 家启用", len(rules), len(on))
+            if sups:
+                sub += " · " + tr("这次对上 {0} 家的报价文件", len(hit))
+            if not self.t_min2.isChecked():
+                sub += f" · <span style='color:{T('warn')}'>" + tr("起订量凑单已关") + "</span>"
+            self.rules_hero.set_sub(sub)
+        try:
+            __import__("rules_page").render(self, rules, hit if sups else {})
+        except Exception as e:
+            file_logger.error(f"起订规则页刷新失败：{e}")
         if not rules:
             self.banner_rules.show_msg(tr("还没有起订规则。点「新增供应商规则」，填上供应商的起订箱数或金额。"), "info")
         else:
             self.banner_rules.hide()
 
+    def _rule_dialog(self, rule):
+        return RuleDialog(self, rule, self.info.get("suppliers") or [], compact=True)
+
+    def _set_rule(self, i, rule):
+        settings["rules"][i] = rule
+        self._save_rules(tr("已保存规则"))
+
     def _sel_rule(self):
+        sel = getattr(self, "_rule_sel", None)
+        if hasattr(self, "_rules_grid"):
+            if isinstance(sel, int) and 0 <= sel < len(settings["rules"]):
+                return sel
+            QMessageBox.information(self, tr("起订量"), tr("先选一条规则。"))
+            return None
         rows = self.rules_table.selectionModel().selectedRows()
         if not rows:
             QMessageBox.information(self, tr("起订量"), tr("先在表格里选一条规则。"))
@@ -6255,6 +6455,7 @@ class MainWindow(QMainWindow):
         d = RuleDialog(self, {"mode": "all", "allow_drop": True, "enabled": True}, self.info.get("suppliers") or [])
         if d.exec() and d.result_rule:
             settings["rules"].append(d.result_rule)
+            self._rule_sel = len(settings["rules"]) - 1
             self._save_rules(tr("已添加规则"))
 
     def edit_rule(self):
@@ -6281,6 +6482,7 @@ class MainWindow(QMainWindow):
         name = settings["rules"][i].get("name")
         if QMessageBox.question(self, tr("删除规则"), tr("删除「{0}」的起订规则？", name)) == QMessageBox.Yes:
             settings["rules"].pop(i)
+            self._rule_sel = min(i, len(settings["rules"]) - 1) if settings["rules"] else None
             self._save_rules(tr("已删除规则"))
 
     # ---------- 缺失查找 ----------
@@ -6319,11 +6521,14 @@ class MainWindow(QMainWindow):
             return
         if not results:
             self.miss_status.setText(tr("没有缺失的商品。"))
+            __import__("missing_page").render(self, [])
             return
         t = self.miss_table
         t.setUpdatesEnabled(False)            # 几百上千行：填完再一次画出来
         QTimer.singleShot(0, lambda: t.setUpdatesEnabled(True))     # 万一中途出错也会恢复
         t.setRowCount(len(results))
+        t.show()
+        self.miss_empty.hide()
         found = web_found = 0
         for i, (ean, art, count, matches, web_source, web_art, st) in enumerate(results):
             if not matches:
@@ -6347,6 +6552,7 @@ class MainWindow(QMainWindow):
         self.log(tr("✔ 缺失查找完成：{0}", msg))
         self.miss_sorter.apply()
         self._filter_missing(self.miss_filter.text())
+        __import__("missing_page").render(self, results)
         self.go_page("search")
 
     def _miss_base(self, r):
@@ -6365,12 +6571,11 @@ class MainWindow(QMainWindow):
 
     def run_web(self):
         from matcher import search_web_ean
-        rows = self.miss_table.selectionModel().selectedRows()
-        if not rows:
-            QMessageBox.information(self, tr("网络搜索"), tr("先在表格里选一行。"))
+        cur = __import__("missing_page").selected(self)
+        if not cur:
+            QMessageBox.information(self, tr("网络搜索"), tr("先在左边选一个商品。"))
             return
-        r = rows[0].row()
-        ean, art = self.miss_table.item(r, 0).text(), self.miss_table.item(r, 1).text()
+        ean, art = cur
         self.btn_web.setEnabled(False)
         self.btn_web.setText(tr("搜索中…"))
 
@@ -6388,7 +6593,7 @@ class MainWindow(QMainWindow):
     def _on_web_done(self, payload):
         ean, (result, source, st) = payload
         self.btn_web.setEnabled(True)
-        self.btn_web.setText(tr("网络搜索选中行"))
+        self.btn_web.setText(tr("网络搜索这个商品"))
         if result:
             QMessageBox.information(self, tr("网络搜索"), tr("EAN {0}\n\n{1}\n\n来源：{2}", ean, result, source))
         else:
@@ -6481,11 +6686,16 @@ class WheelGuard(QObject):
         self.clicked_view = None    # 点过的表格（鼠标离开后失效）
         self.last_page_wheel = -1e9 # 上一次把滚轮交给页面的时间
 
+    TYPES = (QEvent.Polish, QEvent.Wheel, QEvent.Enter, QEvent.MouseMove, QEvent.MouseButtonPress, QEvent.Leave)
+    _KINDS = None
+
     @staticmethod
     def _view_of(obj):
         """obj 是表格 / 列表 / 文本框（或它们的 viewport）→ 返回那个控件，否则 None"""
-        from PySide6.QtWidgets import QAbstractItemView, QTextEdit, QPlainTextEdit
-        kinds = (QAbstractItemView, QTextEdit, QPlainTextEdit)
+        kinds = WheelGuard._KINDS
+        if kinds is None:
+            from PySide6.QtWidgets import QAbstractItemView, QTextEdit, QPlainTextEdit
+            kinds = WheelGuard._KINDS = (QAbstractItemView, QTextEdit, QPlainTextEdit)
         w = obj if isinstance(obj, kinds) else None
         if w is None:
             par = obj.parentWidget() if hasattr(obj, "parentWidget") else None
@@ -6514,7 +6724,6 @@ class WheelGuard(QObject):
         return True
 
     def eventFilter(self, obj, ev):
-        from PySide6.QtCore import QEvent
         t = ev.type()
         if t == QEvent.Polish:
             if isinstance(obj, (QAbstractSpinBox, QComboBox)):
@@ -6591,6 +6800,95 @@ def _init_click_recorder():
     _ClickRecorder._INPUT = frozenset((QEvent.MouseButtonPress, QEvent.MouseButtonRelease, QEvent.KeyPress, QEvent.Wheel))
 
 
+def _event_hub(app):
+    hub = getattr(app, "_event_hub", None)
+    if hub is None:
+        from erp_widgets import AppEventHub
+        hub = app._event_hub = AppEventHub(app)
+        app.installEventFilter(hub)
+    return hub
+
+
+STALL_SEC = 0.6          # 2026-11-19：界面停了这么久（用户能感觉到的小卡）就记进 logs/stall.log
+STALL_TICK = 0.1
+
+
+def _start_stall_sampler(app):
+    """
+    小卡顿记录（2026-11-19 用户：很多地方点了以后卡一会、没有进度条，都是以前遗留的 → 全面排查）。
+    hang.log 只记 5 秒以上的；这里界面每 0.1 秒报一次平安，停了 0.4 秒以上就开始每 0.1 秒看一次界面线程正在跑
+    本程序的哪一行，恢复时超过 STALL_SEC 就写一行：卡了几秒 · 最后点的按钮 · 卡最久的几处代码（按被看到的次数）。
+    只看界面线程、只记本程序文件夹里的代码，开销很小。logs/stall.log 超过 2 MB 换新文件（旧的留一份 .old）。
+    """
+    try:
+        from datetime import datetime as _dt
+        path = os.path.join(LOG_DIR, "stall.log")
+        try:
+            if os.path.getsize(path) > 2_000_000:
+                os.replace(path, path + ".old")
+        except OSError:
+            pass
+        f = open(path, "a", encoding="utf-8")
+        f.write(f"\n=== {APP_NAME} {APP_VERSION} 启动 {_dt.now():%Y-%m-%d %H:%M:%S}\n")
+        f.flush()
+        app._stall_file = f
+        main_id = threading.main_thread().ident
+        here = os.path.dirname(os.path.abspath(__file__)).lower()
+        beat = {"t": time.time()}
+
+        def tick():
+            beat["t"] = time.time()
+        tm = QTimer(app)
+        tm.setInterval(int(STALL_TICK * 1000))
+        tm.timeout.connect(tick)
+        tm.start()
+        app._stall_timer = tm
+
+        def own_stack():
+            fr = sys._current_frames().get(main_id)
+            out = []
+            while fr is not None and len(out) < 4:
+                fn = fr.f_code.co_filename
+                if fn.lower().startswith(here):
+                    out.append(f"{os.path.basename(fn)}:{fr.f_lineno} {fr.f_code.co_name}")
+                fr = fr.f_back
+            return " ← ".join(out) or "（不是本程序的代码：Qt 画界面 / 套样式，或别的库）"
+
+        def run():
+            from erp_widgets import RUNNING
+            last = time.time()
+            while True:
+                time.sleep(STALL_TICK)
+                now = time.time()
+                if now - last > 2:                       # 电脑睡眠醒来
+                    beat["t"] = now
+                last = now
+                if now - beat["t"] < 0.4:
+                    continue
+                start, seen = beat["t"], {}
+                while time.time() - beat["t"] > 0.25 and time.time() - start < 120:
+                    k = own_stack()
+                    seen[k] = seen.get(k, 0) + 1
+                    time.sleep(STALL_TICK)
+                dur = beat["t"] - start
+                if dur < STALL_SEC:
+                    continue
+                click, ct = _ClickRecorder.last
+                top = sorted(seen.items(), key=lambda kv: -kv[1])[:3]
+                try:
+                    f.write(f"[{_dt.now():%Y-%m-%d %H:%M:%S}] 卡 {dur:.1f} 秒"
+                            f" · 最后点的：{('「' + click + '」 ' + format(start - ct, '.1f') + ' 秒前') if click else '—'}"
+                            f" · 进度窗口：{'、'.join(RUNNING.values()) or '没有'}\n")
+                    for k, n in top:
+                        f.write(f"    {n * STALL_TICK:4.1f}s  {k}\n")
+                    f.flush()
+                except Exception:
+                    pass
+        threading.Thread(target=run, daemon=True, name="stall-sampler").start()
+    except Exception as e:
+        file_logger.info(f"小卡顿记录没开：{e}")
+
+
 def _start_hang_watchdog(app):
     """
     界面卡住时自动记下「卡在哪一行代码」（logs/hang.log，不会关掉程序）。
@@ -6607,6 +6905,33 @@ def _start_hang_watchdog(app):
                 f"（下面「界面卡住」那几行就是卡的时候在做什么）\n")
         f.flush()
         app._hang_file = f
+        # 程序闪退（Qt / Excel 那层崩了，Python 来不及报错）时也记下当时每条线程在跑哪一行：logs/crash.log
+        cf = open(os.path.join(LOG_DIR, "crash.log"), "a", encoding="utf-8")
+        cf.write(f"\n=== {APP_NAME} {APP_VERSION} 启动 {_dt.now():%Y-%m-%d %H:%M:%S}（下面有内容 = 这次闪退了）\n")
+        cf.flush()
+        faulthandler.enable(file=cf, all_threads=True)
+        app._crash_file = cf
+
+        def _hook(tp, val, tb, _old=sys.excepthook):
+            try:
+                import traceback
+                cf.write(f"[{_dt.now():%H:%M:%S}] 没处理的错误：\n" + "".join(traceback.format_exception(tp, val, tb)))
+                cf.flush()
+            except Exception:
+                pass
+            _old(tp, val, tb)
+        sys.excepthook = _hook
+
+        def _thook(a, _old=threading.excepthook):
+            try:
+                import traceback
+                cf.write(f"[{_dt.now():%H:%M:%S}] 后台线程 {a.thread.name if a.thread else ''} 出错：\n"
+                         + "".join(traceback.format_exception(a.exc_type, a.exc_value, a.exc_traceback)))
+                cf.flush()
+            except Exception:
+                pass
+            _old(a)
+        threading.excepthook = _thook
         state = {"beat": time.time()}
 
         def beat():
@@ -6621,7 +6946,7 @@ def _start_hang_watchdog(app):
         app._hang_timer = t
         _init_click_recorder()
         rec = _ClickRecorder(app)
-        app.installEventFilter(rec)
+        _event_hub(app).add(rec, _ClickRecorder._INPUT)
         app._click_rec = rec
         beat()
 
@@ -6675,6 +7000,7 @@ def main():
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
     _start_hang_watchdog(app)
+    _start_stall_sampler(app)
     # Qt 自带按钮（是 / 否 / 取消 等）的翻译
     try:
         from PySide6.QtCore import QTranslator, QLibraryInfo
@@ -6685,14 +7011,15 @@ def main():
     except Exception:
         pass
     app.setStyle("Fusion")
-    app._wheel_guard = WheelGuard(app)
-    app.installEventFilter(app._wheel_guard)
+    hub = _event_hub(app)                       # 全程序只装一个事件过滤器（AppEventHub），按事件类型分给下面几个
+    app._wheel_guard = hub.add(WheelGuard(app))
     from erp_widgets import CopyHelper
-    app._copy_helper = CopyHelper(app)          # 程序里的文字都可以选中复制，表格 Ctrl+C / 右键复制
-    app.installEventFilter(app._copy_helper)
+    app._copy_helper = hub.add(CopyHelper(app))  # 程序里的文字都可以选中复制，表格 Ctrl+C / 右键复制
     from erp_widgets import ScreenFit
-    app._screen_fit = ScreenFit(app)            # 窗口打开时不会比屏幕大、不会跑出屏幕
-    app.installEventFilter(app._screen_fit)
+    app._screen_fit = hub.add(ScreenFit(app))    # 窗口打开时不会比屏幕大、不会跑出屏幕
+    from erp_widgets import WidthMemory
+    app._width_memory = hub.add(WidthMemory(app, settings.setdefault("table_widths", {}),
+                                            lambda: save_settings(settings)))     # 所有表格拖过的列宽都记住
     theme.load_fonts()
     f = QFont()
     f.setFamilies([theme.LATIN_FONT, UI_FONT])

@@ -533,7 +533,8 @@ class SelloutPage:
         self.sig = _Sig()
         self.sig.done.connect(self._done)
         self.sig.lists.connect(self._lists_arrived)
-        self.res = None
+        self.res = None                 # 现在显示的（按门店切过的）
+        self.full = None                # 查回来的全部（五家店 + 仓库）；点门店只在它上面切，不再读数据库
         self.running = False
         self.tree = None
         self.view = self.cfg.get("view") or "item"
@@ -660,9 +661,11 @@ class SelloutPage:
             b.setMinimumHeight(34)
             b.setCursor(Qt.PointingHandCursor)
             if code == SO.WAREHOUSE:
-                b.setToolTip(tr("仓库（BMS）：只算进货和库存（仓库不卖东西）"))
+                b.setToolTip(tr("仓库（BMS）：只算进货和库存（仓库不卖东西）") + "\n" + tr("查询时读全部门店，点门店直接切换，不用重新查询"))
             elif code is None:
-                b.setToolTip(tr("五家店 + 仓库：门店之间、仓库到门店的调货一进一出抵掉"))
+                b.setToolTip(tr("五家店 + 仓库：门店之间、仓库到门店的调货一进一出抵掉") + "\n" + tr("查询时读全部门店，点门店直接切换，不用重新查询"))
+            else:
+                b.setToolTip(tr("查询时读全部门店，点门店直接切换，不用重新查询"))
             b.clicked.connect(lambda _=False, c=code: self._store_clicked(c))
             self.store_btns[code] = b
             r1.addWidget(b)
@@ -714,7 +717,7 @@ class SelloutPage:
         self.preset.currentIndexChanged.connect(self._preset_changed)
         self.d1.dateChanged.connect(lambda _d: self._date_edited())
         self.d2.dateChanged.connect(lambda _d: self._date_edited())
-        self._set_stores(c.get("stores") or [])
+        self._set_stores(c.get("stores") or [], apply=False)
         return box
 
     def _build_report(self, bv):
@@ -889,10 +892,22 @@ class SelloutPage:
             picked = []
         self._set_stores(picked)
 
-    def _set_stores(self, picked):
+    def _set_stores(self, picked, apply=True):
         picked = list(picked)
         for c, b in self.store_btns.items():
             b.setChecked(c in picked if c is not None else not picked)
+        if apply and self.full is not None:
+            self._apply_store_view()
+
+    def _apply_store_view(self):
+        """点门店：在已经查好的全部数据上切换（2026-11-16 用户：不用每次重新读）"""
+        import sellout as SO
+        import settings as ST
+        self.res = SO.view(self.full, self.stores())
+        self.cfg["stores"] = self.stores()
+        ST.save_settings(self.settings)
+        self.b_exp.setEnabled(bool(self.res["rows"]))
+        self.update_view()
 
     def stores(self):
         return [c for c, b in self.store_btns.items() if c is not None and b.isChecked()]
@@ -946,7 +961,8 @@ class SelloutPage:
         for k in self.p_sub.picked:
             c, s = k.split(":", 1)
             subs.append((int(c), int(s)))
-        return {"start": d1, "end": d2, "stores": self.stores(), "sups": list(self.p_sup.picked),
+        # 一律查全部门店（含仓库），点门店按钮再切换（view），不用重新读数据库
+        return {"start": d1, "end": d2, "stores": [], "sups": list(self.p_sup.picked),
                 "cats": list(self.p_cat.picked), "mids": mids, "subs": subs, "codes": list(self.codes)}
 
     def _first_show(self):
@@ -986,7 +1002,8 @@ class SelloutPage:
         self._lists_loading = False
         if err:
             self.win.log(tr("⚠ SELL OUT：读分类 / 供应商失败：{0}", err))
-            self.status.setText(tr("连不上数据库：{0}", err))
+            self.status.setText(tr("连不上数据库") + "  ⓘ")       # 原文很长：放鼠标提示
+            self.status.setToolTip(str(err))
             return
         self.tree, self.upto = tree, upto
         c = self.cfg
@@ -1095,6 +1112,15 @@ class SelloutPage:
         threading.Thread(target=work, daemon=True).start()
 
     def _done(self, payload):
+        try:
+            self._done_inner(payload)
+        except Exception as e:                  # 显示出错也不能一直停在「正在读数据库…」
+            import traceback
+            self.win.log(tr("❌ SELL OUT 分析失败：{0}", f"{e}\n{traceback.format_exc()}"))
+            self.win.show_toast(tr("SELL OUT 分析失败：{0}", e))
+            self.stack.setCurrentIndex(0 if self.res is None else 1)
+
+    def _done_inner(self, payload):
         import sellout as SO
         res, err = payload
         self.running = False
@@ -1104,7 +1130,8 @@ class SelloutPage:
             self.win.log(tr("❌ SELL OUT 分析失败：{0}", err))
             self.win.show_toast(tr("SELL OUT 分析失败：{0}", err))
             return
-        self.res = res
+        self.full = res
+        self.res = SO.view(res, self.stores())
         self.bucket = None
         n = len(res["rows"])
         other = res.get("other_types") or {}
@@ -1113,7 +1140,7 @@ class SelloutPage:
                      (tr("（没算的入库类型：{0}）", ", ".join(f"{k} {v:,.0f}" for k, v in sorted(other.items())))
                       if other else ""))
         self.stack.setCurrentIndex(1)
-        self.b_exp.setEnabled(bool(n))
+        self.b_exp.setEnabled(bool(self.res["rows"]))
         self.update_view()
 
     # ---------- 显示 ----------
@@ -1149,6 +1176,7 @@ class SelloutPage:
         nd = (res["end"] - res["start"]).days + 1
         up = res.get("upto")
         self.h1.setText(tr("SELL OUT · {0}", stores))
+        self.status.setToolTip("")
         self.status.setText(tr("{0:%d/%m/%Y} – {1:%d/%m/%Y} · {2} 天 · {3:,} 个商品", res["start"], res["end"], nd, len(rows)) +
                             (tr(" · 名单：{0}", self.codes_name) if self.codes_name and res["filters"].get("codes") else "") +
                             (tr(" · 销售数据到 {0:%d/%m}", up) if up else ""))
@@ -1164,7 +1192,7 @@ class SelloutPage:
         self.k_rem.set(eur0(t["rem_v"]), tr("{0:,.0f} 件", t["rem_q"]), "err" if t["rem_q"] < 0 else "muted")
         self.flow.set(res["days"])
         self.bk.set(SO.bucket_counts(rows), self.bucket)
-        top = sorted((r for r in rows if r["rem_v"] > 0), key=lambda r: -r["rem_v"])[:3]
+        top = sorted((r for r in rows if (r["rem_v"] or 0) > 0), key=lambda r: -r["rem_v"])[:3]
         self.top_rem.set([(r["name"], r["ean"], r["rem_q"], r["rem_v"]) for r in top])
         self.rem_cap.setVisible(bool(top))
         self._fill_table()

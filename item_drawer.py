@@ -26,6 +26,7 @@ def _clear(lay):
     while lay.count():
         w = lay.takeAt(0).widget()
         if w:
+            w.hide()              # 马上藏起来（deleteLater 要等下一轮才删，快速上下翻时旧标签会叠在新标签下面）
             w.deleteLater()
 
 
@@ -347,8 +348,7 @@ class ItemDrawer(QScrollArea):
     def months_message(self, text, note=""):
         self.months.set_message(text)
         self.months.setToolTip(note or "")
-        short = (note or "").splitlines()[0][:18] if note else ""
-        self.months_note.setText(short + ("…" if note and len(note) > 18 else ""))
+        self.months_note.setText("ⓘ" if note else "")      # 原因（常是数据库报错的原文）只放鼠标提示，不把英文报错摆在界面上
         self.months_note.setToolTip(note or "")
 
     def show_months(self, vals, keys):

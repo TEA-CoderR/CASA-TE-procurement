@@ -186,7 +186,10 @@ def best_quotes(files):
 def apply_quotes(rows, quotes):
     """
     检查清单的行改用报价的件价和每箱件数（调货门槛、箱数显示、估算金额用）；报价里没有的保留数据库的。
-    原来数据库的记在 db_pack / db_price，报价是哪家记在 quote_sup。清单件数（file_pcs）已经按数据库箱规折好，不动。
+    原来数据库的记在 db_pack / db_price，报价是哪家记在 quote_sup、报价的每箱件数记在 quote_pack。
+    清单件数（file_pcs）已经按数据库箱规折好，不动。
+    2026-11-19（用户：门店发来的都是箱数，他们看到的都是数据库的箱规）：数据库有箱规就照用数据库的，
+    审核的箱数和门店清单是同一种箱；比价时再按每家批发商的箱规换算（service._price_row base）。
     数据库里没有的商品也按条码去报价里找（补上每箱件数、件价，名称空着的补上报价里的品名）。
     返回改了几行
     """
@@ -196,7 +199,9 @@ def apply_quotes(rows, quotes):
         if not q:
             continue
         x["db_pack"], x["db_price"] = x.get("pack"), x.get("price")
-        x["pack"], x["price"], x["quote_sup"] = q["pack"], q["price"], q["supplier"]
+        x["price"], x["quote_sup"], x["quote_pack"] = q["price"], q["supplier"], q["pack"]
+        if not (x.get("db_pack") and float(x["db_pack"]) > 0):
+            x["pack"] = q["pack"]
         if not str(x.get("name") or "").strip() and q.get("desc"):
             x["name"] = q["desc"]
         n += 1

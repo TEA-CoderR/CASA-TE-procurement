@@ -73,6 +73,11 @@ def _entry(summary, hid, when, old=None):
         # 历史页按「日期 · 门店」分组；几种方案各一行，标出选用的
         "store": _store_of(summary),
         "scenario": summary.get("scenario"),
+        # 起订规则这次怎么样（起订规则页「最近几次比价」小方块用）：[[规则名, 状态], …]
+        "rules": [[r.get("name") or r.get("target"), r.get("status")] for r in (mo.get("rules") or [])],
+        # 分给哪几家（历史页的彩色条 / 详情用）：[[名称, 金额], …] 金额大的在前
+        "split": sorted([[(st.get("labels") or {}).get(s.get("name")) or s.get("name"), round(float(s.get("amount") or 0), 2)]
+                         for s in sups if (s.get("amount") or 0) > 0], key=lambda x: -x[1]),
         "scenarios": [{"name": x.get("name"), "total": round(float(x.get("total") or 0), 2),
                        "missing": len(x.get("missing") or []), "priced": x.get("priced", 0),
                        "vs_first": round(float(x.get("vs_first") or 0), 2), "chosen": bool(x.get("chosen")),

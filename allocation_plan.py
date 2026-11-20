@@ -226,8 +226,13 @@ def _cover(r, pieces):
 
 
 def qty_step(r, s):
-    """多订一箱时数量要加多少：按件数订货时加这家一箱的件数，否则加 1 箱"""
-    return _box_pieces(r, s) if r.get("pieces") is not None else 1.0
+    """多订一箱时数量要加多少：按件数订货时加这家一箱的件数；主订单按数据库箱规（base_pack）时
+    加这家一箱折合多少个主订单的箱；否则加 1 箱"""
+    if r.get("pieces") is not None:
+        return _box_pieces(r, s)
+    if r.get("base_pack"):
+        return _box_pieces(r, s) / float(r["base_pack"])
+    return 1.0
 
 
 def suggest_items(cands, colli, amount, rule, max_days=60, ignore_days=False, max_steps=3000):

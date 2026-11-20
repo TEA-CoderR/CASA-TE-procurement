@@ -354,3 +354,31 @@ def test_qty_fill_already_ok_and_pieces_mode():
     assert suggest_qty_fill([r], {2: "S.xlsx"}, dict(rule, min_colli=2))["adds"] == {}
     res = suggest_qty_fill([r], {2: "S.xlsx"}, rule)
     assert res["ok"] and res["adds"] == {2: 6.0} and res["boxes"] == {2: 1}
+
+
+def test_boxes_converted_per_wholesaler_pack_and_oversized_pack_not_auto_chosen():
+    """2026-11-19 用户：门店清单的箱 = 数据库箱规；换批发商时按件数换算成那家的箱（最接近的整箱、最少 1 箱），
+    换算后超过要的 1.5 倍的不自动选（真实数据：S.MARCO GUANTI SPONTEX 要 1 箱 × 6，凑单挪到 MEGA CASH 变成 72 件）"""
+    import service as S
+    assert [S.fit_boxes(n, 12) for n in (6, 15, 18, 24, 30, 0)] == [1, 1, 2, 2, 3, 0]
+    unit = {"PET": 0.61, "GRI": 0.77, "MEL": 0.72, "MEGA": 0.62}
+    packs = {"PET": 6, "GRI": 72, "MEL": 6, "MEGA": 72}
+    r = S._price_row(5, 1, unit, packs, "8001", "GUANTI", base=6)
+    assert r["need"] == 6 and r["colli"]["MEGA"] == 1 and set(r["unfit"]) == {"GRI", "MEGA"}
+    assert r["prices"]["MEGA"] is None and r["prices"]["GRI"] is None
+    assert abs(r["prices"]["PET"] - 0.61 * 6) < 1e-9 and abs(r["amt"]["MEGA"] - 72 * 0.62) < 1e-9
+    # 只有箱规大的那家有货：照样可以选
+    r2 = S._price_row(6, 1, {"MEGA": 0.62, "X": None}, {"MEGA": 72, "X": 6}, base=6)
+    assert r2["prices"]["MEGA"] is not None and not r2["unfit"]
+    # 2 箱 × 6 = 12 件，那家一箱 10 件 → 1 箱（10 件），起订箱数 / 金额按它的箱算
+    r3 = S._price_row(7, 2, {"A": 1.0, "B": 0.9}, {"A": 6, "B": 10}, base=6)
+    assert r3["colli"] == {"A": 2, "B": 1} and abs(r3["amt"]["B"] * 2 - 10 * 0.9) < 1e-9
+    assert S._order_qty(r3, "B") == 1 and S._order_qty(r3, "A") == 2
+    ch = S.pack_changes([r3], {7: "B"})
+    assert ch[0]["need"] == 12 and ch[0]["got"] == 10 and not S.pack_changes([r3], {7: "A"})
+    # 修改分配里改数量：各家箱数跟着重算
+    r4 = S.set_row_qty(r3, 4)
+    assert r4["colli"] == {"A": 4, "B": 2} and r4["qty_orig"] == 2
+    # 没有 CASSA_DB 的老主订单照旧：箱数原样搬
+    r5 = S._price_row(8, 2, {"A": 1.0, "B": 0.9}, {"A": 6, "B": 10})
+    assert "colli" not in r5 and S._order_qty(r5, "B") == 2

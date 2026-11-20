@@ -56,7 +56,9 @@ def test_best_and_apply():
             {"ean": "77", "pack": 4, "price": 2.0, "in_db": True},
             {"ean": "2", "pack": 0, "price": 0, "in_db": False}]
     assert P.apply_quotes(rows, best) == 2
-    assert rows[0]["pack"] == 6.0 and rows[0]["db_pack"] == 12 and rows[0]["quote_sup"] == "MELONI"
+    # 2026-11-19：门店清单的箱是数据库箱规 → 有数据库箱规就照用，报价的箱规记在 quote_pack
+    assert rows[0]["pack"] == 12 and rows[0]["quote_pack"] == 6.0 and rows[0]["db_pack"] == 12
+    assert rows[0]["quote_sup"] == "MELONI"
     assert rows[0]["file_pcs"] == 24                 # 清单件数不动
     assert rows[1]["pack"] == 4 and "quote_sup" not in rows[1]
     assert rows[2]["pack"] == best["2"]["pack"] and rows[2]["quote_sup"] == "MEGA CASH"   # 数据库没有的也去报价里找

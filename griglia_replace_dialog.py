@@ -321,7 +321,7 @@ class ReplaceDialog(QDialog):
             "相似度 ≥ 80% 的先勾上，都要看一眼再替换。\n"
             "替换进 Griglia：原来那一行换成新商品（分类 / 品牌 / 门店勾选照旧，条码 / 名称 / 箱规 / 价格 / 供应商换成新的、"
             "编号空着，改过的格子浅蓝底），原商品那一行抄到文件最下面、划线停用。新商品 Griglia 里已经有的，只把原商品那一行移到最下面。"
-            "Griglia 里已经划线的：直接把那一行改成新商品、去掉划线。\n"
+            "Griglia 里已经划线的也一样：那一行换成新商品，原商品抄到文件最下面划线。\n"
             "替换过的商品，以后门店清单里再有旧条码，检查清单时自动换成新商品去采购。"))
         title.setStyleSheet("font-size:15px; font-weight:700;")
         head.addWidget(title)
@@ -449,7 +449,7 @@ class ReplaceDialog(QDialog):
         cancel = QPushButton(tr("关闭"))
         cancel.clicked.connect(self.reject)
         foot.addWidget(cancel)
-        self.b_add = QPushButton("")
+        self.b_add = __import__("erp_widgets").CountButton("")
         self.b_add.setObjectName("Primary")
         self.b_add.clicked.connect(self._add)
         foot.addWidget(self.b_add)
@@ -553,7 +553,7 @@ class ReplaceDialog(QDialog):
                     it.setData(Qt.UserRole + 1, pct(ch) if ch else None)
                 if f == "old":
                     it.setToolTip(f"{old.get('name') or ''}\n{old['ean']}" + (
-                        "\n\n" + tr("Griglia 第 {0} 行已经划线：替换时直接把这一行改成新商品、去掉划线", old.get("row") or "?")
+                        "\n\n" + tr("Griglia 第 {0} 行已经划线：替换时这一行换成新商品，原商品抄到最下面划线", old.get("row") or "?")
                         if old.get("struck") else ""))
                     if ch:
                         it.setData(SEGS, self.GR.diff_tokens(old.get("name") or "", ch["name"]))
@@ -612,7 +612,8 @@ class ReplaceDialog(QDialog):
 
     def _update_foot(self):
         n = len(self.checked)
-        self.b_add.setText(tr("替换进 Griglia（{0}）", n))
+        self.b_add.setText(tr("替换进 Griglia"))
+        self.b_add.set_count(n)
         self.b_add.setEnabled(n > 0)
         changed = sum(1 for i in self.checked if self._chg(i)[1])
         self.status.setText(tr("勾了 {0} 个 · 其中 {1} 个换了规格", n, changed) if n else tr("勾上要替换的"))
@@ -722,7 +723,7 @@ class ReplaceDialog(QDialog):
     def _add(self):
         import os
         import commands as CMD
-        from erp_widgets import BusyDialog
+        from erp_widgets import BusyDialog, excel_call
         picks = [(self.rows[i]["old"], self.choice[i]) for i in sorted(self.checked) if self.choice.get(i)]
         if not picks:
             return
@@ -735,19 +736,17 @@ class ReplaceDialog(QDialog):
         if len(picks) > 12:
             lines += "\n" + tr("…还有 {0} 个", len(picks) - 12)
         n_in = sum(1 for _o, c in picks if c.get("in_grid"))
-        n_st = sum(1 for o, _c in picks if o.get("struck"))
         msg = tr("替换 Griglia 里 {0} 个商品：\n{1}\n\n改的文件：{2}（{3}）\n{4}\n\n"
                  "原来那一行换成新商品（改过的格子浅蓝底，编号空着）；旧商品那一行抄到文件最下面、划线。\n"
                  "其中 {5} 个新商品 Griglia 里已经有，只把旧行移到最下面。\n"
-                 "其中 {6} 个 Griglia 里已经划线：那一行直接改成新商品、去掉划线。\n"
                  "改之前在程序文件夹存一份备份；先在本机副本上改，逐格核对：除了这几行别的格子都没变才放回，核对不过原文件不动。Excel / WPS 要关着，文件大，可能要几分钟。\n"
-                 "同步文件夹里的文件同事都会看到。确定替换？", len(picks), lines, name, where, os.path.dirname(target), n_in, n_st)
+                 "同步文件夹里的文件同事都会看到。确定替换？", len(picks), lines, name, where, os.path.dirname(target), n_in)
         if QMessageBox.question(self, tr("替换进 Griglia"), msg) != QMessageBox.Yes:
             return
         import product_images as PI
         url = self.settings.get("image_url") or PI.DEFAULT_URL
         res, err = BusyDialog.run(self, tr("替换进 Griglia"), tr("正在备份并用 Excel 改 {0}…（文件大，请等一下）", name),
-                                  lambda: CMD.griglia_add_replacements(self.grid, picks, source=src, url=url))
+                                  lambda: excel_call(lambda: CMD.griglia_add_replacements(self.grid, picks, source=src, url=url)))
         if err:
             QMessageBox.warning(self, tr("替换进 Griglia"), tr("没替换：{0}", err))
             return
@@ -801,28 +800,29 @@ def open_replace(page):
         page.refresh()
 
 
-class ReplaceLogDialog(QDialog):
-    """替换记录（用户 11-09：程序里要有替换记录，不然不知道改了哪个）：0 Griglia/_替代记录.json，新的在上面"""
-    COLS = [("at", "时间", 128), ("by", "谁", 70), ("old_name", "原商品", 280), ("old", "旧条码", 116),
-            ("name", "替代成", 280), ("new", "新条码", 116), ("size", "规格", 110), ("in", "在 Griglia 里", 92),
-            ("file", "文件 · 行", 220)]
+def _mono_font():
+    import theme
+    f = QFont(theme.NUM_FONT)
+    f.setPointSize(10)
+    return f
 
-    def __init__(self, parent, settings, done, grid):
+
+class ReplaceLogDialog(QDialog):
+    """替换记录（用户 11-09：程序里要有替换记录，不然不知道改了哪个）：0 Griglia/_替代记录.json，新的在上面。
+    用户 11-18：加新旧价格好对比、商品带小图；以前原地换掉的原商品可以从备份抄回最下面"""
+    COLS = [("at", "时间", 128), ("by", "谁", 70), ("old_name", "原商品", 280), ("old", "旧条码", 116),
+            ("old_price", "原价格", 84), ("old_sup", "原供应商", 150), ("name", "替代成", 280), ("new", "新条码", 116),
+            ("price", "新价格", 84), ("sup", "现供应商", 150),
+            ("diff", "差价", 76), ("size", "规格", 110), ("in", "在 Griglia 里", 92), ("file", "文件 · 行", 220)]
+    PRICE_F = ("old_price", "price", "diff")
+
+    def __init__(self, parent, settings, done, grid, source=""):
         super().__init__(parent)
-        import os
+        self.settings, self.grid, self.source = settings, grid, source
         self.setWindowTitle(tr("替换记录"))
         self.setWindowFlags(Qt.Window | Qt.WindowTitleHint | Qt.WindowMinMaxButtonsHint | Qt.WindowCloseButtonHint)
-        items = (grid or {}).get("items") or {}
-        self.rows = []
-        for old, r in sorted(done.items(), key=lambda kv: kv[1].get("at") or "", reverse=True):
-            f = r.get("file") or ""
-            self.rows.append({"at": r.get("at") or "", "by": r.get("by") or "", "old": old,
-                              "old_name": r.get("old_name") or (items.get(old) or {}).get("name") or "",
-                              "new": r.get("new") or "", "name": r.get("name") or "", "size": r.get("size") or "",
-                              "in": tr("在") if r.get("new") in items else tr("不在"),
-                              "file": (os.path.basename(f) + (f" · {r['row']}" if r.get("row") else "")
-                                       + (f" ← {r['moved_to']}" if r.get("moved_to") else "")) if f else "",
-                              "_path": f})
+        self.restored = False
+        self._load(done)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(20, 16, 20, 14)
         lay.setSpacing(10)
@@ -844,23 +844,42 @@ class ReplaceLogDialog(QDialog):
         lay.addLayout(head)
         self.t = QTableWidget(0, len(self.COLS))
         self.t.setHorizontalHeaderLabels([tr(h) for _f, h, _w in self.COLS])
+        tips = {"old_price": tr("替换那天 Griglia 里记的价格（PA MIGLIORE，没有就用 PREZZO NETTO）· 供应商"),
+                "price": tr("替换那天这周报价里最便宜的价格 · 批发商"),
+                "diff": tr("新价格比原价格贵多少（红 = 贵了，绿 = 便宜了）"),
+                "old_sup": tr("替换那天 Griglia 里原商品的供应商"),
+                "sup": tr("替换那天报价最便宜的批发商（新价格就是它的）")}
+        for c, (f, _h, _w) in enumerate(self.COLS):
+            if f in tips:
+                self.t.horizontalHeaderItem(c).setToolTip(tips[f])
+            if f in self.PRICE_F:
+                self.t.horizontalHeaderItem(c).setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
         self.t.verticalHeader().setVisible(False)
         self.t.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.t.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.t.setShowGrid(False)
-        self.t.verticalHeader().setDefaultSectionSize(34)
+        import product_images as PI
+        self.t.verticalHeader().setDefaultSectionSize(PI.row_height(settings))
+        fi = {f: c for c, (f, _h, _w) in enumerate(self.COLS)}
+        self.t.setItemDelegateForColumn(fi["old_name"], PI.ThumbDelegate(self.t, fi["old"], settings=settings))
+        self.t.setItemDelegateForColumn(fi["name"], PI.ThumbDelegate(self.t, fi["new"], settings=settings))
         hh = self.t.horizontalHeader()
         for c, (_f, _h, w) in enumerate(self.COLS):
             hh.setSectionResizeMode(c, QHeaderView.Interactive)
             self.t.setColumnWidth(c, w)
-        self.ctl = TableSortFilter(self.t, lambda: len(self.rows), self._text, self._fill, hide=self._hidden)
+        num = {fi[f] for f in self.PRICE_F}
+        self.ctl = TableSortFilter(self.t, lambda: len(self.rows), self._text, self._fill, key=self._key,
+                                   hide=self._hidden, numeric=num)
         self.ctl.rendered.connect(lambda n, tot: self.count.setText(tr("{0:,} / {1:,}", n, tot)))
         import settings as ST
         self.ctl.remember(settings.setdefault("griglia_cols", {}), "replace_log", lambda: ST.save_settings(settings),
-                          [f for f, _h, _w in self.COLS])
+                          [f for f, _h, _w in self.COLS], ver=3)
         self.search.textChanged.connect(lambda _: self.ctl.render())
         lay.addWidget(self.t, 1)
         foot = QHBoxLayout()
+        self.b_restore = __import__("erp_widgets").CountButton("", tone="warn")
+        self.b_restore.clicked.connect(self._restore)
+        foot.addWidget(self.b_restore)
         foot.addStretch()
         self.b_open = QPushButton(tr("打开文件"))
         self.b_open.setToolTip(tr("用 Excel 打开选中那一条改的 Griglia"))
@@ -870,13 +889,61 @@ class ReplaceLogDialog(QDialog):
         close.clicked.connect(self.accept)
         foot.addWidget(close)
         lay.addLayout(foot)
-        self.resize(1300, 560)
+        self._update_restore()
+        self.resize(1340, 600)
         from erp_widgets import fit_to_screen
         fit_to_screen(self)
         self.ctl.render()
 
+    def _load(self, done):
+        import os
+        import griglia_replace as GR
+        self.done_log = done            # 别叫 self.done：会盖掉 QDialog.done()，窗口就关不掉了（11-18 bug）
+        items = (self.grid or {}).get("items") or {}
+        struck = (self.grid or {}).get("struck") or {}
+        self.missing = set(GR.missing_old_rows(done, self.grid))
+        self.rows = []
+        for old, r in sorted(done.items(), key=lambda kv: kv[1].get("at") or "", reverse=True):
+            f = r.get("file") or ""
+            og = items.get(old) or struck.get(old) or {}
+            ng = items.get(r.get("new")) or {}
+            op = r.get("old_price") if r.get("old_price") is not None else GR.old_price_sup(og)[0]
+            np_ = r.get("best") if r.get("best") is not None else (ng.get("best") or ng.get("price"))
+            dst = r.get("restored_to") or r.get("moved_to")
+            self.rows.append({"at": r.get("at") or "", "by": r.get("by") or "", "old": old,
+                              "old_name": r.get("old_name") or og.get("name") or "",
+                              "new": r.get("new") or "", "name": r.get("name") or "", "size": r.get("size") or "",
+                              "old_price": op, "price": np_,
+                              "old_sup": r.get("old_sup") or GR.old_price_sup(og)[1],
+                              "sup": r.get("best_sup") or ng.get("supplier") or "",
+                              "diff": (np_ - op) / op if op and np_ else None,
+                              "in": tr("在") if r.get("new") in items else tr("不在"),
+                              "file": (os.path.basename(f) + (f" · {r['row']}" if r.get("row") else "")
+                                       + (f" ← {dst}" if dst else "")) if f else "",
+                              "_path": f, "_missing": old in self.missing})
+
+    def _update_restore(self):
+        n = len(self.missing)
+        self.b_restore.setVisible(bool(n))
+        self.b_restore.setText(tr("把原商品放回最下面"))
+        self.b_restore.set_count(n)
+        self.b_restore.setToolTip(tr("这几条替换时原商品没有留在 Griglia 最下面（11-18 以前 Griglia 已停用的商品是直接换掉的）。"
+                                     "从程序文件夹的 Griglia 备份里找到原来那一行，抄到最下面划线，和现在替换的做法一样"))
+
+    def _key(self, i, c):
+        f = self.COLS[c][0]
+        if f in self.PRICE_F:
+            v = self.rows[i].get(f)
+            return v if v is not None else -1e9
+        return None
+
     def _text(self, i, c):
-        return str(self.rows[i].get(self.COLS[c][0]) or "")
+        r, f = self.rows[i], self.COLS[c][0]
+        if f in ("old_price", "price"):
+            return f"€{r[f]:.2f}" if r.get(f) else ""
+        if f == "diff":
+            return f"{r['diff']:+.0%}" if r.get("diff") is not None else ""
+        return str(r.get(f) or "")
 
     def _hidden(self, i):
         q = self.search.text().strip().lower()
@@ -890,15 +957,66 @@ class ReplaceLogDialog(QDialog):
             it.setData(Qt.UserRole, i)
             if f == "old_name":
                 it.setForeground(QColor(T("err")))
+                if r["_missing"]:
+                    it.setToolTip(tr("原商品没有留在 Griglia 最下面（可以点左下角「把原商品放回最下面」）"))
             elif f == "name":
                 it.setForeground(QColor(T("accent")))
             elif f == "in" and r["in"] != tr("在"):
                 it.setForeground(QColor(T("warn")))
-            elif f in ("old", "new", "at", "by", "file"):
+            elif f in ("old", "new", "at", "by", "file", "old_sup", "sup"):
                 it.setForeground(QColor(T("muted")))
+            if f in self.PRICE_F:
+                it.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                it.setFont(_mono_font())
+            if f == "old_price" and r["old_sup"]:
+                it.setToolTip(r["old_sup"])
+            elif f == "price" and r["sup"]:
+                it.setToolTip(r["sup"])
+            elif f == "diff" and r.get("diff") is not None:
+                d = r["diff"]
+                if abs(d) >= 0.005:
+                    it.setForeground(QColor(T("err") if d > 0 else T("ok")))
             if f == "file" and r["_path"]:
                 it.setToolTip(r["_path"])
+            if f == "file" and r["_missing"]:
+                it.setForeground(QColor(T("warn")))
             self.t.setItem(k, c, it)
+
+    def _restore(self):
+        import os
+        import commands as CMD
+        import griglia_replace as GR
+        import product_images as PI
+        from erp_widgets import BusyDialog, excel_call
+        olds = [r["old"] for r in self.rows if r["_missing"]]
+        if not olds or not self.grid:
+            return
+        src = self.source if self.source and os.path.isfile(self.source) else ""
+        target = src or self.grid["path"]
+        names = "\n".join(f"  · {r['old_name'] or r['old']}" for r in self.rows if r["_missing"])
+        msg = tr("把这 {0} 个原商品放回 Griglia 最下面（划线、灰字，和现在替换的做法一样）：\n{1}\n\n"
+                 "改的文件：{2}\n内容从程序文件夹的 Griglia 备份里找原来那一行照抄；备份里找不到的会告诉你。\n"
+                 "改之前再存一份备份；先在本机副本上改，逐格核对：除了最下面新加的这几行别的格子都没变才放回。Excel / WPS 要关着。\n"
+                 "同步文件夹里的文件同事都会看到。确定放回？", len(olds), names, target)
+        if QMessageBox.question(self, tr("把原商品放回最下面"), msg) != QMessageBox.Yes:
+            return
+        url = self.settings.get("image_url") or PI.DEFAULT_URL
+        res, err = BusyDialog.run(self, tr("把原商品放回最下面"), tr("正在从备份里找原商品、用 Excel 改 Griglia…（文件大，请等一下）"),
+                                  lambda: excel_call(lambda: CMD.griglia_restore_old(self.grid, olds, source=src, url=url)))
+        if err:
+            QMessageBox.warning(self, tr("把原商品放回最下面"), tr("没放回：{0}", err))
+            return
+        self.restored = True
+        done = GR.load_done(os.path.dirname(self.grid["path"]))
+        for o, row in res["restored"]:
+            self.grid.setdefault("struck", {}).setdefault(o, {"ean": o, "row": row})
+        self._load(done)
+        self._update_restore()
+        self.ctl.render()
+        text = tr("放回了 {0} 个原商品；已逐格核对，其余 {1} 个格子都没变", len(res["restored"]), res.get("checked", 0))
+        if res["missing"]:
+            text += "\n" + tr("备份里找不到这几个（要手动补）：{0}", "、".join(res["missing"]))
+        QMessageBox.information(self, tr("把原商品放回最下面"), text)
 
     def _open(self):
         sel = self.t.selectionModel().selectedRows()

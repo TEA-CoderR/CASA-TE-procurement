@@ -522,3 +522,29 @@ def test_moq_read_once_when_two_threads_ask():
         assert "rotto" in S.load_moq_into(moq, "c")["raw"]
     finally:
         S.parse_moq = orig
+
+
+def test_pdv_order_file_has_extra_columns_on_every_grid(tmp_path):
+    """2026-11-16 用户：门店采购的订单文件也要附加列（GIA · ULT. ARRIVO · QTA ULT. ARR. · ULT. VENDITA · MEDIA MENS. …）"""
+    from openpyxl import load_workbook
+    p = str(tmp_path / "SCHEDA SAIS 0726.xlsx")
+    _pdv_file(p, fatt_per_store=False, grids=("GRIGLIA ESTIVI", "GRIGLIA INVERNO"))
+    sc = S.parse_scheda(p)
+    for it in sc["items"]:
+        it["db_code"] = it["code"]
+    x = {"sugg": 6, "inv": 3, "inv_raw": 3, "sales": [2, 4, 6, 12], "tier": "B", "cycle": 30,
+         "gia_all": [0, 1, 2, 3, 4, 5], "last_in": "03/11/2026", "last_in_qty": 12.0, "last_sale": "14/11/2026"}
+    last = sc["items"][-1]
+    dem = {3: {sc["items"][0]["code"]: x, last["code"]: dict(x, last_in="01/10/2026")}}
+    extra = S.extra_data(sc, dem, {}, None)
+    extra, heads = S.file_extra(extra, S.extra_headers())
+    out = str(tmp_path / "o.xlsx")
+    S.write_pdv_file(sc, 3, {sc["items"][0]["row"]: 2}, out, extra=extra.get(3), headers=heads)
+    wb = load_workbook(out)
+    for g, row, arr in (("GRIGLIA ESTIVI", 6, "03/11/2026"), ("GRIGLIA INVERNO", 8, "01/10/2026")):
+        ws = wb[g]
+        assert [ws.cell(5, c).value for c in range(12, 17)] == \
+               ["GIA", "ULT. ARRIVO", "QTA ULT. ARR.", "ULT. VENDITA", "MEDIA MENS."]      # 接在 IMPORTO（K）后面
+        assert [ws.cell(row, c).value for c in range(12, 16)] == [3, arr, 12, "14/11/2026"]
+    assert wb["GRIGLIA ESTIVI"]["H6"].value == 2
+    assert wb["GRIGLIA ESTIVI"].cell(7, 12).value is None          # 数据库没有的商品留空

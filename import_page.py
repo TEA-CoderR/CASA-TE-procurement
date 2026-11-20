@@ -44,14 +44,13 @@ class ImportPage:
     def build(self):
         w = QWidget()
         lay = QVBoxLayout(w)
-        lay.setContentsMargins(24, 20, 24, 24)
+        lay.setContentsMargins(28, 22, 28, 24)
         lay.setSpacing(14)
-        t = QLabel(tr("导入 / 导出"))
-        t.setObjectName("PageTitle")
-        t.setText(t.text() + "  ⓘ")
-        t.setToolTip(tr("导入一份商品清单，查各门店最近的销量和库存，判断哪家门店能调货给要补货的门店，再导出完整报告。"))
-        lay.addWidget(t)
-        self.steps = StepBar([(tr("导入清单"), ""), (tr("查销量和库存"), ""), (tr("调货判断"), tr("可选")),
+        from page_kit import Hero
+        self.hero = Hero(tr("导入 / 导出"), tr("还没有选择文件"),
+                         tip=tr("导入一份商品清单，查各门店最近的销量和库存，判断哪家门店能调货给要补货的门店，再导出完整报告。"))
+        lay.addWidget(self.hero)
+        self.steps = __import__("page_kit").FlowCard([(tr("导入清单"), ""), (tr("查销量和库存"), ""), (tr("调货判断"), tr("可选")),
                               (tr("导出报告"), "")])
         lay.addWidget(self.steps)
 
@@ -64,7 +63,7 @@ class ImportPage:
         self.file_edit.setReadOnly(True)
         self.file_edit.setPlaceholderText(tr("Excel，里面要有一列商品编号（CodArticolo / Codice / 商品编号 …）"))
         r.addWidget(self.file_edit, 1)
-        b = QPushButton(tr("选择文件…"))
+        b = QPushButton(tr("选择文件"))
         b.clicked.connect(self.choose_file)
         r.addWidget(b)
         cv.addLayout(r)
@@ -228,6 +227,7 @@ class ImportPage:
         self.cfg["last_file"] = p
         save_settings(self.settings)
         self.file_edit.setText(os.path.normpath(p))
+        self.hero.set_sub(os.path.basename(p))
         self.file_info.setText(tr("商品编号列「{0}」· {1} 个商品 · 前几个：{2}", col, len(codes),
                                   ", ".join(map(str, codes[:8])) + (" …" if len(codes) > 8 else "")))
         self.tstack.setCurrentIndex(0)

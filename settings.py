@@ -8,7 +8,7 @@ import copy
 
 DEFAULT_SETTINGS = {
     "last_folder": "",
-    "theme": "dark",           # light / dark
+    "theme": "light",          # light / dark（2026-11-19 起默认浅色）
     "language": "zh",           # zh / en / it
     "auto_backup": True,          # 处理前自动备份 ORDINE / distribuire
     "confirm_before_run": True,   # 开始处理前弹出确认

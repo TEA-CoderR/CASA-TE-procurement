@@ -330,8 +330,8 @@ def apply_quotes(settings, rows, price_dir, log, files=False):
     n = PC.apply_quotes(rows, PC.best_quotes(files))
     for x in rows:                                  # 这几家报价里都没有（比价时会成为缺失）
         x["in_quote"] = bool(x.get("quote_sup"))
-    diff = sum(1 for x in rows if x.get("quote_sup") and x.get("db_pack") and abs(x["pack"] - x["db_pack"]) > 1e-9)
-    log(tr("[检查清单] {0} 份报价：{1} 个商品改用最便宜那家的箱规和件价，其中 {2} 个箱规和数据库不一样",
+    diff = sum(1 for x in rows if x.get("quote_sup") and x.get("db_pack") and abs(x.get("quote_pack", x["pack"]) - x["db_pack"]) > 1e-9)
+    log(tr("[检查清单] {0} 份报价：{1} 个商品改用最便宜那家的件价（箱数照数据库箱规），其中 {2} 个报价箱规和数据库不一样",
            len(files), n, diff))
     return n, len(files)
 
@@ -1048,27 +1048,12 @@ def griglia_replacements(grid, quotes, fresh=None, struck=False):
 GRID_BACKUPS = 5          # 本地备份（不带图片，几 MB）留最近 5 份
 
 
-def griglia_add_replacements(grid, picks, by=None, via="desktop", excel=None, log=None, source=None, url=None,
-                             backup_dir=None):
-    """
-    选好的替代品写进 Griglia（用户 11-09：Griglia 是从同步文件夹拿来的，就直接改同步文件夹那份，本地留备份）：
-      改哪份：source（「换 Griglia…」时记下的原件，在同步文件夹）还在就改它，不然改工作文件夹「0 Griglia」那份；
-      改之前：在程序文件夹 backup/griglia 存一份不带图片的备份（图片换成 =IMAGE 公式，几百 MB → 几 MB）；
-      用 Excel 每个旧商品下面插一行新的、旧的字变灰；改完原件再复制回「0 Griglia」（程序读的那份跟着变）；
-      记进「0 Griglia/_替代记录.json」（时间、谁、旧 → 新、哪个文件、第几行），界面「替换记录」看得到。
-    picks = [(旧商品, 候选)]。返回 {"written": [(旧条码, 新商品所在行 或 None, 旧行挪到的行)], "backup": 备份路径, "file": 改的文件}
-    """
-    import shutil
+def _backup_griglia(target, backup_dir=None, url=None, log=None):
+    """改之前：在程序文件夹 backup/griglia 存一份不带图片的备份（留最近 GRID_BACKUPS 份），返回备份路径"""
     import griglia_replace as GR
     from datetime import datetime
-    path = grid["path"]
-    target = source if source and os.path.isfile(source) else path
-    by = by or os.environ.get("USERNAME") or os.environ.get("USER") or ""
-    d, name = os.path.dirname(target), os.path.basename(target)
-    if os.path.exists(os.path.join(d, "~$" + name)):
-        raise RuntimeError(tr("Griglia 正被 Excel 打开着（{0}），请先关掉再加", name))
     bdir = backup_dir or GR.backup_dir()
-    stem, ext = os.path.splitext(name)
+    stem, ext = os.path.splitext(os.path.basename(target))
     bk = os.path.join(bdir, f"{stem}_{datetime.now():%Y%m%d_%H%M%S}{ext}")
     GR.light_copy(target, bk, url=url, log=log)
     olds = sorted(f for f in os.listdir(bdir) if f.startswith(stem + "_") and f.endswith(ext))
@@ -1077,18 +1062,27 @@ def griglia_add_replacements(grid, picks, by=None, via="desktop", excel=None, lo
             os.remove(os.path.join(bdir, f))
         except OSError:
             pass
-    plan = GR.plan_rows(grid, picks)
-    # 用户 11-11：改完别的内容必须原封不动 → 先在本机临时副本上改，和原文件逐格比（内容 / 公式 / 删除线），
-    # 只有替换的那几行变了才把副本放回去；核对不过原文件一个字都不动
+    return bk
+
+
+def _edit_griglia_safely(target, sheet, edit, log=None):
+    """
+    用户 11-11：改完别的内容必须原封不动 → 先在本机临时副本上改（edit(副本路径, ops)），和原文件逐格比（内容 / 公式 / 删除线），
+    只有 ops 里记的那几行变了才把副本放回去；核对不过原文件一个字都不动。返回 (edit 的结果, 比了几个格子)
+    """
+    import shutil
     import tempfile
+    import griglia_replace as GR
+    from datetime import datetime
+    d, name = os.path.dirname(target), os.path.basename(target)
     st0 = os.stat(target)
     tmp_dir = tempfile.mkdtemp(prefix="casate_griglia_")
     work = os.path.join(tmp_dir, name)
     try:
         shutil.copy2(target, work)
         ops = []
-        written = GR.write_rows(work, grid, plan, excel=excel, log=log, url=url, ops=ops)
-        diffs, n_cells = GR.diff_cells(target, work, grid.get("sheet"), ops, limit=5000)
+        result = edit(work, ops)
+        diffs, n_cells = GR.diff_cells(target, work, sheet, ops, limit=5000)
         if diffs:
             sample = "；".join(f"{c}：{GR._show(b)} → {GR._show(a)}" for c, b, a in diffs[:3])
             try:                                          # 全部不一样的格子写进 logs，方便查原因
@@ -1116,6 +1110,33 @@ def griglia_add_replacements(grid, picks, by=None, via="desktop", excel=None, lo
         os.replace(tmp, target)
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
+    return result, n_cells
+
+
+def griglia_add_replacements(grid, picks, by=None, via="desktop", excel=None, log=None, source=None, url=None,
+                             backup_dir=None):
+    """
+    选好的替代品写进 Griglia（用户 11-09：Griglia 是从同步文件夹拿来的，就直接改同步文件夹那份，本地留备份）：
+      改哪份：source（「换 Griglia…」时记下的原件，在同步文件夹）还在就改它，不然改工作文件夹「0 Griglia」那份；
+      改之前：在程序文件夹 backup/griglia 存一份不带图片的备份（图片换成 =IMAGE 公式，几百 MB → 几 MB）；
+      用 Excel 每个旧商品下面插一行新的、旧的字变灰；改完原件再复制回「0 Griglia」（程序读的那份跟着变）；
+      记进「0 Griglia/_替代记录.json」（时间、谁、旧 → 新、哪个文件、第几行），界面「替换记录」看得到。
+    picks = [(旧商品, 候选)]。返回 {"written": [(旧条码, 新商品所在行 或 None, 旧行挪到的行)], "backup": 备份路径, "file": 改的文件}
+    """
+    import shutil
+    import griglia_replace as GR
+    from datetime import datetime
+    path = grid["path"]
+    target = source if source and os.path.isfile(source) else path
+    by = by or os.environ.get("USERNAME") or os.environ.get("USER") or ""
+    d, name = os.path.dirname(target), os.path.basename(target)
+    if os.path.exists(os.path.join(d, "~$" + name)):
+        raise RuntimeError(tr("Griglia 正被 Excel 打开着（{0}），请先关掉再加", name))
+    bk = _backup_griglia(target, backup_dir, url, log)
+    plan = GR.plan_rows(grid, picks)
+    written, n_cells = _edit_griglia_safely(
+        target, grid.get("sheet"), lambda work, ops: GR.write_rows(work, grid, plan, excel=excel, log=log, url=url, ops=ops),
+        log)
     if os.path.normcase(os.path.abspath(target)) != os.path.normcase(os.path.abspath(path)):
         shutil.copy2(target, path)                       # 工作文件夹那份跟着更新（程序读的是它）
     gdir = os.path.dirname(path)
@@ -1127,11 +1148,58 @@ def griglia_add_replacements(grid, picks, by=None, via="desktop", excel=None, lo
         done[old_ean] = {"new": c["ean"], "name": c["name"], "old_name": o.get("name") or "", "at": now, "by": by,
                          "file": target, "row": row, "moved_to": moved, "in_grid": bool(c.get("in_grid")),
                          "struck": bool(o.get("struck")), "size": GR.change(o.get("name") or "", c["name"])[0],
-                         "best": c.get("best"), "best_sup": c.get("best_sup"), "score": c.get("score")}
+                         "best": c.get("best"), "best_sup": c.get("best_sup"), "score": c.get("score"),
+                         # 新旧价格对比（用户 11-18）：旧 = Griglia 里记的（最低价 PA MIGLIORE，没有用 PREZZO NETTO），新 = 这周报价最低
+                         "old_price": GR.old_price_sup(o)[0], "old_sup": GR.old_price_sup(o)[1],
+                         "old_pack": o.get("pack"), "pack": c.get("pack")}
     GR.save_done(gdir, done)
     audit(by, via, "griglia_add_replacements", {"file": target, "n": len(written), "backup": bk,
                                                 "pairs": [[o, by_old[o][1]["ean"]] for o, _r, _m in written]}, None)
     return {"written": written, "backup": bk, "file": target, "checked": n_cells}
+
+
+def griglia_restore_old(grid, olds, by=None, via="desktop", excel=None, log=None, source=None, url=None,
+                        backup_dir=None):
+    """
+    用户 11-18：以前 Griglia 已停用的商品替换时是原地换掉的，原商品没留在最下面 → 从程序文件夹的备份里找到那一行，
+    抄回 Griglia 最下面划线（和现在替换时一样）。改法和替换一样：先备份 → 临时副本上改 → 逐格核对 → 放回。
+    olds = 旧条码。返回 {"restored": [(旧条码, 行号)], "missing": [备份里也找不到的旧条码], "backup", "file", "checked"}
+    """
+    import shutil
+    import griglia_replace as GR
+    path = grid["path"]
+    target = source if source and os.path.isfile(source) else path
+    by = by or os.environ.get("USERNAME") or os.environ.get("USER") or ""
+    d, name = os.path.dirname(target), os.path.basename(target)
+    if os.path.exists(os.path.join(d, "~$" + name)):
+        raise RuntimeError(tr("Griglia 正被 Excel 打开着（{0}），请先关掉再加", name))
+    gdir = os.path.dirname(path)
+    done = GR.load_done(gdir)
+    backups = GR.list_backups(name, backup_dir)
+    found = GR.find_in_backups(backups, grid, olds, excel=excel, log=log)
+    missing = [o for o in olds if o not in found]
+    if not found:
+        return {"restored": [], "missing": missing, "backup": None, "file": target, "checked": 0}
+    bk = _backup_griglia(target, backup_dir, url, log)
+    items = [(o, (done.get(o) or {}).get("new"), found[o][0], found[o][1]) for o in olds if o in found]
+    info = {}
+    restored, n_cells = _edit_griglia_safely(
+        target, grid.get("sheet"),
+        lambda work, ops: GR.restore_rows(work, grid, items, excel=excel, log=log, url=url, ops=ops, info=info), log)
+    if restored and os.path.normcase(os.path.abspath(target)) != os.path.normcase(os.path.abspath(path)):
+        shutil.copy2(target, path)
+    for o, row in restored:
+        if o in done:
+            done[o]["restored_to"] = row
+            done[o]["moved_to"] = row
+            price, sup = info.get(o, (None, ""))
+            if done[o].get("old_price") is None and price is not None:
+                done[o]["old_price"] = price
+            if not done[o].get("old_sup") and sup:
+                done[o]["old_sup"] = sup
+    GR.save_done(gdir, done)
+    audit(by, via, "griglia_restore_old", {"file": target, "rows": restored, "missing": missing, "backup": bk}, None)
+    return {"restored": restored, "missing": missing, "backup": bk, "file": target, "checked": n_cells}
 
 
 # ===================================================================== LUCAS定制采购：总仓采购 / 门店采购（2026-11-13，智能体用）
