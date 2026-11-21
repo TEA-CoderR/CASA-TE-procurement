@@ -1993,6 +1993,10 @@ class OrderCheck:
         root = self._mem_root()
         if not root or not self.rows:
             return
+        try:
+            self.win.mark_working("审核清单")     # 别的电脑看得到「X 正在做」（工作文件夹在同步盘）
+        except Exception:
+            pass
         import getpass
         import socket
         who = f"{getpass.getuser()}@{socket.gethostname()}"

@@ -218,6 +218,7 @@ def test_one_file_per_supplier(tmp_path, monkeypatch):
     assert lines == {1: {7: 2}, 3: {8: 1}}
     assert marks["FOIANO"] == S.GRIGLIA_MARK["direct"] and marks["S.FILIPPO"] == S.GRIGLIA_MARK["bms"]
     assert marks["S.MARCO"] == ""
+    assert w[1][7] == ("3",) and len(w[0]) == 7          # BMS 那行多一项：哪几家店凑的（订单跟踪写 BMS (FI)）
 
 
 def test_allocate_uses_bms_picks(tmp_path, monkeypatch):

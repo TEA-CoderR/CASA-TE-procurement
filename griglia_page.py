@@ -530,10 +530,11 @@ class GrigliaPage:
                 from settings import app_dir
                 today = date.today().isoformat()
                 sp = os.path.join(app_dir(), "cache", "griglia", "seen.json")
-                seen = G.load_seen(sp)
+                shared = W.data_dir(r)                 # 工作文件夹在同步盘：几台电脑的新上架记录合起来
+                seen = G.load_seen_all(sp, shared)
                 hist = any(seen.get(k, {}).get("since", today) < today for k in quotes)
                 seen, fresh = G.track(seen, quotes, today)
-                G.save_seen(sp, seen)
+                G.save_seen_all(sp, seen, shared)
                 st = G.stats(grid, quotes, fresh if hist else None)
                 import griglia_replace as GR
                 GR.set_shared((self.settings.get("griglia") or {}).get("source") or "")

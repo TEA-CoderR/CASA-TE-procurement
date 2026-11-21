@@ -17,7 +17,7 @@ import copy
 MODULE = "company_defaults.py"
 
 # 顶层不同步的（个人的 / 这台电脑的）
-SKIP_TOP = {"last_folder", "theme", "ui_dark_v2", "ui_light_v3", "language", "db", "wholesale_root", "wholesale_batch", "user_name", "user_site",
+SKIP_TOP = {"last_folder", "theme", "ui_dark_v2", "ui_light_v3", "deter_shared_v1", "language", "db", "wholesale_root", "wholesale_batch", "user_name", "user_site",
             "company_defaults_ver", "use_web", "window", "geometry", "last_dir",
             "mail",   # 邮箱是每个人自己的（2026-11-06）
             "accent", "density", "theme_follow",   # 外观：每个人自己的（2026-11-16）

@@ -67,12 +67,12 @@ def card_hint(r, today=None):
         return (tr("确认信 {0}", _dm(r["confirmed"])) if r.get("confirmed") else tr("已确认")) + \
             (tr(" · 预计 {0}", _dm(r["expected"])) if r.get("expected") else ""), "muted"
     if lane == "ordered":
-        d0 = r.get("date")
-        n = (today - d0).days if d0 else 0
+        n = r.get("wait_days") or 0               # 工作日（周末不算）：2 个工作日没确认黄、4 个红
         text = tr("邮件已发 · 等确认") if r.get("mails") or r.get("origin") == "mail" else tr("等确认")
         if n >= 1:
-            text += tr(" {0} 天", n)
-        return text, ("warn" if r.get("pending") else "muted")
+            text += tr(" {0} 个工作日", n)
+        lv = r.get("wait_level") or (1 if r.get("pending") else 0)
+        return text, ("err" if lv >= 2 else "warn" if lv else "muted")
     return "", "muted"
 
 

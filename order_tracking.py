@@ -35,7 +35,37 @@ EXCEL_STORE = {"FOIANO": "1", "CAPANNORI": "2", "MARLIA": "2", "SANFILIPPO": "3"
 _STORE_WORDS = (("FOIANO", "1"), ("CAPANNORI", "2"), ("MARLIA", "2"), ("FILIPPO", "3"), ("MARCO", "4"),
                 ("CONCORDIO", "5"), ("BMS", "BMS"))
 IVA = 0.22
-PENDING_DAYS = 2          # 下单超过 2 天还没确认 → 「待确认」
+PENDING_DAYS = 2          # 发出 2 个工作日还没收到确认 → 「待确认」黄色
+PENDING_RED_DAYS = 4      # 4 个工作日（差不多一个星期）还没确认 → 红色（2026-11-21 用户：两天黄、再久红色，按最优解）
+BMS_ABBR = {"1": "FO", "2": "MA", "3": "FI", "4": "SM", "5": "SC"}   # BMS 单后面写凑单门店：BMS (FO, MA, SC)
+
+
+def workdays_between(d0, d1):
+    """d0 之后到 d1（含）有几个工作日（周一到周五）；d1 不比 d0 晚 = 0"""
+    if not d0 or not d1 or d1 <= d0:
+        return 0
+    n, d = 0, d0
+    while d < d1:
+        d += timedelta(days=1)
+        if d.weekday() < 5:
+            n += 1
+    return n
+
+
+def store_label(o):
+    """门店显示：BMS 单后面写是哪几家店凑的（bms_of），例如「BMS (FO, MA, SC)」"""
+    sc = str(o.get("store") or "")
+    name = STORE_NAMES.get(sc, sc)
+    if sc == "BMS" and o.get("bms_of"):
+        ab = [BMS_ABBR.get(str(x), str(x)) for x in sorted(o["bms_of"], key=str)]
+        return f"{name} ({', '.join(ab)})"
+    return name
+
+
+def sent_day(o):
+    """订单邮件发出那天（程序发的有 sent.at），没有就用下单日期"""
+    at = ((o.get("sent") or {}).get("at") or "")[:10]
+    return to_date(at) if at else to_date(o.get("date"))
 LEAD_DEFAULT = 10         # 没有历史时按 10 天到货
 LEAD_MIN_SAMPLES = 2      # 一家供应商至少 2 张到货的单才用它自己的天数
 EXCEL_FIELDS = ("date", "store", "supplier", "buyer", "amount", "confirmed", "arrived", "state", "kind", "note", "ref",
@@ -360,12 +390,15 @@ def rows(st, today=None):
         exp = exp_manual or ((d0 + timedelta(days=round(lead if lead is not None else dflt))) if d0 else None)
         open_ = s in OPEN
         overdue = bool(open_ and exp and today > exp)
-        pending = bool(s == "ordered" and d0 and (today - d0).days >= PENDING_DAYS)
+        wd = workdays_between(sent_day(o), today) if s == "ordered" else 0
+        wait_level = 2 if wd >= PENDING_RED_DAYS else 1 if wd >= PENDING_DAYS else 0
+        pending = bool(s == "ordered" and wait_level)
         days = (arr - d0).days if (arr and d0) else ((today - d0).days if (d0 and open_) else None)
         m = st.meta.get(oid, {})
         last = max(m.values(), key=lambda w: w[0]) if m else None
         out.append({"id": oid, "date": d0, "store": str(o.get("store") or ""),
-                    "store_name": STORE_NAMES.get(str(o.get("store") or ""), str(o.get("store") or "")),
+                    "store_name": store_label(o), "bms_of": list(o.get("bms_of") or []),
+                    "wait_days": wd, "wait_level": wait_level,
                     "supplier": disp.get(k) or str(o.get("supplier") or ""), "raw_supplier": o.get("supplier") or "",
                     "sup_key": k, "buyer": str(o.get("buyer") or ""), "amount": o.get("amount"),
                     "status": s, "confirmed": conf, "arrived": arr, "expected": exp, "expected_manual": bool(exp_manual),
@@ -981,6 +1014,8 @@ def register_drafts(st, source, items, in_scope=None, today=None):
         f = {"date": day, "store": store, "supplier": sup,
              "amount": round(float(it["amount"]), 2) if it.get("amount") is not None else None,
              "colli": it.get("colli"), "file": it.get("file") or None, "origin": source}
+        if it.get("bms_of"):                 # BMS 单是哪几家店凑的（"1".."5"）
+            f["bms_of"] = sorted(str(x) for x in it["bms_of"])
         cur = st.orders.get(oid)
         if cur is None and st.deleted.get(oid) in ("mail", "merged"):
             continue                    # 已经和 Excel 手填的那张合并了（mail_match.merge_duplicates），重新配货不再生成
@@ -1024,8 +1059,9 @@ def register_store_orders(settings, written, log=None, source="store_orders"):
     st = store_for(settings)
     if st is None:
         return None
-    items = [{"store": store_code(dest), "supplier": sup, "colli": colli, "amount": amt, "file": p}
-             for p, sup, dest, colli, amt, _status, _sc in written or []]
+    items = [{"store": store_code(w[2]), "supplier": w[1], "colli": w[3], "amount": w[4], "file": w[0],
+              "bms_of": list(w[7]) if len(w) > 7 and w[7] else None}
+             for w in written or []]
     sups = {sup_key(x["supplier"]) for x in items}
     res = register_drafts(st, source, items, in_scope=lambda o: sup_key(o.get("supplier")) in sups)
     if log:

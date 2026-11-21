@@ -112,6 +112,17 @@ if not settings.get("ui_light_v3"):         # 2026-11-19 用户：以后以浅�
         save_settings(settings)
     except Exception:
         pass
+if not settings.get("deter_shared_v1"):    # 2026-11-21 用户：DETERSIVO 工作文件夹搬进同步盘（几台电脑同一份），每台电脑换一次
+    try:
+        import workspace as _W0
+        _r0 = _W0.find_shared_root()
+        if _r0:                               # 找不到同步盘的电脑下次打开再找
+            settings["wholesale_root"] = _r0
+            settings["last_folder"] = ""      # 以前的是本机测试数据，不再打开
+            settings["deter_shared_v1"] = True
+            save_settings(settings)
+    except Exception:
+        pass
 theme.set_theme(settings.get("theme", "dark"))
 theme.set_accent(settings.get("accent") or "blue")
 theme.set_density(settings.get("density") or "normal")
@@ -3125,6 +3136,7 @@ class MainWindow(QMainWindow):
             steps.append((name, now - t))
             t = now
         import reorder_service as _RS
+        self._follow_latest_result()           # 别的电脑比完的更新：打开就看最新那一批（同步盘共用工作文件夹）
         if settings.get("last_folder") and os.path.isdir(settings["last_folder"]) and _RS.batch_root_of(settings["last_folder"]):
             self.folder_edit.setText(settings["last_folder"])      # 上次在看的门店比价文件夹
         mark("上次文件夹")
@@ -5230,6 +5242,8 @@ class MainWindow(QMainWindow):
         if self.running or self.order_check.running:
             return
         root = self.ws_root()
+        if not self._others_not_working(root, tr("检查门店清单")):
+            return
         st = W.scan(root)
         if not st["lists"]:
             QMessageBox.information(self, tr("开始"), tr("「门店清单」里还没有清单。把门店发来的订货清单拖进去。"))
@@ -5255,8 +5269,36 @@ class MainWindow(QMainWindow):
         if st["elim_loose"]:
             self.log(tr("⚠ 「3 扣减文件」下面有 {0} 个文件不在门店子文件夹里，这次不会扣减", len(st["elim_loose"])))
         if items:
+            self.mark_working("检查门店清单")
             self.cmp_steps.set_current(1)
             self.order_check.run_lists(items)
+
+    def mark_working(self, what):
+        """这台电脑在做 DETERSIVO（工作文件夹几台电脑共用）：记下来，别的电脑看得到「X 正在做」"""
+        import workspace as W
+        try:
+            W.mark_working(self.ws_root(), settings.get("user_name") or os.environ.get("USERNAME") or "", what)
+        except Exception as e:
+            file_logger.warning(f"mark working failed: {e}")
+
+    def _others_not_working(self, root, what):
+        """别的电脑 30 分钟内在做 DETERSIVO → 先问（同时检查 / 比价会改同一批文件）；没人在做或者选继续 → True"""
+        import workspace as W
+        busy = W.who_works(root)
+        if not busy:
+            return True
+        u, pc, doing, at = busy[0]
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Warning)
+        box.setWindowTitle(what)
+        box.setText(tr("{0}（{1}）正在做 DETERSIVO：{2}，最后操作 {3}。", u or pc, pc, tr(doing) if doing else "",
+                       at.strftime("%H:%M")))
+        box.setInformativeText(tr("两台电脑同时检查清单或比价，会改同一批文件、结果互相覆盖。\n"
+                                  "只想看他的结果不用继续。确定要现在开始吗？"))
+        go = box.addButton(tr("仍然开始"), QMessageBox.AcceptRole)
+        box.addButton(tr("取消"), QMessageBox.RejectRole)
+        box.exec()
+        return box.clickedButton() is go
 
     def _cmp_went_bg(self):
         if getattr(self, "_in_batch", False):
@@ -5275,6 +5317,7 @@ class MainWindow(QMainWindow):
         self._batch_info = {}
         if msg:
             self.banner_folder.show_msg(msg, "warn" if warn else "ok")
+        self.mark_working("比价分配")
         self.refresh_ws()
         self._run_next_in_batch()
 
@@ -5923,6 +5966,30 @@ class MainWindow(QMainWindow):
             final = manual
         self.stage.setText(tr("写入文件…"))
         return {"assignment": final, "sources": sources}
+
+    def _follow_latest_result(self):
+        """
+        工作文件夹在同步盘、几台电脑共用（2026-11-21）：工作文件夹里最新一批比本机上次看的新（或者上次看的不在
+        这个工作文件夹里）→ 改成看最新那一批，同事比完的结果打开程序就看得到
+        """
+        import workspace as W
+        try:
+            root = os.path.normpath(settings.get("wholesale_root") or "")
+            if not root or not os.path.isdir(root):
+                return
+            new = W.latest_result_folder(root)
+            if not new:
+                return
+            last = settings.get("last_folder") or ""
+            inside = last and os.path.normcase(os.path.normpath(last)).startswith(os.path.normcase(root) + os.sep)
+
+            def day(p):
+                return os.path.basename(os.path.dirname(os.path.normpath(p)))
+            if not inside or not os.path.isdir(last) or day(new) > day(last):
+                settings["last_folder"] = new
+                save_settings(settings)
+        except Exception as e:
+            file_logger.warning(f"follow latest result failed: {e}")
 
     def _load_saved_result(self):
         """打开程序时，载入这个文件夹上次的分配结果（可以继续修改）；没有的话显示最近一条历史记录"""

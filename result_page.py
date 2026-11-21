@@ -440,7 +440,7 @@ def _batch_runs(s):
     hid = s.get("history_id")
     me = next((e for e in runs if e.get("id") == hid), None)
     if not me:
-        return []
+        return _folder_runs(s)        # 别的电脑比的（工作文件夹在同步盘）：本机没有历史记录，按文件夹找同一批
     key = _batch_key(me)
     seen, out = set(), []
     for e in sorted(runs, key=lambda e: e.get("time") or "", reverse=True):
@@ -454,11 +454,54 @@ def _batch_runs(s):
     return sorted(out, key=lambda e: e.get("time") or "")
 
 
+def _folder_runs(s):
+    """
+    这一批的几家门店，直接看「4 比价结果\日期\」下面每家店文件夹里的比价结果（_备份/last_allocation.json），
+    不靠本机的历史记录（2026-11-21：同事电脑比的，这台电脑也要能切换着看）。id = "dir:" + 门店文件夹
+    """
+    import json
+    import reorder_service as RS
+    from datetime import datetime
+    of = ((s or {}).get("state") or {}).get("ordine_file") or ""
+    folder = os.path.dirname(os.path.dirname(of)) if of else ""
+    if not folder or not RS.batch_root_of(folder):
+        return []
+    day = os.path.dirname(os.path.normpath(folder))
+    out = []
+    try:
+        subs = sorted(os.listdir(day))
+    except OSError:
+        return []
+    for n in subs:
+        p = os.path.join(day, n, "_备份", "last_allocation.json")
+        if not os.path.isfile(p):
+            continue
+        try:
+            with open(p, encoding="utf-8") as f:
+                d = json.load(f)
+        except (OSError, ValueError):
+            continue
+        out.append({"id": "dir:" + os.path.join(day, n), "store": n,
+                    "final_cost": sum((x.get("amount") or 0) for x in d.get("suppliers") or []),
+                    "missing": d.get("missing") or 0,
+                    "time": datetime.fromtimestamp(os.path.getmtime(p)).strftime("%Y-%m-%d %H:%M:%S")})
+    cur = os.path.normcase(os.path.normpath(folder))
+    for e in out:                          # 现在看的那家：按钮高亮要对上
+        if os.path.normcase(os.path.normpath(e["id"][4:])) == cur:
+            e["id"] = s.get("history_id") or e["id"]
+            e["_folder"] = folder
+    return sorted(out, key=lambda e: e.get("time") or "")
+
+
 def _open_run(win, hid):
     """点顶上一家门店：是那家店最新的一次比价 → 切换到那家店（修改分配、缺失商品、门店报告都跟着这家）；
     不是最新的 → 只看历史记录"""
     import history
     import reorder_service as RS
+    if str(hid).startswith("dir:"):           # 别的电脑比的：直接打开那家店文件夹里的结果
+        if not getattr(win, "running", False):
+            win._show_store_result(hid[4:])
+        return
     e = next((x for x in history.list_runs() if x.get("id") == hid), None)
     folder = (e or {}).get("folder") or ""
     if folder and RS.batch_root_of(folder) and os.path.isdir(folder) and not getattr(win, "running", False):

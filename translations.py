@@ -4469,4 +4469,13 @@ TRANSLATIONS = {
     '点一下 = 只看这个品牌的商品（品牌取自原商品），什么都不输也会列出这个品牌的全部商品。\n不点也行：搜出来的同品牌商品排在前面，其他品牌放在下面': ("Click = show only this brand (taken from the original item); with an empty search it lists all products of the brand.\nWithout clicking: results of the same brand come first, other brands below", "Clicca = solo questa marca (presa dall'articolo originale); con la ricerca vuota elenca tutti gli articoli della marca.\nSenza cliccare: gli articoli della stessa marca vengono prima, le altre marche sotto"),
     '只看 {0}': ('Only {0}', 'Solo {0}'),
     '其他品牌 · {0} 个': ('Other brands · {0}', 'Altre marche · {0}'),
+    '工作文件夹在同步盘，几台电脑共用同一份：一个人在做时，另一台电脑可以看结果，但不要同时检查清单或比价': ('The work folder is on the synced drive and shared by all computers: while one person is working, the others can view the results but should not check lists or compare prices at the same time', 'La cartella di lavoro è sul disco sincronizzato e condivisa da tutti i computer: mentre una persona lavora, gli altri possono vedere i risultati ma non devono controllare le liste o confrontare i prezzi contemporaneamente'),
+    '{0} 正在做（{1}）· {2}': ('{0} is working ({1}) · {2}', '{0} sta lavorando ({1}) · {2}'),
+    '本周 {0} 做过 · {1}': ('Done this week by {0} · {1}', 'Fatto questa settimana da {0} · {1}'),
+    '{0}（{1}）正在做 DETERSIVO：{2}，最后操作 {3}。': ('{0} ({1}) is working on DETERSIVO: {2}, last action {3}.', '{0} ({1}) sta lavorando su DETERSIVO: {2}, ultima operazione {3}.'),
+    '两台电脑同时检查清单或比价，会改同一批文件、结果互相覆盖。\n只想看他的结果不用继续。确定要现在开始吗？': ('If two computers check lists or compare prices at the same time, they change the same files and overwrite each other.\nTo only view the results, do not continue. Start now anyway?', 'Se due computer controllano le liste o confrontano i prezzi insieme, modificano gli stessi file e si sovrascrivono.\nPer vedere solo i risultati non serve continuare. Iniziare comunque?'),
+    '仍然开始': ('Start anyway', 'Inizia comunque'),
+    ' {0} 个工作日': (' {0} working days', ' {0} giorni lavorativi'),
+    '订单发出 {0} 个工作日以上还没收到确认的': ('Orders sent {0}+ working days ago and not yet confirmed', 'Ordini inviati da {0}+ giorni lavorativi e non ancora confermati'),
+    '订单发出 {0} 个工作日了还没收到确认（2 个工作日黄色、{1} 个红色）': ('Order sent {0} working days ago, no confirmation yet (yellow after 2 working days, red after {1})', 'Ordine inviato da {0} giorni lavorativi, nessuna conferma (giallo dopo 2 giorni lavorativi, rosso dopo {1})'),
 }

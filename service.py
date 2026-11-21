@@ -1469,10 +1469,35 @@ def load_state(root_path):
         from history import _new_names
         _new_names(data)
         if not os.path.exists(st["ordine_file"]):
-            return None
+            data = rebase_paths(data, os.path.dirname(os.path.dirname(st["ordine_file"])), root_path)
+            if not os.path.exists(data["state"]["ordine_file"]):
+                return None
         return data
     except Exception:
         return None
+
+
+def rebase_paths(obj, old_root, new_root):
+    """
+    结果里记的文件路径换个根（2026-11-21：工作文件夹在同步盘，同事电脑上同步盘的位置可能不一样，
+    例如 D: 和 E:）：以 old_root 开头的路径换成 new_root 开头，别的不动
+    """
+    old = os.path.normcase(os.path.normpath(old_root or ""))
+    if not old or os.path.normcase(os.path.normpath(new_root)) == old:
+        return obj
+
+    def fix(v):
+        if isinstance(v, str):
+            n = os.path.normpath(v) if (os.sep in v or "/" in v) else v
+            if os.path.normcase(n) == old or os.path.normcase(n).startswith(old + os.sep):
+                return os.path.join(new_root, n[len(old):].lstrip(os.sep)) if len(n) > len(old) else new_root
+            return v
+        if isinstance(v, dict):
+            return {k: fix(x) for k, x in v.items()}
+        if isinstance(v, list):
+            return [fix(x) for x in v]
+        return v
+    return fix(obj)
 
 
 def _previous_written(root):

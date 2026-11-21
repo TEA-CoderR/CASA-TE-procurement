@@ -2115,8 +2115,9 @@ def write_plans(results, out_root, date_tag=None, on_file=None, calc=None):
         write_order_file(sc, lines, p, extra, heads, marks=plan_marks(plan))
         for sid, st in direct:
             written.append((p, sc["name"], STORE_SHEETS[sid], st["colli"], st["amount"], st["status"], sc["path"]))
-        if b:
-            written.append((p, sc["name"], BMS, b["colli"], b["amount"], b["status"], sc["path"]))
+        if b:                                 # 第 8 项：这张 BMS 单是哪几家店凑的（订单跟踪写「BMS (FO, MA)」）
+            members = tuple(str(sid) for sid in sorted(b.get("per_store") or {}, key=str) if b["per_store"].get(sid))
+            written.append((p, sc["name"], BMS, b["colli"], b["amount"], b["status"], sc["path"], members))
     return written
 
 

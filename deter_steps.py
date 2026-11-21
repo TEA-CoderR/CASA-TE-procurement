@@ -289,6 +289,38 @@ def _file_row(tag, name, sub, on_remove=None, tone="accent", bad=False):
     return f
 
 
+def who_text(root, now=None):
+    """(文字, 正在做吗)：别的电脑 30 分钟内在做 → 「X 正在做 · 几点」；不然这周别人做过 → 「本周 X 做过 · 几号几点」"""
+    import workspace as W
+    now = now or datetime.now()
+    busy = W.who_works(root, now=now)
+    if busy:
+        u, pc, what, at = busy[0]
+        return tr("{0} 正在做（{1}）· {2}", u or pc, tr(what) if what else tr("DETERSIVO"), at.strftime("%H:%M")), True
+    old = W.who_works(root, now=now, minutes=7 * 24 * 60)
+    if old:
+        u, pc, what, at = old[0]
+        return tr("本周 {0} 做过 · {1}", u or pc, at.strftime("%d/%m %H:%M")), False
+    return "", False
+
+
+def _render_who(win, root):
+    lab = getattr(win, "_dc_who", None)
+    if lab is None:
+        return
+    try:
+        txt, busy = who_text(root)
+    except Exception:
+        txt, busy = "", False
+    lab.setVisible(bool(txt))
+    lab.setText(txt)
+    lab.setToolTip(tr("工作文件夹在同步盘，几台电脑共用同一份：一个人在做时，另一台电脑可以看结果，"
+                      "但不要同时检查清单或比价"))
+    col, bg = (T("warn"), T("warn_soft")) if busy else (T("muted"), T("canvas"))
+    lab.setStyleSheet(f"color:{col}; background:{bg}; border-radius:10px; padding:3px 10px; font-size:12px;"
+                      f" font-weight:{'600' if busy else '400'};")
+
+
 # ===================================================================== ① 收集文件
 def build_collect(win, lay):
     """lay = 第 1 步的竖排版面（main._page_order 里，在老的工作文件夹 Panel 位置）"""
@@ -313,6 +345,9 @@ def build_collect(win, lay):
         b.clicked.connect(fn)
         path.addWidget(b)
     path.addStretch()
+    win._dc_who = QLabel("")                 # 2026-11-21：工作文件夹几台电脑共用 → 别的电脑谁在做 / 上次谁做的
+    win._dc_who.hide()
+    path.addWidget(win._dc_who)
     lay.addLayout(path)
     win.banner_folder.setParent(None)
     lay.addWidget(win.banner_folder)
@@ -403,6 +438,7 @@ def render_collect(win, st, root):
         for c in (win._dc_lists, win._dc_prices, win._dc_elim):
             c.restyle()
     today = date.today()
+    _render_who(win, root)
 
     def mtime(folder, f):
         try:

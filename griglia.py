@@ -355,6 +355,48 @@ def save_seen(path, seen):
         pass
 
 
+def merge_seen(a, b):
+    """两份新上架记录合起来：每家批发商 since 取早的，每个条码第一次取早的、最后一次取晚的"""
+    out = {k: {"since": v.get("since"), "eans": dict(v.get("eans") or {})} for k, v in (a or {}).items()}
+    for lab, rec in (b or {}).items():
+        cur = out.get(lab)
+        if not cur:
+            out[lab] = {"since": rec.get("since"), "eans": dict(rec.get("eans") or {})}
+            continue
+        cur["since"] = min(x for x in (cur.get("since"), rec.get("since")) if x) if (cur.get("since") or rec.get("since")) else None
+        for e, v in (rec.get("eans") or {}).items():
+            o = cur["eans"].get(e)
+            cur["eans"][e] = v if not o else [min(o[0], v[0]), max(o[1], v[1])]
+    return out
+
+
+def seen_shared_files(shared_dir):
+    try:
+        return [os.path.join(shared_dir, n) for n in sorted(os.listdir(shared_dir))
+                if n.startswith("新上架记录_") and n.endswith(".json") and "conflict" not in n.lower()]
+    except OSError:
+        return []
+
+
+def load_seen_all(path, shared_dir=None):
+    """
+    新上架记录：本机一份 + 工作文件夹「_程序数据」里每台电脑一份（2026-11-21：工作文件夹在同步盘，
+    同事那边也要知道哪些是这几周才上架的），合起来
+    """
+    seen = load_seen(path)
+    for p in seen_shared_files(shared_dir) if shared_dir else []:
+        seen = merge_seen(seen, load_seen(p))
+    return seen
+
+
+def save_seen_all(path, seen, shared_dir=None, pc=None):
+    """本机一份；同步盘里只写这台电脑自己那份（不会两台电脑改同一个文件）"""
+    save_seen(path, seen)
+    if shared_dir:
+        import workspace as W
+        save_seen(os.path.join(shared_dir, "新上架记录_%s.json" % (pc or W.me())), seen)
+
+
 def category_mapper(items, offer):
     """
     新品（Griglia 里没有）的类别也用 Griglia 的叫法（CAT.1 大类 / CAT 2 中类 / CAT 3 小类）：

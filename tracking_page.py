@@ -538,7 +538,7 @@ class TrackingPage:
         sr.addStretch(1)
         self.pills = {}                              # 以前的「待登记 / 待确认…」小胶囊：看板的五列代替了，对象留着（列表视图的筛选用）
         tips = {"draft": tr("总仓采购 / DETERSIVO采购生成的订单，还没确认发给供应商。发了以后选中，右键「确认已下单」"),
-                "pending": tr("下单 {0} 天以上还没确认的", OT.PENDING_DAYS),
+                "pending": tr("订单发出 {0} 个工作日以上还没收到确认的", OT.PENDING_DAYS),
                 "overdue": tr("过了预计到货日还没到（含部分到货）"), "stuck": ""}
         for key, _tok in PILLS:
             b = QPushButton("", body)
@@ -1202,14 +1202,15 @@ class TrackingPage:
                     it.setForeground(QColor(T("faint")))
         st_it = self.t.item(k, fids.index(5))
         if st_it is not None and not cancel:
-            tok = "warn" if r["pending"] else STATUS_TOKEN.get(r["status"], "text")
+            tok = ("err" if r.get("wait_level", 0) >= 2 else "warn") if r["pending"] else STATUS_TOKEN.get(r["status"], "text")
             st_it.setForeground(QColor(T(tok)))
             f = st_it.font()
             f.setBold(r["status"] in ("stuck", "partial", "draft") or r["pending"])
             st_it.setFont(f)
             tips = []
             if r["pending"]:
-                tips.append(tr("下单 {0} 天了还没确认", r["days"]))
+                tips.append(tr("订单发出 {0} 个工作日了还没收到确认（2 个工作日黄色、{1} 个红色）",
+                               r.get("wait_days") or 0, OT.PENDING_RED_DAYS))
             if r.get("shipped"):
                 tips.append(tr("发货日期 {0}", _d(r["shipped"])))
             if r.get("mails"):
