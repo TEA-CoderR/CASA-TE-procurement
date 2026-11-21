@@ -397,6 +397,23 @@ def build_collect(win, lay):
     note.setMinimumHeight(58)
     note.clicked.connect(win.open_deter_arrival)
     win._dc_elim.foot.addWidget(note)
+    # 门店在扫码枪上做的清单（2026-11-21）：一键放进来（手动拖文件照旧可以）
+    scan = QPushButton()
+    scan.setObjectName("DeterNote")
+    scan.setCursor(Qt.PointingHandCursor)
+    scan.setToolTip(tr("门店在 Zebra 扫码枪上做好、提交的清单：看哪几家交了，一键写成 Excel 放进「1 门店清单」"))
+    sl = QVBoxLayout(scan)
+    sl.setContentsMargins(12, 10, 12, 10)
+    sl.setSpacing(2)
+    a = QLabel(tr("扫码枪清单"))
+    a.setStyleSheet("font-weight:500;")
+    sl.addWidget(a)
+    sl.addWidget(RP.muted(tr("门店在扫码枪上提交的 → 一键放进来") + "  ›", 12))
+    for w in scan.findChildren(QWidget):
+        w.setAttribute(Qt.WA_TransparentForMouseEvents)
+    scan.setMinimumHeight(58)
+    scan.clicked.connect(lambda: open_scanner_lists(win))
+    win._dc_lists.foot.addWidget(scan)
     chk = QPushButton(tr("报价与数据库核对"))
     chk.setObjectName("Link")
     chk.setCursor(Qt.PointingHandCursor)
@@ -1139,3 +1156,15 @@ def send_all(win):
     refresh_send(win)
     if getattr(win, "tracking", None) is not None:
         win.tracking.check_badge()
+
+
+def open_scanner_lists(win):
+    """DETERSIVO 第 1 步「扫码枪清单」：打开扫码枪窗口的「门店清单」页（要先连好预约平台）"""
+    import booking_api as BA
+    from PySide6.QtWidgets import QMessageBox
+    settings = getattr(win, "_S", None) or {}
+    if not BA.ready(settings):
+        QMessageBox.information(win, tr("扫码枪清单"), tr("门店扫码枪的清单存在预约平台服务器上：请先在 系统设置 → 数据连接 → 预约平台 里填好密钥。"))
+        return
+    from scanner_dialog import ScannerDialog
+    ScannerDialog(win, settings, tab="lists").exec()

@@ -565,12 +565,19 @@ class GrigliaPage:
             meta, rows = SC.build(grid, quotes, subs, SC.direct_index(self.settings, lambda *_: None),
                                   week=date.today().strftime("%G-W%V"))
             me = (self.settings.get("tracking") or {}).get("me") or self.settings.get("user_name") or "?"
-            logs = []
-            SC.publish_if_changed(self.settings, meta, rows, me, log=logs.append)
-            for m in logs:
-                self.sig.log.emit(m)
         except Exception as e:
             self.sig.log.emit(tr("⚠ 扫码枪目录没发布：{0}", e))
+            return
+
+        def send():
+            """每家门店的库存 / 销量 / 价格要查数据库（几分钟）：单独一条线程（不占 Excel 那条线程，也不用 Excel）"""
+            try:
+                stores = SC.cached_store_data(self.settings, rows, quotes, log=self.sig.log.emit)
+                SC.publish_if_changed(self.settings, meta, rows, me, log=self.sig.log.emit, stores=stores)
+            except Exception as e:
+                self.sig.log.emit(tr("⚠ 扫码枪目录没发布：{0}", e))
+        import threading
+        threading.Thread(target=send, name="scanner-publish", daemon=True).start()
 
     def _warm_replacements(self, grid, quotes, fresh):
         """统计完在后台接着把「找替代商品」算好（约 1 秒）：点按钮时不用再等"""

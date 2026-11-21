@@ -1,7 +1,13 @@
 """门店扫码枪目录（2026-11-21）：Griglia + 这周报价 + 替代商品 + 直厂 → 扫码枪离线查的目录"""
 import json
+import sys
+import types
 
 import pytest
+
+if "win32com" not in sys.modules:                 # utils 一 import 就要（云端没有 Excel）
+    w = types.ModuleType("win32com"); c = types.ModuleType("win32com.client"); w.client = c
+    sys.modules["win32com"] = w; sys.modules["win32com.client"] = c
 
 import booking_api as BA
 import scanner_catalog as SC
@@ -64,3 +70,91 @@ def test_device_accounts_go_through_platform():
     assert SC.pretty_code(code) == "ABCD-2345"
     assert SC.set_active({}, 4, False, session=s)["active"] is False
     assert s.calls[1][3] == {"action": "deactivate"}
+
+
+def test_store_data_row_suggestion_minus_transit_and_prices():
+    from datetime import date
+    x = {"store_inv": 9.0, "sales": [22, 40, 60, 100], "sys_box": 3, "pack": 6.0}
+    r = SC.store_row("8001", x, 1, 1.104, 2.49, {"price": 1.99, "end": date(2026, 11, 30)})
+    assert r == ["8001", 9.0, 22.0, 1.0, 2, 1.1, 2.49, 1.99, "30/11", 6.0]
+    assert SC.store_row("8001", {"sys_box": None}, 0, None, None, None)[4] is None
+    assert SC.store_row("8001", {"sys_box": 1}, 3, None, None, None)[4] == 0      # 在途比建议多：不建议
+    assert SC.cheapest(QUOTES, "8001") == 1.1 and SC.cheapest(QUOTES, "8002") is None
+
+
+def test_publish_sends_each_store_its_own_parts(monkeypatch, tmp_path):
+    BA.set_token("k" * 40)
+    monkeypatch.setattr(SC, "PART", 2)
+    calls = []
+    s = FakeSession({("POST", "/api/erp/catalog"): (200, lambda p, b: calls.append(b) or {"complete": b["part"] == b["parts"]})})
+    meta, rows = SC.build(GRID, QUOTES, {}, None)
+    SC.publish({}, meta, rows, "M", session=s, stores={2: [["8001", 3]], 1: [["8001", 9], ["8002", 0], ["8004", 1]]})
+    assert [c.get("store") for c in calls] == [None, None, None, 1, 1, 2]
+    assert all(c["parts"] == 6 for c in calls)
+    # 门店数据变了也算变了：要重新发布
+    state = str(tmp_path / "st.json")
+    SC.publish_if_changed({}, meta, rows, "M", session=s, log=lambda *_: None, state_path=state, stores={1: [["8001", 9]]})
+    n = len(calls)
+    assert SC.publish_if_changed({}, meta, rows, "M", session=s, log=lambda *_: None, state_path=state, stores={1: [["8001", 9]]}) is None
+    SC.publish_if_changed({}, meta, rows, "M", session=s, log=lambda *_: None, state_path=state, stores={1: [["8001", 8]]})
+    assert len(calls) > n
+
+
+def test_store_data_cached_for_a_few_hours(monkeypatch, tmp_path):
+    runs = []
+    monkeypatch.setattr(SC, "store_data", lambda *a, **k: runs.append(1) or {1: [["8001", 9]]})
+    p = str(tmp_path / "c.json")
+    assert SC.cached_store_data({}, [], {}, log=lambda *_: None, path=p, now=1000) == {1: [["8001", 9]]}
+    assert SC.cached_store_data({}, [], {}, log=lambda *_: None, path=p, now=1000 + 3600) == {1: [["8001", 9]]}
+    assert len(runs) == 1
+    SC.cached_store_data({}, [], {}, log=lambda *_: None, path=p, now=1000 + 5 * 3600)
+    SC.cached_store_data({}, [], {}, log=lambda *_: None, path=p, now=1000 + 5 * 3600, force=True)
+    assert len(runs) == 3
+
+
+LIST = {"id": 7, "entityCode": 1, "week": "2026-11-22", "lines": [
+    {"ean": "8015100572212", "name": "DIXAN 40", "boxes": 2, "kind": "griglia", "updatedBy": "TC22 FOIANO 1"},
+    {"ean": "8000036022017", "name": "AMUCHINA", "boxes": 1, "kind": "urgent", "reason": "Scaffale vuoto"},
+    {"ean": "8004", "name": "NUOVO", "boxes": 1, "kind": "sub", "origEan": "8003", "origName": "SVELTO 980"},
+    {"ean": "8001090213465", "name": "SVELTO", "boxes": 0, "kind": "remind"}]}
+
+
+def test_scanner_list_written_like_a_store_list_with_urgent_column(tmp_path):
+    import reorder_service as R
+    p = SC.write_list_excel(LIST, str(tmp_path / SC.list_file_name(LIST)))
+    assert SC.list_file_name(LIST) == "FOIANO - Lista scanner 2211.xlsx"
+    info = R.parse_order_file(p)
+    rows = {r["ean"]: r for r in info["rows"]}
+    assert set(rows) == {"8015100572212", "8000036022017", "8004"}      # 只写要订的
+    assert rows["8015100572212"]["qty"] == 2 and not rows["8015100572212"]["urgent"]
+    assert rows["8000036022017"]["urgent"] and rows["8000036022017"]["reason"] == "Scaffale vuoto"
+    assert "8003" in rows["8004"]["reason"]
+    out = R.check_rows(info["rows"], [], "colli")
+    assert {x["ean"]: x.get("urgent") for x in out}["8000036022017"] is True
+
+
+def test_import_lists_places_file_marks_received_and_feedback(tmp_path, monkeypatch):
+    import workspace as W
+    BA.set_token("k" * 40)
+    monkeypatch.setattr(SC, "_seen_path", lambda: str(tmp_path / "seen.json"))
+    root = str(tmp_path / "ws")
+    W.ensure(root)
+    old = tmp_path / "ws" / W.LISTS / "FOIANO - vecchia.xlsx"
+    SC.write_list_excel(LIST, str(old))
+    posts = []
+    s = FakeSession({("POST", "/api/erp/store-lists/7"): (200, lambda p, b: posts.append(b) or {"id": 7})})
+    out = SC.import_lists({}, root, [LIST], session=s, tmp_dir=str(tmp_path / "tmp"), log=lambda *_: None)
+    (sid, dst, moved), = out
+    assert sid == 1 and dst.endswith("FOIANO - Lista scanner 2211.xlsx")
+    assert moved and moved[0][0] == str(old) and not old.exists()     # 原来的挪进 _旧文件（撤销能放回）
+    assert posts == [{"action": "received"}]
+    # 确认比价后：最后定的箱数写回（少订 / 不订写备注）
+    rows = [{"store": 1, "ean": "8015100572212", "fbox": 1}, {"store": 1, "ean": "8004", "fbox": 1},
+            {"store": 2, "ean": "8000036022017", "fbox": 5}]
+    monkeypatch.setattr(BA, "_call", lambda st, m, path, params=None, body=None, session=None, tok=None: posts.append(body) or {})
+    assert SC.send_check_feedback({"booking": {"url": "https://x"}}, rows, [dst], log=lambda *_: None) == 1
+    fb = posts[-1]["feedback"]["lines"]
+    assert fb["8015100572212"] == {"boxes": 1, "note": "Ridotto da 2 a 1"}
+    assert fb["8000036022017"] == {"boxes": 0, "note": "Non ordinato"}       # 门店 2 的不算
+    assert fb["8004"] == {"boxes": 1} and "8001090213465" not in fb
+    assert SC.send_check_feedback({"booking": {"url": "https://x"}}, rows, [dst], log=lambda *_: None) == 0   # 只发一次

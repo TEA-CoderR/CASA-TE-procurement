@@ -1356,6 +1356,9 @@ class OrderCheck:
     def _marks(self, x):
         """判断后面的提醒：新加 / 清单改过（要审核）；慢销（订了要卖很久）；库存可能不准（虚库存）"""
         rv = []
+        if x.get("urgent"):
+            rv.append(("urgent", tr("门店紧急"), tr("门店在扫码枪上标了紧急（原因：{0}）：这个商品不在 Griglia，平常应该向直厂订，"
+                                                  "门店说等不及才从批发商订", x.get("list_reason") or "—")))
         if x.get("review") == "new":
             rv.append(("review", tr("新加"), tr("上次审核时清单里没有这个商品（或者以前的程序没读到），要审核")))
         elif x.get("review") == "changed":
@@ -2084,6 +2087,8 @@ class OrderCheck:
         底部「要审核 104」三个数各算各的）：判断不是「照清单订」（多订 / 少订 / 不订 / 调货），或者清单是新加 / 改过的；
         沿用了上次审核的（review = kept）不用再审
         """
+        if x.get("urgent"):
+            return True                                   # 门店在扫码枪上标了紧急：一定要人看
         rv = x.get("review")
         if rv in ("new", "changed"):
             return True
@@ -2853,6 +2858,12 @@ class OrderCheck:
                     self.win.log(tr("✔ 门店报告（五家店一个文件）：{0}", rep))
             except Exception as e:
                 problems.append(tr("门店报告没写上：{0}", e))
+            # 门店在扫码枪上做的清单：最后定了几箱写回预约平台（门店扫码枪上看得到订了多少、哪些少订了）
+            try:
+                import scanner_catalog as SC
+                SC.send_check_feedback(self.settings, self.rows, [l.get("path") for l in self.lists or []], log=self.win.log)
+            except Exception as e:
+                self.win.log(tr("⚠ 扫码枪清单结果没写回：{0}", e))
             return all_tf
 
         from erp_widgets import BusyDialog
