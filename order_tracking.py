@@ -413,7 +413,7 @@ def rows(st, today=None):
                     "origin": o.get("origin") or "", "last": last, "file": str(o.get("file") or ""),
                     "colli": o.get("colli"), "record": str(o.get("record") or ""),
                     "shipped": to_date(o.get("shipped")), "mails": list(o.get("mails") or []),
-                    "receipts": list(o.get("receipts") or []),
+                    "receipts": list(o.get("receipts") or []), "booking": dict(o.get("booking") or {}),
                     "from_file": any((m.get(k) or ("", "", ""))[2] == "file" for k in ("amount", "colli")),
                     "late_by": (today - exp).days if overdue else 0})
     return out

@@ -291,6 +291,7 @@ class TransitOrdersDialog(QDialog):
         if not out:
             return
         before, f, rec = out
+        RD.sync_booking(self, self.settings, self.st, r["id"], rec)
         self._apply([(r["id"], f)], tr("{0}：{1} · {2}（{3}）", tr(RD.RES_TEXT[rec["result"]]), r["supplier"],
                                        r["store_name"], rec["by"]), written=[(r["id"], before)])
 

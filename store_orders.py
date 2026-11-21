@@ -2074,7 +2074,7 @@ def plan_marks(plan):
 
 def write_plans(results, out_root, date_tag=None, on_file=None, calc=None):
     """
-    results: [(星期, scheda, plan)]。一家供应商一个文件：直接送店的门店和并进 BMS 的门店都写在同一个文件里，
+    results: [(星期, scheda, plan)]。每个去向一个文件（2026-11-21 起）：直送的每家店一个、BMS 一个（里面是凑单的几家店），
     汇总页门店名上面写明去向（DIRETTO / BMS）。
     calc: compute() 的结果；有的话各门店页加上 GIA、ROT.30d … 附加数据列
     返回 [(文件路径, 供应商, 去向, 箱数, 金额, 状态, SCHEDA 路径)]：每个去向一行（同一家供应商的路径相同）
@@ -2106,17 +2106,22 @@ def write_plans(results, out_root, date_tag=None, on_file=None, calc=None):
         extra = extra_data(sc, calc.get("demand"), calc.get("base"), calc.get("days")) if calc else None
         heads = extra_headers(calc.get("days")) if calc else None
         extra, heads = file_extra(extra, heads)
-        lines = {sid: st["lines"] for sid, st in direct}
-        if b:
-            for sid, ln in (b.get("per_store") or {}).items():
-                lines[sid] = ln
-        p = os.path.join(folder, f"Ordine_{safe}_{date_tag}.xlsx")
-        on_file(n, len(todo), os.path.basename(p))
-        write_order_file(sc, lines, p, extra, heads, marks=plan_marks(plan))
+        # 2026-11-21 用户：直送门店 = 门店收货、从门店邮箱发；几家店凑的 BMS = BMS 收货、从 BMS 邮箱发
+        # → 每个去向一个文件（直送门店只有这家店的箱数，BMS 文件只有凑单的那几家店），一封邮件发一个文件
+        marks = plan_marks(plan)
         for sid, st in direct:
+            p = os.path.join(folder, f"Ordine_{safe}_{STORE_SHEETS[sid]}_{date_tag}.xlsx")
+            on_file(n, len(todo), os.path.basename(p))
+            write_order_file(sc, {sid: st["lines"]}, p, extra, heads,
+                             marks={k: (v if k == STORE_SHEETS[sid] else "") for k, v in marks.items()})
             written.append((p, sc["name"], STORE_SHEETS[sid], st["colli"], st["amount"], st["status"], sc["path"]))
         if b:                                 # 第 8 项：这张 BMS 单是哪几家店凑的（订单跟踪写「BMS (FO, MA)」）
-            members = tuple(str(sid) for sid in sorted(b.get("per_store") or {}, key=str) if b["per_store"].get(sid))
+            per = {sid: ln for sid, ln in (b.get("per_store") or {}).items()}
+            names = {STORE_SHEETS.get(sid) for sid in per}
+            p = os.path.join(folder, f"Ordine_{safe}_BMS_{date_tag}.xlsx")
+            on_file(n, len(todo), os.path.basename(p))
+            write_order_file(sc, per, p, extra, heads, marks={k: (v if k in names else "") for k, v in marks.items()})
+            members = tuple(str(sid) for sid in sorted(per, key=str) if per.get(sid))
             written.append((p, sc["name"], BMS, b["colli"], b["amount"], b["status"], sc["path"], members))
     return written
 

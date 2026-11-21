@@ -403,7 +403,8 @@ class SettingsPage:
         for key, abbr, tok, name, tip, fn in (
                 ("db", "DB", "ok", tr("销售数据库"), tr("销量、库存、商品资料都从这里读（ysoft 数据库）。程序只读数据库，从来不写"), self.edit_db),
                 ("mail", "@", "warn", tr("公司邮箱"), tr("读供应商回信、收报价、发订单邮件。密码只加密存在这台电脑"), self.edit_mail),
-                ("share", "F", "accent", tr("共享文件夹"), tr("同事共用的同步盘文件夹：订单跟踪的记录、PIANO 表"), self.pick_share)):
+                ("share", "F", "accent", tr("共享文件夹"), tr("同事共用的同步盘文件夹：订单跟踪的记录、PIANO 表"), self.pick_share),
+                ("booking", "P", "cyan", tr("预约平台"), tr("卸货预约平台：登记发货时约卸货时间、确认收货 / 拒收写回平台、承运商在网上约的时间写进订单"), self.edit_booking)):
             line = QFrame()
             line.setObjectName("SetLine")
             line.setFixedHeight(1)
@@ -790,6 +791,10 @@ class SettingsPage:
         there = bool(fol) and os.path.isdir(fol)
         self.conn_rows["share"].set(fol or tr("还没选"), tr("已连接") if there else (tr("找不到") if fol else tr("未设置")),
                                     "ok" if there else ("err" if fol else "muted"))
+        import booking_api as BA
+        on = BA.ready(self.settings)
+        self.conn_rows["booking"].set(BA.base_url(self.settings).replace("https://", ""), tr("已连接") if on else tr("未设置"),
+                                      "ok" if on else "muted")
         from reorder_page import algo_params, algo_summary
         p = algo_params(self.settings)
         self.engine.blockSignals(True)
@@ -970,6 +975,10 @@ class SettingsPage:
         OrderMailboxDialog(self.win, self.settings).exec()
         self._mail_refresh()
 
+    def edit_booking(self):
+        BookingConnDialog(self.win, self.settings).exec()
+        self.refresh()
+
     def edit_receivers(self):
         import receipt as RC
         from PySide6.QtWidgets import QInputDialog
@@ -1031,3 +1040,73 @@ class SettingsPage:
         self.settings["user_name"], self.settings["user_site"] = name, site
         save_settings(self.settings)
         self.win.show_toast(tr("已保存"))
+
+
+class BookingConnDialog(QDialog):
+    """预约平台：网址（随发布同步）+ 密钥（只加密存在这台电脑）+ 测试连接"""
+
+    def __init__(self, win, settings):
+        super().__init__(win)
+        import booking_api as BA
+        self.settings = settings
+        self.setWindowTitle(tr("预约平台"))
+        self.setMinimumWidth(520)
+        v = QVBoxLayout(self)
+        v.setContentsMargins(20, 18, 20, 16)
+        v.setSpacing(12)
+        from PySide6.QtWidgets import QGridLayout, QLineEdit
+        from erp_widgets import tip_label
+        g = QGridLayout()
+        g.setHorizontalSpacing(12)
+        g.setVerticalSpacing(10)
+        self.url = QLineEdit(BA.base_url(settings))
+        g.addWidget(tip_label(tr("网址"), tr("预约平台的地址；换域名（.top → .com）时改这里，发布后同事那边也跟着换")), 0, 0)
+        g.addWidget(self.url, 0, 1)
+        self.key = QLineEdit()
+        self.key.setEchoMode(QLineEdit.Password)
+        self.key.setPlaceholderText(tr("已经填过，留空 = 不改") if BA.token() else tr("平台服务器 .env 里的 ERP_API_TOKEN"))
+        g.addWidget(tip_label(tr("密钥"), tr("平台服务器上运行一次 deploy/update.sh 会生成并显示，也在服务器 .env 的 ERP_API_TOKEN。"
+                                           "只加密存在这台电脑，不同步；每台电脑填一次")), 1, 0)
+        g.addWidget(self.key, 1, 1)
+        v.addLayout(g)
+        self.msg = QLabel("")
+        self.msg.setWordWrap(True)
+        v.addWidget(self.msg)
+        b = QHBoxLayout()
+        t = QPushButton(tr("测试连接"))
+        t.clicked.connect(self._test)
+        b.addWidget(t)
+        b.addStretch(1)
+        c = QPushButton(tr("取消"))
+        c.clicked.connect(self.reject)
+        b.addWidget(c)
+        ok = QPushButton(tr("保存"))
+        ok.setObjectName("Primary")
+        ok.clicked.connect(self._save)
+        b.addWidget(ok)
+        v.addLayout(b)
+
+    def _test(self):
+        import booking_api as BA
+        from erp_widgets import BusyDialog
+        tmp = {"booking": {"url": self.url.text().strip()}}
+        tok = self.key.text().strip() or BA.token()
+        n, err = BusyDialog.run(self, tr("测试连接"), tr("正在连预约平台…"), lambda: BA.test(tmp, tok=tok))
+        import theme
+        if err:
+            self.msg.setStyleSheet(f"color:{theme.T('err')};")
+            self.msg.setText("✖ " + str(err))
+        else:
+            self.msg.setStyleSheet(f"color:{theme.T('ok')};")
+            self.msg.setText(tr("✔ 连上了 · 今天有 {0} 个预约", n))
+
+    def _save(self):
+        import booking_api as BA
+        url = self.url.text().strip().rstrip("/")
+        if url and not url.startswith("http"):
+            url = "https://" + url
+        BA.cfg(self.settings)["url"] = url
+        if self.key.text().strip():
+            BA.set_token(self.key.text())
+        save_settings(self.settings)
+        self.accept()

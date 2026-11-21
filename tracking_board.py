@@ -58,6 +58,12 @@ def card_hint(r, today=None):
         if s == "stuck":
             return tr("卡住了") + (f" · {r['note']}" if r.get("note") else ""), "err"
         return tr("超期 {0} 天", r.get("late_by") or 0), "err"
+    bk = r.get("booking") or {}
+    if lane in ("shipped", "confirmed") and bk.get("status") in ("requested", "confirmed", "arrived", "unloading"):
+        d = str(bk.get("date") or "")
+        when = f"{d[8:10]}/{d[5:7]} {bk.get('time') or ''}".strip()
+        return tr("预约卸货 {0}", when) + (f" · {bk['carrier']}" if bk.get("carrier") else ""), \
+            ("warn" if bk.get("status") == "requested" else "accent")
     if lane == "shipped":
         if s == "partial":
             return tr("部分到货") + (f" · {_dm(r.get('arrived'))}" if r.get("arrived") else ""), "warn"
@@ -587,7 +593,10 @@ class OrderDrawer(QFrame):
         self.tl.set_steps(timeline(r))
         import receipt as RC
         rc = RC.last(r)
-        txt = "\n".join(x for x in ((tr("收货：{0}", RC.summary(rc)) if rc else ""), r.get("note") or "") if x)
+        import booking_api as BA
+        bk = r.get("booking") or {}
+        txt = "\n".join(x for x in ((tr("预约卸货：{0}", BA.text(bk)) if bk else ""),
+                                   (tr("收货：{0}", RC.summary(rc)) if rc else ""), r.get("note") or "") if x)
         self.note.setText(txt)
         self.note.setVisible(bool(txt))
         self.note.setToolTip("\n".join(RC.summary(x) + (" · " + x["note"] if x.get("note") else "")

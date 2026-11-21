@@ -1496,3 +1496,48 @@ def store_allocate(settings, calc, suppliers=None, log=print, progress=None, act
                                                "out_root": out_root},
           {"files": len(S.written_files(res["written"])), "total": round(tot["total"], 2)})
     return res
+
+
+# ===================================================================== 卸货预约平台（2026-11-21）
+def booking_sync(settings, st, log=print, session=None, now=None, days=60):
+    """
+    没到货的单按订单号去预约平台查预约（承运商在网上约的、仓库在平台上改的），有变化就写进订单：
+    o["booking"]、约好的日期写进预计到货。返回改了的 [(单号, 字段)]。没填密钥 → []
+    """
+    from datetime import datetime, timedelta
+    import booking_api as BA
+    import mail_send as MS
+    import order_tracking as OT
+    if not BA.ready(settings):
+        return []
+    now = now or datetime.now()
+    oldest = (now.date() - timedelta(days=days)).isoformat()
+    want = {}
+    for oid, o in st.orders.items():
+        if o.get("draft") or o.get("deleted") or o.get("state") == "cancelled":
+            continue
+        bk = o.get("booking") or {}
+        if o.get("arrived") and bk.get("status") not in BA.LIVE:
+            continue
+        if str(o.get("date") or "")[:10] < oldest:
+            continue
+        if str(o.get("kind") or "") == "deter" and not o.get("no"):
+            continue
+        want[MS.order_no(oid, o).upper()] = oid
+    if not want:
+        return []
+    found = BA.bookings_for(settings, list(want), session=session)
+    changes = []
+    for no, bs in found.items():
+        oid = want.get(no)
+        if not oid or not bs:
+            continue
+        f = BA.changes_from(st.orders[oid], BA.pick(bs), now=now)
+        if f:
+            changes.append((oid, f))
+    if changes:
+        st.set_many(changes, src="booking")
+        for oid, f in changes:
+            o = st.orders.get(oid) or {}
+            log(f"预约平台：{o.get('supplier') or ''} · {OT.store_label(o)} → {BA.text(f.get('booking') or o.get('booking'))}")
+    return changes

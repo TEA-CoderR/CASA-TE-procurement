@@ -308,3 +308,28 @@ def register(parent, settings, st, r, info=None, save=None):
             except Exception:
                 pass
     return before, f, rec
+
+
+def sync_booking(parent, settings, st, oid, rec):
+    """
+    这张单在预约平台上有预约 → 收货结果写回平台（2026-11-21）：收到（全部 / 部分）= 卸货完成，拒收 = 拒收 + 原因。
+    平台连不上不影响收货登记，只提示一句
+    """
+    import booking_api as BA
+    o = st.orders.get(oid) or {}
+    bk = o.get("booking") or {}
+    if not bk.get("id") or bk.get("status") not in BA.LIVE or not BA.ready(settings):
+        return None
+    to = BA.receipt_status(rec["result"])
+    note = " · ".join(x for x in (rec.get("reason") or "", rec.get("note") or "",
+                                  ("DDT " + rec["ddt"]) if rec.get("ddt") else "") if x) or None
+    if to == "refused" and not note:
+        note = "Respinta"
+    from erp_widgets import BusyDialog
+    _r, err = BusyDialog.run(parent, tr("确认收货"), tr("正在把收货结果写回预约平台…"),
+                             lambda: BA.set_status(settings, bk["id"], to, rec["by"], note))
+    if err:
+        QMessageBox.warning(parent, tr("确认收货"), tr("收货已经登记了，但预约平台没更新：{0}\n请仓库在平台上手动改。", err))
+        return False
+    st.set(oid, {"booking": dict(bk, status=to)})
+    return True

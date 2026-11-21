@@ -30,6 +30,7 @@ class _Sig(QObject):
     exported = Signal(object)
     transit = Signal(object)
     files = Signal(object)
+    bookings = Signal(object)
 
 
 def STATUS_LABELS():
@@ -414,6 +415,7 @@ class TrackingPage:
         self.sig.exported.connect(self._export_done)
         self.sig.transit.connect(self._transit_done)
         self.sig.files.connect(self._files_done)
+        self.sig.bookings.connect(self._bookings_done)
         self.transit = None                          # order_record.compute 的结果（每张没到货的单对上哪个订单文件）
         self._transit_busy = self._transit_again = False
         self.syncing = False
@@ -925,6 +927,9 @@ class TrackingPage:
         if action == "arrive":
             self.receive(r)
             return
+        if action == "ship":
+            self.ship(r)
+            return
         what = {"confirm": tr("标记供应商已确认"), "ship": tr("登记发货"), "arrive": tr("确认收货")}[action]
         after = {"confirm": tr("这张单移到「已确认」"), "ship": tr("这张单移到「已发货」"),
                  "arrive": tr("这张单算到货了，不再算在途（建议量不再扣它）")}[action]
@@ -944,6 +949,33 @@ class TrackingPage:
             self.win.show_toast(tr("已撤销"))
         self.win.show_toast(tr("✓ {0}：{1} · {2}", what, r["supplier"], r["store_name"]), 8000, action=(tr("撤销"), undo))
 
+    def ship(self, r):
+        """登记发货：同时可以在预约平台上约卸货时间（ship_dialog），能撤销（新约的预约在平台上一起取消）"""
+        import ship_dialog as SD
+        out = SD.register(self.win, self.settings, self.st, r, me=self._me())
+        if not out:
+            return
+        before, f, created = out
+        self.refresh()
+
+        def undo():
+            if created and created.get("id"):
+                import booking_api as BA
+                from erp_widgets import BusyDialog
+                _r, err = BusyDialog.run(self.win, tr("撤销"), tr("正在预约平台上取消这次预约…"),
+                                         lambda: BA.set_status(self.settings, created["id"], "cancelled", self._me(),
+                                                               "Annullata dall'ufficio acquisti"))
+                if err:
+                    QMessageBox.warning(self.win, tr("撤销"), tr("预约平台上没取消掉：{0}\n请到平台上手动取消。", err))
+            self.st.set(r["id"], before)
+            self.refresh()
+            self.win.show_toast(tr("已撤销"))
+        import booking_api as BA
+        msg = tr("✓ 已登记发货：{0} · {1}", r["supplier"], r["store_name"])
+        if f.get("booking"):
+            msg += " · " + tr("预约卸货 {0}", BA.text(f["booking"]))
+        self.win.show_toast(msg, 8000, action=(tr("撤销"), undo))
+
     def receive(self, r):
         """确认收货：弹出收货登记窗口（谁卸的货、到了什么、拒收原因），写进订单跟踪，能撤销"""
         import receipt_dialog as RD
@@ -952,6 +984,7 @@ class TrackingPage:
         if not out:
             return
         before, _f, rec = out
+        RD.sync_booking(self.win, self.settings, self.st, r["id"], rec)
         self.refresh()
 
         def undo():
@@ -1713,6 +1746,7 @@ class TrackingPage:
         刚存完 10 秒内先不读（同步盘可能还在传、文件可能只写了一半），下一轮再读
         """
         self._check_files()
+        self._check_bookings()
         x = self._excel()
         if not x:
             return
@@ -1739,6 +1773,27 @@ class TrackingPage:
                     return
                 self.sync_excel(manual=False)
 
+    def _check_bookings(self):
+        """预约平台上的预约（承运商在网上约的、仓库改的）写进订单：后台查，最多 5 分钟一次；没填密钥不查"""
+        import booking_api as BA
+        if self.st is None or getattr(self, "_bk_busy", False) or time.time() - getattr(self, "_bk_t", 0) < 300 \
+                or not BA.ready(self.settings):
+            return
+        self._bk_busy, self._bk_t = True, time.time()
+        folder, me, settings = self.st.folder, self._me(), self.settings
+
+        def work():
+            msgs = []
+            try:
+                import commands as CMD
+                st = OT.Store(folder, me=me)
+                st.reload()
+                ch = CMD.booking_sync(settings, st, log=msgs.append)
+                self.sig.bookings.emit((ch, msgs))
+            except Exception as e:
+                self.sig.bookings.emit(([], [tr("⚠ 预约平台读不了：{0}", e)]))
+        threading.Thread(target=work, daemon=True).start()
+
     def _check_files(self):
         """
         总仓 / 门店采购生成的订单文件改过（减少 / 砍掉箱数）→ 订单跟踪的箱数、金额跟着改（2026-11-04 用户要同步回程序）。
@@ -1761,6 +1816,17 @@ class TrackingPage:
             except Exception as e:
                 self.sig.files.emit(([], [tr("⚠ 订单文件读不了：{0}", e)]))
         threading.Thread(target=work, daemon=True).start()
+
+    def _bookings_done(self, payload):
+        ch, msgs = payload
+        self._bk_busy = False
+        for m in msgs:
+            self.win.log(tr("订单跟踪：") + m)
+        if ch:
+            if self.st is not None:
+                self.st.reload()
+            if self.page.isVisible():
+                self.refresh()
 
     def _files_done(self, payload):
         ch, msgs = payload
