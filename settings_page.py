@@ -404,7 +404,8 @@ class SettingsPage:
                 ("db", "DB", "ok", tr("销售数据库"), tr("销量、库存、商品资料都从这里读（ysoft 数据库）。程序只读数据库，从来不写"), self.edit_db),
                 ("mail", "@", "warn", tr("公司邮箱"), tr("读供应商回信、收报价、发订单邮件。密码只加密存在这台电脑"), self.edit_mail),
                 ("share", "F", "accent", tr("共享文件夹"), tr("同事共用的同步盘文件夹：订单跟踪的记录、PIANO 表"), self.pick_share),
-                ("booking", "P", "cyan", tr("预约平台"), tr("卸货预约平台：登记发货时约卸货时间、确认收货 / 拒收写回平台、承运商在网上约的时间写进订单"), self.edit_booking)):
+                ("booking", "P", "cyan", tr("预约平台"), tr("卸货预约平台：登记发货时约卸货时间、确认收货 / 拒收写回平台、承运商在网上约的时间写进订单"), self.edit_booking),
+                ("scanner", "Z", "violet", tr("扫码枪"), tr("门店 Zebra 扫码枪：扫 DETERSIVO 商品看在不在 Griglia、这周能不能订。账号和目录在预约平台服务器上"), self.edit_scanners)):
             line = QFrame()
             line.setObjectName("SetLine")
             line.setFixedHeight(1)
@@ -795,6 +796,7 @@ class SettingsPage:
         on = BA.ready(self.settings)
         self.conn_rows["booking"].set(BA.base_url(self.settings).replace("https://", ""), tr("已连接") if on else tr("未设置"),
                                       "ok" if on else "muted")
+        self.conn_rows["scanner"].set(tr("一台扫码枪一个账号"), tr("可以用") if on else tr("先连预约平台"), "ok" if on else "muted")
         from reorder_page import algo_params, algo_summary
         p = algo_params(self.settings)
         self.engine.blockSignals(True)
@@ -974,6 +976,14 @@ class SettingsPage:
         from mail_page import OrderMailboxDialog
         OrderMailboxDialog(self.win, self.settings).exec()
         self._mail_refresh()
+
+    def edit_scanners(self):
+        import booking_api as BA
+        if not BA.ready(self.settings):
+            QMessageBox.information(self.win, tr("扫码枪"), tr("扫码枪的账号和目录存在预约平台服务器上：请先在「预约平台」里填好密钥。"))
+            return
+        from scanner_dialog import ScannerDialog
+        ScannerDialog(self.win, self.settings).exec()
 
     def edit_booking(self):
         BookingConnDialog(self.win, self.settings).exec()
