@@ -38,6 +38,12 @@ IVA = 0.22
 PENDING_DAYS = 2          # 发出 2 个工作日还没收到确认 → 「待确认」黄色
 PENDING_RED_DAYS = 4      # 4 个工作日（差不多一个星期）还没确认 → 红色（2026-11-21 用户：两天黄、再久红色，按最优解）
 BMS_ABBR = {"1": "FO", "2": "MA", "3": "FI", "4": "SM", "5": "SC"}   # BMS 单后面写凑单门店：BMS (FO, MA, SC)
+ORDER_NO_RE = re.compile(r"\b(?:FO|MA|FI|SM|SC|BMS|CT)-\d{4}-[0-9A-F]{4}\b")   # 程序发的订单号（mail_send.order_no）
+
+
+def find_order_nos(text):
+    """文字里的订单号（FO-2011-3F9A…），不分大小写"""
+    return ORDER_NO_RE.findall(str(text or "").upper())
 
 
 def workdays_between(d0, d1):
@@ -407,6 +413,7 @@ def rows(st, today=None):
                     "origin": o.get("origin") or "", "last": last, "file": str(o.get("file") or ""),
                     "colli": o.get("colli"), "record": str(o.get("record") or ""),
                     "shipped": to_date(o.get("shipped")), "mails": list(o.get("mails") or []),
+                    "receipts": list(o.get("receipts") or []),
                     "from_file": any((m.get(k) or ("", "", ""))[2] == "file" for k in ("amount", "colli")),
                     "late_by": (today - exp).days if overdue else 0})
     return out

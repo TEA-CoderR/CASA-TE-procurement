@@ -271,12 +271,12 @@ def build_qss_legacy():
     #EmptyTitle {{ font-size: 16px; font-weight: 600; }}
 
     /* ---------- 输入 ---------- */
-    QLineEdit, QDoubleSpinBox, QSpinBox, QComboBox, QDateEdit {{
+    QLineEdit, QDoubleSpinBox, QSpinBox, QComboBox, QDateTimeEdit {{
         background: {t['surface2']}; border: 1px solid {t['line']}; border-radius: 7px;
         padding: 6px 10px; selection-background-color: {t['accent']}; selection-color: #FFFFFF; }}
-    QLineEdit:focus, QDoubleSpinBox:focus, QSpinBox:focus, QComboBox:focus, QDateEdit:focus {{ border: 1px solid {t['accent']}; }}
-    QDateEdit::drop-down {{ border: none; width: 26px; subcontrol-origin: padding; subcontrol-position: center right; }}
-    QDateEdit::down-arrow {{ image: url("{_arrow_svg(t['muted'])}"); width: 10px; height: 10px; margin-right: 8px; }}
+    QLineEdit:focus, QDoubleSpinBox:focus, QSpinBox:focus, QComboBox:focus, QDateTimeEdit:focus {{ border: 1px solid {t['accent']}; }}
+    QDateTimeEdit::drop-down {{ border: none; width: 26px; subcontrol-origin: padding; subcontrol-position: center right; }}
+    QDateTimeEdit::down-arrow {{ image: url("{_arrow_svg(t['muted'])}"); width: 10px; height: 10px; margin-right: 8px; }}
     QLineEdit:disabled, QSpinBox:disabled, QComboBox:disabled {{ color: {t['faint']}; }}
     QDoubleSpinBox::up-button, QDoubleSpinBox::down-button {{ width: 0; border: none; }}
     QSpinBox::up-button, QSpinBox::down-button {{ width: 0; border: none; }}
@@ -370,8 +370,8 @@ def _frozen_qss():
     QPushButton:hover, QPushButton:pressed, QPushButton:disabled {{ background: {t['surface']}; }}
     QPushButton#Link, QPushButton#Link:hover, QPushButton#Link:disabled {{ background: transparent; }}
     QPushButton#Danger {{ color: {t['text']}; }}
-    QLineEdit, QDoubleSpinBox, QSpinBox, QComboBox, QDateEdit {{ min-height: 0px; }}
-    QLineEdit:hover, QDoubleSpinBox:hover, QSpinBox:hover, QComboBox:hover, QDateEdit:hover {{ border: 1px solid {t['line']}; }}
+    QLineEdit, QDoubleSpinBox, QSpinBox, QComboBox, QDateTimeEdit {{ min-height: 0px; }}
+    QLineEdit:hover, QDoubleSpinBox:hover, QSpinBox:hover, QComboBox:hover, QDateTimeEdit:hover {{ border: 1px solid {t['line']}; }}
     QComboBox QAbstractItemView {{ border-radius: 0px; padding: 0px; }}
     QToolButton:hover {{ background: transparent; border-color: transparent; }}
     QListWidget::item:hover, QTreeWidget::item:hover {{ background: transparent; }}
@@ -497,14 +497,14 @@ def build_qss():
     #EmptyTitle {{ font-size: 16px; font-weight: 600; }}
 
     /* ---------- 输入 ---------- */
-    QLineEdit, QDoubleSpinBox, QSpinBox, QComboBox, QDateEdit {{
+    QLineEdit, QDoubleSpinBox, QSpinBox, QComboBox, QDateTimeEdit {{
         background: {t['surface']}; border: 1px solid {t['border']}; border-radius: 8px;
         padding: 6px 10px; min-height: 20px; selection-background-color: {t['accent']}; selection-color: #FFFFFF; }}
-    QLineEdit:hover, QDoubleSpinBox:hover, QSpinBox:hover, QComboBox:hover, QDateEdit:hover {{ border: 1px solid {t['faint']}; }}
-    QLineEdit:focus, QDoubleSpinBox:focus, QSpinBox:focus, QComboBox:focus, QDateEdit:focus {{ border: 1px solid {t['accent']}; }}
+    QLineEdit:hover, QDoubleSpinBox:hover, QSpinBox:hover, QComboBox:hover, QDateTimeEdit:hover {{ border: 1px solid {t['faint']}; }}
+    QLineEdit:focus, QDoubleSpinBox:focus, QSpinBox:focus, QComboBox:focus, QDateTimeEdit:focus {{ border: 1px solid {t['accent']}; }}
     QLineEdit:read-only {{ background: {t['surface2']}; }}
-    QDateEdit::drop-down {{ border: none; width: 26px; subcontrol-origin: padding; subcontrol-position: center right; }}
-    QDateEdit::down-arrow {{ image: url("{_arrow_svg(t['muted'])}"); width: 10px; height: 10px; margin-right: 8px; }}
+    QDateTimeEdit::drop-down {{ border: none; width: 26px; subcontrol-origin: padding; subcontrol-position: center right; }}
+    QDateTimeEdit::down-arrow {{ image: url("{_arrow_svg(t['muted'])}"); width: 10px; height: 10px; margin-right: 8px; }}
     QLineEdit:disabled, QSpinBox:disabled, QComboBox:disabled, QDoubleSpinBox:disabled {{ color: {t['faint']}; background: {t['surface2']}; border-color: {t['line']}; }}
     QDoubleSpinBox::up-button, QDoubleSpinBox::down-button {{ width: 0; border: none; }}
     QSpinBox::up-button, QSpinBox::down-button {{ width: 0; border: none; }}

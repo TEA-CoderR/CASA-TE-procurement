@@ -769,29 +769,25 @@ def order_mail_draft(settings, st, oid, fetch_body=True, factory=None, today=Non
         raise RuntimeError(tr("还没设置邮箱（系统设置 → 邮箱）"))
     own = {a["address"].lower() for a in accs}
     hist = _sent_history(st, own)
-    acc = MS.sender_for(stores, accs)
+    if MS.senders(settings):                   # 设了订单发件邮箱：严格照它，没设这家就不能发
+        bad = MS.sender_problem(stores, settings, accs)
+        if bad:
+            raise RuntimeError(bad)
+    acc = MS.sender_for(stores, accs, settings)
     supplier = str(o.get("supplier") or "")
     to, to_src = MS.recipients(st, supplier, hist)
-    subject = MS.subject_for(supplier, stores, today)
-    body, body_src = MS.default_body(supplier, stores), "template"
+    # 2026-11-21：正文一律按订单数据填固定模板（不再照搬上一封信，以前常对不上）
+    subject, body = MS.compose(supplier, [(k, st.orders[k]) for k in ids], settings, today)
+    body_src = "template"
     last = MS.last_sent(hist, st, supplier, acc["address"])
     need_last = False
-    if last and last.get("uid"):
-        t = _cached_body(last)
-        if t is None and fetch_body:
-            try:
-                t = mail_view_body(settings, last, factory=factory)
-            except Exception:
-                t = None
-        if t and t.strip():
-            body, body_src = MS.body_from_last(t, last["subject"], subject, supplier), "last"
-        elif not fetch_body:
-            need_last = True
     files = []
     f = str(o.get("file") or "").strip()
     if f:
         files.append((f, MS.attachment_name(subject, f), os.path.exists(f)))
     return {"ids": ids, "stores": stores, "supplier": supplier, "from": acc["address"], "accounts": accs,
+            "from_locked": bool(MS.senders(settings)),
+            "nos": {k: MS.order_no(k, st.orders[k]) for k in ids},
             "to": to, "to_src": to_src, "cc": MS.usual_cc(hist), "subject": subject, "body": body, "body_src": body_src,
             "files": files, "last": last, "need_last": need_last,
             "amount": sum(float((st.orders.get(k) or {}).get("amount") or 0) for k in ids),

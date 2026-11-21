@@ -922,6 +922,9 @@ class TrackingPage:
         if action == "send":
             self.send_order(r)
             return
+        if action == "arrive":
+            self.receive(r)
+            return
         what = {"confirm": tr("标记供应商已确认"), "ship": tr("登记发货"), "arrive": tr("确认收货")}[action]
         after = {"confirm": tr("这张单移到「已确认」"), "ship": tr("这张单移到「已发货」"),
                  "arrive": tr("这张单算到货了，不再算在途（建议量不再扣它）")}[action]
@@ -940,6 +943,23 @@ class TrackingPage:
             self.refresh()
             self.win.show_toast(tr("已撤销"))
         self.win.show_toast(tr("✓ {0}：{1} · {2}", what, r["supplier"], r["store_name"]), 8000, action=(tr("撤销"), undo))
+
+    def receive(self, r):
+        """确认收货：弹出收货登记窗口（谁卸的货、到了什么、拒收原因），写进订单跟踪，能撤销"""
+        import receipt_dialog as RD
+        out = RD.register(self.win, self.settings, self.st, r, self._rec_info(r),
+                          save=lambda: ST.save_settings(self.settings))
+        if not out:
+            return
+        before, _f, rec = out
+        self.refresh()
+
+        def undo():
+            self.st.set(r["id"], before)
+            self.refresh()
+            self.win.show_toast(tr("已撤销"))
+        self.win.show_toast(tr("✓ {0}：{1} · {2} · {3}", tr(RD.RES_TEXT[rec["result"]]), r["supplier"], r["store_name"],
+                               rec["by"]), 8000, action=(tr("撤销"), undo))
 
     def set_store(self, code):
         self.store_sel = code

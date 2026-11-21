@@ -288,6 +288,11 @@ def analyze(mails, st, own, mailbox_store=None, today=None, ignored=None):
     events, suggest, unmatched = [], {}, []
     by_sup, deter = {}, set()
     twins = {d for d, _m in duplicates(st)}      # 和 Excel 手填重复的待登记：邮件算在手填的那张上，待登记另外建议合并
+    by_no = {}                                 # 程序发信时记的订单号 → 单（2026-11-21：回信 / DDT 里写了订单号 = 准确对上）
+    for oid, o in st.orders.items():
+        for k in (o.get("no"), o.get("gno")):
+            if k:
+                by_no.setdefault(str(k).upper(), []).append(oid)
     for oid, o in st.orders.items():
         if oid in twins:
             continue
@@ -333,7 +338,12 @@ def analyze(mails, st, own, mailbox_store=None, today=None, ignored=None):
         want = subject_day(subj, day, full=(kind == "confirm"))
         oids = []
         parent = thread.get((m.get("in_reply_to") or "").strip())
-        if parent and not sent:
+        by_code = list(dict.fromkeys(oid for c in OT.find_order_nos(" ".join([subj] + atts + [m.get("body") or ""]))
+                                     for oid in by_no.get(c, [])))
+        if by_code and not sent:
+            oids = by_code                                 # 写了我们的订单号：就是这几张，不用再猜
+            stores = stores or list(dict.fromkeys(str(st.orders[o].get("store")) for o in oids))
+        elif parent and not sent:
             oids = list(parent)
         elif sups:
             if want:

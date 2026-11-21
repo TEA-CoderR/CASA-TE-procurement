@@ -135,7 +135,9 @@ def test_draft_uses_cached_sent_mail_without_network(tmp_path, monkeypatch):
     d = CMD.order_mail_draft({"mail": {"accounts": ACCS}}, st, "L2", fetch_body=False, today=date(2026, 11, 7))
     assert d["ids"] == ["L2"] and d["from"] == "infolucca@casa-te.com"
     assert d["to"] == ["ordini@lampa.it"] and d["cc"] == ["matteohe@casa-te.com"]
-    assert d["subject"] == "Ordine Lampa Capannori 0711" and d["body_src"] == "template" and d["files"] == []
+    no = d["nos"]["L2"]
+    assert no.startswith("MA-0711-") and d["subject"] == f"Ordine {no} · CASA&TE Capannori · Lampa"
+    assert d["body_src"] == "template" and d["files"] == []
 
 
 def test_smtp_test_logs_in_only_and_switches_to_other_aliyun_host():
@@ -228,27 +230,74 @@ def test_mail_body_and_attachment_cached_locally(tmp_path, monkeypatch):
     assert seen.count("(BODY.PEEK[2])") == 1
 
 
-def test_draft_opens_without_network_and_reads_last_body_later(tmp_path, monkeypatch):
-    """发订单窗口不用等邮箱：草稿只用本机缓存；上次那封信的正文读过的直接用，没读过的标 need_last 窗口打开后再读"""
+def test_draft_body_is_fixed_template_never_last_mail(tmp_path, monkeypatch):
+    """2026-11-21：正文一律按订单数据填固定模板（订单号、送货地址、箱数、预约），不再照搬上一封信、也不连网"""
     import json
     import commands as CMD
     import settings as SET
     monkeypatch.setattr(SET, "app_dir", lambda: str(tmp_path))
     (tmp_path / "cache" / "mail").mkdir(parents=True)
     rows = {"5": {"from": "infolucca@casa-te.com", "mailbox": "infolucca@casa-te.com", "folder": "已发送", "uid": 5,
-                  "subject": "Ordine LAMPA Capannori 2010", "attachments": ["Ordine LAMPA Capannori 2010.xlsx"],
-                  "date": "2026-10-20 10:00:00", "to": "ordini@lampa.it"}}
+                  "subject": "Ordine LAMPA Capannori 2010", "attachments": [], "date": "2026-10-20 10:00:00",
+                  "to": "ordini@lampa.it"}}
     (tmp_path / "cache" / "mail" / "lucca.json").write_text(json.dumps({"Sent": {"validity": 1, "rows": rows}}),
                                                              encoding="utf-8")
     st = _st(tmp_path / "tr")
-    st.set("L2", {"date": "2026-11-07", "store": "2", "supplier": "LAMPA", "draft": True})
+    st.set("L2", {"date": "2026-11-07", "store": "2", "supplier": "LAMPA", "draft": True, "colli": 6})
     calls = []
-    monkeypatch.setattr(CMD, "mail_view_body", lambda s, m, factory=None: calls.append(m["uid"]) or
-                        "Buongiorno,\nordine Ordine LAMPA Capannori 2010\nSaluti")
-    st_ = {"mail": {"accounts": ACCS}}
-    d = CMD.order_mail_draft(st_, st, "L2", fetch_body=False, today=date(2026, 11, 7))
-    assert d["need_last"] and d["body_src"] == "template" and calls == []          # 没连网
-    assert "Capannori 0711" in CMD.order_mail_last_body(st_, d) and calls == [5]
-    CMD._bodies_save({"view|" + CMD._body_key(d["last"]): "Ciao\nOrdine LAMPA Capannori 2010"})
-    d2 = CMD.order_mail_draft(st_, st, "L2", fetch_body=False, today=date(2026, 11, 7))
-    assert d2["body_src"] == "last" and not d2["need_last"] and "0711" in d2["body"] and calls == [5]
+    monkeypatch.setattr(CMD, "mail_view_body", lambda *a, **k: calls.append(1) or "vecchio testo")
+    cfg = {"mail": {"accounts": ACCS}, "order_mail": {"booking_url": "https://prenota.casa-te.top"}}
+    d = CMD.order_mail_draft(cfg, st, "L2", fetch_body=True, today=date(2026, 11, 7))
+    no = d["nos"]["L2"]
+    assert calls == [] and not d["need_last"] and d["body_src"] == "template"
+    assert f"ordine n. {no} del 07/11/2026" in d["body"] and "CASA & TE GROUP SRL" in d["body"]
+    assert "Viale Europa 434" in d["body"] and "Colli ordinati: 6" in d["body"] and "prenota.casa-te.top" in d["body"]
+    assert "vecchio" not in d["body"]
+
+
+def test_fixed_sender_per_store_and_bms_for_multi_store_file(tmp_path):
+    """固定六个邮箱：一家店 = 这家店的邮箱，几家店一个文件 = BMS；没设这家就不能发（写清原因）"""
+    import commands as CMD
+    import mail_send as MS
+    st = _st(tmp_path / "tr")
+    st.set("F1", {"date": "2026-11-20", "store": "1", "supplier": "ACME", "draft": True, "file": "x.xlsx"})
+    st.set("B1", {"date": "2026-11-20", "store": "BMS", "supplier": "ACME", "draft": True, "file": "x.xlsx", "colli": 4})
+    st.set("M1", {"date": "2026-11-20", "store": "2", "supplier": "Lampa", "draft": True})
+    accs = ACCS + [{"address": "ordine.foiano@casa-te.com"}, {"address": "ordini@bmspsrl.it"}]
+    cfg = {"mail": {"accounts": accs},
+           "order_mail": {"senders": {"1": "ordine.foiano@casa-te.com", "BMS": "ordini@bmspsrl.it"}}}
+    d = CMD.order_mail_draft(cfg, st, "F1", fetch_body=False)
+    assert d["from"] == "ordini@bmspsrl.it" and d["from_locked"] and set(d["ids"]) == {"F1", "B1"}
+    nb = d["nos"]["B1"]
+    assert d["subject"].startswith(f"Ordine {nb} · CASA&TE 2 PDV") and d["nos"]["F1"] in d["body"]
+    assert "BMS PARTNERS SRL" in d["body"] and "CASA & TE SRL" in d["body"]
+    import pytest
+    with pytest.raises(RuntimeError, match="Capannori"):           # MARLIA 的发件邮箱没设：不能发
+        CMD.order_mail_draft(cfg, st, "M1", fetch_body=False)
+    assert MS.sender_problem(["1"], cfg, MC_accounts(cfg)) is None
+
+
+def MC_accounts(cfg):
+    import mail_client as MC
+    return MC.accounts(cfg)
+
+
+def test_order_no_kept_after_send_and_replies_matched_by_it(tmp_path):
+    """发过的单记住订单号（下单日期变了也不换）；供应商回信 / DDT 主题里写了订单号 → 直接对到这张单"""
+    import mail_send as MS
+    import mail_match as MM
+    st = _st(tmp_path / "tr")
+    st.set("F1", {"date": "2026-11-18", "store": "1", "supplier": "ACME", "draft": True})
+    no = MS.order_no("F1", st.orders["F1"])
+    assert no.startswith("FO-1811-") and OT.find_order_nos(f"re: ordine {no.lower()} ok") == [no]
+    MS.mark_sent(st, ["F1"], {"to": ["a@acme.it"], "from": "x@casa-te.com", "subject": f"Ordine {no} · CASA&TE Foiano · ACME"},
+                 today=date(2026, 11, 20))
+    o = st.orders["F1"]
+    assert o["date"] == "2026-11-20" and o["no"] == no and MS.order_no("F1", o) == no
+    # 另一张 ACME 的单（同一门店、日期更近），信写的是 F1 的号 → 只对 F1
+    st.set("F2", {"date": "2026-11-21", "store": "1", "supplier": "ACME", "confirmed": None})
+    mails = [{"subject": f"Conferma {no}", "from": "ordini@acme.it", "date": "2026-11-21 09:00:00",
+              "mailbox": "x@casa-te.com", "folder": "INBOX", "attachments": [], "message_id": "<m1>"}]
+    res = MM.analyze(mails, st, {"x@casa-te.com"}, today=date(2026, 11, 21))
+    ev = [e for e in res["events"] if e["kind"] == "confirm"]
+    assert ev and ev[0]["orders"] == ["F1"]

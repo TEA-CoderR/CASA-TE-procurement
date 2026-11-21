@@ -705,6 +705,14 @@ class SettingsPage:
         r = QHBoxLayout()
         self.mail_info = QLabel("")
         r.addWidget(self.mail_info, 1)
+        b = QPushButton(tr("订单发件邮箱"))
+        b.setToolTip(tr("五家门店 + BMS 各一个发件邮箱：各自的订单用各自的邮箱发；送货抬头、地址、预约网址写进订单邮件"))
+        b.clicked.connect(self.edit_order_mail)
+        r.addWidget(b)
+        b = QPushButton(tr("卸货人名单"))
+        b.setToolTip(tr("确认收货时选的卸货人（随发布同步给大家）"))
+        b.clicked.connect(self.edit_receivers)
+        r.addWidget(b)
         b = QPushButton(tr("管理邮箱"))
         b.clicked.connect(self.edit_mail)
         r.addWidget(b)
@@ -956,6 +964,24 @@ class SettingsPage:
                                    tr("缺密码") if miss else tr("正常"), "warn" if miss else "ok")
         self.cats["mail"].dot = bool(miss)
         self.cats["mail"].update()
+
+    def edit_order_mail(self):
+        from mail_page import OrderMailboxDialog
+        OrderMailboxDialog(self.win, self.settings).exec()
+        self._mail_refresh()
+
+    def edit_receivers(self):
+        import receipt as RC
+        from PySide6.QtWidgets import QInputDialog
+        cur = ", ".join(RC.people(self.settings))
+        text, ok = QInputDialog.getText(self.win, tr("卸货人名单"), tr("名字用逗号分开："), text=cur)
+        if not ok:
+            return
+        xs = [x.strip() for x in text.replace("，", ",").split(",") if x.strip()]
+        if not xs:
+            return
+        self.settings.setdefault("receiving", {})["people"] = xs
+        save_settings(self.settings)
 
     def edit_mail(self):
         from mail_page import MailAccountsDialog

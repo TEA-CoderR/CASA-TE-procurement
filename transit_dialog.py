@@ -67,9 +67,9 @@ class TransitOrdersDialog(QDialog):
         bar.setSpacing(8)
         self.b_recv = QPushButton(tr("✓ 确认收货"))
         self.b_recv.setObjectName("Primary")
-        self.b_recv.setToolTip(tr("选中的订单登记为今天已收货，不再计入在途（会先让你确认）"))
+        self.b_recv.setToolTip(tr("登记这张订单的收货：卸货人、到货内容、送货单号；拒收选原因"))
         self.b_part = QPushButton(tr("部分收货"))
-        self.b_part.setToolTip(tr("只到了一部分：登记部分收货并填写缺货说明；订单仍计入在途"))
+        self.b_part.setToolTip(tr("只到了一部分：在收货登记里改收到的箱数；订单仍计入在途"))
         self.b_excl = QPushButton(tr("不计入在途"))
         self.b_excl.setToolTip(tr("这张订单没有可用的订单明细（例如电话下单），不参与在途计算；订单状态不变"))
         self.b_view = QPushButton(tr("查看订单明细"))
@@ -270,41 +270,32 @@ class TransitOrdersDialog(QDialog):
         box.exec()
         return box.clickedButton() == ok
 
-    def receive(self, sel):
+    def receive(self, sel, partial=False):
+        """确认收货 / 部分收货：一张一张登记（弹出收货登记窗口：谁卸的货、到了什么、拒收原因）"""
         rows = [r for r in sel if r["status"] in REC.OPEN_STATES]
-        if not rows:
+        if not rows or self.st is None:
             return
-        today = date.today()
-        if not self._confirm(tr("确认收货"), tr("将以下 {0} 张订单登记为已收货（收货日期 {1}）：", len(rows), _d(today)), rows,
-                             tr("确认后：\n· 这些订单不再计入在途，相关商品的订货箱数会立即重新计算；\n"
-                                "· 收货状态写入采购订单跟踪，所有同事都能看到；\n· 登记错了可以点下方「撤销」，或在采购订单跟踪里改回。"),
-                             tr("确认收货")):
+        if len(rows) > 1:
+            QMessageBox.information(self, tr("确认收货"), tr("每张订单要分别登记卸货人和到货内容，请一次选一张订单。"))
             return
-        iso = today.isoformat()
-        self._apply([(r["id"], {"arrived": iso, "state": None} if r["status"] in ("partial", "stuck") else {"arrived": iso})
-                     for r in rows], tr("已登记收货 {0} 张订单", len(rows)))
+        r = rows[0]
+        import receipt_dialog as RD
+        import settings as ST
+        info = None
+        try:
+            tr_ = REC.cached(self.settings)
+            info = (tr_ or {}).get("orders", {}).get(r["id"])
+        except Exception:
+            info = None
+        out = RD.register(self, self.settings, self.st, r, info, save=lambda: ST.save_settings(self.settings))
+        if not out:
+            return
+        before, f, rec = out
+        self._apply([(r["id"], f)], tr("{0}：{1} · {2}（{3}）", tr(RD.RES_TEXT[rec["result"]]), r["supplier"],
+                                       r["store_name"], rec["by"]), written=[(r["id"], before)])
 
     def receive_partial(self, sel):
-        rows = [r for r in sel if r["status"] in REC.OPEN_STATES]
-        if not rows:
-            return
-        text, ok = QInputDialog.getText(self, tr("部分收货"), tr("缺货说明（缺哪些、什么时候补）："))
-        if not ok:
-            return
-        if not self._confirm(tr("部分收货"), tr("将以下 {0} 张订单登记为部分收货：", len(rows)), rows,
-                             tr("确认后：\n· 订单状态改为「部分到货」，仍计入在途（订货箱数不变）；\n"
-                                "· 写入采购订单跟踪，所有同事都能看到；可以点下方「撤销」。"), tr("登记部分收货")):
-            return
-        iso = date.today().isoformat()
-        ch = []
-        for r in rows:
-            f = {"state": "partial"}
-            if not r["arrived"]:
-                f["arrived"] = iso
-            if text.strip():
-                f["note"] = (r["note"] + " · " if r["note"] else "") + text.strip()
-            ch.append((r["id"], f))
-        self._apply(ch, tr("已登记部分收货 {0} 张订单", len(rows)))
+        self.receive(sel, partial=True)
 
     def exclude(self, sel):
         rows = [r for r in sel if r.get("record") != REC.NO_FILE]
@@ -325,15 +316,18 @@ class TransitOrdersDialog(QDialog):
         self._undo = None
         self._apply(before, tr("已撤销：{0}", what), undoable=False)
 
-    def _apply(self, changes, what, undoable=True):
-        """写进采购订单跟踪 → 重算在途（处理中窗口）→ 页面重新扣"""
+    def _apply(self, changes, what, undoable=True, written=None):
+        """写进采购订单跟踪 → 重算在途（处理中窗口）→ 页面重新扣。written = 已经写好了（收货登记窗口写的），给改之前的值"""
         if self.st is None or not changes:
             return
-        before = []
-        for oid, f in changes:
-            o = self.st.orders.get(oid, {})
-            before.append((oid, {k: o.get(k) for k in f}))
-        self.st.set_many(changes)
+        if written is not None:
+            before = written
+        else:
+            before = []
+            for oid, f in changes:
+                o = self.st.orders.get(oid, {})
+                before.append((oid, {k: o.get(k) for k in f}))
+            self.st.set_many(changes)
         self.changed = True
         from erp_widgets import BusyDialog
         transit, err = BusyDialog.run(self, tr("重新计算"), tr("正在重新计算在途和订货箱数…"),
