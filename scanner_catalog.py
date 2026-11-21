@@ -16,6 +16,7 @@
   下载下来写成现在格式的 Excel 放进「1 门店清单」（write_list_excel / import_lists），后面检查清单、比价照旧。
 """
 import hashlib
+import math
 import json
 import os
 import uuid
@@ -212,14 +213,30 @@ def _r2(v):
     return round(f, 2)
 
 
-def store_row(ean, x, transit_boxes, cost, price, promo):
-    """一个商品在一家店的数据行（扫码枪 StoreInfo 的顺序）"""
-    pack = _r2(x.get("pack")) if x.get("pack") else None
-    sys_box = x.get("sys_box")
+def stock_suspect(stock, s30, s90, last_days):
+    """账面有货、平时卖得动，却很久一件没卖 → 库存可能不准（和检查清单 phantom_info 一个意思：
+    真有货这么久不卖的可能很小）。只给扫码枪提醒门店去清点"""
+    try:
+        stock = float(stock or 0)
+        daily = max(float(s30 or 0) / 30.0, float(s90 or 0) / 90.0)
+    except (TypeError, ValueError):
+        return False
+    if stock <= 0 or daily <= 0 or last_days is None:
+        return False
+    return last_days >= max(7, math.ceil(3 / daily))
+
+
+def store_row(ean, m, transit_boxes, cost, price, promo, sys_box=None):
+    """一个商品在一家店的数据行（扫码枪 StoreInfo 的顺序）：
+    [条码, 库存, 30 天销量, 在途箱数, 建议箱数, 进价, 卖价, 打折价, 打折到, 每箱件数, 几天没卖, 库存可能不准 0/1]
+    m = 门店数字 {stock, s30, s90, last_days, pack}；sys_box = 检查清单算法算的箱数（只有 Griglia 商品有）"""
+    pack = _r2(m.get("pack")) if m.get("pack") else None
     sugg = None if sys_box is None else max(0, int(sys_box) - int(transit_boxes or 0))
-    sales = x.get("sales") or []
-    return [ean, _r2(x.get("store_inv")), _r2(sales[0] if sales else None), _r2(transit_boxes or 0), sugg,
-            _r2(cost), _r2(price), _r2((promo or {}).get("price")), _promo_end(promo), pack]
+    last = m.get("last_days")
+    return [ean, _r2(m.get("stock")), _r2(m.get("s30")), _r2(transit_boxes or 0), sugg,
+            _r2(cost), _r2(price), _r2((promo or {}).get("price")), _promo_end(promo), pack,
+            None if last is None else int(last),
+            1 if stock_suspect(m.get("stock"), m.get("s30"), m.get("s90"), last) else 0]
 
 
 def _promo_end(promo):
@@ -247,16 +264,66 @@ def cheapest(quotes, ean):
     return best
 
 
+def _chunks(codes, n=2000):
+    for i in range(0, len(codes), n):
+        chunk = [int(c) for c in codes[i:i + n]]
+        yield chunk, ", ".join(["%s"] * len(chunk))
+
+
+def _days(d, today):
+    if d is None:
+        return None
+    try:
+        import pandas as pd
+        if pd.isna(d):
+            return None
+        d = pd.Timestamp(d).date()
+    except Exception:
+        return None
+    return max(0, (today - d).days)
+
+
+def light_numbers(db, sid, codes, today=None):
+    """一家店这些商品的 库存 / 30 天和 90 天销量 / 最后卖出（几天前），只读、三条查询（不算建议量，几千个商品也快）
+    → {编号: {stock, s30, s90, last_days}}"""
+    import pandas as pd
+    from datetime import date, timedelta
+    today = today or date.today()
+    sid = int(sid)
+    out = {str(c): {"stock": 0.0, "s30": 0.0, "s90": 0.0, "last_days": None} for c in codes}
+    d30, d90, d365 = (today - timedelta(days=k) for k in (30, 90, 365))
+    for chunk, ph in _chunks(codes):
+        df = pd.read_sql(f"SELECT CodArticolo, G{sid} AS g FROM giacenza WHERE CodArticolo IN ({ph})", db.engine,
+                         params=tuple(chunk))
+        for r in df.to_dict("records"):
+            out[str(int(r["CodArticolo"]))]["stock"] = float(r["g"] or 0)
+        df = pd.read_sql(f"SELECT CodArticolo, SUM(CASE WHEN Data >= %s THEN Qta ELSE 0 END) AS q30, SUM(Qta) AS q90 "
+                         f"FROM vendite_list_{sid} WHERE CodArticolo IN ({ph}) AND Data >= %s GROUP BY CodArticolo",
+                         db.engine, params=(d30, *chunk, d90))
+        for r in df.to_dict("records"):
+            x = out[str(int(r["CodArticolo"]))]
+            x["s30"], x["s90"] = float(r["q30"] or 0), float(r["q90"] or 0)
+        df = pd.read_sql(f"SELECT CodArticolo, MAX(Data) AS d FROM vendite_list_{sid} WHERE CodArticolo IN ({ph}) "
+                         f"AND Qta > 0 AND Data >= %s GROUP BY CodArticolo", db.engine, params=(*chunk, d365))
+        for r in df.to_dict("records"):
+            out[str(int(r["CodArticolo"]))]["last_days"] = _days(r["d"], today)
+    return out
+
+
 def store_data(settings, rows, quotes, log=print, stores=STORE_IDS):
     """
-    rows = build 的目录行（只算 Griglia 里的商品 + 替代商品：门店平常订的就是这些）。
+    rows = build 的目录行。每家店：目录里**所有在数据库里的商品**（Griglia 的、不在 Griglia 只能紧急订的、直厂的）
+    都给 库存 / 销量 / 最后卖出 / 进价 / 卖价 / 打折价（light_numbers，三条查询）；
+    Griglia 商品 + 替代商品另外按检查清单的算法算建议箱数（compute_suggestions，慢）。
     → {门店号: [门店数据行]}。查数据库（只读），出错的门店跳过（日志里写）。
     """
     import check_rules as CR
     import commands as CMD
     import order_record as REC
     import reorder_service as R
-    want = sorted({r[0] for r in rows if r[2] in (1, 2)} | {r[4] for r in rows if r[4]})
+    from datetime import date
+    want_grid = {r[0] for r in rows if r[2] in (1, 2)} | {r[4] for r in rows if r[4]}
+    want = sorted({r[0] for r in rows} | want_grid)
     if not want:
         return {}
     p = CMD.check_params(settings)
@@ -267,44 +334,48 @@ def store_data(settings, rows, quotes, log=print, stores=STORE_IDS):
         for e, c in codes.items():
             by_code.setdefault(c, e)
         code_list = sorted(by_code)
+        grid_codes = sorted({c for e, c in codes.items() if e in want_grid})
         try:
             transit = REC.cached(settings) if REC.tracking_folder(settings) else None
         except Exception as e:
             transit = None
             log(f"⚠ 扫码枪门店数据：在途没读到（{e}）")
-        prices = {}
+        prod = {}
         try:
             import pandas as pd
-            for i in range(0, len(code_list), 2000):
-                chunk = [int(c) for c in code_list[i:i + 2000]]
-                ph = ", ".join(["%s"] * len(chunk))
-                df = pd.read_sql(f"SELECT CodArticolo, PrezzoVedi1 FROM prodotti WHERE CodArticolo IN ({ph})", db.engine,
-                                 params=tuple(chunk))
+            for chunk, ph in _chunks(code_list):
+                df = pd.read_sql(f"SELECT CodArticolo, PrezzoVedi1, PrezzoForn, qtasmallbox FROM prodotti "
+                                 f"WHERE CodArticolo IN ({ph})", db.engine, params=tuple(chunk))
                 for r in df.to_dict("records"):
-                    prices[str(int(r["CodArticolo"]))] = r["PrezzoVedi1"]
+                    prod[str(int(r["CodArticolo"]))] = r
         except Exception as e:
-            log(f"⚠ 扫码枪门店数据：卖价没读到（{e}）")
+            log(f"⚠ 扫码枪门店数据：卖价 / 进价没读到（{e}）")
+        today = date.today()
 
         def one(sid):
-            df = R.compute_suggestions(db, sid, code_list, p["days"], p["cycle"], None,
-                                       use_supplier_cycles=p["use_cfg"], algo=p["algo"])
-            res = R.to_rows(df, [], p["days"])
-            for x in res:
-                x["file_qty"] = 0                      # 门店还没说要：只要系统自己算的箱数（不套「门店点名要」的保护）
-            CR.init_boxes(res, None, p["algo"], settings.get("reorder") or {})
+            nums = light_numbers(db, sid, code_list, today)
+            sys_box = {}
+            if grid_codes:
+                df = R.compute_suggestions(db, sid, grid_codes, p["days"], p["cycle"], None,
+                                           use_supplier_cycles=p["use_cfg"], algo=p["algo"])
+                res = R.to_rows(df, [], p["days"])
+                for x in res:
+                    x["file_qty"] = 0                  # 门店还没说要：只要系统自己算的箱数（不套「门店点名要」的保护）
+                CR.init_boxes(res, None, p["algo"], settings.get("reorder") or {})
+                sys_box = {x["code"]: x.get("sys_box") for x in res}
             try:
                 promos = R.query_promos(db, sid, code_list)
             except Exception:
                 promos = {}
             out = []
-            for x in res:
-                ean = by_code.get(x["code"]) or _ean(x.get("ean"))
-                if not ean:
-                    continue
-                t = REC.lookup(transit, sid, ean, x["code"]) if transit else None
+            for code in code_list:
+                ean = by_code[code]
+                pr = prod.get(code) or {}
+                m = dict(nums.get(code) or {}, pack=pr.get("qtasmallbox"))
+                t = REC.lookup(transit, sid, ean, code) if transit else None
                 tb = int(t["colli"]) if t else 0
-                out.append(store_row(ean, x, tb, cheapest(quotes, ean) or x.get("price"), prices.get(x["code"]),
-                                     promos.get(x["code"])))
+                out.append(store_row(ean, m, tb, cheapest(quotes, ean) or pr.get("PrezzoForn"), pr.get("PrezzoVedi1"),
+                                     promos.get(code), sys_box.get(code)))
             return out
         from concurrent.futures import ThreadPoolExecutor
         out = {}
@@ -524,6 +595,34 @@ def send_check_feedback(settings, rows, list_paths, log=print):
         _save_seen(seen)
         log(f"扫码枪：{n} 家门店的清单结果已写回")
     return n
+
+
+# ===================================================================== 门店报的库存错误
+# 门店在扫码枪上清点（货架 + 仓库都看过、写了谁点的、按住确认）后报的真实件数。程序不写数据库：
+# 采购部在 ERP 里改好库存后点「已在 ERP 改好」，或者驳回（写原因，门店扫码枪上看得到）。
+def stock_reports(settings, status="open", session=None):
+    """→ [{id, entityCode, ean, name, systemQty, counted, countedBy, device, status, answer, handledBy, handledAt, createdAt}]"""
+    data = BA._call(settings, "GET", "/api/erp/stock-reports", params={"status": status or "all"}, session=session)
+    return data.get("reports") or []
+
+
+def handle_stock_report(settings, report_id, action, answer=None, by=None, session=None):
+    """action = fixed（ERP 里改好了）/ rejected（驳回，answer 必填）/ reopen（撤销）"""
+    body = {"action": action}
+    if answer:
+        body["answer"] = str(answer)[:200]
+    if by:
+        body["by"] = str(by)[:80]
+    return BA._call(settings, "POST", f"/api/erp/stock-reports/{int(report_id)}", body=body, session=session)
+
+
+def open_reports_by_item(reports):
+    """{(门店号, 条码去前导 0): 报告}（检查清单在判断后面写「门店报库存」）"""
+    out = {}
+    for r in reports or []:
+        if r.get("status") == "open":
+            out[(int(r.get("entityCode") or 0), _ean(r.get("ean")))] = r
+    return out
 
 
 # ===================================================================== 扫码枪账号

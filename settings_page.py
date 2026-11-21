@@ -403,7 +403,7 @@ class SettingsPage:
         for key, abbr, tok, name, tip, fn in (
                 ("db", "DB", "ok", tr("销售数据库"), tr("销量、库存、商品资料都从这里读（ysoft 数据库）。程序只读数据库，从来不写"), self.edit_db),
                 ("mail", "@", "warn", tr("公司邮箱"), tr("读供应商回信、收报价、发订单邮件。密码只加密存在这台电脑"), self.edit_mail),
-                ("share", "F", "accent", tr("共享文件夹"), tr("同事共用的同步盘文件夹：订单跟踪的记录、PIANO 表"), self.pick_share),
+                ("share", "F", "accent", tr("同步文件夹"), tr("Synology Drive 同步盘：总仓采购、门店采购、DETERSIVO、订单跟踪的文件都在里面"), self.pick_sync),
                 ("booking", "P", "cyan", tr("预约平台"), tr("卸货预约平台：登记发货时约卸货时间、确认收货 / 拒收写回平台、承运商在网上约的时间写进订单"), self.edit_booking),
                 ("scanner", "Z", "violet", tr("扫码枪"), tr("门店 Zebra 扫码枪：扫 DETERSIVO 商品看在不在 Griglia、这周能不能订。账号和目录在预约平台服务器上"), self.edit_scanners)):
             line = QFrame()
@@ -579,7 +579,63 @@ class SettingsPage:
         return c
 
     def _cat_common(self):
-        return [self._conn_card(), self._look_card(), self._company_card(), self._about_card()]
+        return [self._setup_card(), self._conn_card(), self._look_card(), self._company_card(), self._about_card()]
+
+    def show_cat(self, key):
+        """切到某一类（「设置检查」的「去设置」、程序打开时的提示用）"""
+        keys = [k for k, _n in self.CATS]
+        if key in keys:
+            i = keys.index(key)
+            self.cat_group.button(i).setChecked(True)
+            self.stack.setCurrentIndex(i)
+
+    def _setup_card(self):
+        """设置检查：一定要设置的（不设置用不了）+ 用到才要的，各一行，点「去设置」过去"""
+        c, v = _card(tr("设置检查"), tr("每台电脑一定要设置的只有两样：销售数据库（密码只存在这台电脑）和同步文件夹（一般自动找到）。"
+                                     "邮箱、预约平台、采购助手用到那个功能才要；算法、起订规则、供应商名称、列宽等发布时随公司统一设置同步，不用每台电脑设。"))
+        self.setup_rows = {}
+        for key in ("db", "sync", "mail", "booking", "agent"):
+            r = QHBoxLayout()
+            r.setSpacing(12)
+            mark = QLabel("")
+            mark.setFixedWidth(18)
+            name = QLabel("")
+            name.setFixedWidth(96)
+            need = chip("", "gray")
+            det = QLabel("")
+            det.setObjectName("Faint")
+            go = QPushButton(tr("去设置"))
+            go.setObjectName("SetGhost")
+            go.setCursor(Qt.PointingHandCursor)
+            go._cat = "common"
+            go.clicked.connect(lambda _=False, go=go: self.show_cat(go._cat))
+            r.addWidget(mark)
+            r.addWidget(name)
+            r.addWidget(need)
+            r.addWidget(det, 1)
+            r.addWidget(go)
+            v.addLayout(r)
+            self.setup_rows[key] = (mark, name, need, det, go)
+        return c
+
+    def _setup_refresh(self):
+        if not hasattr(self, "setup_rows"):
+            return
+        import setup_check as SCK
+        for it in SCK.items(self.settings, getattr(self.win, "_db_ok", None)):
+            row = self.setup_rows.get(it["key"])
+            if not row:
+                continue
+            mark, name, need, det, go = row
+            bad = not it["ok"]
+            mark.setText("✓" if it["ok"] else ("⚠" if it["need"] else "○"))
+            mark.setStyleSheet(f"color:{_T('ok' if it['ok'] else ('err' if it['need'] else 'muted'))}; font-weight:700;")
+            name.setText(it["label"])
+            set_chip(need, tr("必须") if it["need"] else tr("用到才要"), "err" if (it["need"] and bad) else ("accent" if it["need"] else "gray"))
+            det.setText(it["detail"])
+            det.setToolTip(it["detail"])
+            go._cat = it["cat"]
+            go.setVisible(bad)
 
     # ---------------------------------------------------------- 数据连接
     def _cat_conn(self):
@@ -600,35 +656,49 @@ class SettingsPage:
         row.addWidget(b)
         row.addWidget(b2)
         v.addLayout(row)
-        c2, v2 = _card(tr("文件位置"))
-        so = self.settings.setdefault("store_orders", {})
-        tk = self.settings.setdefault("tracking", {})
-        self.paths = {}
-        for key, label, getter, setter, is_file in (
-                ("so_folder", tr("采购配单文件夹（总仓采购）"), lambda: so.get("folder", ""),
-                 lambda p: so.__setitem__("folder", p), False),
-                ("cmp_folder", tr("比价总文件夹（DETERSIVO采购）"), lambda: self.settings.get("last_folder", ""),
-                 lambda p: self.settings.__setitem__("last_folder", p), False),
-                ("share", tr("共享文件夹（订单跟踪）"), lambda: tk.get("folder", ""),
-                 None, False),
-                ("legacy", tr("旧程序 SistemaIntegrato（第二期之前用）"), lambda: self.settings.get("legacy_exe", ""),
-                 lambda p: self.settings.__setitem__("legacy_exe", p), True)):
-            l = QLabel(label)
-            l.setObjectName("Faint")
-            v2.addWidget(l)
+        c2, v2 = _card(tr("同步文件夹"), tr("Synology Drive 同步盘（一般是 D:\\SynologyDrive\\SynologyDrive，程序自己找）。"
+                                         "下面几个文件夹都按固定的名字在它里面找，不用一个个选；某一个放在别处才「单独设置」。"))
+        r = QHBoxLayout()
+        self.sync_edit = QLineEdit("")
+        self.sync_edit.setReadOnly(True)
+        b = QPushButton(tr("更改"))
+        b.clicked.connect(self.pick_sync)
+        r.addWidget(self.sync_edit, 1)
+        r.addWidget(b)
+        v2.addLayout(r)
+        import sync_paths as SP
+        self.sync_rows = {}
+        for key, label, _rel, _sp in SP.FOLDERS:
             r = QHBoxLayout()
-            e = QLineEdit(getter())
-            e.setReadOnly(True)
-            pb = QPushButton(tr("选择"))
-            if setter is None:
-                pb.clicked.connect(self.pick_share)
-            else:
-                pb.clicked.connect(lambda _=False, e=e, setter=setter, is_file=is_file, label=label:
-                                   self._pick(e, setter, is_file, label))
-            r.addWidget(e, 1)
-            r.addWidget(pb)
+            r.setSpacing(12)
+            r.addWidget(_row_label(tr(label)))
+            pl = QLabel("")
+            pl.setObjectName("Faint")
+            pl.setMinimumWidth(80)
+            st = chip("", "gray")
+            ob = QPushButton("")
+            ob.setObjectName("SetGhost")
+            ob.setCursor(Qt.PointingHandCursor)
+            ob.clicked.connect(lambda _=False, key=key, label=label: self._own_folder(key, label))
+            r.addWidget(pl, 1)
+            r.addWidget(st)
+            r.addWidget(ob)
             v2.addLayout(r)
-            self.paths[key] = (e, getter)
+            self.sync_rows[key] = (pl, st, ob)
+        self.paths = {}
+        r = QHBoxLayout()
+        r.setSpacing(12)
+        r.addWidget(_row_label(tr("旧程序"), tr("旧程序 SistemaIntegrato（第二期之前用，不用可以不设）")))
+        e = QLineEdit(self.settings.get("legacy_exe", ""))
+        e.setReadOnly(True)
+        pb = QPushButton(tr("选择"))
+        getter = lambda: self.settings.get("legacy_exe", "")
+        pb.clicked.connect(lambda _=False, e=e: self._pick(e, lambda p: self.settings.__setitem__("legacy_exe", p), True,
+                                                             tr("旧程序 SistemaIntegrato")))
+        r.addWidget(e, 1)
+        r.addWidget(pb)
+        v2.addLayout(r)
+        self.paths["legacy"] = (e, getter)
         return [c, c2]
 
     # ---------------------------------------------------------- 订货算法
@@ -787,11 +857,12 @@ class SettingsPage:
         sub = tr("只读") + f" · {d.get('host') or D.HOST}" + (tr(" · 销售到 {0:%d/%m}", upto) if upto else "")
         self.conn_rows["db"].set(sub, tr("正常") if ok else (tr("检查中…") if ok is None else tr("连不上")),
                                  "ok" if ok else ("muted" if ok is None else "err"))
-        tk = self.settings.get("tracking") or {}
-        fol = tk.get("folder") or ""
-        there = bool(fol) and os.path.isdir(fol)
-        self.conn_rows["share"].set(fol or tr("还没选"), tr("已连接") if there else (tr("找不到") if fol else tr("未设置")),
-                                    "ok" if there else ("err" if fol else "muted"))
+        import sync_paths as SP
+        root = SP.root(self.settings)
+        bad = [tr(x["label"]) for x in SP.status(self.settings) if not x["ok"]]
+        self.conn_rows["share"].set(root or tr("还没找到"),
+                                    (tr("找不到：{0}", "、".join(bad)) if bad else tr("已连接")) if root else tr("未设置"),
+                                    "warn" if (root and bad) else ("ok" if root else "err"))
         import booking_api as BA
         on = BA.ready(self.settings)
         self.conn_rows["booking"].set(BA.base_url(self.settings).replace("https://", ""), tr("已连接") if on else tr("未设置"),
@@ -806,6 +877,8 @@ class SettingsPage:
         self.engine.setToolTip(algo_summary(p))
         for e, getter in self.paths.values():
             e.setText(getter())
+        self._sync_refresh()
+        self._setup_refresh()
         self._look_refresh()
         self._company_refresh()
         self._agent_refresh()
@@ -934,6 +1007,60 @@ class SettingsPage:
         save_settings(self.settings)
         theme.set_density(key)
         self.win.apply_density()
+
+    def pick_sync(self):
+        import sync_paths as SP
+        start = SP.root(self.settings) or SP.find_root() or ""
+        f = QFileDialog.getExistingDirectory(self.win, tr("选择同步文件夹（SynologyDrive）"), start)
+        if not f:
+            return
+        f = os.path.normpath(f)
+        if not SP.looks_like_root(f):
+            QMessageBox.warning(self.win, tr("同步文件夹"), tr("这个文件夹里没有程序要用的文件夹（例如 Ordine DETERSIVI、2 Griglia per gli ordini）。"
+                                                         "要选的是 SynologyDrive\\SynologyDrive 那一层。"))
+            return
+        changed = SP.apply(self.settings, new_root=f, force=True)
+        save_settings(self.settings)
+        self.refresh()
+        self.win.show_toast(tr("✓ 同步文件夹已更改：{0} 项跟着换了", max(0, len([c for c in changed if c != "sync_root"]))))
+
+    def _own_folder(self, key, label):
+        """单独设置一个文件夹 / 恢复按同步文件夹算"""
+        import sync_paths as SP
+        st = {x["key"]: x for x in SP.status(self.settings)}.get(key) or {}
+        if st.get("own"):
+            if QMessageBox.question(self.win, tr(label), tr("恢复成同步文件夹里的：\n{0}", st.get("derived") or "")) != QMessageBox.Yes:
+                return
+            SP.set_own(self.settings, key, "")
+        else:
+            f = QFileDialog.getExistingDirectory(self.win, tr(label), st.get("path") or "")
+            if not f:
+                return
+            SP.set_own(self.settings, key, f)
+        save_settings(self.settings)
+        self.refresh()
+        self.win.show_toast(tr("已保存"))
+
+    def _sync_refresh(self):
+        if not hasattr(self, "sync_rows"):
+            return
+        import sync_paths as SP
+        r = SP.root(self.settings)
+        self.sync_edit.setText(r or tr("没找到（点「更改」选一次）"))
+        for x in SP.status(self.settings):
+            pl, st, ob = self.sync_rows[x["key"]]
+            p = x["path"] or ""
+            shown = p[len(r):].lstrip("\\/") if (r and not x["own"] and p.lower().startswith(r.lower())) else p
+            pl.setText(shown or "—")
+            pl.setToolTip(p)
+            if not x["ok"]:
+                set_chip(st, tr("找不到"), "err")
+            elif x["own"]:
+                set_chip(st, tr("单独设置"), "accent")
+            else:
+                set_chip(st, tr("已找到"), "ok")
+            ob.setText(tr("恢复") if x["own"] else tr("单独设置"))
+            ob.setToolTip(tr("恢复成同步文件夹里的") if x["own"] else tr("这个文件夹不在同步文件夹里的固定位置时，单独选一次"))
 
     def pick_share(self):
         tp = getattr(self.win, "tracking", None)

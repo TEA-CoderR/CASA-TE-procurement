@@ -1356,6 +1356,11 @@ class OrderCheck:
     def _marks(self, x):
         """判断后面的提醒：新加 / 清单改过（要审核）；慢销（订了要卖很久）；库存可能不准（虚库存）"""
         rv = []
+        sr = x.get("stock_report")
+        if sr:
+            rv.append(("stock", tr("门店报库存 {0}", sr.get("counted")),
+                       tr("门店在扫码枪上清点：实际 {0} 件（系统 {1} 件），{2} 点的。请在 ERP 里改好库存后，在 系统设置 → 扫码枪 → 库存报错 里点「已在 ERP 改好」",
+                          sr.get("counted"), sr.get("system"), sr.get("by") or "")))
         if x.get("urgent"):
             rv.append(("urgent", tr("门店紧急"), tr("门店在扫码枪上标了紧急（原因：{0}）：这个商品不在 Griglia，平常应该向直厂订，"
                                                   "门店说等不及才从批发商订", x.get("list_reason") or "—")))
@@ -2087,8 +2092,8 @@ class OrderCheck:
         底部「要审核 104」三个数各算各的）：判断不是「照清单订」（多订 / 少订 / 不订 / 调货），或者清单是新加 / 改过的；
         沿用了上次审核的（review = kept）不用再审
         """
-        if x.get("urgent"):
-            return True                                   # 门店在扫码枪上标了紧急：一定要人看
+        if x.get("urgent") or x.get("stock_report"):
+            return True                                   # 门店在扫码枪上标了紧急 / 报了库存不对：一定要人看
         rv = x.get("review")
         if rv in ("new", "changed"):
             return True

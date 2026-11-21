@@ -123,6 +123,12 @@ if not settings.get("deter_shared_v1"):    # 2026-11-21 用户：DETERSIVO 工�
             save_settings(settings)
     except Exception:
         pass
+try:                                      # 2026-11-21：一个同步文件夹管全部（sync_paths）：空着 / 不在了的文件夹按它填上
+    import sync_paths as _SP0
+    if _SP0.apply(settings):
+        save_settings(settings)
+except Exception:
+    pass
 theme.set_theme(settings.get("theme", "dark"))
 theme.set_accent(settings.get("accent") or "blue")
 theme.set_density(settings.get("density") or "normal")
@@ -3163,6 +3169,26 @@ class MainWindow(QMainWindow):
         self.updater.start_auto()
         if self.NAV[self.stack.currentIndex()][0] == "home":
             self.dashboard.refresh()
+        QTimer.singleShot(8000, self._check_setup)
+
+    def _check_setup(self):
+        """打开程序后看一下一定要设置的（数据库、同步文件夹）有没有设好；没有就提示一次，点一下去设置"""
+        try:
+            import setup_check as SC_
+            miss = SC_.missing_required(settings, getattr(self, "_db_ok", None))
+        except Exception:
+            return
+        if not miss:
+            return
+        txt = tr("还有 {0} 项必须设置：{1}", len(miss), "、".join(f"{m['label']}（{m['detail']}）" for m in miss))
+        self.log("⚠ " + txt)
+        self.show_toast(txt, 12000, action=(tr("去设置"), lambda: self.open_settings_cat("common")))
+
+    def open_settings_cat(self, cat):
+        self.go_page("settings")
+        sp = getattr(self, "settings_page", None)
+        if sp is not None and hasattr(sp, "show_cat"):
+            sp.show_cat(cat)
 
     def _make_distribution(self):
         from distribution_page import DistributionPage

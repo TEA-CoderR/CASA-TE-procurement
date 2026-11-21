@@ -87,6 +87,8 @@ class ScannerDialog(QDialog):
         self.tabs = QTabWidget()
         self.tabs.addTab(self._devices_tab(), tr("扫码枪"))
         self.tabs.addTab(self._lists_tab(), tr("门店清单"))
+        self.reports = []
+        self.tabs.addTab(self._reports_tab(), tr("库存报错"))
         v.addWidget(self.tabs, 1)
 
         bl = QHBoxLayout()
@@ -101,7 +103,16 @@ class ScannerDialog(QDialog):
         if tab == "lists":
             self.tabs.setCurrentIndex(1)
             self.load_lists()
-        self.tabs.currentChanged.connect(lambda i: self.load_lists() if i == 1 and not self.lists else None)
+        elif tab == "stock":
+            self.tabs.setCurrentIndex(2)
+            self.load_reports()
+        self.tabs.currentChanged.connect(self._tab_changed)
+
+    def _tab_changed(self, i):
+        if i == 1 and not self.lists:
+            self.load_lists()
+        elif i == 2 and not self.reports:
+            self.load_reports()
 
     # ------------------------------------------------------------------ 扫码枪
     def _table(self, cols, widths):
@@ -480,3 +491,138 @@ class ScannerDialog(QDialog):
             self.win.refresh_ws()
         self.win.show_toast(tr("✓ {0} 家门店的扫码枪清单已放进「1 门店清单」", len(done)), 6000, action=(tr("撤销"), undo))
         self.load_lists()
+
+    # ------------------------------------------------------------------ 库存报错
+    RCOLS = ("门店", "商品", "条码", "系统", "实际", "差", "清点人", "报告时间", "状态")
+    STATUS = {"open": ("待处理", "warn"), "fixed": ("已在 ERP 改好", "ok"), "rejected": ("已驳回", "muted")}
+
+    def _reports_tab(self):
+        w = QWidget()
+        v = QVBoxLayout(w)
+        v.setContentsMargins(0, 12, 0, 0)
+        v.setSpacing(10)
+        top = QHBoxLayout()
+        from erp_widgets import tip_label
+        top.addWidget(tip_label(tr("门店报的库存错误"), tr(
+            "门店在扫码枪上清点（货架和仓库都看过、写了谁点的、按住按钮确认）后报的实际件数。程序不改数据库："
+            "请在 ERP 里把库存改好，再点「已在 ERP 改好」；数不对就「驳回」并写原因，门店扫码枪上都看得到。")))
+        top.addStretch(1)
+        self.rep_view = QComboBox()
+        self.rep_view.addItem(tr("待处理"), "open")
+        self.rep_view.addItem(tr("全部（近 90 天）"), "all")
+        self.rep_view.currentIndexChanged.connect(lambda _i: self.load_reports())
+        top.addWidget(self.rep_view)
+        self.rep_lbl = QLabel("")
+        self.rep_lbl.setObjectName("PageSub")
+        top.addWidget(self.rep_lbl)
+        v.addLayout(top)
+        self.rt = self._table(self.RCOLS, (100, 230, 120, 56, 56, 56, 100, 100))
+        for c in (3, 4, 5):
+            self.rt.horizontalHeaderItem(c).setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.rt.itemSelectionChanged.connect(self._rsel)
+        v.addWidget(self.rt, 1)
+        bl = QHBoxLayout()
+        self.b_fixed = QPushButton(tr("已在 ERP 改好"))
+        self.b_fixed.setObjectName("Primary")
+        self.b_fixed.setToolTip(tr("ERP 里已经把库存改成门店点的数：报告关掉，门店扫码枪上显示「已更正」"))
+        self.b_fixed.clicked.connect(lambda: self.handle_reports("fixed"))
+        self.b_reject = QPushButton(tr("驳回"))
+        self.b_reject.setToolTip(tr("门店点的数不对（例如仓库里还有）：写原因，门店扫码枪上看得到，可以重新清点"))
+        self.b_reject.clicked.connect(lambda: self.handle_reports("rejected"))
+        b_ref = QPushButton(tr("刷新"))
+        b_ref.clicked.connect(self.load_reports)
+        for b in (self.b_fixed, self.b_reject, b_ref):
+            bl.addWidget(b)
+        bl.addStretch(1)
+        v.addLayout(bl)
+        self._rsel()
+        return w
+
+    def load_reports(self):
+        status = self.rep_view.currentData() if hasattr(self, "rep_view") else "open"
+        res, err = _busy(self, tr("正在读取库存报错…"), lambda: SC.stock_reports(self.settings, status))
+        if err:
+            self.rep_lbl.setText("⚠ " + str(err))
+            self.rep_lbl.setStyleSheet(f"color:{theme.T('err')};")
+            return
+        self.rep_lbl.setStyleSheet("")
+        self.reports = res or []
+        n_open = sum(1 for r in self.reports if r.get("status") == "open")
+        self.rep_lbl.setText(tr("{0} 条待处理", n_open) if status == "open" else tr("{0} 条 · 待处理 {1}", len(self.reports), n_open))
+        self.rt.setRowCount(len(self.reports))
+        for k, r in enumerate(self.reports):
+            sysq, cnt = r.get("systemQty"), r.get("counted")
+            diff = (cnt - sysq) if (sysq is not None and cnt is not None) else None
+            st, tok = self.STATUS.get(r.get("status"), (r.get("status") or "", "muted"))
+            vals = [STORE_NAMES.get(r.get("entityCode"), str(r.get("entityCode"))), r.get("name") or "", r.get("ean") or "",
+                    "" if sysq is None else f"{sysq:g}", f"{cnt}", "" if diff is None else f"{diff:+g}",
+                    r.get("countedBy") or "", _when(r.get("createdAt")), tr(st)]
+            for c, val in enumerate(vals):
+                it = QTableWidgetItem(val)
+                if c in (3, 4, 5):
+                    it.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                if c == 5 and diff:
+                    it.setForeground(QColor(theme.T("err" if diff < 0 else "accent")))
+                if c == 8:
+                    it.setForeground(QColor(theme.T(tok)))
+                    tip = []
+                    if r.get("answer"):
+                        tip.append(tr("原因：{0}", r["answer"]))
+                    if r.get("handledBy") or r.get("handledAt"):
+                        tip.append(tr("{0} · {1}", r.get("handledBy") or "", _when(r.get("handledAt"))))
+                    it.setToolTip("\n".join(tip))
+                if c == 6 and r.get("device"):
+                    it.setToolTip(r["device"])
+                self.rt.setItem(k, c, it)
+        self._rsel()
+
+    def _picked_reports(self):
+        rows = sorted({i.row() for i in self.rt.selectedIndexes()})
+        return [self.reports[r] for r in rows if 0 <= r < len(self.reports) and self.reports[r].get("status") == "open"]
+
+    def _rsel(self):
+        n = len(self._picked_reports()) if hasattr(self, "rt") else 0
+        for b in (self.b_fixed, self.b_reject):
+            b.setEnabled(n > 0)
+
+    def handle_reports(self, action):
+        picked = self._picked_reports()
+        if not picked:
+            return
+        lines = "\n".join(f"· {STORE_NAMES.get(r.get('entityCode'), '')} · {(r.get('name') or r.get('ean') or '')[:40]}："
+                          f"{r.get('systemQty')} → {r.get('counted')}" for r in picked[:12])
+        if len(picked) > 12:
+            lines += "\n" + tr("…还有 {0} 条", len(picked) - 12)
+        answer = None
+        if action == "fixed":
+            if QMessageBox.question(self, tr("已在 ERP 改好"), tr(
+                    "确认 ERP 里已经把这 {0} 个商品的库存改成门店点的数？\n\n{1}\n\n报告会关掉，门店扫码枪上显示「已更正」。程序不改数据库。",
+                    len(picked), lines)) != QMessageBox.Yes:
+                return
+        else:
+            from PySide6.QtWidgets import QInputDialog
+            answer, ok = QInputDialog.getText(self, tr("驳回"), tr("驳回原因（门店扫码枪上看得到）：") + "\n\n" + lines)
+            answer = (answer or "").strip()
+            if not ok or not answer:
+                return
+        me = (self.settings.get("tracking") or {}).get("me") or self.settings.get("user_name") or ""
+
+        def work():
+            for r in picked:
+                SC.handle_stock_report(self.settings, r["id"], action, answer, me)
+        _r, err = _busy(self, tr("正在保存…"), work)
+        if err:
+            QMessageBox.warning(self, tr("库存报错"), str(err))
+            self.load_reports()
+            return
+
+        def undo():
+            _u, e = _busy(self, tr("正在撤销…"), lambda: [SC.handle_stock_report(self.settings, r["id"], "reopen") for r in picked])
+            if e:
+                QMessageBox.warning(self, tr("库存报错"), str(e))
+            self.win.show_toast(tr("已撤销：{0} 条库存报错回到待处理", len(picked)))
+            if self.isVisible():
+                self.load_reports()
+        self.win.show_toast(tr("✓ {0} 条库存报错：{1}", len(picked), tr("已在 ERP 改好") if action == "fixed" else tr("已驳回")),
+                            6000, action=(tr("撤销"), undo))
+        self.load_reports()

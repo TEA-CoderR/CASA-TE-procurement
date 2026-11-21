@@ -74,12 +74,23 @@ def test_device_accounts_go_through_platform():
 
 def test_store_data_row_suggestion_minus_transit_and_prices():
     from datetime import date
-    x = {"store_inv": 9.0, "sales": [22, 40, 60, 100], "sys_box": 3, "pack": 6.0}
-    r = SC.store_row("8001", x, 1, 1.104, 2.49, {"price": 1.99, "end": date(2026, 11, 30)})
-    assert r == ["8001", 9.0, 22.0, 1.0, 2, 1.1, 2.49, 1.99, "30/11", 6.0]
-    assert SC.store_row("8001", {"sys_box": None}, 0, None, None, None)[4] is None
-    assert SC.store_row("8001", {"sys_box": 1}, 3, None, None, None)[4] == 0      # 在途比建议多：不建议
+    m = {"stock": 9.0, "s30": 22, "s90": 60, "last_days": 1, "pack": 6.0}
+    r = SC.store_row("8001", m, 1, 1.104, 2.49, {"price": 1.99, "end": date(2026, 11, 30)}, sys_box=3)
+    assert r == ["8001", 9.0, 22.0, 1.0, 2, 1.1, 2.49, 1.99, "30/11", 6.0, 1, 0]
+    assert SC.store_row("8001", {}, 0, None, None, None)[4] is None              # 不在 Griglia：没有建议箱数，价格照样有
+    assert SC.store_row("8001", {}, 3, None, None, None, sys_box=1)[4] == 0       # 在途比建议多：不建议
     assert SC.cheapest(QUOTES, "8001") == 1.1 and SC.cheapest(QUOTES, "8002") is None
+
+
+def test_stock_suspect_when_it_should_sell_but_nothing_sold_for_long():
+    # 一天卖 1 件、12 件在店里、10 天一件没卖 → 不对劲
+    assert SC.stock_suspect(12, 30, 90, 10)
+    assert not SC.stock_suspect(12, 30, 90, 2)          # 前天还卖了
+    assert not SC.stock_suspect(0, 30, 90, 30)          # 账面也没货
+    assert not SC.stock_suspect(5, 0, 0, None)          # 本来就不卖的
+    # 卖得慢（90 天 6 件 = 15 天一件）：45 天以上没卖才算
+    assert not SC.stock_suspect(4, 0, 6, 30) and SC.stock_suspect(4, 0, 6, 45)
+    assert SC.store_row("1", {"stock": 12, "s30": 30, "s90": 90, "last_days": 10}, 0, None, None, None)[11] == 1
 
 
 def test_publish_sends_each_store_its_own_parts(monkeypatch, tmp_path):

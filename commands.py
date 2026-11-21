@@ -70,6 +70,31 @@ def load_lists(items):
     return lists
 
 
+def attach_stock_reports(settings, rows, log=print):
+    """门店在扫码枪上报的库存错误（还没处理的）挂到检查清单的行上：x["stock_report"] = {counted, system, by, at}。
+    没连预约平台 / 读不到就算了（只是提醒）"""
+    try:
+        import booking_api as BA
+        import scanner_catalog as SC
+        if not BA.ready(settings):
+            return 0
+        reps = SC.open_reports_by_item(SC.stock_reports(settings, "open"))
+    except Exception as e:
+        log(tr("⚠ 门店报的库存错误没读到：{0}", e))
+        return 0
+    n = 0
+    for x in rows:
+        x.pop("stock_report", None)
+        r = reps.get((int(x.get("store") or 0), SC._ean(x.get("ean"))))
+        if r:
+            x["stock_report"] = {"counted": r.get("counted"), "system": r.get("systemQty"), "by": r.get("countedBy"),
+                                 "at": r.get("createdAt")}
+            n += 1
+    if n:
+        log(tr("[检查清单] {0} 个商品门店报了库存不对（扫码枪清点），判断后面写「门店报库存」", n))
+    return n
+
+
 def run_check(settings, lists, *, price_dir, log=print, progress=None, days=None, cycle=None, use_cfg=None, algo=None):
     """
     检查门店订货清单：查数据库（本店 + 其他门店）、Griglia、品牌供应商、在途、报价 → (rows, meta)。
@@ -267,6 +292,7 @@ def run_check(settings, lists, *, price_dir, log=print, progress=None, days=None
                 n_tr += 1
         if n_tr:
             log(tr("在途：{0} 个商品已经订了还没到货，建议箱数里扣掉了", n_tr))
+        attach_stock_reports(settings, rows, log)
         q_files, q_end = q_fut.result()
         n_q, n_files = apply_quotes(settings, rows, price_dir, log, files=q_files)
         if n_files:
