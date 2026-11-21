@@ -1,5 +1,5 @@
 """
-和卸货预约平台（Prenotazione_Scarico，prenota.casa-te.top / .com）对接（2026-11-21 用户：预约平台不并进程序、做对接；
+和卸货预约平台（Prenotazione_Scarico，prenota.casaete.top / .com）对接（2026-11-21 用户：预约平台不并进程序、做对接；
 登记发货时在程序里就能选卸货时间，和平台同步；确认收货 / 拒收也写回平台）。不依赖界面。
 
 平台那边的接口 /api/erp/*（PR #10），密钥 = 平台服务器 .env 里的 ERP_API_TOKEN：
@@ -13,7 +13,7 @@
 """
 from datetime import date, datetime
 
-DEFAULT_URL = "https://prenota.casa-te.top"
+DEFAULT_URL = "https://prenota.casaete.top"
 CRED_KEY = "booking.token"
 TIMEOUT = 12
 
@@ -54,7 +54,12 @@ def cfg(settings):
 
 def base_url(settings):
     u = (cfg(settings).get("url") or ((settings or {}).get("order_mail") or {}).get("booking_url") or DEFAULT_URL).strip()
-    return u.rstrip("/")
+    return fix_url(u).rstrip("/")
+
+
+def fix_url(u):
+    """2026-11-21 用户：网址是 prenota.casaete.top，以前写错成 casa-te.top（已经存进设置的也改过来）"""
+    return (u or "").replace("casa-te.top", "casaete.top")
 
 
 def token():

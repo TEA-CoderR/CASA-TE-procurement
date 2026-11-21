@@ -85,14 +85,46 @@ def attach_stock_reports(settings, rows, log=print):
     n = 0
     for x in rows:
         x.pop("stock_report", None)
+        use_counted_stock(x, None)
         r = reps.get((int(x.get("store") or 0), SC._ean(x.get("ean"))))
         if r:
             x["stock_report"] = {"counted": r.get("counted"), "system": r.get("systemQty"), "by": r.get("countedBy"),
                                  "at": r.get("createdAt")}
+            use_counted_stock(x, r.get("counted"))
             n += 1
     if n:
-        log(tr("[检查清单] {0} 个商品门店报了库存不对（扫码枪清点），判断后面写「门店报库存」", n))
+        log(tr("[检查清单] {0} 个商品门店报了库存不对（扫码枪清点），建议箱数按门店点的数算，判断后面写「门店报库存」", n))
     return n
+
+
+def use_counted_stock(x, counted):
+    """2026-11-21 用户定：门店报了库存不对（还没处理）→ 建议量按门店点的数算。
+    原来的（系统库存）存在 *_sys，counted = None 先还原。建议件数：有目标库存 = 目标 − 点的数，
+    没有就按差多少件加减（原来建议 0 的按日均 × 周期 − 点的数）。"""
+    for k in ("store_inv", "inv0", "suggested"):
+        if k + "_sys" in x:
+            x[k] = x.pop(k + "_sys")
+    if counted is None:
+        return
+    try:
+        c = max(0.0, float(counted))
+    except (TypeError, ValueError):
+        return
+    for k in ("store_inv", "inv0", "suggested"):
+        x[k + "_sys"] = x.get(k)
+    old = float(x.get("inv0") or 0)
+    sugg = float(x.get("suggested") or 0)
+    tgt = x.get("target")
+    if isinstance(tgt, (int, float)) and tgt == tgt and tgt > 0:
+        new = max(0.0, float(tgt) - c)
+    elif sugg > 0:
+        new = max(0.0, sugg + old - c)
+    else:
+        d = float((x.get("daily0") if x.get("daily0") is not None else x.get("daily")) or 0)
+        new = max(0.0, d * float(x.get("cycle") or 30) - c)
+    x["store_inv"] = c
+    x["inv0"] = c
+    x["suggested"] = round(new, 2)
 
 
 def run_check(settings, lists, *, price_dir, log=print, progress=None, days=None, cycle=None, use_cfg=None, algo=None):

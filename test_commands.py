@@ -154,3 +154,23 @@ def test_cli_drafts_and_confirm(monkeypatch, tmp_path, capsys):
     assert cli.main(["confirm", oid]) == 1
     assert cli.main(["confirm", oid, "--yes"]) == 0
     assert "已确认 1 张" in capsys.readouterr().out
+
+
+def test_counted_stock_used_for_suggestion_and_restored():
+    import commands as C
+    # 有目标库存：目标 − 门店点的数
+    x = {"store_inv": 12.0, "inv0": 12.0, "suggested": 0.0, "target": 10.0}
+    C.use_counted_stock(x, 0)
+    assert x["inv0"] == 0 and x["store_inv"] == 0 and x["suggested"] == 10.0
+    assert x["inv0_sys"] == 12.0
+    C.use_counted_stock(x, None)                     # 报告处理了 → 回到系统库存
+    assert x["inv0"] == 12.0 and x["suggested"] == 0.0 and "inv0_sys" not in x
+    # 没有目标库存：按差多少件加减；原来不订的按日均 × 周期
+    y = {"store_inv": 5.0, "inv0": 5.0, "suggested": 3.0}
+    C.use_counted_stock(y, 2)
+    assert y["suggested"] == 6.0
+    z = {"store_inv": 40.0, "inv0": 40.0, "suggested": 0.0, "daily": 0.5, "cycle": 30}
+    C.use_counted_stock(z, 4)
+    assert z["suggested"] == 11.0
+    C.use_counted_stock(z, 4)                        # 再套一次结果一样（先还原）
+    assert z["suggested"] == 11.0 and z["inv0_sys"] == 40.0

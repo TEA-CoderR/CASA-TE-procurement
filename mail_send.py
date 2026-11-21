@@ -40,7 +40,7 @@ DEFAULT_BODY = ("Buongiorno,\n\n"
 # 请供应商回信保留主题、DDT 和预约卸货时写上订单号 → 回信、预约都能准确对到这张单。
 STORE_ABBR = {"1": "FO", "2": "MA", "3": "FI", "4": "SM", "5": "SC", "BMS": "BMS"}
 ORDER_NO_RE = OT.ORDER_NO_RE
-BOOKING_URL = "https://prenota.casa-te.top"
+BOOKING_URL = "https://prenota.casaete.top"
 # 送货抬头 / 地址（来自门店采购 SCHEDA 的「Luogo di destinazione」；在「订单发件邮箱」窗口里可以改）
 DEFAULT_PROFILES = {
     "1": {"name": "CASA & TE SRL", "address": "Via d'Arezzo 159/r, 52045 Foiano della Chiana"},
@@ -70,7 +70,7 @@ def profile(settings, code):
 
 
 def booking_url(settings):
-    return (order_cfg(settings).get("booking_url") or BOOKING_URL).strip()
+    return (order_cfg(settings).get("booking_url") or BOOKING_URL).strip().replace("casa-te.top", "casaete.top")
 
 
 def order_no(oid, o):

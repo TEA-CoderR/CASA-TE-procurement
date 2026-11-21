@@ -246,12 +246,12 @@ def test_draft_body_is_fixed_template_never_last_mail(tmp_path, monkeypatch):
     st.set("L2", {"date": "2026-11-07", "store": "2", "supplier": "LAMPA", "draft": True, "colli": 6})
     calls = []
     monkeypatch.setattr(CMD, "mail_view_body", lambda *a, **k: calls.append(1) or "vecchio testo")
-    cfg = {"mail": {"accounts": ACCS}, "order_mail": {"booking_url": "https://prenota.casa-te.top"}}
+    cfg = {"mail": {"accounts": ACCS}, "order_mail": {"booking_url": "https://prenota.casaete.top"}}
     d = CMD.order_mail_draft(cfg, st, "L2", fetch_body=True, today=date(2026, 11, 7))
     no = d["nos"]["L2"]
     assert calls == [] and not d["need_last"] and d["body_src"] == "template"
     assert f"ordine n. {no} del 07/11/2026" in d["body"] and "CASA & TE GROUP SRL" in d["body"]
-    assert "Viale Europa 434" in d["body"] and "Colli ordinati: 6" in d["body"] and "prenota.casa-te.top" in d["body"]
+    assert "Viale Europa 434" in d["body"] and "Colli ordinati: 6" in d["body"] and "prenota.casaete.top" in d["body"]
     assert "vecchio" not in d["body"]
 
 

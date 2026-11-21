@@ -41,7 +41,8 @@ def test_no_key_means_not_connected_and_clear_message():
 
 def test_url_from_settings_or_order_mail_and_key_sent_as_bearer():
     BA.set_token("k" * 40)
-    assert BA.base_url({}) == "https://prenota.casa-te.top"
+    assert BA.base_url({}) == "https://prenota.casaete.top"
+    assert BA.base_url({"booking": {"url": "https://prenota.casa-te.top/"}}) == "https://prenota.casaete.top"
     assert BA.base_url({"order_mail": {"booking_url": "https://prenota.casa-te.com/"}}) == "https://prenota.casa-te.com"
     s = FakeSession({("GET", "/api/erp/bookings"): (200, {"bookings": [{"id": 1}]})})
     assert BA.test({"booking": {"url": "https://x.test"}}, session=s) == 1

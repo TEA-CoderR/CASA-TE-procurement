@@ -1359,7 +1359,7 @@ class OrderCheck:
         sr = x.get("stock_report")
         if sr:
             rv.append(("stock", tr("门店报库存 {0}", sr.get("counted")),
-                       tr("门店在扫码枪上清点：实际 {0} 件（系统 {1} 件），{2} 点的。请在 ERP 里改好库存后，在 系统设置 → 扫码枪 → 库存报错 里点「已在 ERP 改好」",
+                       tr("门店在扫码枪上清点：实际 {0} 件（系统 {1} 件），{2} 点的。库存和建议箱数已经按门店点的数算。请在 ERP 里改好库存后，在 系统设置 → 扫码枪 → 库存报错 里点「已在 ERP 改好」",
                           sr.get("counted"), sr.get("system"), sr.get("by") or "")))
         if x.get("urgent"):
             rv.append(("urgent", tr("门店紧急"), tr("门店在扫码枪上标了紧急（原因：{0}）：这个商品不在 Griglia，平常应该向直厂订，"
