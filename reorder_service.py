@@ -30,6 +30,9 @@ FIELD_ALIASES = {
     "qty": ["数量", "Quantità ordine", "Quantità", "Qtà ordine", "Qta ordine", "Qta", "Qtà", "Colli", "Ord.Colli"],
     "stock": ["库存", "Giacenza", "Inventario", "Stock"],
     "supplier": ["商家编号", "IDFornitore", "Fornitore"],
+    # 门店扫码枪做的清单（scanner_catalog.write_list_excel）多这两列：不在 Griglia、门店说紧急才从批发商订的
+    "urgent": ["URGENZA", "Urgente", "紧急"],
+    "reason": ["MOTIVO", "Motivo urgenza", "紧急原因"],
 }
 
 
@@ -177,9 +180,14 @@ def parse_order_file(path, legacy=False):
             code, ean = _clean_code(get("code")), _clean_code(get("ean"))
             if not code and not ean:
                 continue
-            rows.append({"code": code, "ean": ean, "name": str(get("name") or "").strip(),
-                         "qty": _num(get("qty")), "stock": _num(get("stock")),
-                         "supplier": _clean_code(get("supplier"))})
+            row = {"code": code, "ean": ean, "name": str(get("name") or "").strip(),
+                   "qty": _num(get("qty")), "stock": _num(get("stock")),
+                   "supplier": _clean_code(get("supplier"))}
+            if not legacy:
+                u = str(get("urgent") or "").strip().upper()
+                row["urgent"] = u in ("SI", "SÌ", "YES", "Y", "X", "1", "是", "紧急")
+                row["reason"] = str(get("reason") or "").strip()
+            rows.append(row)
         # 商品编号列里大多不是数字（比如表头对错了列）→ 改用条码
         # 只看写了编号的行（2026-11-15：清单最后加的新商品只写条码，以前一起算，写了编号的也被清掉）
         has = [x for x in rows if x["code"]] if not legacy else rows
@@ -652,6 +660,29 @@ def _day(v):
         return None
 
 
+# 2026-11-22 用户：数据库里 2025-01-08 之前的入库记录是错的（例如 2025-01-03 商家 0、发票 0000 的一大笔）
+OLD_RECEIPTS_BEFORE = "2025-01-08"
+
+
+def old_receipts(db, store_id, codes, before=OLD_RECEIPTS_BEFORE):
+    """这家店这些商品在 before 之前的入库记录（是错的）→ {编号: (最早那天 date, 几条, 合计件数)}；只读"""
+    import pandas as pd
+    codes = sorted({str(c) for c in codes or () if str(c).isdigit()})
+    out = {}
+    for i in range(0, len(codes), 2000):
+        chunk = codes[i:i + 2000]
+        ph = ", ".join(["%s"] * len(chunk))
+        df = pd.read_sql(f"SELECT CodArticolo, MIN(Cdata) AS d, COUNT(*) AS n, SUM(Quantita) AS q FROM caricolistalist "
+                         f"WHERE Negozio = %s AND Cdata < %s AND CodArticolo IN ({ph}) GROUP BY CodArticolo",
+                         db.engine, params=(int(store_id), before, *chunk))
+        for c, d, n, q in zip(df["CodArticolo"], df["d"], df["n"], df["q"]):
+            try:
+                out[str(int(float(c)))] = (_day(d), int(n or 0), _num(q))
+            except (TypeError, ValueError):
+                continue
+    return out
+
+
 def _active(start, end, today):
     a, b = _day(start), _day(end)
     return (a is None or a <= today) and (b is None or b >= today)
@@ -939,7 +970,9 @@ def product_card(db, code, days=60, stores=None, today=None, store=None):
                 except (TypeError, ValueError):
                     n = None
                 if n:
-                    r["_sup_name"] = n          # 商家照 ERP 写编号，名字给鼠标提示用
+                    r["_sup_name"] = n          # 商家照 ERP 写编号，名字另一列（2026-11-22 用户）
+            k = next(i for i, (c, _h, _t) in enumerate(cols) if c == sup)
+            cols.insert(k + 1, ("_sup_name", "供应商", "supname"))
         return cols, rows
 
     def q_daily():              # 五家店近 days 天每天的销量：一条 UNION ALL 查完
@@ -1365,6 +1398,10 @@ def check_rows(file_rows, result_rows, unit="colli"):
         if f.get("merged"):
             row["merged"] = f["merged"]
             row["list_ean"] = f.get("ean", "")
+        if f.get("urgent"):
+            row["urgent"] = True                  # 门店在扫码枪上说紧急（不在 Griglia、从批发商订）
+        if f.get("reason"):
+            row["list_reason"] = f["reason"]
         out.append(row)
     return out
 

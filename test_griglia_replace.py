@@ -833,3 +833,36 @@ def test_search_brand_lock_and_exclude_word():
     assert ids(GR.search(pool_, "", ["SWIFFER"])) == ["1", "2", "3"]
     assert ids(GR.search(pool_, "14", ["SWIFFER"])) == ["1"]                 # 短数字 = 规格，不当条码
     assert ids(GR.search([{"ean": "8001090000014", "name": "X 14"}], "800109")) == ["8001090000014"]
+
+
+def test_replace_log_shared_next_to_griglia_source(tmp_path, monkeypatch):
+    """用户 11-20：我替换的，同事那边也要看得到 → 替换记录在 Griglia 原件旁边每台电脑一个文件，读的时候合起来"""
+    src_dir, a_dir, b_dir = tmp_path / "sync", tmp_path / "a", tmp_path / "b"
+    for d in (src_dir, a_dir, b_dir):
+        d.mkdir()
+    src = src_dir / "SCHEDA DETERSIVI.xlsx"
+    src.write_bytes(b"x")
+    # 电脑 A：以前只记在本机 → 第一次读就放一份到同步文件夹
+    (a_dir / GR.FILE).write_text('{"111": {"new": "222", "at": "2026-11-18 10:00"}}', encoding="utf-8")
+    monkeypatch.setenv("COMPUTERNAME", "PC-A")
+    GR.set_shared(str(src))
+    assert GR.load_done(str(a_dir))["111"]["new"] == "222"
+    assert (src_dir / "_替代记录_PC-A.json").exists()
+    # 电脑 B：本机什么都没有，也看得到 A 的；B 自己替换一个，只写自己的文件
+    monkeypatch.setenv("COMPUTERNAME", "PC-B")
+    done = GR.load_done(str(b_dir))
+    assert done["111"]["new"] == "222"
+    done["333"] = {"new": "444", "at": "2026-11-20 17:00"}
+    done["111"] = {"new": "555", "at": "2026-11-20 17:01"}        # 后来又改了：时间新的算
+    GR.save_done(str(b_dir), done)
+    monkeypatch.setenv("COMPUTERNAME", "PC-A")
+    got = GR.load_done(str(a_dir))
+    assert got["333"]["new"] == "444" and got["111"]["new"] == "555"
+    # 没设原件 = 只用本机的
+    GR.set_shared("")
+    assert "333" not in GR.load_done(str(a_dir))
+
+
+def test_brand_word_check_any_spelling():
+    c = {"ean": "1", "name": "DUSTER 14", "names": ["DUSTER 14", "SWIFFER DUSTER 14 PIUMINI"]}
+    assert GR.has_word(c, "SWIFFER") and not GR.has_word(c, "VILEDA")

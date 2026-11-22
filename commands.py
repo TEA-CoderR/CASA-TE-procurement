@@ -70,6 +70,63 @@ def load_lists(items):
     return lists
 
 
+def attach_stock_reports(settings, rows, log=print):
+    """门店在扫码枪上报的库存错误（还没处理的）挂到检查清单的行上：x["stock_report"] = {counted, system, by, at}。
+    没连预约平台 / 读不到就算了（只是提醒）"""
+    try:
+        import booking_api as BA
+        import scanner_catalog as SC
+        if not BA.ready(settings):
+            return 0
+        reps = SC.open_reports_by_item(SC.stock_reports(settings, "open"))
+    except Exception as e:
+        log(tr("⚠ 门店报的库存错误没读到：{0}", e))
+        return 0
+    n = 0
+    for x in rows:
+        x.pop("stock_report", None)
+        use_counted_stock(x, None)
+        r = reps.get((int(x.get("store") or 0), SC._ean(x.get("ean"))))
+        if r:
+            x["stock_report"] = {"counted": r.get("counted"), "system": r.get("systemQty"), "by": r.get("countedBy"),
+                                 "at": r.get("createdAt")}
+            use_counted_stock(x, r.get("counted"))
+            n += 1
+    if n:
+        log(tr("[检查清单] {0} 个商品门店报了库存不对（扫码枪清点），建议箱数按门店点的数算，判断后面写「门店报库存」", n))
+    return n
+
+
+def use_counted_stock(x, counted):
+    """2026-11-21 用户定：门店报了库存不对（还没处理）→ 建议量按门店点的数算。
+    原来的（系统库存）存在 *_sys，counted = None 先还原。建议件数：有目标库存 = 目标 − 点的数，
+    没有就按差多少件加减（原来建议 0 的按日均 × 周期 − 点的数）。"""
+    for k in ("store_inv", "inv0", "suggested"):
+        if k + "_sys" in x:
+            x[k] = x.pop(k + "_sys")
+    if counted is None:
+        return
+    try:
+        c = max(0.0, float(counted))
+    except (TypeError, ValueError):
+        return
+    for k in ("store_inv", "inv0", "suggested"):
+        x[k + "_sys"] = x.get(k)
+    old = float(x.get("inv0") or 0)
+    sugg = float(x.get("suggested") or 0)
+    tgt = x.get("target")
+    if isinstance(tgt, (int, float)) and tgt == tgt and tgt > 0:
+        new = max(0.0, float(tgt) - c)
+    elif sugg > 0:
+        new = max(0.0, sugg + old - c)
+    else:
+        d = float((x.get("daily0") if x.get("daily0") is not None else x.get("daily")) or 0)
+        new = max(0.0, d * float(x.get("cycle") or 30) - c)
+    x["store_inv"] = c
+    x["inv0"] = c
+    x["suggested"] = round(new, 2)
+
+
 def run_check(settings, lists, *, price_dir, log=print, progress=None, days=None, cycle=None, use_cfg=None, algo=None):
     """
     检查门店订货清单：查数据库（本店 + 其他门店）、Griglia、品牌供应商、在途、报价 → (rows, meta)。
@@ -220,6 +277,7 @@ def run_check(settings, lists, *, price_dir, log=print, progress=None, days=None
             try:
                 import griglia_replace as GR
                 from utils import clean_ean
+                GR.set_shared((settings.get("griglia") or {}).get("source") or "")
                 subs = GR.substitutes(GR.load_done(os.path.dirname(grid["path"])), grid)
                 n_s = GR.apply_substitutes(rows, subs, clean_ean)
                 if n_s:
@@ -266,6 +324,7 @@ def run_check(settings, lists, *, price_dir, log=print, progress=None, days=None
                 n_tr += 1
         if n_tr:
             log(tr("在途：{0} 个商品已经订了还没到货，建议箱数里扣掉了", n_tr))
+        attach_stock_reports(settings, rows, log)
         q_files, q_end = q_fut.result()
         n_q, n_files = apply_quotes(settings, rows, price_dir, log, files=q_files)
         if n_files:
@@ -768,29 +827,25 @@ def order_mail_draft(settings, st, oid, fetch_body=True, factory=None, today=Non
         raise RuntimeError(tr("还没设置邮箱（系统设置 → 邮箱）"))
     own = {a["address"].lower() for a in accs}
     hist = _sent_history(st, own)
-    acc = MS.sender_for(stores, accs)
+    if MS.senders(settings):                   # 设了订单发件邮箱：严格照它，没设这家就不能发
+        bad = MS.sender_problem(stores, settings, accs)
+        if bad:
+            raise RuntimeError(bad)
+    acc = MS.sender_for(stores, accs, settings)
     supplier = str(o.get("supplier") or "")
     to, to_src = MS.recipients(st, supplier, hist)
-    subject = MS.subject_for(supplier, stores, today)
-    body, body_src = MS.default_body(supplier, stores), "template"
+    # 2026-11-21：正文一律按订单数据填固定模板（不再照搬上一封信，以前常对不上）
+    subject, body = MS.compose(supplier, [(k, st.orders[k]) for k in ids], settings, today)
+    body_src = "template"
     last = MS.last_sent(hist, st, supplier, acc["address"])
     need_last = False
-    if last and last.get("uid"):
-        t = _cached_body(last)
-        if t is None and fetch_body:
-            try:
-                t = mail_view_body(settings, last, factory=factory)
-            except Exception:
-                t = None
-        if t and t.strip():
-            body, body_src = MS.body_from_last(t, last["subject"], subject, supplier), "last"
-        elif not fetch_body:
-            need_last = True
     files = []
     f = str(o.get("file") or "").strip()
     if f:
         files.append((f, MS.attachment_name(subject, f), os.path.exists(f)))
     return {"ids": ids, "stores": stores, "supplier": supplier, "from": acc["address"], "accounts": accs,
+            "from_locked": bool(MS.senders(settings)),
+            "nos": {k: MS.order_no(k, st.orders[k]) for k in ids},
             "to": to, "to_src": to_src, "cc": MS.usual_cc(hist), "subject": subject, "body": body, "body_src": body_src,
             "files": files, "last": last, "need_last": need_last,
             "amount": sum(float((st.orders.get(k) or {}).get("amount") or 0) for k in ids),
@@ -1139,6 +1194,8 @@ def griglia_add_replacements(grid, picks, by=None, via="desktop", excel=None, lo
     """
     import shutil
     import griglia_replace as GR
+    if source:
+        GR.set_shared(source)
     from datetime import datetime
     path = grid["path"]
     target = source if source and os.path.isfile(source) else path
@@ -1181,6 +1238,8 @@ def griglia_restore_old(grid, olds, by=None, via="desktop", excel=None, log=None
     """
     import shutil
     import griglia_replace as GR
+    if source:
+        GR.set_shared(source)
     path = grid["path"]
     target = source if source and os.path.isfile(source) else path
     by = by or os.environ.get("USERNAME") or os.environ.get("USER") or ""
@@ -1495,3 +1554,48 @@ def store_allocate(settings, calc, suppliers=None, log=print, progress=None, act
                                                "out_root": out_root},
           {"files": len(S.written_files(res["written"])), "total": round(tot["total"], 2)})
     return res
+
+
+# ===================================================================== 卸货预约平台（2026-11-21）
+def booking_sync(settings, st, log=print, session=None, now=None, days=60):
+    """
+    没到货的单按订单号去预约平台查预约（承运商在网上约的、仓库在平台上改的），有变化就写进订单：
+    o["booking"]、约好的日期写进预计到货。返回改了的 [(单号, 字段)]。没填密钥 → []
+    """
+    from datetime import datetime, timedelta
+    import booking_api as BA
+    import mail_send as MS
+    import order_tracking as OT
+    if not BA.ready(settings):
+        return []
+    now = now or datetime.now()
+    oldest = (now.date() - timedelta(days=days)).isoformat()
+    want = {}
+    for oid, o in st.orders.items():
+        if o.get("draft") or o.get("deleted") or o.get("state") == "cancelled":
+            continue
+        bk = o.get("booking") or {}
+        if o.get("arrived") and bk.get("status") not in BA.LIVE:
+            continue
+        if str(o.get("date") or "")[:10] < oldest:
+            continue
+        if str(o.get("kind") or "") == "deter" and not o.get("no"):
+            continue
+        want[MS.order_no(oid, o).upper()] = oid
+    if not want:
+        return []
+    found = BA.bookings_for(settings, list(want), session=session)
+    changes = []
+    for no, bs in found.items():
+        oid = want.get(no)
+        if not oid or not bs:
+            continue
+        f = BA.changes_from(st.orders[oid], BA.pick(bs), now=now)
+        if f:
+            changes.append((oid, f))
+    if changes:
+        st.set_many(changes, src="booking")
+        for oid, f in changes:
+            o = st.orders.get(oid) or {}
+            log(f"预约平台：{o.get('supplier') or ''} · {OT.store_label(o)} → {BA.text(f.get('booking') or o.get('booking'))}")
+    return changes

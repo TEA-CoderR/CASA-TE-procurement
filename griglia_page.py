@@ -18,6 +18,7 @@ from i18n import tr
 
 class _Sig(QObject):
     done = Signal(object)
+    log = Signal(str)
 
 
 class _ExportDialog(QDialog):
@@ -332,6 +333,7 @@ class GrigliaPage:
         self.win, self.settings, self.ui = win, settings, ui
         self.sig = _Sig()
         self.sig.done.connect(self._done)
+        self.sig.log.connect(lambda m: self.win.log(m) if hasattr(self.win, "log") else None)
         self.st = None
         self.grid = None
         self.running = False
@@ -530,12 +532,14 @@ class GrigliaPage:
                 from settings import app_dir
                 today = date.today().isoformat()
                 sp = os.path.join(app_dir(), "cache", "griglia", "seen.json")
-                seen = G.load_seen(sp)
+                shared = W.data_dir(r)                 # 工作文件夹在同步盘：几台电脑的新上架记录合起来
+                seen = G.load_seen_all(sp, shared)
                 hist = any(seen.get(k, {}).get("since", today) < today for k in quotes)
                 seen, fresh = G.track(seen, quotes, today)
-                G.save_seen(sp, seen)
+                G.save_seen_all(sp, seen, shared)
                 st = G.stats(grid, quotes, fresh if hist else None)
                 import griglia_replace as GR
+                GR.set_shared((self.settings.get("griglia") or {}).get("source") or "")
                 done = GR.done_eans(GR.load_done(os.path.dirname(grid["path"])), grid)   # 加过替代品的：不再算「都不做了」
                 st["gone"] = [x for x in st["gone"] if x["ean"] not in done]
                 self._quotes, self._fresh = quotes, (fresh if hist else None)
@@ -545,7 +549,35 @@ class GrigliaPage:
                 self.sig.done.emit((None, None, str(e)))
                 return
             self._warm_replacements(grid, quotes, self._fresh)
+            self._publish_scanner(grid, quotes)
         __import__("erp_widgets").run_excel_job(work)      # 可能用到 Excel：排进同一条线程（不在线程退出时卡死）
+
+    def _publish_scanner(self, grid, quotes):
+        """统计完顺便把门店扫码枪的目录发布到预约平台（内容没变 / 没连平台就不发；失败只记日志）"""
+        try:
+            import booking_api as BA
+            if not BA.ready(self.settings):
+                return
+            import griglia_replace as GR
+            import scanner_catalog as SC
+            from datetime import date
+            subs = GR.substitutes(GR.load_done(os.path.dirname(grid["path"])), grid)
+            meta, rows = SC.build(grid, quotes, subs, SC.direct_index(self.settings, lambda *_: None),
+                                  week=date.today().strftime("%G-W%V"))
+            me = (self.settings.get("tracking") or {}).get("me") or self.settings.get("user_name") or "?"
+        except Exception as e:
+            self.sig.log.emit(tr("⚠ 扫码枪目录没发布：{0}", e))
+            return
+
+        def send():
+            """每家门店的库存 / 销量 / 价格要查数据库（几分钟）：单独一条线程（不占 Excel 那条线程，也不用 Excel）"""
+            try:
+                stores = SC.cached_store_data(self.settings, rows, quotes, log=self.sig.log.emit)
+                SC.publish_if_changed(self.settings, meta, rows, me, log=self.sig.log.emit, stores=stores)
+            except Exception as e:
+                self.sig.log.emit(tr("⚠ 扫码枪目录没发布：{0}", e))
+        import threading
+        threading.Thread(target=send, name="scanner-publish", daemon=True).start()
 
     def _warm_replacements(self, grid, quotes, fresh):
         """统计完在后台接着把「找替代商品」算好（约 1 秒）：点按钮时不用再等"""
@@ -817,7 +849,10 @@ class GrigliaPage:
 
     def source(self):
         """Griglia 原件（同步文件夹里的）：「换 Griglia…」时记下的"""
-        return (self.settings.get("griglia") or {}).get("source") or ""
+        src = (self.settings.get("griglia") or {}).get("source") or ""
+        import griglia_replace as GR
+        GR.set_shared(src)                     # 替换记录在 Griglia 原件旁边也存一份，同事看得到
+        return src
 
     def _tab_of(self, key):
         return {"gone": self.t_gone, "new": self.t_new, "prices": self.t_price, "odd": self.t_odd}.get(key)

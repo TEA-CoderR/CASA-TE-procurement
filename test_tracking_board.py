@@ -27,8 +27,9 @@ def test_lane_of_each_status():
 
 def test_card_hint_and_action():
     assert B.card_hint(_r(status="draft", origin="wholesale"))[0].startswith("DETERSIVO")
-    text, tone = B.card_hint(_r(status="ordered", pending=True), T)
+    text, tone = B.card_hint(_r(status="ordered", pending=True, wait_days=3, wait_level=1), T)
     assert "3" in text and tone == "warn"
+    assert B.card_hint(_r(status="ordered", pending=True, wait_days=4, wait_level=2), T)[1] == "err"   # 4 个工作日红
     text, tone = B.card_hint(_r(status="ordered", overdue=True, late_by=9), T)
     assert "9" in text and tone == "err"
     assert B.action_of(_r(status="draft"))[0] == "send"

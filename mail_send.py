@@ -34,6 +34,123 @@ DEFAULT_BODY = ("Buongiorno,\n\n"
                 "CASA & TE")
 
 
+# ===================================================================== 订单号、发件邮箱、固定模板（2026-11-21）
+# 用户：以后全部用程序发订单邮件，内容一定要准确清楚；固定六个邮箱（五家门店各一个 + BMS），各自的订单用各自的邮箱发。
+# 正文不再照搬上一封信（以前内容常对不上），一律按订单数据填固定的意大利文模板；每张单一个订单号，
+# 请供应商回信保留主题、DDT 和预约卸货时写上订单号 → 回信、预约都能准确对到这张单。
+STORE_ABBR = {"1": "FO", "2": "MA", "3": "FI", "4": "SM", "5": "SC", "BMS": "BMS"}
+ORDER_NO_RE = OT.ORDER_NO_RE
+BOOKING_URL = "https://prenota.casaete.top"
+# 送货抬头 / 地址（来自门店采购 SCHEDA 的「Luogo di destinazione」；在「订单发件邮箱」窗口里可以改）
+DEFAULT_PROFILES = {
+    "1": {"name": "CASA & TE SRL", "address": "Via d'Arezzo 159/r, 52045 Foiano della Chiana"},
+    "2": {"name": "CASA & TE GROUP SRL", "address": "Viale Europa 434, Capannori"},
+    "3": {"name": "CASA & TE S.FILIPPO SRL", "address": "Via di Tiglio 1893, Lucca"},
+    "4": {"name": "CASA & TE S.MARCO SRL", "address": "Via del Brennero 844, Lucca"},
+    "5": {"name": "CASA & TE S.CONCORDIO SRL", "address": "Via Savonarola 50"},
+    "BMS": {"name": "BMS PARTNERS SRL", "address": "Via di Tiglio 1893, Lucca"},
+}
+SENDER_CODES = ("1", "2", "3", "4", "5", "BMS")
+
+
+def order_cfg(settings):
+    return (settings or {}).get("order_mail") or {}
+
+
+def senders(settings):
+    """{门店代码: 发件邮箱}：「订单发件邮箱」窗口里填的六个"""
+    return {k: str(v).strip() for k, v in (order_cfg(settings).get("senders") or {}).items() if str(v or "").strip()}
+
+
+def profile(settings, code):
+    """送货抬头 + 地址：窗口里改过的优先，没改过用 DEFAULT_PROFILES"""
+    p = dict(DEFAULT_PROFILES.get(str(code), {"name": "", "address": ""}))
+    p.update({k: v for k, v in ((order_cfg(settings).get("stores") or {}).get(str(code)) or {}).items() if v})
+    return p
+
+
+def booking_url(settings):
+    return (order_cfg(settings).get("booking_url") or BOOKING_URL).strip().replace("casa-te.top", "casaete.top")
+
+
+def order_no(oid, o):
+    """
+    订单号：门店缩写-下单那天 ddmm-4 位（单号算出来的，几台电脑算出来都一样，不用记流水号），例如 FO-2011-3F9A。
+    发过的单记在单上（o["no"]），之后下单日期变了也不换号
+    """
+    import hashlib
+    if o.get("no"):
+        return o["no"]
+    d = OT.to_date(o.get("date")) or date.today()
+    ab = STORE_ABBR.get(str(o.get("store") or ""), "CT")
+    return f"{ab}-{d:%d%m}-{hashlib.sha1(str(oid).encode('utf-8')).hexdigest()[:4].upper()}"
+
+
+find_order_nos = OT.find_order_nos
+
+
+def sender_problem(stores, settings, accounts):
+    """要用的发件邮箱有问题时返回给人看的一句话，没问题返回 None"""
+    code = stores[0] if len(stores) == 1 else "BMS"
+    label = STORE_LABEL.get(code, code)
+    addr = senders(settings).get(code)
+    if not addr:
+        return f"{label}：订单发件邮箱还没设置（系统设置 → 邮箱 → 订单发件邮箱）"
+    if not any(a["address"].lower() == addr.lower() for a in accounts or []):
+        return f"{label}：发件邮箱 {addr} 不在邮箱设置里（系统设置 → 邮箱 → 订单发件邮箱）"
+    return None
+
+
+def compose(supplier, orders, settings, day=None):
+    """
+    固定模板（意大利文）：orders = [(单号 oid, 单 o)]，一封信管的几张单。返回 (主题, 正文)。
+    一家店：主题「Ordine FO-2011-3F9A · CASA&TE Foiano · ACME」；几家店一起（总仓采购一个文件）：
+    主题用 BMS 那张（没有就第一张）的订单号，正文按门店分段写每张的订单号和送货地址
+    """
+    day = day or date.today()
+    sup = str(supplier or "").strip()
+    url = booking_url(settings)
+    rows = [(oid, o, order_no(oid, o)) for oid, o in orders]
+    d0 = min((OT.to_date(o.get("date")) or day) for _i, o, _n in rows) if rows else day
+
+    def colli(o):
+        c = o.get("colli")
+        try:
+            c = float(c)
+        except (TypeError, ValueError):
+            return ""
+        return f"{c:g}" if c else ""
+    tail = ("Vi chiediamo cortesemente di:\n"
+            "- confermare la ricezione dell'ordine indicando la data di consegna prevista, rispondendo a questa "
+            "e-mail senza modificarne l'oggetto;\n"
+            "- riportare il numero d'ordine sul documento di trasporto (DDT).\n\n"
+            f"Le consegne si ricevono solo su prenotazione: il vettore deve prenotare lo scarico su {url} "
+            "indicando il numero d'ordine. Le consegne senza prenotazione verranno respinte.\n\n"
+            "Cordiali saluti\nUfficio Acquisti\nCASA & TE")
+    if len(rows) == 1:
+        oid, o, no = rows[0]
+        code = str(o.get("store") or "")
+        p = profile(settings, code)
+        subject = f"Ordine {no} · CASA&TE {STORE_LABEL.get(code, code)} · {sup}"
+        c = colli(o)
+        body = (f"Buongiorno,\n\nin allegato il nostro ordine n. {no} del {d0:%d/%m/%Y}.\n\n"
+                f"Consegna presso:\n{p['name']}\n{p['address']}\n"
+                + (f"\nColli ordinati: {c}\n" if c else "") + "\n" + tail)
+        return subject, body
+    main = next((r for r in rows if str(r[1].get("store")) == "BMS"), rows[0])
+    subject = f"Ordine {main[2]} · CASA&TE {len(rows)} PDV · {sup}"
+    parts = []
+    for _oid, o, no in rows:
+        code = str(o.get("store") or "")
+        p = profile(settings, code)
+        c = colli(o)
+        parts.append(f"- {STORE_LABEL.get(code, code)} – ordine n. {no}" + (f" – colli {c}" if c else "") +
+                     f"\n  {p['name']}, {p['address']}")
+    body = (f"Buongiorno,\n\nin allegato il nostro ordine del {d0:%d/%m/%Y}. "
+            "Ogni punto vendita ha il suo numero d'ordine e la sua consegna:\n\n" + "\n".join(parts) + "\n\n" + tail)
+    return subject, body
+
+
 # ===================================================================== 一封信管哪几张单
 def group_of(st, oid):
     """
@@ -80,11 +197,18 @@ def attachment_name(subject, path):
 
 
 # ===================================================================== 用哪个邮箱发
-def sender_for(stores, accounts):
-    """一家店 → 这家店自己的邮箱（设置里选的门店 / 按地址猜的）；BMS、几家店一起、没有邮箱的店 → BMS 采购办公室的邮箱"""
+def sender_for(stores, accounts, settings=None):
+    """
+    「订单发件邮箱」设了 → 严格照它：一家店 = 这家店的邮箱，BMS / 几家店一起（总仓采购一个文件）= BMS 的邮箱，
+    没设这家 → None（不能发，窗口里写原因）。一个都没设（老设置）→ 照以前的猜法
+    """
     accounts = list(accounts or [])
     if not accounts:
         return None
+    snd = senders(settings)
+    if snd:
+        addr = snd.get(stores[0] if len(stores) == 1 else "BMS")
+        return next((a for a in accounts if addr and a["address"].lower() == addr.lower()), None)
     bms = next((a for a in accounts if "bmspsrl" in a["address"].lower()), None)
     if len(stores) == 1 and stores[0] != "BMS":
         own = next((a for a in accounts if str(a.get("store") or "") == stores[0]), None) or \
@@ -291,16 +415,19 @@ def send(acc, password, msg, smtp_factory=None, imap_factory=None):
 
 
 def mark_sent(st, ids, mail, today=None):
-    """发出去了：待登记 → 已下单（下单日期 = 今天），单上记发了什么（同一张单不会再发一次）"""
+    """发出去了：待登记 → 已下单（下单日期 = 今天），单上记发了什么（同一张单不会再发一次）、订单号（之后不再变）"""
     day = (today or date.today()).isoformat()
+    gno = (find_order_nos(mail.get("subject")) or [None])[0]
     ch = []
     for oid in ids:
         o = st.orders.get(oid)
         if not o:
             continue
-        f = {"draft": None, "date": day, "sent": {"at": datetime.now().isoformat(timespec="seconds"),
+        f = {"draft": None, "date": day, "no": order_no(oid, o), "sent": {"at": datetime.now().isoformat(timespec="seconds"),
                                                    "to": mail["to"], "from": mail["from"], "subject": mail["subject"],
                                                    "mid": mail.get("mid") or ""}}
+        if gno and gno != f["no"]:
+            f["gno"] = gno                     # 几家店一封信：主题里写的那个号（回信用它也能对上这几张）
         if not o.get("buyer"):
             f["buyer"] = st.me
         mails = list(o.get("mails") or [])

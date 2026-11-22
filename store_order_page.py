@@ -1923,8 +1923,12 @@ class StoreOrderPage:
                                 else tr("{0} 张单", n_wait) if n_wait else tr("全部订了"))
 
         files = {}
-        for w in res["written"]:
-            files.setdefault(S.written_source(w, res), w[0])
+        for w in res["written"]:                # 一家供应商几个文件（每个去向一个）→ 打开所在文件夹
+            src = S.written_source(w, res)
+            if src in files and files[src] != w[0]:
+                files[src] = os.path.dirname(w[0])
+            else:
+                files.setdefault(src, w[0])
         t = self.rtable
         rows = [(day, sc, plan) for day, sc, plan in res["results"]
                 if plan.get("bms") or any(st["status"] != "none" for st in plan["stores"].values())]

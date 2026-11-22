@@ -58,6 +58,12 @@ def card_hint(r, today=None):
         if s == "stuck":
             return tr("卡住了") + (f" · {r['note']}" if r.get("note") else ""), "err"
         return tr("超期 {0} 天", r.get("late_by") or 0), "err"
+    bk = r.get("booking") or {}
+    if lane in ("shipped", "confirmed") and bk.get("status") in ("requested", "confirmed", "arrived", "unloading"):
+        d = str(bk.get("date") or "")
+        when = f"{d[8:10]}/{d[5:7]} {bk.get('time') or ''}".strip()
+        return tr("预约卸货 {0}", when) + (f" · {bk['carrier']}" if bk.get("carrier") else ""), \
+            ("warn" if bk.get("status") == "requested" else "accent")
     if lane == "shipped":
         if s == "partial":
             return tr("部分到货") + (f" · {_dm(r.get('arrived'))}" if r.get("arrived") else ""), "warn"
@@ -67,12 +73,12 @@ def card_hint(r, today=None):
         return (tr("确认信 {0}", _dm(r["confirmed"])) if r.get("confirmed") else tr("已确认")) + \
             (tr(" · 预计 {0}", _dm(r["expected"])) if r.get("expected") else ""), "muted"
     if lane == "ordered":
-        d0 = r.get("date")
-        n = (today - d0).days if d0 else 0
+        n = r.get("wait_days") or 0               # 工作日（周末不算）：2 个工作日没确认黄、4 个红
         text = tr("邮件已发 · 等确认") if r.get("mails") or r.get("origin") == "mail" else tr("等确认")
         if n >= 1:
-            text += tr(" {0} 天", n)
-        return text, ("warn" if r.get("pending") else "muted")
+            text += tr(" {0} 个工作日", n)
+        lv = r.get("wait_level") or (1 if r.get("pending") else 0)
+        return text, ("err" if lv >= 2 else "warn" if lv else "muted")
     return "", "muted"
 
 
@@ -585,8 +591,16 @@ class OrderDrawer(QFrame):
         self.btn.setText(label)
         self.btn.setVisible(bool(self.action))
         self.tl.set_steps(timeline(r))
-        self.note.setText(r.get("note") or "")
-        self.note.setVisible(bool(r.get("note")))
+        import receipt as RC
+        rc = RC.last(r)
+        import booking_api as BA
+        bk = r.get("booking") or {}
+        txt = "\n".join(x for x in ((tr("预约卸货：{0}", BA.text(bk)) if bk else ""),
+                                   (tr("收货：{0}", RC.summary(rc)) if rc else ""), r.get("note") or "") if x)
+        self.note.setText(txt)
+        self.note.setVisible(bool(txt))
+        self.note.setToolTip("\n".join(RC.summary(x) + (" · " + x["note"] if x.get("note") else "")
+                                       for x in r.get("receipts") or []))
         n = len(r.get("mails") or [])
         self.b_mail.set_count(n)
         self.b_lines.setEnabled(lines_ok is not False)

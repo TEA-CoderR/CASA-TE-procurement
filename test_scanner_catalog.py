@@ -1,0 +1,182 @@
+"""门店扫码枪目录（2026-11-21）：Griglia + 这周报价 + 替代商品 + 直厂 → 扫码枪离线查的目录"""
+import json
+import sys
+import types
+
+import pytest
+
+if "win32com" not in sys.modules:                 # utils 一 import 就要（云端没有 Excel）
+    w = types.ModuleType("win32com"); c = types.ModuleType("win32com.client"); w.client = c
+    sys.modules["win32com"] = w; sys.modules["win32com.client"] = c
+
+import booking_api as BA
+import scanner_catalog as SC
+from test_booking_api import FakeSession
+
+
+@pytest.fixture(autouse=True)
+def _cred(monkeypatch, tmp_path):
+    monkeypatch.setenv("CASATE_CRED_DIR", str(tmp_path / "cred"))
+
+
+GRID = {"path": "/x/ELENCO_DETERSIVI.xlsx",
+        "items": {"8001": {"name": "SVELTO 1000", "pack": 12}, "8002": {"name": "DIXAN 40"}, "8004": {"name": "NUOVO"}},
+        "struck": {"8003": {"name": "SVELTO 980"}}}
+QUOTES = {"MELONI": {"8001": {"price": 1.2, "desc": "SVELTO PIATTI 1000"}, "08005": {"price": 2, "desc": "FUORI GRIGLIA"},
+                     "8002": {"price": 0, "desc": "omaggio"}},
+          "PETRILLO": {"8001": {"price": 1.1, "desc": "SVELTO"}}}
+
+
+def test_catalog_rows_griglia_state_wholesalers_substitute_direct():
+    meta, rows = SC.build(GRID, QUOTES, {"8003": {"ean": "8004", "name": "NUOVO"}},
+                          {"ean": {"5005": "BAMA", "8005": "BAMA"}, "items": {("BAMA", "5005"): [6.0, 1.2]}}, week="2026-W47")
+    by = {r[0]: r for r in rows}
+    assert meta["sources"] == ["MELONI", "PETRILLO"] and meta["directs"] == ["BAMA"]
+    assert by["8001"] == ["8001", "SVELTO 1000", 1, [0, 1], "", "", -1, 12, 1.1, 1]   # 箱规 · 最便宜件价 · 哪家
+    assert by["8002"][3] == []                      # 价格 0 的行不算有货
+    assert by["8003"][2] == 2 and by["8003"][4:6] == ["8004", "NUOVO"]
+    assert by["8005"] == ["8005", "FUORI GRIGLIA", 0, [0], "", "", 0, None, 2, 0]   # 前面的 0 去掉
+    assert by["5005"][2] == 0 and by["5005"][6] == 0
+    assert by["5005"][7] == 6                       # 直厂商品的箱规从 SCHEDA 来
+    assert meta["counts"] == {"griglia": 3, "stopped": 1, "items": 6}
+    assert all(len(r) == 10 for r in rows)
+
+
+def test_publish_in_parts_and_only_when_changed(tmp_path, monkeypatch):
+    BA.set_token("k" * 40)
+    monkeypatch.setattr(SC, "PART", 2)
+    calls = []
+
+    def answer(params, body):
+        calls.append(body)
+        return {"complete": body["part"] == body["parts"], "id": 9, "items": 6}
+    s = FakeSession({("POST", "/api/erp/catalog"): (200, answer)})
+    meta, rows = SC.build(GRID, QUOTES, {}, None)
+    state = str(tmp_path / "state.json")
+    res = SC.publish_if_changed({}, meta, rows, "Marco", session=s, log=lambda *_: None, state_path=state)
+    assert res["id"] == 9 and [c["part"] for c in calls] == [1, 2, 3] and calls[0]["parts"] == 3
+    assert "meta" in calls[0] and "meta" not in calls[1] and calls[0]["by"] == "Marco"
+    assert sum(len(c["items"]) for c in calls) == len(rows)
+    assert json.load(open(state))["id"] == 9
+    assert SC.publish_if_changed({}, meta, rows, "Marco", session=s, log=lambda *_: None, state_path=state) is None
+    assert len(calls) == 3                          # 没变不再发
+
+
+def test_device_accounts_go_through_platform():
+    BA.set_token("k" * 40)
+    s = FakeSession({("POST", "/api/erp/scanners"): (201, {"device": {"id": 4, "name": "TC22 FOIANO"}, "pairCode": "ABCD2345"}),
+                     ("POST", "/api/erp/scanners/4"): (200, {"device": {"id": 4, "active": False}})})
+    d, code = SC.add_device({}, "TC22 FOIANO", "1", session=s)
+    assert code == "ABCD2345" and s.calls[0][3] == {"name": "TC22 FOIANO", "entityCode": 1}
+    assert SC.pretty_code(code) == "ABCD-2345"
+    assert SC.set_active({}, 4, False, session=s)["active"] is False
+    assert s.calls[1][3] == {"action": "deactivate"}
+
+
+def test_store_data_row_suggestion_minus_transit_and_prices():
+    from datetime import date
+    m = {"stock": 9.0, "s30": 22, "s90": 60, "last_days": 1, "pack": 6.0}
+    r = SC.store_row("8001", m, 1, 1.104, 2.49, {"price": 1.99, "end": date(2026, 11, 30)}, sys_box=3)
+    assert r == ["8001", 9.0, 22.0, 1.0, 2, 1.1, 2.49, 1.99, "30/11", 6.0, 1, 0]
+    assert SC.store_row("8001", {}, 0, None, None, None)[4] is None              # 不在 Griglia：没有建议箱数，价格照样有
+    assert SC.store_row("8001", {}, 3, None, None, None, sys_box=1)[4] == 0       # 在途比建议多：不建议
+    assert SC.cheapest(QUOTES, "8001") == 1.1 and SC.cheapest(QUOTES, "8002") is None
+
+
+def test_stock_suspect_when_it_should_sell_but_nothing_sold_for_long():
+    # 一天卖 1 件、12 件在店里、10 天一件没卖 → 不对劲
+    assert SC.stock_suspect(12, 30, 90, 10)
+    assert not SC.stock_suspect(12, 30, 90, 2)          # 前天还卖了
+    assert not SC.stock_suspect(0, 30, 90, 30)          # 账面也没货
+    assert not SC.stock_suspect(5, 0, 0, None)          # 本来就不卖的
+    # 卖得慢（90 天 6 件 = 15 天一件）：45 天以上没卖才算
+    assert not SC.stock_suspect(4, 0, 6, 30) and SC.stock_suspect(4, 0, 6, 45)
+    assert SC.store_row("1", {"stock": 12, "s30": 30, "s90": 90, "last_days": 10}, 0, None, None, None)[11] == 1
+
+
+def test_publish_sends_each_store_its_own_parts(monkeypatch, tmp_path):
+    BA.set_token("k" * 40)
+    monkeypatch.setattr(SC, "PART", 2)
+    calls = []
+    s = FakeSession({("POST", "/api/erp/catalog"): (200, lambda p, b: calls.append(b) or {"complete": b["part"] == b["parts"]})})
+    meta, rows = SC.build(GRID, QUOTES, {}, None)
+    SC.publish({}, meta, rows, "M", session=s, stores={2: [["8001", 3]], 1: [["8001", 9], ["8002", 0], ["8004", 1]]})
+    assert [c.get("store") for c in calls] == [None, None, None, 1, 1, 2]
+    assert all(c["parts"] == 6 for c in calls)
+    # 门店数据变了也算变了：要重新发布
+    state = str(tmp_path / "st.json")
+    SC.publish_if_changed({}, meta, rows, "M", session=s, log=lambda *_: None, state_path=state, stores={1: [["8001", 9]]})
+    n = len(calls)
+    assert SC.publish_if_changed({}, meta, rows, "M", session=s, log=lambda *_: None, state_path=state, stores={1: [["8001", 9]]}) is None
+    SC.publish_if_changed({}, meta, rows, "M", session=s, log=lambda *_: None, state_path=state, stores={1: [["8001", 8]]})
+    assert len(calls) > n
+
+
+def test_store_data_cached_for_a_few_hours(monkeypatch, tmp_path):
+    runs = []
+    monkeypatch.setattr(SC, "store_data", lambda *a, **k: runs.append(1) or {1: [["8001", 9]]})
+    p = str(tmp_path / "c.json")
+    assert SC.cached_store_data({}, [], {}, log=lambda *_: None, path=p, now=1000) == {1: [["8001", 9]]}
+    assert SC.cached_store_data({}, [], {}, log=lambda *_: None, path=p, now=1000 + 3600) == {1: [["8001", 9]]}
+    assert len(runs) == 1
+    SC.cached_store_data({}, [], {}, log=lambda *_: None, path=p, now=1000 + 5 * 3600)
+    SC.cached_store_data({}, [], {}, log=lambda *_: None, path=p, now=1000 + 5 * 3600, force=True)
+    assert len(runs) == 3
+
+
+LIST = {"id": 7, "entityCode": 1, "week": "2026-11-22", "lines": [
+    {"ean": "8015100572212", "name": "DIXAN 40", "boxes": 2, "kind": "griglia", "updatedBy": "TC22 FOIANO 1"},
+    {"ean": "8000036022017", "name": "AMUCHINA", "boxes": 1, "kind": "urgent", "reason": "Scaffale vuoto"},
+    {"ean": "8004", "name": "NUOVO", "boxes": 1, "kind": "sub", "origEan": "8003", "origName": "SVELTO 980"},
+    {"ean": "8001090213465", "name": "SVELTO", "boxes": 0, "kind": "remind"}]}
+
+
+def test_scanner_list_written_like_a_store_list_with_urgent_column(tmp_path):
+    import reorder_service as R
+    p = SC.write_list_excel(LIST, str(tmp_path / SC.list_file_name(LIST)))
+    assert SC.list_file_name(LIST) == "FOIANO - Lista scanner 2211.xlsx"
+    info = R.parse_order_file(p)
+    rows = {r["ean"]: r for r in info["rows"]}
+    assert set(rows) == {"8015100572212", "8000036022017", "8004"}      # 只写要订的
+    assert rows["8015100572212"]["qty"] == 2 and not rows["8015100572212"]["urgent"]
+    assert rows["8000036022017"]["urgent"] and rows["8000036022017"]["reason"] == "Scaffale vuoto"
+    assert "8003" in rows["8004"]["reason"]
+    out = R.check_rows(info["rows"], [], "colli")
+    assert {x["ean"]: x.get("urgent") for x in out}["8000036022017"] is True
+
+
+def test_import_lists_places_file_marks_received_and_feedback(tmp_path, monkeypatch):
+    import workspace as W
+    BA.set_token("k" * 40)
+    monkeypatch.setattr(SC, "_seen_path", lambda: str(tmp_path / "seen.json"))
+    root = str(tmp_path / "ws")
+    W.ensure(root)
+    old = tmp_path / "ws" / W.LISTS / "FOIANO - vecchia.xlsx"
+    SC.write_list_excel(LIST, str(old))
+    posts = []
+    s = FakeSession({("POST", "/api/erp/store-lists/7"): (200, lambda p, b: posts.append(b) or {"id": 7})})
+    out = SC.import_lists({}, root, [LIST], session=s, tmp_dir=str(tmp_path / "tmp"), log=lambda *_: None)
+    (sid, dst, moved), = out
+    assert sid == 1 and dst.endswith("FOIANO - Lista scanner 2211.xlsx")
+    assert moved and moved[0][0] == str(old) and not old.exists()     # 原来的挪进 _旧文件（撤销能放回）
+    assert posts == [{"action": "received"}]
+    # 确认比价后：最后定的箱数写回（少订 / 不订写备注）
+    rows = [{"store": 1, "ean": "8015100572212", "fbox": 1}, {"store": 1, "ean": "8004", "fbox": 1},
+            {"store": 2, "ean": "8000036022017", "fbox": 5}]
+    monkeypatch.setattr(BA, "_call", lambda st, m, path, params=None, body=None, session=None, tok=None: posts.append(body) or {})
+    assert SC.send_check_feedback({"booking": {"url": "https://x"}}, rows, [dst], log=lambda *_: None) == 1
+    fb = posts[-1]["feedback"]["lines"]
+    assert fb["8015100572212"] == {"boxes": 1, "note": "Ridotto da 2 a 1"}
+    assert fb["8000036022017"] == {"boxes": 0, "note": "Non ordinato"}       # 门店 2 的不算
+    assert fb["8004"] == {"boxes": 1} and "8001090213465" not in fb
+    assert SC.send_check_feedback({"booking": {"url": "https://x"}}, rows, [dst], log=lambda *_: None) == 0   # 只发一次
+
+
+def test_office_note_tells_store_why():
+    assert SC.office_note({"list_reason": "Promozione o volantino", "fbox": 3, "sbox": 3}, 3, 3) == "Accettato · motivo: Promozione o volantino"
+    assert SC.office_note({"transit_cut": 2, "fbox": 1, "sbox": 1}, 3, 1) == "Ridotto da 3 a 1: già in arrivo 2 colli"
+    assert SC.office_note({"cover_now": 95.4, "fbox": 0, "sbox": 0}, 2, 0) == "Non ordinato: scorta per ~95 giorni"
+    assert SC.office_note({"fbox": 1, "sbox": 2}, 2, 1) == "Ridotto da 2 a 1: deciso dall'ufficio acquisti"
+    assert SC.office_note({"fbox": 4, "sbox": 2}, 2, 4) == "Aumentato da 2 a 4 dall'ufficio acquisti"
+    assert SC.office_note({"list_reason": "URGENTE", "urgent": True, "fbox": 2, "sbox": 2}, 2, 2) in ("", "Accettato · motivo: URGENTE")
+    assert SC.office_note(None, 2, 2) == ""

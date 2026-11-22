@@ -212,12 +212,15 @@ def test_one_file_per_supplier(tmp_path, monkeypatch):
                        3: {"status": "bms", "lines": {8: 1}}, 4: {"status": "wait", "lines": {9: 1}}},
             "bms": {"status": "direct", "colli": 1, "amount": 10, "per_store": {3: {8: 1}}}}
     w = S.write_plans([("周一", sc, plan)], str(tmp_path), "1810")
-    assert len(S.written_files(w)) == 1 and [x[2] for x in w] == ["FOIANO", S.BMS]
-    assert os.path.basename(w[0][0]) == "Ordine_ACME_1810.xlsx"
-    lines, marks = got[0]
-    assert lines == {1: {7: 2}, 3: {8: 1}}
-    assert marks["FOIANO"] == S.GRIGLIA_MARK["direct"] and marks["S.FILIPPO"] == S.GRIGLIA_MARK["bms"]
-    assert marks["S.MARCO"] == ""
+    # 每个去向一个文件（2026-11-21）：直送 FOIANO 只有它的箱数，BMS 文件只有凑单的 S.FILIPPO
+    assert len(S.written_files(w)) == 2 and [x[2] for x in w] == ["FOIANO", S.BMS]
+    assert os.path.basename(w[0][0]) == "Ordine_ACME_FOIANO_1810.xlsx"
+    assert os.path.basename(w[1][0]) == "Ordine_ACME_BMS_1810.xlsx"
+    (l1, m1), (l2, m2) = got
+    assert l1 == {1: {7: 2}} and l2 == {3: {8: 1}}
+    assert m1["FOIANO"] == S.GRIGLIA_MARK["direct"] and m1["S.FILIPPO"] == ""
+    assert m2["S.FILIPPO"] == S.GRIGLIA_MARK["bms"] and m2["FOIANO"] == "" and m2["S.MARCO"] == ""
+    assert w[1][7] == ("3",) and len(w[0]) == 7          # BMS 那行多一项：哪几家店凑的（订单跟踪写 BMS (FI)）
 
 
 def test_allocate_uses_bms_picks(tmp_path, monkeypatch):

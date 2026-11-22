@@ -26,6 +26,7 @@ from i18n import tr
 from settings import save_settings
 import reorder_service as R
 import review_memory as RM
+import volantino_plan as VP
 import transfers as TR
 from reorder_page import short_decision, store_label, algo_widgets
 
@@ -83,8 +84,8 @@ PCS_COL = _col(14)            # 确定件数（= 箱数 × 每箱件数，默认
 
 from check_rules import (  # noqa: F401  业务规则搬到 check_rules.py（2026-11-06），这里照旧能用这些名字
     _pk, PROB_KINDS_TIPS, _prob_title, _issue, _situation, _edited, _issue_text, _problem, PROB_TABS, _tab_of,
-    _report_rows, report_name, _advice, write_problem_report, _can_transfer, _set_box, is_new_item,
-    REVIEW_DEFAULTS, review_rules, _cover_now, PHANTOM_MIN_DAYS, PHANTOM_UNITS, censored_info, phantom_info,
+    _report_rows, report_name, _advice, write_problem_report, _can_transfer, _set_box, is_new_item, store_reason,
+    REVIEW_DEFAULTS, review_rules, review_days_for, _cover_now, PHANTOM_MIN_DAYS, PHANTOM_UNITS, censored_info, phantom_info,
     init_boxes)
 
 AFTER_COL = _col(20)          # 确定订后够卖（跟着确定件数变）
@@ -105,12 +106,34 @@ def _cover(x, pieces=0):
 def _days(v):
     import store_orders as SO
     return SO.days_text(v)
+BIG_LINE_EUR = 1000          # 开始比价前：单行超过这个金额的商品先列出来核对
+
+
+def old_rec_short(orc):
+    """入库记录有误的短文字：「入库有误 53 件」（2026-11-22 用户：数量放在外面，不用点进去数）"""
+    q = orc[2] if len(orc) > 2 else None
+    if q:
+        return tr("入库有误 {0} 件", f"{q:g}")
+    return tr("入库有误 {0} 条", orc[1])
+
+
+def old_rec_tip(orc, stock=None):
+    q = orc[2] if len(orc) > 2 else None
+    t = tr("这家店有 {0} 条 08/01/2025 以前的入库记录（最早 {1}，合计 {2} 件），那之前的入库记录是错的：库存、进价可能不准",
+           orc[1], orc[0].strftime("%d/%m/%Y") if orc[0] else "—", f"{q or 0:g}")
+    if stock is not None:
+        t += "\n" + tr("现在库存 {0} 件", f"{stock:g}")
+    return t
+
+
 def key_tags(x, transit_boxes=0, edited=False):
     """
     详情栏「为什么」的精华：几个短标签 [(文字, 颜色 token)]，最要紧的在前（2026-11-07 用户：审核时看不了那么多字）。
     完整的几句话放鼠标提示（_reason_lines）。
     """
     out = []
+    if x.get("old_rec"):
+        out.append((old_rec_short(x["old_rec"]), "err"))     # 2025-01-08 以前的入库记录是错的（2026-11-22 用户）
     if not x.get("in_db", True):
         return [(tr("数据库没有"), "err")]
     cut = x.get("transit_cut") or 0
@@ -134,6 +157,8 @@ def key_tags(x, transit_boxes=0, edited=False):
         out.append((tr("缺货保护"), "ok"))
     elif prot == "a_low":
         out.append((tr("A 类保护"), "ok"))
+    elif prot == "store":
+        out.append((tr("VOLANTINO 备货") if VP.is_tag(x.get("list_reason")) else tr("门店说明 · 照清单"), "warn"))
     if x.get("phantom"):
         out.append((tr("库存可能不准"), "warn"))
     if x.get("censored"):
@@ -160,7 +185,7 @@ VERDICT_TOKEN = {"transfer": "violet", "more": "accent", "less": "warn", "none":
 # 「看哪些」下拉框
 VIEWS = (("all", "全部商品"), ("review", "只看要审核的"), ("changed", "只看有变化的"), ("transfer", "只看调货"), ("more", "只看多订"),
          ("less", "只看少订"), ("none", "只看不订"), ("phantom", "只看库存可能不准"),
-         ("promo", "只看促销"))
+         ("promo", "只看促销"), ("oldrec", "只看入库记录有误"))
 
 
 def promo_text(p):
@@ -208,12 +233,14 @@ class _ProductDelegate(QStyledItemDelegate):
             p.fillRect(QRectF(r.left(), r.top(), 3, r.height()), QColor(T("accent")))
         ean = idx.sibling(idx.row(), self.ean_col).data() or ""
         name = idx.data(Qt.DisplayRole) or ""
-        dot, tier = None, ""
+        dot, tier, bad = None, "", False
         if self.badge is not None:
             try:
-                dot, tier = self.badge(idx.model().index(idx.row(), 0).data(Qt.UserRole))
+                b = self.badge(idx.model().index(idx.row(), 0).data(Qt.UserRole))
+                dot, tier = b[0], b[1]
+                bad = bool(b[2]) if len(b) > 2 else False
             except Exception:
-                dot, tier = None, ""
+                dot, tier, bad = None, "", False
         if dot:                                       # 要审核、还没看过：左边一个小圆点（看过 / 改过就没了）
             p.setPen(Qt.NoPen)
             p.setBrush(QColor(T(dot)))
@@ -251,7 +278,15 @@ class _ProductDelegate(QStyledItemDelegate):
         f2 = QFont(NUM_FONT)
         f2.setPixelSize(11)
         p.setFont(f2)
-        p.setPen(QColor(T("faint")))
+        if bad and ean:
+            # 2026-11-22 用户：有 2025-01-08 以前（错的）入库记录的商品，条码标颜色（红底红字，一眼看出要核对）
+            bw = QFontMetrics(f2).horizontalAdvance(str(ean)) + 8
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor(T("err_soft")))
+            p.drawRoundedRect(QRectF(tx - 4, r.top() + 30, bw, 15), 4, 4)
+            p.setPen(QColor(T("err")))
+        else:
+            p.setPen(QColor(T("faint")))
         p.drawText(QRectF(tx, r.top() + 29, tw, 16), Qt.AlignLeft | Qt.AlignVCenter, str(ean))
         if tier in ("A", "B", "C"):
             # 等级小标签不用彩色（2026-11-19 用户问要不要标颜色）：表格里红 / 黄 / 绿 / 蓝 / 紫都已经有意思了
@@ -414,6 +449,7 @@ class _Sig(QObject):
     done = Signal(object)
     months = Signal(object)          # 近两年每月销量读好了（后台线程 → 界面）
     promos = Signal(object)          # 本店在促销的商品读好了
+    oldrec = Signal(object)          # 2025-01-08 之前有（错的）入库记录的商品读好了
     transit = Signal(object)         # 在途读好了（order_record）
 
 
@@ -431,6 +467,7 @@ class OrderCheck:
         self.sig.done.connect(self._done)
         self.sig.months.connect(self._months_arrived)
         self.sig.promos.connect(self._promos_arrived)
+        self.sig.oldrec.connect(self._oldrec_arrived)
         self.sig.transit.connect(self._transit_arrived)
         self.transit = None
         self._card = None                # 商品详情窗口（双击商品打开，一个窗口反复用）
@@ -821,7 +858,7 @@ class OrderCheck:
         self.table.cellDoubleClicked.connect(self._edit_transfer)     # 双击「调货」：选调出门店、填件数
         self.table.cellDoubleClicked.connect(self._open_transit)      # 双击「在途箱数」：看是哪几张单、标到货
         self.table.cellDoubleClicked.connect(self._open_card)         # 双击商品：商品详情窗口
-        self.table.horizontalHeaderItem(_col(3)).setToolTip(tr("双击打开商品详情（入库记录、每天销量、各店库存）；名称红色 = 门店在促销"))
+        self.table.horizontalHeaderItem(_col(3)).setToolTip(tr("双击打开商品详情（入库记录、每天销量、各店库存）；名称红色 = 门店在促销；条码红底 = 有 08/01/2025 以前的入库记录（数据有误）"))
         self.table.horizontalHeaderItem(_col(TRANSFER_COL)).setText(tr("调货") + " ✎")
         self._plan_timer = QTimer()
         self._plan_timer.setSingleShot(True)
@@ -1206,6 +1243,45 @@ class OrderCheck:
             return 0.0
         return b * _pk(x) * (p if p == p else 0.0)
 
+    def _big_lines(self):
+        """开始比价前最后一道关（2026-11-22 用户：MARLIA €42,404 这种问题千万不能出现）：
+        单行金额 ≥ BIG_LINE_EUR，或者订完够卖超过 1 年且金额 ≥ €100 → [(行, 金额, 够卖天数)]，金额大的在前"""
+        out = []
+        for x in self.rows:
+            if not x.get("fbox"):
+                continue
+            a = self._amount(x)
+            v = self._arrive_days(x)
+            far = v is not None and v != float("inf") and v > 365
+            if a >= BIG_LINE_EUR or (far and a >= 100):
+                out.append((x, a, v))
+        return sorted(out, key=lambda t: -t[1])
+
+    def _confirm_big_lines(self):
+        """有特别大的行：先列出来问一句，默认「回去检查」"""
+        big = self._big_lines()
+        if not big:
+            return True
+        lines = [f"{store_label(x.get('store'))} · {str(x.get('name') or '')[:38]} · {x['fbox']:,} " + tr("箱") +
+                 f" · €{a:,.0f}" + (" · " + tr("够卖 {0} 天", _days(v)) if v and v != float("inf") else "")
+                 for x, a, v in big[:12]]
+        more = tr("…还有 {0} 行", len(big) - 12) if len(big) > 12 else ""
+        box = QMessageBox(self.window)
+        box.setIcon(QMessageBox.Warning)
+        box.setWindowTitle(tr("金额异常的商品"))
+        box.setText(tr("{0} 行单个商品金额特别大，或者订完要卖一年以上，请先核对：", len(big)))
+        box.setInformativeText("\n".join(lines + ([more] if more else [])))
+        back = box.addButton(tr("回去检查"), QMessageBox.RejectRole)
+        box.addButton(tr("确认无误，继续比价"), QMessageBox.AcceptRole)
+        box.setDefaultButton(back)
+        box.exec()
+        if box.clickedButton() is back:
+            self.win.log(tr("[检查清单] 有 {0} 行金额异常，回去检查", len(big)))
+            return False
+        self.win.log(tr("[检查清单] 有 {0} 行金额异常，确认无误继续比价：{1}", len(big),
+                        "；".join(f"{x.get('name')} {x['fbox']} 箱 €{a:,.0f}" for x, a, _v in big[:20])))
+        return True
+
     def _amount_text(self, x):
         a = self._amount(x)
         return f"{a:,.2f}" if a > 0 else ""
@@ -1353,14 +1429,71 @@ class OrderCheck:
             lines.append(tr("现在确定 {0:,} 箱（手动改过）", x["fbox"]))
         return lines
 
+    def _too_much(self, x):
+        """
+        订太多（2026-11-22 用户：清单 300 箱程序也照清单订、不用审核）：确定箱数比系统建议多，
+        订完够卖的天数超过这一等级的「可不订」天数（A 180 / B 120 / C 90）→ (够卖天数, 门槛)；不是 → None。
+        只标出来要人看，不自动改箱数。没销量算不出天数的不管（新品另有规则）
+        """
+        if not x.get("in_db", True) or not x.get("fbox") or VP.is_tag(x.get("list_reason")):
+            return None                                  # VOLANTINO 备货：本来就是促销期要多卖的，不算订太多
+        sys_ = x.get("sys_box") if x.get("sys_box") is not None else x.get("sbox")
+        if x["fbox"] <= int(sys_ or 0):                   # 系统自己算的（照清单 / 保护之前）
+            return None
+        v = self._arrive_days(x)
+        if v is None or v == float("inf"):
+            return None
+        free = (x.get("review_days") or review_days_for(review_rules(self.cfg), x.get("tier")))[1]
+        return (v, free) if v > free else None
+
     def _marks(self, x):
         """判断后面的提醒：新加 / 清单改过（要审核）；慢销（订了要卖很久）；库存可能不准（虚库存）"""
         rv = []
+        cm = x.get("cut_much")
+        if cm:
+            rv.append(("much", tr("清单 {0} → 砍到 {1} 箱", cm[0], cm[1]),
+                       tr("门店清单 {0} 箱，比系统建议多 10 倍以上，照清单订完要卖 {2} 天：多半写错了（例如件数写成了箱数），"
+                          "已经自动砍到够卖 {3:g} 天的 {1} 箱。真要这么多请直接改确定箱数",
+                          cm[0], cm[1], _days(cm[2]), (x.get("review_days") or review_days_for(review_rules(self.cfg), x.get("tier")))[1])))
+        pf = x.get("pack_far")
+        if pf:
+            rv.append(("packfar", tr("箱规不一致 · 数据库 {0:g} 件", pf),
+                       tr("数据库里每箱 {0:g} 件，批发商报价每箱只有 {1:g} 件（差很多，多半是直厂的整箱 / 一托）。"
+                          "这里的箱数按批发商的箱算（每箱 {1:g} 件），请核对门店清单的数量", pf, _pk(x))))
+        tm = None if cm else self._too_much(x)
+        if tm:
+            rv.append(("much", tr("订太多 · 够卖 {0} 天", _days(tm[0])),
+                       tr("确定 {0} 箱，比系统建议的 {1} 箱多，订完够卖 {2} 天（{3} 类超过 {4:g} 天就算库存多）。"
+                          "门店清单可能写错了（例如件数写成了箱数），请核对", x["fbox"],
+                          int(x.get("sys_box") if x.get("sys_box") is not None else x.get("sbox") or 0),
+                          _days(tm[0]), x.get("tier") or "B", tm[1])))
+        sr = x.get("stock_report")
+        if sr:
+            rv.append(("stock", tr("门店报库存 {0}", sr.get("counted")),
+                       tr("门店在扫码枪上清点：实际 {0} 件（系统 {1} 件），{2} 点的。库存和建议箱数已经按门店点的数算。请在 ERP 里改好库存后，在 系统设置 → 扫码枪 → 库存报错 里点「已在 ERP 改好」",
+                          sr.get("counted"), sr.get("system"), sr.get("by") or "")))
+        if x.get("protect") == "store" and VP.is_tag(x.get("list_reason")):
+            rv.append(("store", tr("VOLANTINO"), tr("采购部按以前 VOLANTINO 促销期的销量算的备货量（{0}），写进了门店清单；"
+                                                     "系统按平时销量算会少订，这里照清单订，请确认", x.get("list_reason") or "—")))
+        elif x.get("protect") == "store":
+            rv.append(("store", tr("门店说明"), tr("系统本来不订（库存够 / 已在途），门店在扫码枪上说明了还要订：{0}。按门店清单订，请确认",
+                                                  x.get("list_reason") or "—")))
+        if x.get("urgent"):
+            rv.append(("urgent", tr("门店紧急"), tr("门店在扫码枪上标了紧急（原因：{0}）：这个商品不在 Griglia，平常应该向直厂订，"
+                                                  "门店说等不及才从批发商订", x.get("list_reason") or "—")))
         if x.get("review") == "new":
             rv.append(("review", tr("新加"), tr("上次审核时清单里没有这个商品（或者以前的程序没读到），要审核")))
         elif x.get("review") == "changed":
             rv.append(("review", tr("清单改过"), tr("上次审核时清单是 {0} 箱，现在是 {1} 箱：按系统建议重新算了，要审核",
                                                    x.get("review_prev"), x.get("lbox"))))
+        orc = x.get("old_rec")
+        if orc:
+            st = x.get("store_inv")
+            try:
+                st = float(st) if st is not None else None
+            except (TypeError, ValueError):
+                st = None
+            rv.append(("oldrec", old_rec_short(orc), old_rec_tip(orc, st)))
         if x.get("merged"):
             rv.append(("merged", tr("合并 {0} 行", len(x["merged"]) + 1),
                        tr("清单里这几行是同一个商品，合成一行（箱数加在一起）：") + "\n" + "\n".join(
@@ -1581,6 +1714,11 @@ class OrderCheck:
                         self.sig.promos.emit((token, sid, R.query_promos(db, sid, codes)))
                     except Exception as e:
                         self.sig.promos.emit((token, sid, {"_error": str(e)}))
+                for sid, codes in by_store.items():       # 2025-01-08 之前的入库记录是错的：有的商品在列表里标出来
+                    try:
+                        self.sig.oldrec.emit((token, sid, R.old_receipts(db, sid, codes)))
+                    except Exception as e:
+                        self.sig.oldrec.emit((token, sid, {"_error": str(e)}))
                 for sid, codes in by_store.items():
                     try:
                         data = R.query_monthly_sales(db, sid, codes)
@@ -1592,6 +1730,29 @@ class OrderCheck:
                 for sid, codes in by_store.items():
                     self.sig.months.emit((token, sid, codes, {"_error": str(e)}))
         threading.Thread(target=work, daemon=True).start()
+
+    def _oldrec_arrived(self, payload):
+        """2025-01-08 之前有入库记录的商品：x["old_rec"] = (最早那天, 几条, 合计件数)，判断后面「入库有误 n 件」"""
+        token, sid, data = payload
+        if token != getattr(self, "_m24_token", None):
+            return
+        err = data.pop("_error", None)
+        if err:
+            self.win.log(tr("⚠ 旧入库记录没查到：{0}", err))
+            return
+        idx = []
+        for i, x in enumerate(self.rows):
+            if x.get("store") == sid:
+                v = data.get(str(x.get("code")))
+                if v or x.get("old_rec"):
+                    x["old_rec"] = v
+                    idx.append(i)
+        if data:
+            self.win.log(tr("[检查清单] {0}：{1} 个商品有 {2} 以前的入库记录（数据有误）", R.STORES.get(sid, sid), len(data),
+                            "08/01/2025"))
+        if idx:
+            self._refresh_rows(idx)
+            self._summary()
 
     def _promos_arrived(self, payload):
         """本店在促销的商品：x["promo"]，商品 / 条码格标红、「只看促销」"""
@@ -1678,6 +1839,8 @@ class OrderCheck:
         if i not in self._seen:                         # 门店列表的「已看 n / m」
             self._seen.add(i)
             self._side_timer.start()
+            if self._needs_review(x) and hasattr(self, "_mem_timer"):
+                self._mem_timer.start()                 # 看过的要审核商品也记进审核记录（重开程序不用再看一遍）
         code = str(x.get("code"))
         sid = x.get("store")
         pack = x.get("pack") or 0
@@ -1706,8 +1869,16 @@ class OrderCheck:
                          tok if kind != "same" else None, extra)
         reasons = "\n".join(["· " + l for l in self._reason_lines(x)] + ["⚠ " + m[2] for m in self._marks(x)] +
                             (["🏷 " + self._promo_tip(x)] if x.get("promo") else []))
-        dr.show_tags(key_tags(x, self._transit_boxes(x) if x.get("transit_pcs") or self._transit_of(x) else 0,
-                              _edited(x)), reasons)
+        tags = key_tags(x, self._transit_boxes(x) if x.get("transit_pcs") or self._transit_of(x) else 0, _edited(x))
+        cm = x.get("cut_much")
+        tm = None if cm else self._too_much(x)
+        if cm:
+            tags = [(tr("清单 {0} → 砍到 {1} 箱", cm[0], cm[1]), "err")] + tags
+        elif tm:
+            tags = [(tr("订太多 · 够卖 {0} 天", _days(tm[0])), "err")] + tags
+        if x.get("pack_far"):
+            tags = [(tr("箱规不一致 · 数据库 {0:g} 件", x["pack_far"]), "warn")] + tags
+        dr.show_tags(tags, reasons)
         # 四个数（够卖都含在途；订了的是订后够卖）
         if x.get("in_db", True):
             inv = x.get("store_inv")
@@ -1993,14 +2164,20 @@ class OrderCheck:
         root = self._mem_root()
         if not root or not self.rows:
             return
+        try:
+            self.win.mark_working("审核清单")     # 别的电脑看得到「X 正在做」（工作文件夹在同步盘）
+        except Exception:
+            pass
         import getpass
         import socket
         who = f"{getpass.getuser()}@{socket.gethostname()}"
+        # 2026-11-22 用户：审核到一半更新 / 重开程序要能接着审 → 改过的 + 点开看过的要审核商品（照现在的箱数）都记下来
+        seen = {id(self.rows[i]) for i in getattr(self, "_seen", ()) if 0 <= i < len(self.rows)}
         for sid in (self.meta or {}).get("stores") or []:
             rows = [x for x in self.rows if x.get("store") == sid]
             when = (getattr(self, "_mem_ok", {}) or {}).get(sid)
             mem = RM.build(rows, sid, prev={"confirmed": when} if when else None, confirmed=confirmed,
-                           edited=_edited, who=who)
+                           edited=lambda x: _edited(x) or (id(x) in seen and self._needs_review(x)), who=who)
             if not mem["items"] and not confirmed and not os.path.exists(RM.path_for(root, sid)):
                 continue                                   # 还没审（没改过）：不建空记录
             try:
@@ -2010,6 +2187,13 @@ class OrderCheck:
                 return
             if confirmed:
                 self._mem_ok[sid] = mem["confirmed"]
+
+    def flush_memory(self):
+        """关程序前：还没存的审核记录马上存"""
+        t = getattr(self, "_mem_timer", None)
+        if t is not None and t.isActive():
+            t.stop()
+            self._save_memory()
 
     def _forget_review(self):
         n = sum(1 for x in self.rows if x.get("review") == "kept")
@@ -2080,11 +2264,15 @@ class OrderCheck:
         底部「要审核 104」三个数各算各的）：判断不是「照清单订」（多订 / 少订 / 不订 / 调货），或者清单是新加 / 改过的；
         沿用了上次审核的（review = kept）不用再审
         """
+        if x.get("urgent") or x.get("stock_report") or x.get("protect") == "store":
+            return True                                   # 门店在扫码枪上标了紧急 / 报了库存不对：一定要人看
         rv = x.get("review")
         if rv in ("new", "changed"):
             return True
         if rv == "kept":
             return False
+        if x.get("cut_much") or x.get("pack_far") or self._too_much(x):
+            return True                                   # 订完要卖很久 / 自动砍过 / 箱规对不上：一定要人看
         return self._verdict(x)[0] in ("transfer", "more", "less", "none")
 
     def _row_badge(self, i):
@@ -2093,7 +2281,7 @@ class OrderCheck:
             return None, ""
         x = self.rows[i]
         dot = "warn" if (i not in self._seen and not _edited(x) and self._needs_review(x)) else None
-        return dot, str(x.get("tier") or "")
+        return dot, str(x.get("tier") or ""), bool(x.get("old_rec"))
 
     def _todo_rows(self):
         """现在看得见的行里：要审核、还没看过也没改过的（按表格现在的顺序）"""
@@ -2269,6 +2457,7 @@ class OrderCheck:
         n.update(cnt)
         n["phantom"] = sum(1 for x in mine if x.get("phantom") and not _problem(x))
         n["promo"] = sum(1 for x in mine if x.get("promo"))
+        n["oldrec"] = sum(1 for x in mine if x.get("old_rec"))
         n["review"] = sum(1 for x in mine if self._needs_review(x))
         for k in range(self.view.count()):
             key = self.view.itemData(k)
@@ -2335,6 +2524,7 @@ class OrderCheck:
         hide = (view == "changed" and kind not in ("transfer", "more", "less", "none")) or \
             (view in ("transfer", "more", "less", "none") and kind != view) or \
             (view == "phantom" and not x.get("phantom")) or (view == "promo" and not x.get("promo")) or \
+            (view == "oldrec" and not x.get("old_rec")) or \
             (view == "review" and not self._needs_review(x))
         return hide or \
                (bool(text) and text not in self._search_text(x))
@@ -2515,7 +2705,9 @@ class OrderCheck:
         marks = self._marks(x)
         vc = self.table.item(k, _col(0))         # 「判断」列（以前写成第 0 列 = 门店列，门店名被判断盖掉）
         vc.setText(" · ".join([vt] + [m[1] for m in marks]))
-        vc.setForeground(QColor(T("warn") if (marks and kind in ("same", "more")) else T(VERDICT_TOKEN.get(kind, "text"))))
+        much = any(m[0] == "much" for m in marks)           # 订太多：红色，一眼看到
+        vc.setForeground(QColor(T("err") if much else T("warn") if (marks and kind in ("same", "more"))
+                                else T(VERDICT_TOKEN.get(kind, "text"))))
         f = vc.font()
         f.setBold(kind in ("transfer", "more", "less", "none"))
         vc.setFont(f)
@@ -2779,6 +2971,8 @@ class OrderCheck:
         if not root_dir:
             QMessageBox.warning(self.win, tr("确认，开始比价"), tr("还没有工作文件夹。"))
             return
+        if not self._confirm_big_lines():
+            return
         folders = {sid: R.batch_store_folder(root_dir, sid) for sid in self.meta["stores"] if self._to_order(sid)}
         self._save_memory(confirmed=True)              # 整张清单都审核过了：以后清单改了 / 重新计算，只审新加和改过的
         tag = datetime.now().strftime("%Y%m%d_%H%M")
@@ -2849,6 +3043,12 @@ class OrderCheck:
                     self.win.log(tr("✔ 门店报告（五家店一个文件）：{0}", rep))
             except Exception as e:
                 problems.append(tr("门店报告没写上：{0}", e))
+            # 门店在扫码枪上做的清单：最后定了几箱写回预约平台（门店扫码枪上看得到订了多少、哪些少订了）
+            try:
+                import scanner_catalog as SC
+                SC.send_check_feedback(self.settings, self.rows, [l.get("path") for l in self.lists or []], log=self.win.log)
+            except Exception as e:
+                self.win.log(tr("⚠ 扫码枪清单结果没写回：{0}", e))
             return all_tf
 
         from erp_widgets import BusyDialog

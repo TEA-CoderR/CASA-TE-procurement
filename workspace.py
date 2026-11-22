@@ -31,6 +31,101 @@ STORES = {1: "FOIANO", 2: "MARLIA", 3: "S.FILIPPO", 4: "S.MARCO", 5: "S.CONCORDI
 EXCEL = (".xlsx", ".xls", ".xlsm")
 
 
+# 2026-11-21 用户：DETERSIVO 工作文件夹搬进同步盘，几台电脑看同一份（一周一个人做，另一个人能查看）
+SHARED_NAME = os.path.join("SynologyDrive", "SynologyDrive", "Ordine DETERSIVI")
+DATA = "_程序数据"           # 程序自己记的东西（每台电脑一个文件，读的时候合起来）
+BUSY_MIN = 30                # 别的电脑最后一次操作在这么多分钟内 = 他正在做
+
+
+def find_shared_root(home=None, drives=None):
+    """同步盘里的「Ordine DETERSIVI」：D:\\SynologyDrive\\SynologyDrive\\Ordine DETERSIVI（盘符不一定是 D，也可能在用户文件夹下）"""
+    home = home or os.path.expanduser("~")
+    if drives is None:
+        drives = [f"{c}:\\" for c in "DEFGHCIJKLMNOPQRSTUVWXYZ"] if os.name == "nt" else []
+    for base in list(drives) + [home]:
+        p = os.path.join(base, SHARED_NAME)
+        if os.path.isdir(p):
+            return os.path.normpath(p)
+    return None
+
+
+def data_dir(root):
+    return os.path.join(root, DATA)
+
+
+def me():
+    """这台电脑（文件名里用）"""
+    import platform
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", os.environ.get("COMPUTERNAME") or platform.node() or "pc") or "pc"
+
+
+def mark_working(root, user, what, now=None):
+    """这台电脑在做 DETERSIVO（检查清单 / 比价 / 改分配时调）：写 _程序数据/working_<电脑>.json"""
+    import json
+    now = now or datetime.now()
+    d = data_dir(root)
+    try:
+        os.makedirs(d, exist_ok=True)
+        p = os.path.join(d, "working_%s.json" % me())
+        with open(p + ".tmp", "w", encoding="utf-8") as f:
+            json.dump({"pc": me(), "user": user or "", "what": what, "at": now.strftime("%Y-%m-%d %H:%M:%S")}, f,
+                      ensure_ascii=False)
+        os.replace(p + ".tmp", p)
+    except OSError:
+        pass
+
+
+def who_works(root, now=None, minutes=BUSY_MIN, mine=None):
+    """
+    别的电脑谁在做：[(用户, 电脑, 做什么, 最后操作时间)]，最近的在前。
+    minutes=None 时不管多久以前（「这周谁做的」用）
+    """
+    import json
+    now = now or datetime.now()
+    mine = mine or me()
+    out = []
+    d = data_dir(root)
+    try:
+        names = os.listdir(d)
+    except OSError:
+        return out
+    for n in names:
+        if not (n.startswith("working_") and n.endswith(".json")) or "conflict" in n.lower():
+            continue
+        try:
+            with open(os.path.join(d, n), encoding="utf-8") as f:
+                r = json.load(f)
+            at = datetime.strptime(r.get("at") or "", "%Y-%m-%d %H:%M:%S")
+        except (OSError, ValueError, TypeError):
+            continue
+        if r.get("pc") == mine:
+            continue
+        if minutes is not None and (now - at).total_seconds() > minutes * 60:
+            continue
+        out.append((r.get("user") or r.get("pc") or "", r.get("pc") or "", r.get("what") or "", at))
+    return sorted(out, key=lambda x: x[3], reverse=True)
+
+
+def latest_result_folder(root):
+    """「4 比价结果」里最新一天、有比价结果（_备份/last_allocation.json）的门店文件夹；没有 None"""
+    base = os.path.join(root, RESULTS)
+    try:
+        days = sorted((d for d in os.listdir(base) if re.fullmatch(r"\d{4}-\d{2}-\d{2}", d)), reverse=True)
+    except OSError:
+        return None
+    for d in days:
+        dd = os.path.join(base, d)
+        try:
+            subs = sorted(os.listdir(dd))
+        except OSError:
+            continue
+        done = [os.path.join(dd, s) for s in subs
+                if os.path.isfile(os.path.join(dd, s, "_备份", "last_allocation.json"))]
+        if done:
+            return max(done, key=lambda x: os.path.getmtime(os.path.join(x, "_备份", "last_allocation.json")))
+    return None
+
+
 def default_root(home=None):
     """第一次用时的根目录：我的文档\\批发商比价"""
     home = home or os.path.expanduser("~")

@@ -382,3 +382,33 @@ def test_boxes_converted_per_wholesaler_pack_and_oversized_pack_not_auto_chosen(
     # 没有 CASSA_DB 的老主订单照旧：箱数原样搬
     r5 = S._price_row(8, 2, {"A": 1.0, "B": 0.9}, {"A": 6, "B": 10})
     assert "colli" not in r5 and S._order_qty(r5, "B") == 2
+
+
+def test_big_lines_listed_for_review():
+    """比价结果：单个商品超过 €1,000 的列出来（2026-11-22 MARLIA VIT 四行 €35k）"""
+    import service as S
+    rows = [{"row": 2, "qty": 60, "ean": "801", "articolo": "VIT BOBINA", "unit": {"G": 4.242}, "packs": {"G": 1},
+             "colli": {"G": 3360}},
+            {"row": 3, "qty": 1, "ean": "802", "articolo": "DASH", "unit": {"G": 4.9}, "packs": {"G": 4}}]
+    big = S.big_lines(rows, {"2": "G", 3: "G"})
+    assert [b["ean"] for b in big] == ["801"] and round(big[0]["amount"]) == 14253
+
+
+def test_meloni_order_file_gets_pieces_and_amount_columns_like_template(tmp_path):
+    from openpyxl import Workbook, load_workbook
+    import service as SV
+    f = str(tmp_path / "Ordine_MARLIA_MELONI_2211.xlsx")
+    wb = Workbook()
+    ws = wb.active
+    ws.append(["CODICE EAN", "articolo", "ARTICOLI.descrizione", "UDV", "PREZZO NETTO", "ORDINE", "Cod.Gruppo", "FOTO"])
+    ws.append(["8001", "1", "ACE", 6, 1.74, 2, 10, '=HYPERLINK("x"&B2,"FOTO")'])
+    ws.append(["8002", "2", "DASH", 12, 0.5, None, 11, '=HYPERLINK("x"&B3,"FOTO")'])
+    ws.auto_filter.ref = "A1:H3"
+    wb.save(f)
+    assert SV.needs_pieces_amount("MELONI") and not SV.needs_pieces_amount("PETRILLO")
+    assert SV.add_pieces_amount(f) == 1
+    ws = load_workbook(f).active
+    assert [c.value for c in ws[1]] == ["CODICE EAN", "articolo", "ARTICOLI.descrizione", "UDV", "PREZZO NETTO", None,
+                                        "ORDINE", None, "Cod.Gruppo", "FOTO"]
+    assert [ws.cell(2, c).value for c in (6, 7, 8, 9)] == [2, "=F2*D2", "=G2*E2", 10]
+    assert ws["J2"].value == '=HYPERLINK("x"&B2,"FOTO")' and ws.auto_filter.ref == "A1:J3"

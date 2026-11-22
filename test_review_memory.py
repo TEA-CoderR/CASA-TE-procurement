@@ -139,12 +139,12 @@ def test_restore_from_last_confirmed_main_order():
     got = RM.restore(root, {1: new}, {1: lst}, _set_box, now=now)
     assert got[1]["source"] == "main_order" and (got[1]["kept"], got[1]["new"]) == (3, 1)
     assert [x["fbox"] for x in new] == [4, 0, 1, 7] and new[3]["review"] == "new"
-    # 清单在确认以后又改过：主订单里没有的不能当成「当时定了不订」
+    # 清单在确认以后又换过 / 改过（新一周的清单）：上次的主订单一概不用，不标新加、不沿用箱数
     later = datetime.now() + timedelta(minutes=5)
     os.utime(lst, (later.timestamp(), later.timestamp()))
-    new2 = [_row("349360", "8002410046830", 2, 2)]
-    RM.restore(root, {1: new2}, {1: lst}, _set_box, now=now)
-    assert new2[0]["review"] == "new" and new2[0]["fbox"] == 2
+    new2 = [_row("348138", "8030976034350", 1, 2), _row("349360", "8002410046830", 2, 2)]
+    assert RM.restore(root, {1: new2}, {1: lst}, _set_box, now=now) == {}
+    assert [x.get("review") for x in new2] == [None, None] and [x["fbox"] for x in new2] == [2, 2]
     # 有了审核记录就用记录，不再看主订单
     RM.save(root, 1, RM.build(new, 1, confirmed=True, edited=_edited))
     shutil.rmtree(os.path.join(root, R.BATCH_DIR))
@@ -173,3 +173,27 @@ def test_list_report_explains_merged_and_missing_from_database():
     assert len(rows) == 2 and rows[0]["file_qty"] == 3 and rows[0]["merged"][0]["ean"] == "809"
     rep = R.list_report(f, rows)
     assert rep["lines"] == 3 and rep["items"] == 2 and rep["nodb"] == ["NICKY"] and rep["merged"] == [("A", ["A bis"])]
+
+
+def test_viewed_rows_kept_after_restart_half_way():
+    """2026-11-22 用户：审核到一半更新 / 重开程序 → 改过的和点开看过（没改）的都沿用，没看过的照样要审"""
+    root = tempfile.mkdtemp()
+    rows = [_row("1", "801", 2, 0), _row("2", "802", 3, 1), _row("3", "803", 1, 0)]
+    _set_box(rows[1], 2)                                   # 改过
+    seen = {id(rows[0])}                                   # 点开看过、照系统建议不订
+    RM.save(root, 1, RM.build(rows, 1, edited=lambda x: _edited(x) or id(x) in seen))
+    new = [_row("1", "801", 2, 1), _row("2", "802", 3, 1), _row("3", "803", 1, 1)]   # 重开后重新算，建议变了
+    assert RM.apply(new, RM.load(root, 1), _set_box) == {"kept": 2, "changed": 0, "new": 0}
+    assert [x["fbox"] for x in new] == [0, 2, 1] and new[2].get("review") is None
+
+
+def test_confirmed_record_of_another_list_does_not_mark_everything_new():
+    """2026-11-22 bug：记录里带着上一张清单的确认时间，只对上 2 个商品 → 这周新清单 104 个里 102 个被标成新加"""
+    root = tempfile.mkdtemp()
+    mem = {"store": 3, "updated": datetime.now().isoformat(timespec="seconds"), "confirmed": "2026-11-21T15:25:00",
+           "source": "app", "items": {"801": {"lbox": 1, "fbox": 1, "ok": True}}}
+    RM.save(root, 3, mem)
+    rows = [_row("1", "801", 1, 1, store=3)] + [_row(str(i), str(900 + i), 1, 1, store=3) for i in range(2, 12)]
+    n = RM.apply(rows, RM.load(root, 3), _set_box)
+    assert n == {"kept": 1, "changed": 0, "new": 0}
+    assert all(x.get("review") is None for x in rows[1:])

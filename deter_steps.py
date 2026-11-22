@@ -289,6 +289,38 @@ def _file_row(tag, name, sub, on_remove=None, tone="accent", bad=False):
     return f
 
 
+def who_text(root, now=None):
+    """(文字, 正在做吗)：别的电脑 30 分钟内在做 → 「X 正在做 · 几点」；不然这周别人做过 → 「本周 X 做过 · 几号几点」"""
+    import workspace as W
+    now = now or datetime.now()
+    busy = W.who_works(root, now=now)
+    if busy:
+        u, pc, what, at = busy[0]
+        return tr("{0} 正在做（{1}）· {2}", u or pc, tr(what) if what else tr("DETERSIVO"), at.strftime("%H:%M")), True
+    old = W.who_works(root, now=now, minutes=7 * 24 * 60)
+    if old:
+        u, pc, what, at = old[0]
+        return tr("本周 {0} 做过 · {1}", u or pc, at.strftime("%d/%m %H:%M")), False
+    return "", False
+
+
+def _render_who(win, root):
+    lab = getattr(win, "_dc_who", None)
+    if lab is None:
+        return
+    try:
+        txt, busy = who_text(root)
+    except Exception:
+        txt, busy = "", False
+    lab.setVisible(bool(txt))
+    lab.setText(txt)
+    lab.setToolTip(tr("工作文件夹在同步盘，几台电脑共用同一份：一个人在做时，另一台电脑可以看结果，"
+                      "但不要同时检查清单或比价"))
+    col, bg = (T("warn"), T("warn_soft")) if busy else (T("muted"), T("canvas"))
+    lab.setStyleSheet(f"color:{col}; background:{bg}; border-radius:10px; padding:3px 10px; font-size:12px;"
+                      f" font-weight:{'600' if busy else '400'};")
+
+
 # ===================================================================== ① 收集文件
 def build_collect(win, lay):
     """lay = 第 1 步的竖排版面（main._page_order 里，在老的工作文件夹 Panel 位置）"""
@@ -313,6 +345,9 @@ def build_collect(win, lay):
         b.clicked.connect(fn)
         path.addWidget(b)
     path.addStretch()
+    win._dc_who = QLabel("")                 # 2026-11-21：工作文件夹几台电脑共用 → 别的电脑谁在做 / 上次谁做的
+    win._dc_who.hide()
+    path.addWidget(win._dc_who)
     lay.addLayout(path)
     win.banner_folder.setParent(None)
     lay.addWidget(win.banner_folder)
@@ -362,6 +397,40 @@ def build_collect(win, lay):
     note.setMinimumHeight(58)
     note.clicked.connect(win.open_deter_arrival)
     win._dc_elim.foot.addWidget(note)
+    # 门店在扫码枪上做的清单（2026-11-21）：一键放进来（手动拖文件照旧可以）
+    scan = QPushButton()
+    scan.setObjectName("DeterNote")
+    scan.setCursor(Qt.PointingHandCursor)
+    scan.setToolTip(tr("门店在 Zebra 扫码枪上做好、提交的清单：看哪几家交了，一键写成 Excel 放进「1 门店清单」"))
+    sl = QVBoxLayout(scan)
+    sl.setContentsMargins(12, 10, 12, 10)
+    sl.setSpacing(2)
+    a = QLabel(tr("扫码枪清单"))
+    a.setStyleSheet("font-weight:500;")
+    sl.addWidget(a)
+    sl.addWidget(RP.muted(tr("门店在扫码枪上提交的 → 一键放进来") + "  ›", 12))
+    for w in scan.findChildren(QWidget):
+        w.setAttribute(Qt.WA_TransparentForMouseEvents)
+    scan.setMinimumHeight(58)
+    scan.clicked.connect(lambda: open_scanner_lists(win))
+    win._dc_lists.foot.addWidget(scan)
+    # VOLANTINO 备货（2026-11-22）：新一期促销名单 → 按以前几期促销期的销量算每家店备几箱 → 改进门店清单
+    vol = QPushButton()
+    vol.setObjectName("DeterNote")
+    vol.setCursor(Qt.PointingHandCursor)
+    vol.setToolTip(tr("选这一期的 VOLANTINO 名单：按这些商品以前上 VOLANTINO 时各门店的销量，算出每家店要备几箱，确认后写进门店清单"))
+    vl = QVBoxLayout(vol)
+    vl.setContentsMargins(12, 10, 12, 10)
+    vl.setSpacing(2)
+    a = QLabel(tr("VOLANTINO 备货"))
+    a.setStyleSheet("font-weight:500;")
+    vl.addWidget(a)
+    vl.addWidget(RP.muted(tr("按以前促销期的销量 → 改进门店清单") + "  ›", 12))
+    for w in vol.findChildren(QWidget):
+        w.setAttribute(Qt.WA_TransparentForMouseEvents)
+    vol.setMinimumHeight(58)
+    vol.clicked.connect(lambda: open_volantino_plan(win))
+    win._dc_lists.foot.addWidget(vol)
     chk = QPushButton(tr("报价与数据库核对"))
     chk.setObjectName("Link")
     chk.setCursor(Qt.PointingHandCursor)
@@ -403,6 +472,7 @@ def render_collect(win, st, root):
         for c in (win._dc_lists, win._dc_prices, win._dc_elim):
             c.restyle()
     today = date.today()
+    _render_who(win, root)
 
     def mtime(folder, f):
         try:
@@ -1103,3 +1173,21 @@ def send_all(win):
     refresh_send(win)
     if getattr(win, "tracking", None) is not None:
         win.tracking.check_badge()
+
+
+def open_scanner_lists(win):
+    """DETERSIVO 第 1 步「扫码枪清单」：打开扫码枪窗口的「门店清单」页（要先连好预约平台）"""
+    import booking_api as BA
+    from PySide6.QtWidgets import QMessageBox
+    settings = getattr(win, "_S", None) or {}
+    if not BA.ready(settings):
+        QMessageBox.information(win, tr("扫码枪清单"), tr("门店扫码枪的清单存在预约平台服务器上：请先在 系统设置 → 数据连接 → 预约平台 里填好密钥。"))
+        return
+    from scanner_dialog import ScannerDialog
+    ScannerDialog(win, settings, tab="lists").exec()
+
+
+def open_volantino_plan(win):
+    """DETERSIVO 第 1 步「VOLANTINO 备货」"""
+    import volantino_plan_dialog as VPD
+    VPD.open_plan(win)

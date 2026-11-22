@@ -199,6 +199,134 @@ class MailAccountsDialog(QDialog):
         self._fill()
 
 
+class OrderMailboxDialog(QDialog):
+    """
+    订单发件邮箱（2026-11-21 用户：固定六个邮箱，五家门店各一个 + BMS，各自的订单用各自的邮箱发）。
+    一行一个：门店 · 发件邮箱 · 密码 · 送货抬头 · 送货地址；下面是预约卸货网址（写进订单邮件）。
+    邮箱、抬头、地址随发布同步给同事；密码只存在这台电脑
+    """
+
+    def __init__(self, win, settings):
+        super().__init__(win)
+        import mail_send as MS
+        self.win, self.settings, self.MS = win, settings, MS
+        self.setObjectName("Dialog")
+        self.setWindowTitle(tr("订单发件邮箱"))
+        v = QVBoxLayout(self)
+        v.setContentsMargins(18, 16, 18, 16)
+        v.setSpacing(12)
+        g = QGridLayout()
+        g.setHorizontalSpacing(8)
+        g.setVerticalSpacing(8)
+        heads = [(tr("门店"), ""),
+                 (tr("发件邮箱"), tr("这家店的订单从这个邮箱发；供应商回信也回到这里，邮件核对按它认门店")),
+                 (tr("密码"), tr("邮箱的登录密码或安全密码。只加密保存在这台电脑，不同步；已经填过的留空 = 不改")),
+                 (tr("送货抬头"), tr("订单邮件里「Consegna presso」写的公司名")),
+                 (tr("送货地址"), tr("订单邮件里写的送货地址"))]
+        for c, (t, tip) in enumerate(heads):
+            w = tip_label(t, tip) if tip else QLabel(t)
+            w.setObjectName("Faint")
+            g.addWidget(w, 0, c)
+        snd = MS.senders(settings)
+        self.rows = {}
+        for r, code in enumerate(MS.SENDER_CODES, start=1):
+            lab = QLabel(MS.STORE_LABEL.get(code, code))
+            lab.setStyleSheet("font-weight:600;")
+            g.addWidget(lab, r, 0)
+            addr = QLineEdit(snd.get(code, ""))
+            addr.setPlaceholderText("ordine.foiano@casa-te.com" if code == "1" else "")
+            addr.setMinimumWidth(220)
+            pw = QLineEdit()
+            pw.setEchoMode(QLineEdit.Password)
+            pw.setFixedWidth(130)
+            if snd.get(code) and CMD.mail_password(snd[code]):
+                pw.setPlaceholderText(tr("已保存"))
+            p = MS.profile(settings, code)
+            name = QLineEdit(p["name"])
+            name.setMinimumWidth(190)
+            dest = QLineEdit(p["address"])
+            dest.setMinimumWidth(240)
+            for c, w in enumerate((addr, pw, name, dest), start=1):
+                g.addWidget(w, r, c)
+            self.rows[code] = (addr, pw, name, dest)
+        g.setColumnStretch(1, 1)
+        g.setColumnStretch(4, 1)
+        v.addLayout(g)
+        u = QHBoxLayout()
+        u.addWidget(tip_label(tr("预约卸货网址"), tr("写进订单邮件：没有预约的送货一律拒收，请承运商在这里预约并写上订单号")))
+        self.url = QLineEdit(MS.booking_url(settings))
+        u.addWidget(self.url, 1)
+        v.addLayout(u)
+        self.msg = QLabel("")
+        self.msg.setWordWrap(True)
+        self.msg.setObjectName("Faint")
+        v.addWidget(self.msg)
+        foot = QHBoxLayout()
+        b_test = QPushButton(tr("测试连接"))
+        b_test.setToolTip(tr("每个邮箱登录一次收信和发信服务器，不读信、不发信"))
+        b_test.clicked.connect(self._test)
+        foot.addWidget(b_test)
+        foot.addStretch()
+        cancel = QPushButton(tr("取消"))
+        cancel.clicked.connect(self.reject)
+        ok = QPushButton(tr("保存"))
+        ok.setObjectName("Primary")
+        ok.clicked.connect(self._save_close)
+        foot.addWidget(cancel)
+        foot.addWidget(ok)
+        v.addLayout(foot)
+        self.resize(1120, 0)
+        fit_to_screen(self)
+
+    def _save(self):
+        cfg = self.settings.setdefault("order_mail", {})
+        snd, stores = {}, {}
+        try:
+            for code, (addr, pw, name, dest) in self.rows.items():
+                a = addr.text().strip()
+                if a:
+                    CMD.mail_save_account(self.settings, a, pw.text() or None,
+                                          store=(code if code != "BMS" else False))
+                    snd[code] = a
+                d = self.MS.DEFAULT_PROFILES.get(code, {})
+                n_, ad = name.text().strip(), dest.text().strip()
+                if n_ != d.get("name") or ad != d.get("address"):
+                    stores[code] = {"name": n_, "address": ad}
+        except ValueError as e:
+            QMessageBox.warning(self, tr("订单发件邮箱"), str(e))
+            return False
+        cfg["senders"] = snd
+        cfg["stores"] = stores
+        cfg["booking_url"] = self.url.text().strip() or self.MS.BOOKING_URL
+        save_settings(self.settings)
+        return True
+
+    def _save_close(self):
+        if self._save():
+            self.accept()
+
+    def _test(self):
+        if not self._save():
+            return
+        snd = self.MS.senders(self.settings)
+
+        def work():
+            out = []
+            for code in self.MS.SENDER_CODES:
+                a = snd.get(code)
+                if not a:
+                    out.append(f"{self.MS.STORE_LABEL.get(code, code)}：" + tr("没填"))
+                    continue
+                try:
+                    out.append(f"{self.MS.STORE_LABEL.get(code, code)}：" + CMD.mail_test(self.settings, a).replace("\n", " · "))
+                except Exception as e:
+                    out.append(f"{self.MS.STORE_LABEL.get(code, code)}：✗ {e}")
+            return out
+        r, e = BusyDialog.run(self, tr("测试连接"), tr("正在逐个连接邮箱…"), work)
+        save_settings(self.settings)
+        self.msg.setText(str(e) if e else "\n".join(r))
+
+
 def run_survey(win, settings):
     """邮件摸底：进度窗口（可后台运行），做完问要不要打开结果"""
     from erp_widgets import TaskDialog, ask_return, open_file

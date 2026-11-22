@@ -89,6 +89,33 @@ def _price_row_base(row, qty, unit, packs, ean, articolo, base):
             "unfit": unfit}
 
 
+BIG_LINE_EUR = 1000      # 一个商品一家批发商超过这个金额：比价结果「要你看的」里红字列出来（2026-11-22 MARLIA €42,404）
+
+
+def big_lines(rows, assign):
+    """单行金额 ≥ BIG_LINE_EUR 的商品：[{row, ean, articolo, qty, supplier, pack, colli, got, amount}]，金额大的在前"""
+    out = []
+    for r in rows or []:
+        s = (assign.get(r["row"]) or assign.get(str(r["row"]))) if assign else None
+        if not s:
+            continue
+        p = (r.get("unit") or {}).get(s)
+        if p is None:
+            continue
+        pk = float((r.get("packs") or {}).get(s) or 1)
+        try:
+            q = float(r.get("qty") or 0)
+        except (TypeError, ValueError):
+            q = 0.0
+        c = (r.get("colli") or {}).get(s)
+        c = float(c) if c is not None else q
+        amount = c * pk * float(p)
+        if amount >= BIG_LINE_EUR:
+            out.append({"row": r["row"], "ean": r.get("ean", ""), "articolo": r.get("articolo", ""), "qty": q,
+                        "supplier": s, "pack": pk, "colli": c, "got": c * pk, "amount": amount})
+    return sorted(out, key=lambda x: -x["amount"])
+
+
 def pack_changes(rows, assign):
     """按批发商箱规换算以后件数和门店要的不一样的商品：[{行, ean, 商品, 要的件数, 供应商, 每箱, 箱数, 订到件数}]"""
     out = []
@@ -1075,6 +1102,10 @@ def run_process(ordine_file, eliminare_path, distribuire_path, log, progress=Non
         for x in summary["pack_changes"][:30]:
             log(tr("  {0}：要 {1:g} 件 → {2} {3} 箱 × {4:g} = {5:g} 件", x["articolo"] or x["ean"], x["need"],
                    normalize(x["supplier"]), x["colli"], x["pack"], x["got"]))
+    summary["big_lines"] = big_lines(rows_data, assignment)
+    for x in summary["big_lines"]:
+        log(tr("⚠ 金额异常：{0} → {1} {2:g} 箱 × {3:g} = {4:g} 件，€{5:,.0f}（门店清单 {6:g} 箱），发订单前请核对",
+               x["articolo"] or x["ean"], normalize(x["supplier"]), x["colli"], x["pack"], x["got"], x["amount"], x["qty"]))
     # 调货：主订单 PEZZI 改成减完的件数，备注写从哪家店调了几件；全部靠调货的商品不向批发商订
     for i, t in transfer_rows.items():
         r = row_by_i.get(i)
@@ -1469,10 +1500,35 @@ def load_state(root_path):
         from history import _new_names
         _new_names(data)
         if not os.path.exists(st["ordine_file"]):
-            return None
+            data = rebase_paths(data, os.path.dirname(os.path.dirname(st["ordine_file"])), root_path)
+            if not os.path.exists(data["state"]["ordine_file"]):
+                return None
         return data
     except Exception:
         return None
+
+
+def rebase_paths(obj, old_root, new_root):
+    """
+    结果里记的文件路径换个根（2026-11-21：工作文件夹在同步盘，同事电脑上同步盘的位置可能不一样，
+    例如 D: 和 E:）：以 old_root 开头的路径换成 new_root 开头，别的不动
+    """
+    old = os.path.normcase(os.path.normpath(old_root or ""))
+    if not old or os.path.normcase(os.path.normpath(new_root)) == old:
+        return obj
+
+    def fix(v):
+        if isinstance(v, str):
+            n = os.path.normpath(v) if (os.sep in v or "/" in v) else v
+            if os.path.normcase(n) == old or os.path.normcase(n).startswith(old + os.sep):
+                return os.path.join(new_root, n[len(old):].lstrip(os.sep)) if len(n) > len(old) else new_root
+            return v
+        if isinstance(v, dict):
+            return {k: fix(x) for k, x in v.items()}
+        if isinstance(v, list):
+            return [fix(x) for x in v]
+        return v
+    return fix(obj)
 
 
 def _previous_written(root):
@@ -2011,6 +2067,71 @@ def track_orders(dist, rows, assign, mapping, settings, log):
         return None
 
 
+# 发给供应商之前订单文件要多两列的批发商（2026-11-22 用户给的模板 Ordine_MARLIA_MELONI_1511.xlsx）：
+#   原来 ORDINE 那列（箱数）表头空着；右边插两列 —— 件数 =箱数 × UDV（表头改成 ORDINE，MELONI 按件读订单）、
+#   金额 =件数 × PREZZO NETTO（表头空）；每一行都写公式，和模板一样
+PIECES_AMOUNT = ("MELONI",)
+
+
+def needs_pieces_amount(name):
+    n = str(name or "").upper()
+    return any(k in n for k in PIECES_AMOUNT)
+
+
+def add_pieces_amount(path):
+    """照模板给订单文件加 件数 / 金额 两列（只改 Ordini 里发给供应商的那份，distribuire 工作副本不动）→ 有箱数的行数"""
+    from copy import copy
+    from openpyxl import load_workbook
+    from openpyxl.utils import get_column_letter as gl
+    import quote_prepare as QP
+    wb = load_workbook(path)
+    try:
+        ws = hdr = None
+        cols = {}
+        for w in wb.worksheets:
+            for r in range(1, 11):
+                names = {str(w.cell(r, c).value or "").strip().upper(): c for c in range(1, min(w.max_column, 60) + 1)}
+                if "ORDINE" in names and "UDV" in names and "PREZZO NETTO" in names:
+                    ws, hdr = w, r
+                    cols = {"o": names["ORDINE"], "u": names["UDV"], "p": names["PREZZO NETTO"]}
+                    break
+            if ws is not None:
+                break
+        if ws is None:
+            raise ValueError("找不到 ORDINE / UDV / PREZZO NETTO 这几列")
+        o = cols["o"]
+        QP.insert_col(ws, o + 1)
+        QP.insert_col(ws, o + 1)
+        u = cols["u"] + (2 if cols["u"] > o else 0)
+        p = cols["p"] + (2 if cols["p"] > o else 0)
+        L, M, N, U, P = gl(o), gl(o + 1), gl(o + 2), gl(u), gl(p)
+        head = ws.cell(hdr, o)
+        ws.cell(hdr, o + 1).value = head.value               # 「ORDINE」挪到件数那列
+        if head.has_style:
+            ws.cell(hdr, o + 1)._style = copy(head._style)
+        head.value = None
+        ws.cell(hdr, o + 2).value = None
+        ws.column_dimensions[M].width = 11.5
+        ws.column_dimensions[N].width = 13
+        n = 0
+        for r in range(hdr + 1, ws.max_row + 1):
+            ws[f"{M}{r}"] = f"={L}{r}*{U}{r}"
+            ws[f"{N}{r}"] = f"={M}{r}*{P}{r}"
+            v = ws[f"{L}{r}"].value
+            if isinstance(v, (int, float)) and v > 0:
+                n += 1
+        try:
+            wb.calculation.fullCalcOnLoad = True             # 打开时 Excel 重新算一遍（openpyxl 写的公式没有结果）
+        except Exception:
+            pass
+        tmp = path + ".casate_tmp"
+        wb.save(tmp)
+    finally:
+        wb.close()
+    os.replace(tmp, path)
+    return n
+
+
 def export_orders(dist, purchased, log=None, labels=None, settings=None, mapping=None):
     """
     门店比价文件夹里建 Ordini：只放采购了的供应商的订单，文件名 Ordine_门店名_供应商名_日期.xlsx；
@@ -2046,6 +2167,11 @@ def export_orders(dist, purchased, log=None, labels=None, settings=None, mapping
         used.add(fn.lower())
         try:
             shutil.copy2(src, os.path.join(dest, fn))
+            if needs_pieces_amount(name):
+                try:
+                    add_pieces_amount(os.path.join(dest, fn))
+                except Exception as e:                  # 加不上照样发箱数的那份，日志里写明
+                    log(tr("⚠ {0} 没加上件数 / 金额两列：{1}", fn, e))
             out.append(os.path.join(dest, fn))
             if mapping is not None:
                 mapping[f] = (name, os.path.join(dest, fn))

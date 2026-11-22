@@ -62,11 +62,14 @@ class SendOrderDialog(QDialog):
             from erp_widgets import tip_label
             w = tip_label(text, tip) if tip else QLabel(text)
             g.addWidget(w, r, 0, Qt.AlignRight | Qt.AlignVCenter)
-        lab(tr("发件"), tr("照现在的习惯：一家店的单从这家店的邮箱发，BMS / 几家店一起的从 BMS 的邮箱发"), 0)
+        lab(tr("发件"), tr("一家店的单从这家店的订单发件邮箱发，BMS / 几家店一起的（总仓采购一个文件）从 BMS 的邮箱发"
+                         "（系统设置 → 邮箱 → 订单发件邮箱）"), 0)
         self.e_from = QComboBox()
         for a in d["accounts"]:
             self.e_from.addItem(a["address"], a["address"])
         self.e_from.setCurrentIndex(max(0, self.e_from.findData(d["from"])))
+        if d.get("from_locked"):                 # 固定邮箱：不让选别的，免得用错门店的邮箱发
+            self.e_from.setEnabled(False)
         g.addWidget(self.e_from, 0, 1)
         lab(tr("收件"), tr("以前发给这家的地址（共享通讯录 / 「已发送」里学的）。改了的话，发完存进通讯录，下次照用。"
                          "几个地址用逗号隔开"), 1)
@@ -81,8 +84,10 @@ class SendOrderDialog(QDialog):
         g.addWidget(self.e_subj, 3, 1)
         g.setColumnStretch(1, 1)
         lay.addLayout(g)
+        nos = " · ".join(dict.fromkeys((d.get("nos") or {}).values()))
         src = {"last": tr("正文照上次发给这家的那封信（看一下日期、门店对不对）"),
-               "template": tr("正文用的是默认模板（以前没给这家发过，或者读不到上次的信）")}[d["body_src"]]
+               "template": tr("正文按订单数据自动写好（订单号 {0}、送货地址、箱数、预约卸货）。供应商回信、送货单、"
+                              "预约时都会写这个订单号，程序靠它对到这张单", nos)}[d["body_src"]]
         self.hint = hint = QLabel(src)
         hint.setObjectName("Faint")
         lay.addWidget(hint)

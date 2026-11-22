@@ -17,7 +17,7 @@ import copy
 MODULE = "company_defaults.py"
 
 # 顶层不同步的（个人的 / 这台电脑的）
-SKIP_TOP = {"last_folder", "theme", "ui_dark_v2", "ui_light_v3", "language", "db", "wholesale_root", "wholesale_batch", "user_name", "user_site",
+SKIP_TOP = {"last_folder", "sync_root", "theme", "ui_dark_v2", "ui_light_v3", "deter_shared_v1", "language", "db", "wholesale_root", "wholesale_batch", "user_name", "user_site",
             "company_defaults_ver", "use_web", "window", "geometry", "last_dir",
             "mail",   # 邮箱是每个人自己的（2026-11-06）
             "accent", "density", "theme_follow",   # 外观：每个人自己的（2026-11-16）
@@ -32,6 +32,8 @@ SKIP_IN = {"store_orders": {"folder", "day", "skip", "moq_override", "stores", "
            # VOLANTINO 分析：上次看的哪一期、选文件的文件夹（列顺序 / 宽度照常统一）
            "volantino": {"last", "last_dir", "stores_cols_user"},
            # SELL OUT 分析：每个人自己上次的筛选、看法、文件夹（列顺序 / 宽度照常统一）
+           # 确认收货：上次选的卸货人是每台电脑自己的（卸货人名单 people 照常统一）
+           "receiving": {"last_by"},
            "sellout": {"preset", "start", "end", "stores", "sups", "cats", "mids", "subs", "view", "last_dir", "exp_dir"}}
 _SECRET = re.compile(r"pass|pwd|token|secret|api_?key|credential", re.I)
 _PATHLIKE = re.compile(r"^[A-Za-z]:[\\/]|^\\\\|^/(home|Users|mnt|tmp)/")

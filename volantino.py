@@ -122,6 +122,9 @@ def _day(v):
         return v.date()
     if isinstance(v, date):
         return v
+    n = _num(v) if isinstance(v, (int, float, str)) else None
+    if n is not None and 30000 <= n <= 70000 and float(n).is_integer():      # Excel 日期没设格式：存的是数字（46359 = 03/12/2026）
+        return date(1899, 12, 30) + timedelta(days=int(n))
     a, _b = guess_dates([v, v])
     return a
 
@@ -151,7 +154,7 @@ def _scan(rows):
     cs, cx = _col(head, START_HEADS, exact=True), _col(head, END_HEADS, exact=True)
     get = lambda r, c: r[c] if c is not None and c < len(r) else None      # noqa: E731
     items, seen, dates = [], set(), []
-    for r in rows[hdr + 1:]:
+    for n_r, r in enumerate(rows[hdr + 1:], hdr + 2):
         ean, code = R._clean_code(get(r, ce)), R._clean_code(get(r, cc))
         if code and len(code) >= 8 and code.isdigit():         # 编号列里写的是条码
             ean, code = ean or code, ""
@@ -163,13 +166,13 @@ def _scan(rows):
         if key in seen:
             continue
         seen.add(key)
-        items.append({"code": code, "ean": ean, "name": str(get(r, cn) or "").strip(),
+        items.append({"code": code, "ean": ean, "name": str(get(r, cn) or "").strip(), "row": n_r,
                       "price": _num(get(r, cp)), "normal": _num(get(r, cr))})
         s, e = _day(get(r, cs)), _day(get(r, cx))
         if s and e and s <= e:
             dates.append((s, e))
     texts = [str(v) for row in rows[:hdr] for v in row if v not in (None, "")]
-    return {"items": items, "texts": texts, "dates": dates}
+    return {"items": items, "texts": texts, "dates": dates, "cols": [c for c in (ce, cc, cn) if c is not None]}
 
 
 def read_file(path):
@@ -203,11 +206,13 @@ def read_file(path):
     items = best[2]["items"]
     this = date.today().year
     cnt = Counter(d for f in good for d in f[2]["dates"] if abs(d[0].year - this) <= 1 and (d[1] - d[0]).days <= 200)
+    if not cnt:              # 定稿那页没写日期，草稿页写了（ELENCO VOLANTINO SETTEMBRE：只有 BOZZA ELENCO 有 start / end）
+        cnt = Counter(d for f in found for d in f[2]["dates"] if abs(d[0].year - this) <= 1 and (d[1] - d[0]).days <= 200)
     if cnt:
         start, end = cnt.most_common(1)[0][0]
     else:
         start, end = guess_dates([name] + best[2]["texts"])
-    return {"items": items, "start": start, "end": end, "name": name, "sheet": best[1],
+    return {"items": items, "start": start, "end": end, "name": name, "sheet": best[1], "cols": best[2]["cols"],
             "prices": {k: x["price"] for k, x in enumerate(items) if x.get("price") is not None}}
 
 

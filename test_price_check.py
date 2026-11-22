@@ -75,3 +75,17 @@ def test_duplicate_ean_header_picks_filled_column():
     assert utils.find_col_best(ws, "CODICE EAN") == (8, 1)
     assert utils.find_col_best(ws, "PREZZO NETTO") == (5, 1)
     assert utils.find_col_best(ws, "NIENTE") == (None, None)
+
+
+def test_db_pack_far_bigger_than_every_wholesaler_not_used():
+    """2026-11-22 bug：VIT BOBINA DOPPIA 数据库每箱 56 件、几家批发商都是 1 件一卖 → 门店清单 60 订成 3360 件 €14,253。
+    数据库箱规 ≥ 3 倍于每家批发商的箱规 → 用批发商的箱规，标 pack_far"""
+    import price_check as PC
+    files = {"A": {"801": {"price": 4.3, "pack": 1}, "802": {"price": 1.0, "pack": 12}, "803": {"price": 2.0, "pack": 6}},
+             "B": {"801": {"price": 4.2, "pack": 1}, "803": {"price": 2.1, "pack": 12}}}
+    rows = [{"ean": "801", "pack": 56, "price": 3.7}, {"ean": "802", "pack": 12, "price": 0.9},
+            {"ean": "803", "pack": 24, "price": 1.9}]
+    PC.apply_quotes(rows, PC.best_quotes(files))
+    assert rows[0]["pack"] == 1 and rows[0]["pack_far"] == 56
+    assert rows[1]["pack"] == 12 and "pack_far" not in rows[1]
+    assert rows[2]["pack"] == 24 and "pack_far" not in rows[2]       # 有一家 12 件一箱：24 不算差很多

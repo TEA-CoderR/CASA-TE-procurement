@@ -478,6 +478,22 @@ def test_check_keeps_store_list_unless_stock_really_high():
     assert rows[0]["fbox"] == 2 and not rows[0].get("kept")
 
 
+def test_store_reason_from_scanner_keeps_list_and_needs_review():
+    """2026-11-22 用户：系统不订的，门店在扫码枪上选了原因（促销 / 多陈列 / 客人要 / 库存不对）→ 照门店清单订、要审核"""
+    import order_check as OC
+    algo = {"engine": "v1"}
+    base = {"in_db": True, "pack": 6, "store": 1, "cycle": 14, "daily": None, "sales": [30, 60, 90, 180],
+            "file_qty": 3, "suggested": 0, "tier": "B", "inv0": 70, "daily0": 0.5}      # 够卖 140 天：本来 0 箱
+    rows = [dict(base), dict(base, list_reason="Promozione o volantino"),
+            dict(base, list_reason="Sostituisce 8001 X"), dict(base, list_reason="Scaffale vuoto", urgent=True)]
+    OC.init_boxes(rows, None, algo)
+    assert [x["fbox"] for x in rows[:3]] == [0, 3, 0]
+    assert rows[1]["protect"] == "store" and rows[2].get("protect") != "store"
+    assert OC.store_reason(rows[1]) == "Promozione o volantino" and OC.store_reason(rows[3]) == ""
+    tags = [t for t, _ in OC.key_tags(rows[1])]
+    assert "门店说明 · 照清单" in tags
+
+
 def test_drawer_key_tags_short_and_ordered():
     """2026-11-07 用户：详情栏只留精华 —— 为什么写成几个短标签，在途 / 保护在前"""
     import order_check as OC
@@ -499,3 +515,29 @@ def test_detail_drawer_tags():
     assert tags[:3] == ["在途 2 箱", "调货", "快断货"] and tags[-1] == "手动改过" and "慢销" in tags
     assert SW.detail_tags(None, {"dup_of": 3}) == [("重复编号", "muted")]
     assert SW.detail_tags(None, {}) == [("数据库没有", "err")]
+
+
+def test_old_receipts_flag_shown_first_in_tags():
+    """2025-01-08 以前的入库记录是错的：详情栏第一个标签写出来（判断后面也有「入库记录有误」）"""
+    import order_check as OC
+    from datetime import date
+    x = dict(in_db=True, lbox=1, sbox=1, sys_box=1, protect=None, old_rec=(date(2025, 1, 3), 2, 53.0))
+    assert OC.key_tags(x)[0] == ("入库有误 53 件", "err")
+    assert "合计 53 件" in OC.old_rec_tip(x["old_rec"], 4.0) and "现在库存 4 件" in OC.old_rec_tip(x["old_rec"], 4.0)
+    assert OC.old_rec_short((date(2025, 1, 3), 1)) == "入库有误 1 条"
+
+
+def test_list_ten_times_system_and_over_a_year_cut_to_free_days():
+    """2026-11-22 用户定 B：清单比系统建议多 10 倍以上、订完够卖超过一年 → 自动砍到够卖「可不订」天数，标出来要审核"""
+    import order_check as OC
+    x = dict(in_db=True, pack=12, file_qty=300, suggested=12, inv0=56, daily0=0.72, daily=0.72, cycle=30, tier="A",
+             sales=[21, 40, 60, 120])
+    OC.init_boxes([x])
+    assert x["cut_much"][0] == 300 and x["fbox"] == x["cut_much"][1] < 300
+    assert (56 + x["fbox"] * 12) / 0.72 <= 180 + 12 / 0.72            # 砍到 A 类 180 天左右
+    y = dict(x, file_qty=3)
+    OC.init_boxes([y])
+    assert "cut_much" not in y and y["fbox"] == 3
+    z = dict(x, urgent=True)                                         # 门店标了紧急：不砍（照样要审核）
+    OC.init_boxes([z])
+    assert "cut_much" not in z
