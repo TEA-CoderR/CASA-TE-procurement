@@ -2989,6 +2989,7 @@ class MainWindow(QMainWindow):
         from store_order_page import PdvOrderPage
         self.store_pdv = PdvOrderPage(self, settings, _UI)
         self.order_check = OrderCheck(self, settings, _UI)
+        QApplication.instance().aboutToQuit.connect(lambda: self.order_check.flush_memory())   # 自动更新重启时也存上审核记录
         self.dashboard = DashboardPage(self, settings)
         self.settings_page = SettingsPage(self, settings)
         self.distribution = self.import_page = None     # 分货 / 导入页要用 pandas（加载要 1 秒左右）：第一次建页面时才加载
@@ -6765,6 +6766,12 @@ class MainWindow(QMainWindow):
                 self, APP_NAME, tr("还在处理中，现在关闭可能导致文件没有保存完整。确定关闭？")) != QMessageBox.Yes:
             e.ignore()
             return
+        oc = getattr(self, "order_check", None)
+        if oc is not None:
+            try:
+                oc.flush_memory()       # 审核记录：刚改 / 刚看的 2 秒内关掉程序也存上
+            except Exception:
+                pass
         e.accept()
 
     def resizeEvent(self, e):

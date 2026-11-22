@@ -515,3 +515,11 @@ def test_detail_drawer_tags():
     assert tags[:3] == ["在途 2 箱", "调货", "快断货"] and tags[-1] == "手动改过" and "慢销" in tags
     assert SW.detail_tags(None, {"dup_of": 3}) == [("重复编号", "muted")]
     assert SW.detail_tags(None, {}) == [("数据库没有", "err")]
+
+
+def test_old_receipts_flag_shown_first_in_tags():
+    """2025-01-08 以前的入库记录是错的：详情栏第一个标签写出来（判断后面也有「入库记录有误」）"""
+    import order_check as OC
+    from datetime import date
+    x = dict(in_db=True, lbox=1, sbox=1, sys_box=1, protect=None, old_rec=(date(2025, 1, 3), 1))
+    assert OC.key_tags(x)[0] == ("入库记录有误", "err")

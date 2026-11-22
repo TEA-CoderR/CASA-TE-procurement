@@ -111,6 +111,8 @@ def key_tags(x, transit_boxes=0, edited=False):
     完整的几句话放鼠标提示（_reason_lines）。
     """
     out = []
+    if x.get("old_rec"):
+        out.append((tr("入库记录有误"), "err"))     # 2025-01-08 以前的入库记录是错的（2026-11-22 用户）
     if not x.get("in_db", True):
         return [(tr("数据库没有"), "err")]
     cut = x.get("transit_cut") or 0
@@ -162,7 +164,7 @@ VERDICT_TOKEN = {"transfer": "violet", "more": "accent", "less": "warn", "none":
 # 「看哪些」下拉框
 VIEWS = (("all", "全部商品"), ("review", "只看要审核的"), ("changed", "只看有变化的"), ("transfer", "只看调货"), ("more", "只看多订"),
          ("less", "只看少订"), ("none", "只看不订"), ("phantom", "只看库存可能不准"),
-         ("promo", "只看促销"))
+         ("promo", "只看促销"), ("oldrec", "只看入库记录有误"))
 
 
 def promo_text(p):
@@ -416,6 +418,7 @@ class _Sig(QObject):
     done = Signal(object)
     months = Signal(object)          # 近两年每月销量读好了（后台线程 → 界面）
     promos = Signal(object)          # 本店在促销的商品读好了
+    oldrec = Signal(object)          # 2025-01-08 之前有（错的）入库记录的商品读好了
     transit = Signal(object)         # 在途读好了（order_record）
 
 
@@ -433,6 +436,7 @@ class OrderCheck:
         self.sig.done.connect(self._done)
         self.sig.months.connect(self._months_arrived)
         self.sig.promos.connect(self._promos_arrived)
+        self.sig.oldrec.connect(self._oldrec_arrived)
         self.sig.transit.connect(self._transit_arrived)
         self.transit = None
         self._card = None                # 商品详情窗口（双击商品打开，一个窗口反复用）
@@ -1374,6 +1378,11 @@ class OrderCheck:
         elif x.get("review") == "changed":
             rv.append(("review", tr("清单改过"), tr("上次审核时清单是 {0} 箱，现在是 {1} 箱：按系统建议重新算了，要审核",
                                                    x.get("review_prev"), x.get("lbox"))))
+        orc = x.get("old_rec")
+        if orc:
+            rv.append(("oldrec", tr("入库记录有误"),
+                       tr("这家店有 {0} 条 08/01/2025 以前的入库记录（最早 {1}），那之前的入库记录是错的：库存、进价可能不准，打开商品详情核对",
+                          orc[1], orc[0].strftime("%d/%m/%Y") if orc[0] else "—")))
         if x.get("merged"):
             rv.append(("merged", tr("合并 {0} 行", len(x["merged"]) + 1),
                        tr("清单里这几行是同一个商品，合成一行（箱数加在一起）：") + "\n" + "\n".join(
@@ -1594,6 +1603,11 @@ class OrderCheck:
                         self.sig.promos.emit((token, sid, R.query_promos(db, sid, codes)))
                     except Exception as e:
                         self.sig.promos.emit((token, sid, {"_error": str(e)}))
+                for sid, codes in by_store.items():       # 2025-01-08 之前的入库记录是错的：有的商品在列表里标出来
+                    try:
+                        self.sig.oldrec.emit((token, sid, R.old_receipts(db, sid, codes)))
+                    except Exception as e:
+                        self.sig.oldrec.emit((token, sid, {"_error": str(e)}))
                 for sid, codes in by_store.items():
                     try:
                         data = R.query_monthly_sales(db, sid, codes)
@@ -1605,6 +1619,29 @@ class OrderCheck:
                 for sid, codes in by_store.items():
                     self.sig.months.emit((token, sid, codes, {"_error": str(e)}))
         threading.Thread(target=work, daemon=True).start()
+
+    def _oldrec_arrived(self, payload):
+        """2025-01-08 之前有入库记录的商品：x["old_rec"] = (最早那天, 几条)，判断后面「入库记录有误」"""
+        token, sid, data = payload
+        if token != getattr(self, "_m24_token", None):
+            return
+        err = data.pop("_error", None)
+        if err:
+            self.win.log(tr("⚠ 旧入库记录没查到：{0}", err))
+            return
+        idx = []
+        for i, x in enumerate(self.rows):
+            if x.get("store") == sid:
+                v = data.get(str(x.get("code")))
+                if v or x.get("old_rec"):
+                    x["old_rec"] = v
+                    idx.append(i)
+        if data:
+            self.win.log(tr("[检查清单] {0}：{1} 个商品有 {2} 以前的入库记录（数据有误）", R.STORES.get(sid, sid), len(data),
+                            "08/01/2025"))
+        if idx:
+            self._refresh_rows(idx)
+            self._summary()
 
     def _promos_arrived(self, payload):
         """本店在促销的商品：x["promo"]，商品 / 条码格标红、「只看促销」"""
@@ -1691,6 +1728,8 @@ class OrderCheck:
         if i not in self._seen:                         # 门店列表的「已看 n / m」
             self._seen.add(i)
             self._side_timer.start()
+            if self._needs_review(x) and hasattr(self, "_mem_timer"):
+                self._mem_timer.start()                 # 看过的要审核商品也记进审核记录（重开程序不用再看一遍）
         code = str(x.get("code"))
         sid = x.get("store")
         pack = x.get("pack") or 0
@@ -2013,11 +2052,13 @@ class OrderCheck:
         import getpass
         import socket
         who = f"{getpass.getuser()}@{socket.gethostname()}"
+        # 2026-11-22 用户：审核到一半更新 / 重开程序要能接着审 → 改过的 + 点开看过的要审核商品（照现在的箱数）都记下来
+        seen = {id(self.rows[i]) for i in getattr(self, "_seen", ()) if 0 <= i < len(self.rows)}
         for sid in (self.meta or {}).get("stores") or []:
             rows = [x for x in self.rows if x.get("store") == sid]
             when = (getattr(self, "_mem_ok", {}) or {}).get(sid)
             mem = RM.build(rows, sid, prev={"confirmed": when} if when else None, confirmed=confirmed,
-                           edited=_edited, who=who)
+                           edited=lambda x: _edited(x) or (id(x) in seen and self._needs_review(x)), who=who)
             if not mem["items"] and not confirmed and not os.path.exists(RM.path_for(root, sid)):
                 continue                                   # 还没审（没改过）：不建空记录
             try:
@@ -2027,6 +2068,13 @@ class OrderCheck:
                 return
             if confirmed:
                 self._mem_ok[sid] = mem["confirmed"]
+
+    def flush_memory(self):
+        """关程序前：还没存的审核记录马上存"""
+        t = getattr(self, "_mem_timer", None)
+        if t is not None and t.isActive():
+            t.stop()
+            self._save_memory()
 
     def _forget_review(self):
         n = sum(1 for x in self.rows if x.get("review") == "kept")
@@ -2288,6 +2336,7 @@ class OrderCheck:
         n.update(cnt)
         n["phantom"] = sum(1 for x in mine if x.get("phantom") and not _problem(x))
         n["promo"] = sum(1 for x in mine if x.get("promo"))
+        n["oldrec"] = sum(1 for x in mine if x.get("old_rec"))
         n["review"] = sum(1 for x in mine if self._needs_review(x))
         for k in range(self.view.count()):
             key = self.view.itemData(k)
@@ -2354,6 +2403,7 @@ class OrderCheck:
         hide = (view == "changed" and kind not in ("transfer", "more", "less", "none")) or \
             (view in ("transfer", "more", "less", "none") and kind != view) or \
             (view == "phantom" and not x.get("phantom")) or (view == "promo" and not x.get("promo")) or \
+            (view == "oldrec" and not x.get("old_rec")) or \
             (view == "review" and not self._needs_review(x))
         return hide or \
                (bool(text) and text not in self._search_text(x))

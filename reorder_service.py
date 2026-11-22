@@ -660,6 +660,29 @@ def _day(v):
         return None
 
 
+# 2026-11-22 用户：数据库里 2025-01-08 之前的入库记录是错的（例如 2025-01-03 商家 0、发票 0000 的一大笔）
+OLD_RECEIPTS_BEFORE = "2025-01-08"
+
+
+def old_receipts(db, store_id, codes, before=OLD_RECEIPTS_BEFORE):
+    """这家店这些商品在 before 之前的入库记录（是错的）→ {编号: (最早那天 date, 几条)}；只读"""
+    import pandas as pd
+    codes = sorted({str(c) for c in codes or () if str(c).isdigit()})
+    out = {}
+    for i in range(0, len(codes), 2000):
+        chunk = codes[i:i + 2000]
+        ph = ", ".join(["%s"] * len(chunk))
+        df = pd.read_sql(f"SELECT CodArticolo, MIN(Cdata) AS d, COUNT(*) AS n FROM caricolistalist "
+                         f"WHERE Negozio = %s AND Cdata < %s AND CodArticolo IN ({ph}) GROUP BY CodArticolo",
+                         db.engine, params=(int(store_id), before, *chunk))
+        for c, d, n in zip(df["CodArticolo"], df["d"], df["n"]):
+            try:
+                out[str(int(float(c)))] = (_day(d), int(n or 0))
+            except (TypeError, ValueError):
+                continue
+    return out
+
+
 def _active(start, end, today):
     a, b = _day(start), _day(end)
     return (a is None or a <= today) and (b is None or b >= today)
@@ -947,7 +970,9 @@ def product_card(db, code, days=60, stores=None, today=None, store=None):
                 except (TypeError, ValueError):
                     n = None
                 if n:
-                    r["_sup_name"] = n          # 商家照 ERP 写编号，名字给鼠标提示用
+                    r["_sup_name"] = n          # 商家照 ERP 写编号，名字另一列（2026-11-22 用户）
+            k = next(i for i, (c, _h, _t) in enumerate(cols) if c == sup)
+            cols.insert(k + 1, ("_sup_name", "供应商", "supname"))
         return cols, rows
 
     def q_daily():              # 五家店近 days 天每天的销量：一条 UNION ALL 查完

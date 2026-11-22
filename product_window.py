@@ -21,8 +21,8 @@ import reorder_service as R
 
 DAYS = 60
 CACHE_TTL = 600         # 同一个商品 10 分钟内再打开直接用上次查的
-_TAG_FID = {"date": 1, "qty": 2, "type": 3, "sup": 4, "doc": 5, "price": 6, "store": 7}
-_TAG_W = {"date": 130, "qty": 80, "type": 80, "sup": 80, "doc": 100, "price": 80, "store": 100}
+_TAG_FID = {"date": 1, "qty": 2, "type": 3, "sup": 4, "doc": 5, "price": 6, "store": 7, "supname": 8}
+_TAG_W = {"date": 130, "qty": 80, "type": 80, "sup": 80, "supname": 220, "doc": 100, "price": 80, "store": 100}
 
 
 def _fid(col, tag):
@@ -57,7 +57,7 @@ def fmt_cell(v, tag=None):
 
 
 # 入库记录默认只显示这几列（用户 2026-11-01：要像 ERP 里那样简洁）：日期 数量 类型 商家 发票；其余右键表头「显示哪些列…」打开
-SHOW_TAGS = ("date", "qty", "type", "sup", "doc")
+SHOW_TAGS = ("date", "qty", "type", "sup", "supname", "doc")
 
 
 def default_hidden_cols(cols):
@@ -445,7 +445,7 @@ class ProductWindow(QDialog):
                 it.widget().setParent(None)
         widths = {_fid(c, tag): _TAG_W.get(tag, 110) for c, _h, tag in cols}
         self.rec = _Grid(self.ui, heads, numeric, self.cfg, "card_rec", self._save, fids, default_hidden_cols(cols), widths,
-                         ver=2, erp=True)
+                         ver=3, erp=True)
         lay.addWidget(self.rec.w)
         out, keys, colors, tips = [], [], {}, {}
         qcol = next((k for k, (_c, _h, tag) in enumerate(cols) if tag == "qty"), None)

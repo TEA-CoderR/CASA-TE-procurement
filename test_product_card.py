@@ -97,7 +97,7 @@ def test_query_promos_and_product_card():
         assert card["prod"]["FornitoreNome"] == "MEGA CASH" and card["prod"]["CategoriaNome"] == "DETERSIVI"
         assert card["stock"][1] == 3 and card["stock"][2] == -1 and card["stock"][0] == 10
         cols, rows = card["receipts"]
-        assert [h for _c, h, _t in cols][:5] == ["日期", "数量", "类型", "商家", "发票"]
+        assert [h for _c, h, _t in cols][:6] == ["日期", "数量", "类型", "商家", "供应商", "发票"]
         assert len(rows) == 2 and not card["receipts_all"]                # 只有门店 1 的入库
         assert card["receipts_upto"] == date.today() - timedelta(days=1)   # 入库表最新的日期（数据库停更时窗口里提醒）
         assert len(R.product_card(db, 1, days=60)["receipts"][1]) == 3    # 不给门店：全部
@@ -132,3 +132,24 @@ def test_sales_latest_and_stale_days():
         pd.read_sql = orig
     assert R.stale_days(datetime(2026, 10, 24, 20, 10), datetime(2026, 11, 1, 13, 3)) == 8
     assert R.stale_days(None) is None
+
+
+
+def test_old_receipts_before_2025_01_08_flagged_per_store():
+    """2026-11-22 用户：2025-01-08 以前的入库记录是错的 → 列表里标出有这种记录的商品（按门店）"""
+    import sqlite3
+    import pandas as pd
+    con = sqlite3.connect(":memory:")
+    con.execute("CREATE TABLE caricolistalist (CodArticolo INT, Cdata TEXT, Negozio INT)")
+    con.executemany("INSERT INTO caricolistalist VALUES (?,?,?)", [
+        (1, "2025-01-03 00:00:00", 2), (1, "2024-11-20 00:00:00", 2), (1, "2026-11-10 00:00:00", 2),
+        (2, "2025-01-08 00:00:00", 2),            # 当天开始的不算
+        (3, "2025-01-02 00:00:00", 1)])           # 别的门店
+    orig = pd.read_sql
+    pd.read_sql = lambda q, engine, params=None: orig(q.replace("%s", "?"), con, params=params)
+    try:
+        db = type("DB", (), {"engine": None})()
+        got = R.old_receipts(db, 2, ["1", "2", "3", "x"])
+    finally:
+        pd.read_sql = orig
+    assert got == {"1": (date(2024, 11, 20), 2)}

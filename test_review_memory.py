@@ -173,3 +173,15 @@ def test_list_report_explains_merged_and_missing_from_database():
     assert len(rows) == 2 and rows[0]["file_qty"] == 3 and rows[0]["merged"][0]["ean"] == "809"
     rep = R.list_report(f, rows)
     assert rep["lines"] == 3 and rep["items"] == 2 and rep["nodb"] == ["NICKY"] and rep["merged"] == [("A", ["A bis"])]
+
+
+def test_viewed_rows_kept_after_restart_half_way():
+    """2026-11-22 用户：审核到一半更新 / 重开程序 → 改过的和点开看过（没改）的都沿用，没看过的照样要审"""
+    root = tempfile.mkdtemp()
+    rows = [_row("1", "801", 2, 0), _row("2", "802", 3, 1), _row("3", "803", 1, 0)]
+    _set_box(rows[1], 2)                                   # 改过
+    seen = {id(rows[0])}                                   # 点开看过、照系统建议不订
+    RM.save(root, 1, RM.build(rows, 1, edited=lambda x: _edited(x) or id(x) in seen))
+    new = [_row("1", "801", 2, 1), _row("2", "802", 3, 1), _row("3", "803", 1, 1)]   # 重开后重新算，建议变了
+    assert RM.apply(new, RM.load(root, 1), _set_box) == {"kept": 2, "changed": 0, "new": 0}
+    assert [x["fbox"] for x in new] == [0, 2, 1] and new[2].get("review") is None

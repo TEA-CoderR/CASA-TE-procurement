@@ -4740,4 +4740,9 @@ TRANSLATIONS = {
     '门店说明 · 照清单': ('Store reason · as listed', 'Motivo del negozio · come da lista'),
     '门店说明': ('Store reason', 'Motivo del negozio'),
     '系统本来不订（库存够 / 已在途），门店在扫码枪上说明了还要订：{0}。按门店清单订，请确认': ('The system would not order it (enough stock / already coming); the store explained on the scanner why it still wants it: {0}. Ordered as on the store list, please check', 'Il sistema non lo ordinerebbe (giacenza sufficiente / già in arrivo); il negozio ha spiegato sul terminale perché lo vuole comunque: {0}. Ordinato come da lista, da verificare'),
+    '入库记录有误': ('Wrong receipt records', 'Carichi errati'),
+    '只看入库记录有误': ('Only wrong receipt records', 'Solo carichi errati'),
+    '⚠ 旧入库记录没查到：{0}': ('⚠ Old receipt records not read: {0}', '⚠ Carichi vecchi non letti: {0}'),
+    '[检查清单] {0}：{1} 个商品有 {2} 以前的入库记录（数据有误）': ('[List check] {0}: {1} items have receipt records before {2} (wrong data)', '[Controllo lista] {0}: {1} articoli hanno carichi prima del {2} (dati errati)'),
+    '这家店有 {0} 条 08/01/2025 以前的入库记录（最早 {1}），那之前的入库记录是错的：库存、进价可能不准，打开商品详情核对': ('This store has {0} receipt records before 08/01/2025 (first {1}); records before that date are wrong: stock and cost may be off, check the product details', 'Questo negozio ha {0} carichi prima del 08/01/2025 (il primo {1}); i carichi prima di quella data sono errati: giacenza e costo potrebbero essere sbagliati, controlla la scheda articolo'),
 }
