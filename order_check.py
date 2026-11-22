@@ -83,7 +83,7 @@ PCS_COL = _col(14)            # 确定件数（= 箱数 × 每箱件数，默认
 
 from check_rules import (  # noqa: F401  业务规则搬到 check_rules.py（2026-11-06），这里照旧能用这些名字
     _pk, PROB_KINDS_TIPS, _prob_title, _issue, _situation, _edited, _issue_text, _problem, PROB_TABS, _tab_of,
-    _report_rows, report_name, _advice, write_problem_report, _can_transfer, _set_box, is_new_item,
+    _report_rows, report_name, _advice, write_problem_report, _can_transfer, _set_box, is_new_item, store_reason,
     REVIEW_DEFAULTS, review_rules, _cover_now, PHANTOM_MIN_DAYS, PHANTOM_UNITS, censored_info, phantom_info,
     init_boxes)
 
@@ -134,6 +134,8 @@ def key_tags(x, transit_boxes=0, edited=False):
         out.append((tr("缺货保护"), "ok"))
     elif prot == "a_low":
         out.append((tr("A 类保护"), "ok"))
+    elif prot == "store":
+        out.append((tr("门店说明 · 照清单"), "warn"))
     if x.get("phantom"):
         out.append((tr("库存可能不准"), "warn"))
     if x.get("censored"):
@@ -1361,6 +1363,9 @@ class OrderCheck:
             rv.append(("stock", tr("门店报库存 {0}", sr.get("counted")),
                        tr("门店在扫码枪上清点：实际 {0} 件（系统 {1} 件），{2} 点的。库存和建议箱数已经按门店点的数算。请在 ERP 里改好库存后，在 系统设置 → 扫码枪 → 库存报错 里点「已在 ERP 改好」",
                           sr.get("counted"), sr.get("system"), sr.get("by") or "")))
+        if x.get("protect") == "store":
+            rv.append(("store", tr("门店说明"), tr("系统本来不订（库存够 / 已在途），门店在扫码枪上说明了还要订：{0}。按门店清单订，请确认",
+                                                  x.get("list_reason") or "—")))
         if x.get("urgent"):
             rv.append(("urgent", tr("门店紧急"), tr("门店在扫码枪上标了紧急（原因：{0}）：这个商品不在 Griglia，平常应该向直厂订，"
                                                   "门店说等不及才从批发商订", x.get("list_reason") or "—")))
@@ -2092,7 +2097,7 @@ class OrderCheck:
         底部「要审核 104」三个数各算各的）：判断不是「照清单订」（多订 / 少订 / 不订 / 调货），或者清单是新加 / 改过的；
         沿用了上次审核的（review = kept）不用再审
         """
-        if x.get("urgent") or x.get("stock_report"):
+        if x.get("urgent") or x.get("stock_report") or x.get("protect") == "store":
             return True                                   # 门店在扫码枪上标了紧急 / 报了库存不对：一定要人看
         rv = x.get("review")
         if rv in ("new", "changed"):

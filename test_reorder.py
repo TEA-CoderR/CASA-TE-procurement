@@ -478,6 +478,22 @@ def test_check_keeps_store_list_unless_stock_really_high():
     assert rows[0]["fbox"] == 2 and not rows[0].get("kept")
 
 
+def test_store_reason_from_scanner_keeps_list_and_needs_review():
+    """2026-11-22 用户：系统不订的，门店在扫码枪上选了原因（促销 / 多陈列 / 客人要 / 库存不对）→ 照门店清单订、要审核"""
+    import order_check as OC
+    algo = {"engine": "v1"}
+    base = {"in_db": True, "pack": 6, "store": 1, "cycle": 14, "daily": None, "sales": [30, 60, 90, 180],
+            "file_qty": 3, "suggested": 0, "tier": "B", "inv0": 70, "daily0": 0.5}      # 够卖 140 天：本来 0 箱
+    rows = [dict(base), dict(base, list_reason="Promozione o volantino"),
+            dict(base, list_reason="Sostituisce 8001 X"), dict(base, list_reason="Scaffale vuoto", urgent=True)]
+    OC.init_boxes(rows, None, algo)
+    assert [x["fbox"] for x in rows[:3]] == [0, 3, 0]
+    assert rows[1]["protect"] == "store" and rows[2].get("protect") != "store"
+    assert OC.store_reason(rows[1]) == "Promozione o volantino" and OC.store_reason(rows[3]) == ""
+    tags = [t for t, _ in OC.key_tags(rows[1])]
+    assert "门店说明 · 照清单" in tags
+
+
 def test_drawer_key_tags_short_and_ordered():
     """2026-11-07 用户：详情栏只留精华 —— 为什么写成几个短标签，在途 / 保护在前"""
     import order_check as OC

@@ -424,6 +424,14 @@ def _set_box(x, boxes):
     x["final"] = int(round(b * pk)) if pk > 0 else b
 
 
+def store_reason(x):
+    """门店在扫码枪上写的「为什么还要订」（紧急的、替代商品的说明不算）；没有返回空字符串"""
+    r = str(x.get("list_reason") or "").strip()
+    if not r or x.get("urgent") or r.lower().startswith("sostituisce"):
+        return ""
+    return r
+
+
 def is_new_item(x):
     """
     新品保护：180 天里从没卖过，或者 180 天的销量全是最近 60 天卖的（两个月前还没开始卖）→ 新品 / 刚补上货。
@@ -603,6 +611,11 @@ def init_boxes(rows, units=None, algo=None, rules=None):
         x["cover_now"] = cover
         if is_new_item(x):
             x["protect"] = "new"
+            x["sbox"] = x["lbox"]
+        elif store_reason(x) and sys_ < x["lbox"]:
+            # 2026-11-22 用户：系统不订的，门店在扫码枪上说了原因（促销 / 多了陈列 / 客人要 / 库存不对）→ 照门店清单，
+            # 一定要审核（判断后面「门店说明」）
+            x["protect"] = "store"
             x["sbox"] = x["lbox"]
         else:
             sb = min(sys_, x["lbox"])                  # 先不多订：最多订到门店清单的箱数

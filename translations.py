@@ -4737,4 +4737,7 @@ TRANSLATIONS = {
     '还没加邮箱': ('No mailbox yet', 'Nessuna casella'),
     '还没填地址 / 账号': ('Address / account missing', 'Indirizzo / account mancante'),
     '已填': ('Filled in', 'Compilato'),
+    '门店说明 · 照清单': ('Store reason · as listed', 'Motivo del negozio · come da lista'),
+    '门店说明': ('Store reason', 'Motivo del negozio'),
+    '系统本来不订（库存够 / 已在途），门店在扫码枪上说明了还要订：{0}。按门店清单订，请确认': ('The system would not order it (enough stock / already coming); the store explained on the scanner why it still wants it: {0}. Ordered as on the store list, please check', 'Il sistema non lo ordinerebbe (giacenza sufficiente / già in arrivo); il negozio ha spiegato sul terminale perché lo vuole comunque: {0}. Ordinato come da lista, da verificare'),
 }
