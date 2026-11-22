@@ -122,6 +122,9 @@ def _day(v):
         return v.date()
     if isinstance(v, date):
         return v
+    n = _num(v) if isinstance(v, (int, float, str)) else None
+    if n is not None and 30000 <= n <= 70000 and float(n).is_integer():      # Excel 日期没设格式：存的是数字（46359 = 03/12/2026）
+        return date(1899, 12, 30) + timedelta(days=int(n))
     a, _b = guess_dates([v, v])
     return a
 
@@ -203,6 +206,8 @@ def read_file(path):
     items = best[2]["items"]
     this = date.today().year
     cnt = Counter(d for f in good for d in f[2]["dates"] if abs(d[0].year - this) <= 1 and (d[1] - d[0]).days <= 200)
+    if not cnt:              # 定稿那页没写日期，草稿页写了（ELENCO VOLANTINO SETTEMBRE：只有 BOZZA ELENCO 有 start / end）
+        cnt = Counter(d for f in found for d in f[2]["dates"] if abs(d[0].year - this) <= 1 and (d[1] - d[0]).days <= 200)
     if cnt:
         start, end = cnt.most_common(1)[0][0]
     else:

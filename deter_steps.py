@@ -414,6 +414,23 @@ def build_collect(win, lay):
     scan.setMinimumHeight(58)
     scan.clicked.connect(lambda: open_scanner_lists(win))
     win._dc_lists.foot.addWidget(scan)
+    # VOLANTINO 备货（2026-11-22）：新一期促销名单 → 按以前几期促销期的销量算每家店备几箱 → 改进门店清单
+    vol = QPushButton()
+    vol.setObjectName("DeterNote")
+    vol.setCursor(Qt.PointingHandCursor)
+    vol.setToolTip(tr("选这一期的 VOLANTINO 名单：按这些商品以前上 VOLANTINO 时各门店的销量，算出每家店要备几箱，确认后写进门店清单"))
+    vl = QVBoxLayout(vol)
+    vl.setContentsMargins(12, 10, 12, 10)
+    vl.setSpacing(2)
+    a = QLabel(tr("VOLANTINO 备货"))
+    a.setStyleSheet("font-weight:500;")
+    vl.addWidget(a)
+    vl.addWidget(RP.muted(tr("按以前促销期的销量 → 改进门店清单") + "  ›", 12))
+    for w in vol.findChildren(QWidget):
+        w.setAttribute(Qt.WA_TransparentForMouseEvents)
+    vol.setMinimumHeight(58)
+    vol.clicked.connect(lambda: open_volantino_plan(win))
+    win._dc_lists.foot.addWidget(vol)
     chk = QPushButton(tr("报价与数据库核对"))
     chk.setObjectName("Link")
     chk.setCursor(Qt.PointingHandCursor)
@@ -1168,3 +1185,9 @@ def open_scanner_lists(win):
         return
     from scanner_dialog import ScannerDialog
     ScannerDialog(win, settings, tab="lists").exec()
+
+
+def open_volantino_plan(win):
+    """DETERSIVO 第 1 步「VOLANTINO 备货」"""
+    import volantino_plan_dialog as VPD
+    VPD.open_plan(win)

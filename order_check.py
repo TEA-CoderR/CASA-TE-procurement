@@ -26,6 +26,7 @@ from i18n import tr
 from settings import save_settings
 import reorder_service as R
 import review_memory as RM
+import volantino_plan as VP
 import transfers as TR
 from reorder_page import short_decision, store_label, algo_widgets
 
@@ -157,7 +158,7 @@ def key_tags(x, transit_boxes=0, edited=False):
     elif prot == "a_low":
         out.append((tr("A 类保护"), "ok"))
     elif prot == "store":
-        out.append((tr("门店说明 · 照清单"), "warn"))
+        out.append((tr("VOLANTINO 备货") if VP.is_tag(x.get("list_reason")) else tr("门店说明 · 照清单"), "warn"))
     if x.get("phantom"):
         out.append((tr("库存可能不准"), "warn"))
     if x.get("censored"):
@@ -1434,8 +1435,8 @@ class OrderCheck:
         订完够卖的天数超过这一等级的「可不订」天数（A 180 / B 120 / C 90）→ (够卖天数, 门槛)；不是 → None。
         只标出来要人看，不自动改箱数。没销量算不出天数的不管（新品另有规则）
         """
-        if not x.get("in_db", True) or not x.get("fbox"):
-            return None
+        if not x.get("in_db", True) or not x.get("fbox") or VP.is_tag(x.get("list_reason")):
+            return None                                  # VOLANTINO 备货：本来就是促销期要多卖的，不算订太多
         sys_ = x.get("sys_box") if x.get("sys_box") is not None else x.get("sbox")
         if x["fbox"] <= int(sys_ or 0):                   # 系统自己算的（照清单 / 保护之前）
             return None
@@ -1471,7 +1472,10 @@ class OrderCheck:
             rv.append(("stock", tr("门店报库存 {0}", sr.get("counted")),
                        tr("门店在扫码枪上清点：实际 {0} 件（系统 {1} 件），{2} 点的。库存和建议箱数已经按门店点的数算。请在 ERP 里改好库存后，在 系统设置 → 扫码枪 → 库存报错 里点「已在 ERP 改好」",
                           sr.get("counted"), sr.get("system"), sr.get("by") or "")))
-        if x.get("protect") == "store":
+        if x.get("protect") == "store" and VP.is_tag(x.get("list_reason")):
+            rv.append(("store", tr("VOLANTINO"), tr("采购部按以前 VOLANTINO 促销期的销量算的备货量（{0}），写进了门店清单；"
+                                                     "系统按平时销量算会少订，这里照清单订，请确认", x.get("list_reason") or "—")))
+        elif x.get("protect") == "store":
             rv.append(("store", tr("门店说明"), tr("系统本来不订（库存够 / 已在途），门店在扫码枪上说明了还要订：{0}。按门店清单订，请确认",
                                                   x.get("list_reason") or "—")))
         if x.get("urgent"):
