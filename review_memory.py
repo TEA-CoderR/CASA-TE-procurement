@@ -140,9 +140,12 @@ def apply(rows, mem, set_box):
     if not mem:
         return out
     items = mem.get("items") or {}
-    approved = bool(mem.get("confirmed"))
-    for x in rows:
-        it = next((items[k] for k in _keys(x) if k in items), None)
+    found = [next((items[k] for k in _keys(x) if k in items), None) for x in rows]
+    # 「新加」只在记录确实是这张清单的时候标：至少一半的商品记录里有（2026-11-22 bug：
+    # 上一张清单的确认时间带到这周新清单上 → S.FILIPPO 104 个里 102 个被标成新加）
+    hit = sum(1 for it in found if it is not None)
+    approved = bool(mem.get("confirmed")) and hit * 2 >= len(rows)
+    for x, it in zip(rows, found):
         if it is not None:
             if _box(it.get("lbox")) == _box(x.get("lbox")):
                 set_box(x, _box(it.get("fbox")))
@@ -228,6 +231,9 @@ def from_main_order(root, store, list_path, now=None):
         changed_after = os.path.getmtime(list_path) > when.timestamp() + 60
     except (OSError, TypeError):
         changed_after = True
+    if changed_after:
+        # 清单在确认之后又换过 / 改过：多半是新一周的清单，上次的主订单不能拿来当这张的审核（2026-11-22 bug）
+        return None
     old_eans = {R._clean_code(x.get("ean")) for x in old if x.get("ean")}
     old_codes = {str(x.get("code")) for x in old if x.get("code")}
     return {"store": store, "updated": when.isoformat(timespec="seconds"), "by": os.path.basename(path),
