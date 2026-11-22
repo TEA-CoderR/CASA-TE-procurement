@@ -40,9 +40,12 @@ BIG_LINE_EUR = 1000          # 合理性检查：一家店一个商品 ≥ €1,
 TAG = "VOLANTINO"
 
 
+_TAG_RE = re.compile(r"VOLANTINO \d{2}/\d{2}-\d{2}/\d{2}")     # reason_text 写的样子（门店写的「Promozione o volantino」不算）
+
+
 def is_tag(reason):
-    """门店清单 MOTIVO 是不是这里写的（检查清单用：VOLANTINO 备货照清单、不标订太多）"""
-    return str(reason or "").strip().upper().startswith(TAG)
+    """门店清单 MOTIVO 是不是这里写的（检查清单用：VOLANTINO 备货照清单、不标订太多）；门店原因后面接上的也认"""
+    return bool(_TAG_RE.search(str(reason or "").upper()))
 
 
 def promo_root(settings):
@@ -293,9 +296,9 @@ def lift_of(pairs):
     return max(LIFT_MIN, min(LIFT_MAX, _median(r)))
 
 
-def boxes_for(expected, stock, pack):
-    """够卖整个促销期要订几箱：(预计 − 现在库存) ÷ 每箱件数，进上去；要订就至少 1 箱。在途不扣（审核清单时照常扣）"""
-    need = float(expected) - max(0.0, float(stock or 0))
+def boxes_for(expected, stock, pack, transit_pcs=0.0):
+    """够卖整个促销期要订几箱：(预计 − 现在库存 − 在途件数) ÷ 每箱件数，进上去；要订就至少 1 箱"""
+    need = float(expected) - max(0.0, float(stock or 0)) - max(0.0, float(transit_pcs or 0))
     if expected <= 0 or need <= 0:
         return 0
     return max(1, int(math.ceil(need / max(1.0, float(pack or 1)) - 1e-9)))
@@ -303,7 +306,7 @@ def boxes_for(expected, stock, pack):
 
 # ---------------------------------------------------------------- 计算
 def compute(db, new, hist, quotes, list_rows, transit=None, stores=STORE_IDS, log=print, progress=None, today=None,
-            upto=None):
+            upto=None, deduct_transit=True):
     """
     new = read_list 的结果（这一期，要有 start / end）；hist = history()；quotes = price_check.best_quotes（这周报价）；
     list_rows = {门店号: parse_order_file 的 rows}（现在清单里写的箱数）；transit = order_record.cached
@@ -427,31 +430,45 @@ def compute(db, new, hist, quotes, list_rows, transit=None, stores=STORE_IDS, lo
             st = (stock.get(x["code"]) or {}).get("stock", 0.0)
             t = REC.lookup(transit, sid, x["ean"], x["code"]) if transit else None
             tb = float(t["colli"]) if t else 0.0
-            sugg = boxes_for(expected, st, x["pack"])
+            tp = float(t.get("pcs") or tb * x["pack"]) if t else 0.0
+            gross = boxes_for(expected, st, x["pack"])
+            net = boxes_for(expected, st, x["pack"], tp)
             lr = lst.get(("e", x["key"])) or lst.get(("c", x["code"]))
             cur = float(lr.get("qty") or 0) if lr else None
-            new_box = max(int(math.ceil(cur - 1e-9)) if cur else 0, sugg)
-            amount = new_box * x["pack"] * x["unit"]
-            warn = []
-            if amount >= BIG_LINE_EUR:
-                warn.append(f"金额 €{amount:,.0f}")
+            base = []
             if x.get("pack_far"):
-                warn.append(f"箱规不一致 · 数据库 {x['pack_far']:g} 件")
-            if sugg and expected > 0 and x["pack"] >= 3 * expected:
-                warn.append(f"一箱 {x['pack']:g} 件，预计只卖 {expected:.0f} 件")
+                base.append(f"箱规不一致 · 数据库 {x['pack_far']:g} 件")
+            if gross and expected > 0 and x["pack"] >= 3 * expected:
+                base.append(f"一箱 {x['pack']:g} 件，预计只卖 {expected:.0f} 件")
             rows.append({"store": sid, "code": x["code"], "ean": str(x["ean"]).strip(), "name": x.get("name") or x["db_name"],
                          "db_name": x["db_name"], "price": x.get("price"), "normal_price": x.get("normal"),
                          "basis": basis, "periods": [(h["name"], h["start"].isoformat(), h["end"].isoformat(),
                                                       round(v[0], 3), round(v[1], 3)) for h, v in got],
                          "per_day": round(per_day, 3), "normal": round(normal, 3), "lift": round(lift, 2),
-                         "expected": round(expected, 1), "stock": st, "transit": tb, "pack": x["pack"],
+                         "expected": round(expected, 1), "stock": st, "transit": tb, "transit_pcs": tp, "pack": x["pack"],
                          "unit": x["unit"], "supplier": x["supplier"], "list": cur, "in_list": lr is not None,
                          "list_reason": (lr or {}).get("reason") or "",
-                         "sugg": sugg, "new": new_box, "amount": round(amount, 2), "warn": warn})
+                         "sugg_gross": gross, "sugg_net": net, "warn_base": base})
+    set_deduct(rows, deduct_transit)
     rows.sort(key=lambda r: (r["store"], -r["amount"]))
     return {"days": days, "start": ps.isoformat(), "end": pe.isoformat(), "name": new.get("name"),
             "rows": rows, "skipped": skipped, "lift": lifts, "lift_all": round(lift_all, 2),
             "periods": [(h["name"], h["start"].isoformat(), h["end"].isoformat()) for h in hist], "upto": upto.isoformat()}
+
+
+def refresh_row(r):
+    """改成的箱数变了：重算金额和提醒（合理性检查：金额 ≥ €1,000 标出来）"""
+    r["amount"] = round(r["new"] * r["pack"] * r["unit"], 2)
+    r["warn"] = ([f"金额 €{r['amount']:,.0f}"] if r["amount"] >= BIG_LINE_EUR else []) + list(r.get("warn_base") or [])
+
+
+def set_deduct(rows, on):
+    """扣不扣在途（2026-11-22 用户要的选项）：建议 = 扣了在途 / 没扣的；人手改过「改成」的行不动"""
+    for r in rows:
+        r["sugg"] = r["sugg_net"] if on else r["sugg_gross"]
+        if not r.get("edited"):
+            r["new"] = max(int(math.ceil(r["list"] - 1e-9)) if r.get("list") else 0, r["sugg"])
+        refresh_row(r)
 
 
 def changes(rows):
@@ -459,9 +476,18 @@ def changes(rows):
     return [r for r in rows if r["new"] > (r["list"] or 0)]
 
 
-def reason_text(res):
+NET_TAG = "IN ARRIVO DEDOTTO"
+
+
+def reason_text(res, deducted=False):
+    """写进门店清单 MOTIVO 的话；在途已经扣过 → 后面写「IN ARRIVO DEDOTTO」，审核清单时不再扣一次"""
     d1, d2 = _d(res["start"]), _d(res["end"])
-    return f"{TAG} {d1:%d/%m}-{d2:%d/%m}"
+    return f"{TAG} {d1:%d/%m}-{d2:%d/%m}" + (f" · {NET_TAG}" if deducted else "")
+
+
+def transit_done(reason):
+    """门店清单这一行是 VOLANTINO 备货、在途已经扣过了（审核时不再扣）"""
+    return is_tag(reason) and NET_TAG in str(reason or "").upper()
 
 
 # ---------------------------------------------------------------- 写进门店清单
@@ -549,8 +575,11 @@ def write_lists(paths, rows, reason, backup_dir=None, now=None):
                         oldn = 0.0
                     if r["new"] > oldn:          # 只改大（门店写得更多的照门店的）；改了才写 MOTIVO，门店自己写的原因不盖掉
                         ws.cell(i, col["qty"]).value = int(r["new"])
-                        if not str(ws.cell(i, col["reason"]).value or "").strip():
+                        had = str(ws.cell(i, col["reason"]).value or "").strip()
+                        if not had:
                             ws.cell(i, col["reason"]).value = reason
+                        elif not is_tag(had):   # 门店写的原因留着，后面接上（扣过在途的要让审核知道，不再扣一次）
+                            ws.cell(i, col["reason"]).value = f"{had} | {reason}"
                     continue
                 last_row += 1
                 i = last_row

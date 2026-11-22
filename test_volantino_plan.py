@@ -123,3 +123,42 @@ def test_store_reason_volantino_kept_by_check_rules():
 def test_excel_number_dates_read():
     import volantino as V
     assert V._day(46359) == date(2026, 12, 3) and V._day("46376") == date(2026, 12, 20)
+
+
+def test_deduct_transit_option_and_check_does_not_deduct_twice():
+    r = {"list": None, "pack": 6, "unit": 2.0, "sugg_gross": 6, "sugg_net": 3, "warn_base": []}
+    rows = [r, dict(r, list=5.0), dict(r, edited=True, new=9)]
+    VP.set_deduct(rows, True)
+    assert [x["new"] for x in rows] == [3, 5, 9] and rows[0]["amount"] == 36
+    VP.set_deduct(rows, False)
+    assert [x["new"] for x in rows] == [6, 6, 9]
+    res = {"start": "2026-12-03", "end": "2026-12-20"}
+    net = VP.reason_text(res, True)
+    assert net == "VOLANTINO 03/12-20/12 · IN ARRIVO DEDOTTO" and VP.transit_done(net)
+    assert not VP.transit_done(VP.reason_text(res)) and VP.is_tag(net)
+    assert VP.boxes_for(36, 10, 6, 12) == 3 and VP.boxes_for(36, 10, 6, 30) == 0
+    import check_rules as CR
+    def row(reason):
+        return {"in_db": True, "pack": 6, "store": 1, "cycle": 14, "daily": None, "sales": [30, 60, 90, 180],
+                "file_qty": 3, "suggested": 0, "tier": "B", "inv0": 70, "daily0": 0.5, "list_reason": reason,
+                "transit_pcs": 12}
+    a, b = row(net), row("VOLANTINO 03/12-20/12")
+    CR.init_boxes([a, b], None, {"engine": "v1"})
+    assert a["fbox"] == 3 and not a.get("transit_cut")              # 已经扣过：不再扣
+    assert b["fbox"] == 1 and b["transit_cut"] == 2                  # 没扣过：审核时照常扣
+
+
+def test_tag_not_confused_with_store_reason_and_appended(tmp_path):
+    import reorder_service as R
+    assert not VP.is_tag("Promozione o volantino") and VP.is_tag("Promozione o volantino | VOLANTINO 03/12-20/12")
+    lf = str(tmp_path / "DETER3.xlsx")
+    wb = Workbook()
+    ws = wb.active
+    ws.append(["Cod.Art.", "Cod.Barre", "Descrizione", "Quantità", "MOTIVO"])
+    ws.append(["101", "8000000000011", "ACE", 1, "Richiesto da un cliente"])
+    wb.save(lf)
+    reason = "VOLANTINO 03/12-20/12 · IN ARRIVO DEDOTTO"
+    VP.write_lists({3: lf}, [{"store": 3, "code": "101", "ean": "8000000000011", "name": "ACE", "new": 4}], reason,
+                   backup_dir=str(tmp_path / "old"))
+    got = R.parse_order_file(lf)["rows"][0]
+    assert got["qty"] == 4 and got["reason"] == "Richiesto da un cliente | " + reason and VP.transit_done(got["reason"])

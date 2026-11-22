@@ -8,6 +8,7 @@ from datetime import datetime
 
 from i18n import tr
 import reorder_service as R
+import volantino_plan as VP
 
 
 def _pk(x):
@@ -660,7 +661,7 @@ def init_boxes(rows, units=None, algo=None, rules=None):
         # 在途（已经订了还没到货，order_record；2026-11-03 用户：从建议量里扣）：整箱扣，零头不扣
         x.pop("transit_cut", None)
         tp = float(x.get("transit_pcs") or 0)
-        if tp > 0 and x["sbox"]:
+        if tp > 0 and x["sbox"] and not VP.transit_done(x.get("list_reason")):    # VOLANTINO 备货已经扣过在途的不再扣
             cut = min(x["sbox"], int(tp / pk + 1e-9))
             if cut > 0:
                 x["sbox"] -= cut

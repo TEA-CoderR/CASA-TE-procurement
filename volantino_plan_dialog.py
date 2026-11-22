@@ -76,7 +76,9 @@ def open_plan(win):
                 transit = REC.cached(settings) if REC.tracking_folder(settings) else None
             except Exception:
                 transit = None
-            res = VP.compute(db, new, hist, quotes, lists, transit, log=log)
+            on = bool((settings.get("volantino") or {}).get("plan_deduct", True))
+            res = VP.compute(db, new, hist, quotes, lists, transit, log=log, deduct_transit=on)
+            res["deduct"] = on
             res["paths"], res["file"] = paths, path
             return res
         finally:
@@ -121,7 +123,7 @@ class PlanDialog(QDialog):
         t.setToolTip(tr("每家店每个商品：以前上 VOLANTINO 时每天卖几件（最近 {0} 期的平均）× 这一期 {1} 天 = 预计卖几件；"
                         "减掉现在库存，按数据库箱规换成箱，要订就至少 1 箱。\n"
                         "以前没上过的：最近 90 天平时每天卖几件 × 这家店的放大倍数（别的商品促销期比平时多卖几倍），标「估算」。\n"
-                        "在途这里不扣：「开始检查」时照常扣。\n"
+                        "在途：勾「扣掉在途」这里就扣（写进清单时注明，审核不再扣），不勾就留给「开始检查」扣。\n"
                         "清单里已经写了更多的，照门店写的（不砍）。\n\n用到的以前几期：\n{2}", VP.MAX_PERIODS, res["days"], per))
         head.addWidget(t)
         info = QLabel(tr("{0} · {1} – {2} · {3} 天", res["name"], res["start"][8:10] + "/" + res["start"][5:7],
@@ -145,6 +147,13 @@ class PlanDialog(QDialog):
             self.view.addItem(tr(lab), k)
         self.view.currentIndexChanged.connect(lambda _i: self.ctl.render())
         head.addWidget(self.view)
+        from PySide6.QtWidgets import QCheckBox
+        self.deduct = QCheckBox(tr("扣掉在途"))
+        self.deduct.setToolTip(tr("勾上：建议箱数再减掉已经订了还没到的货（在途件数），写进门店清单时注明，"
+                                  "「开始检查」时这几行不再扣一次。\n不勾：这里不扣，「开始检查」时照常扣掉。\n人手改过「改成」的行不变"))
+        self.deduct.setChecked(bool(res.get("deduct", True)))
+        self.deduct.toggled.connect(self._toggle_deduct)
+        head.addWidget(self.deduct)
         v.addLayout(head)
 
         self.t = ui.make_table([tr(h) if h else "" for _f, h, _w in COLS], numeric_cols=tuple(NUM))
@@ -285,7 +294,8 @@ class PlanDialog(QDialog):
                 lt.setToolTip(tr("门店清单里没有，写进去时加在最后"))
             tr_ = self.t.item(k, F.index("transit"))
             if r["transit"]:
-                tr_.setToolTip(tr("已经订了还没到：这里不扣，「开始检查」时照常扣掉"))
+                tr_.setToolTip(tr("已经订了还没到：{0:g} 件，建议里已经扣掉", r.get("transit_pcs") or 0)
+                               if self.deduct.isChecked() else tr("已经订了还没到：这里不扣，「开始检查」时照常扣掉"))
         finally:
             self._filling = False
 
@@ -296,9 +306,21 @@ class PlanDialog(QDialog):
     def _set_new(self, i, n):
         r = self.rows[i]
         r["new"] = max(0, int(n))
-        r["amount"] = round(r["new"] * r["pack"] * r["unit"], 2)
+        r["edited"] = True
+        VP.refresh_row(r)
         r["_on"] = r["new"] > (r["list"] or 0)
         self.ctl.update_row(i)
+        self._update()
+
+    def _toggle_deduct(self, on):
+        import settings as ST
+        VP.set_deduct(self.rows, on)
+        for r in self.rows:
+            r["_on"] = r["new"] > (r["list"] or 0)
+        self.res["deduct"] = on
+        self.settings.setdefault("volantino", {})["plan_deduct"] = bool(on)
+        ST.save_settings(self.settings)
+        self.ctl.render()
         self._update()
 
     def _step(self, idx, n):
@@ -366,7 +388,7 @@ class PlanDialog(QDialog):
             "确认后：\n· 清单里已有的改成新的箱数（只会改大），没有的加在最后；MOTIVO 写「{0}」；\n"
             "· 原文件先备份到「1 门店清单\\_旧文件」，可以点「撤销」换回来；\n"
             "· 同步文件夹里的同事也会看到改过的清单；\n· 之后点「开始检查」：这些商品照清单订，判断后面写「VOLANTINO」，要审核。",
-            VP.reason_text(self.res)))
+            VP.reason_text(self.res, self.deduct.isChecked())))
         ok = box.addButton(tr("写进去"), QMessageBox.AcceptRole)
         box.addButton(tr("取消"), QMessageBox.RejectRole)
         box.setDefaultButton(ok)
@@ -374,7 +396,7 @@ class PlanDialog(QDialog):
         if box.clickedButton() != ok:
             return
         undo, e = BusyDialog.run(self, tr("写进门店清单"), tr("正在改门店清单…"),
-                                 lambda: VP.write_lists(self.res["paths"], p, VP.reason_text(self.res)))
+                                 lambda: VP.write_lists(self.res["paths"], p, VP.reason_text(self.res, self.deduct.isChecked())))
         if e:
             QMessageBox.warning(self, tr("写进门店清单"), str(e))
             return
