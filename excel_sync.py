@@ -29,6 +29,15 @@ import order_tracking as OT
 WRITE_FIELDS = ("date", "supplier", "buyer", "amount", "confirmed", "arrived", "state", "note")
 BACKUP_DIR = "Backup Excel"
 KEEP_BACKUPS = 30
+# 「写不进去的不再重试」的记录换代号：读 PIANO 的规矩改了（2026-11-22 表头 Fornitore 空着的块也认）→ 以前写不进去的再试一次
+FAILED_VER = 2
+
+
+def _failed(st):
+    f = st.xstate.get("failed") or {}
+    return f if f.get("_ver") == FAILED_VER else {"_ver": FAILED_VER}
+
+
 TAKEOVER_MIN = 10               # 别人改的单，10 分钟还没写进 Excel 就由这台电脑写
 STUCK_TEXT = "卡住了"
 PARTIAL_TEXT = "到了一部分"
@@ -84,7 +93,7 @@ def pending(st, me=None, now=None, everyone=False):
     """
     now = now or datetime.now(timezone.utc)
     ops = []
-    bad = st.xstate.get("failed") or {}               # 上次写不进去的（同样的值不再每次重试）
+    bad = _failed(st)                                 # 上次写不进去的（同样的值不再每次重试）
 
     def skip(kind, oid, val):
         return bad.get(f"{kind}|{oid}") == repr(val)
@@ -435,7 +444,7 @@ def _adopt_existing(st, src, ops, log):
             log(f"Excel 里已经有这张单（{r['ref']}），不再加一行")
         elif k in taken and taken[k] != oid:
             log(f"⚠ 没写进 Excel：{k[2]} {k[1]} 和程序里另一张单一样（Excel 已经有了），请在订单跟踪里合并")
-            fails = dict(st.xstate.get("failed") or {})
+            fails = dict(_failed(st))
             fails[f"append|{oid}"] = repr(_v)                # 同样的值不再每次重试
             st.set_xstate("failed", fails)
         else:
@@ -543,7 +552,7 @@ def writeback(st, path, me=None, log=None, imported=None):
             if kind == "budget" and not any(x[1] == oid for x in failed):
                 bases.append(("_budget", {oid: val, "_w_" + oid: val}))
         vals = {(k, o): v for k, o, v in ops}
-        fails = dict(st.xstate.get("failed") or {})
+        fails = dict(_failed(st))
         for kind, oid, _why in failed:
             fails[f"{kind}|{oid}"] = repr(vals.get((kind, oid)))
         if len(failed) >= len(ops):                    # 一处都没写成：原文件不动
