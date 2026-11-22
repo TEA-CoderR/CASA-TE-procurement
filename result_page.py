@@ -676,6 +676,11 @@ def fill(win, s):
         rows.append((str(len(big)), tr("{0} 个商品金额异常", len(big)),
                      tr("单个商品超过 €{0:,.0f}，发订单前一定要核对", 1000), "err",
                      lambda b=big: _big_dialog(win, b, (st.get("labels") or s.get("supplier_labels") or {}))))
+    oe = win.order_edits_for(s) if current and hasattr(win, "order_edits_for") else []
+    if oe:                                        # 订单文件和程序对不上（2026-11-22：人手改了 / 以前比价留下的）
+        n_old = sum(1 for e in oe if e.get("kind") == "stale")
+        sub = tr("人手改 {0} 行", len(oe) - n_old) + (tr(" · 以前留下的 {0} 行（会重复订货）", n_old) if n_old else "")
+        rows.append((str(len(oe)), tr("订单文件和程序对不上"), sub, "err" if n_old else "warn", win.open_order_edits))
     if miss:
         rows.append((str(miss), tr("{0} 个商品没有报价", miss), tr("哪家批发商都没有 → 找替代商品"), "warn",
                      lambda: (win.go_page("search"))))

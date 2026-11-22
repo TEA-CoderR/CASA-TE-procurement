@@ -676,6 +676,7 @@ class Bridge(QObject):
     choose = Signal(object)
     web_done = Signal(object)
     rewrite_done = Signal(object)
+    order_edits = Signal(object)
     db_state = Signal(bool)
     price_check_done = Signal(object)
 
@@ -2949,6 +2950,7 @@ class MainWindow(QMainWindow):
         self.bridge.decide.connect(self._on_decide)
         self.bridge.choose.connect(self._on_choose)
         self.bridge.rewrite_done.connect(self._on_rewrite_done)
+        self.bridge.order_edits.connect(self._order_edits_found)
         self.bridge.price_check_done.connect(lambda res: PriceCheckDialog(self, res).exec())
         self.bridge.db_state.connect(self._on_db_state)
 
@@ -5773,6 +5775,8 @@ class MainWindow(QMainWindow):
                + tr("\n\n重复处理同一批文件时，会先恢复成原文件再算，不会重复扣减，结果和上次一样。")
                + (("\n\n" + self._scenario_line()) if self._scenario_line() else "")
                + self._snapshot_line(os.path.join(root_path, ORDINE_FOLDER, info["ordine"])))
+        if not auto and not self.warn_order_edits([root_path]):
+            return False
         if not auto:
             box = QMessageBox(self)
             box.setWindowTitle(tr("重新比价"))
@@ -6057,7 +6061,7 @@ class MainWindow(QMainWindow):
             return False
         return cur.get("history_id") == s.get("history_id")
 
-    def edit_allocation(self):
+    def edit_allocation(self, *_a, _ok=False):
         from service import load_state
         if self.running:
             return
@@ -6068,6 +6072,9 @@ class MainWindow(QMainWindow):
         if not self._is_current(data):
             QMessageBox.information(self, tr("修改分配"),
                                     tr("这是历史记录，之后这个文件夹又处理过（或者文件已经不在了），所以不能再改。只能修改每个文件夹最近一次的分配。"))
+            return
+        if not _ok:                       # 订单文件被人手改过：先问要不要同步进程序（不然修改分配会盖掉）
+            self._check_order_edits(data, lambda: self.edit_allocation(_ok=True), tr("继续修改分配"))
             return
         st = data["state"]
         cur = dict(st["assignment"])
@@ -6121,6 +6128,146 @@ class MainWindow(QMainWindow):
 
         __import__("erp_widgets").run_excel_job(work)      # 用 Excel 的活排进同一条线程（一批门店比价不再卡死）
 
+    # ---------- 订单文件人手改过（2026-11-22 用户：要同步回程序） ----------
+    def _edit_store_name(self, data):
+        try:
+            return os.path.basename(os.path.dirname(os.path.abspath(data["state"]["distribuire_path"])))
+        except Exception:
+            return ""
+
+    def _check_order_edits(self, data, then, action):
+        """修改分配 / 换方案之前：订单文件被人手改过、或者里面有以前留下的数量 → 先问要不要同步进程序"""
+        import order_edits as OE
+        from erp_widgets import BusyDialog, excel_call
+        found, err = BusyDialog.run(self, tr("检查订单文件"), tr("正在核对订单文件和程序…"),
+                                    lambda: excel_call(lambda: OE.find(data, self.log)))
+        if err:
+            self.log(tr("⚠ 订单文件没核对上：{0}", err))
+        if err or not found:
+            then()
+            return
+        self._ask_order_edits(data, found, then, action)
+
+    def _ask_order_edits(self, data, found, then=None, action=None):
+        import order_edits_dialog as OED
+        k = OED.ask(self, found, self._edit_store_name(data), action, settings, lambda: save_settings(settings))
+        if k == "skip" and then:
+            then()
+        elif k == "sync":
+            self._sync_order_edits(data, found, then)
+
+    def _sync_order_edits(self, data, found, after=None):
+        import order_edits as OE
+        import reorder_service as RS
+        if self.running:
+            return
+        st = data["state"]
+        try:
+            sid = (RS.load_snapshot(st.get("ordine_file") or "") or {}).get("store")
+        except Exception:
+            sid = None
+        self._after_rewrite = after
+        self._oe_found = None
+        self._start_rewrite(tr("正在同步订单文件"), tr("{0} · {1} 行", self._edit_store_name(data), len(found)))
+
+        def work():
+            try:
+                out, n = OE.apply(data, found, self.log, progress=lambda p, t: self.bridge.progress.emit(int(p), t),
+                                  store=sid)
+                self.bridge.rewrite_done.emit((out, n, None))
+            except Exception as e:
+                file_logger.error(f"order edits sync failed: {e}", exc_info=True)
+                self.log(tr("❌ 处理失败：{0}", e))
+                self._after_rewrite = None
+                self.bridge.rewrite_done.emit((None, 0, str(e)))
+
+        __import__("erp_widgets").run_excel_job(work)
+
+    def _scan_order_edits(self, s, current):
+        """比价结果显示出来以后后台核对订单文件：有人手改的 / 以前留下的 → 「要你看的」多一行"""
+        st = (s or {}).get("state") or {}
+        dist = st.get("distribuire_path")
+        if not dist or not current or self.running:
+            return
+        key = (dist, s.get("history_id"))
+        got = getattr(self, "_oe_found", None)
+        if got and got[0] == key:
+            return
+        self._oe_found = (key, [])
+
+        def work():
+            try:
+                import order_edits as OE
+                found = OE.find(s, self.log, check_all="old")
+            except Exception as e:
+                file_logger.error(f"order edits scan failed: {e}", exc_info=True)
+                found = []
+            self.bridge.order_edits.emit((key, found))
+
+        __import__("erp_widgets").run_excel_job(work)
+
+    def _order_edits_found(self, payload):
+        key, found = payload
+        got = getattr(self, "_oe_found", None)
+        if not got or got[0] != key:
+            return
+        self._oe_found = (key, found)
+        s = self.last_summary or {}
+        if found and ((s.get("state") or {}).get("distribuire_path"), s.get("history_id")) == key:
+            self._res_fill_due = s
+            host = getattr(self, "_res_wrap", None)
+            if host is None or host.isVisible():
+                self._fill_result_now()
+
+    def order_edits_for(self, s):
+        """结果页用：这次比价核对出来的对不上的行（还没核对完 / 没有 = []）"""
+        st = (s or {}).get("state") or {}
+        got = getattr(self, "_oe_found", None)
+        if got and got[0] == (st.get("distribuire_path"), (s or {}).get("history_id")):
+            return got[1]
+        return []
+
+    def open_order_edits(self):
+        s = self.last_summary or {}
+        found = self.order_edits_for(s)
+        if found and self._is_current(s):
+            self._ask_order_edits(s, found)
+
+    def warn_order_edits(self, roots):
+        """重新比价之前：这几家店上次的订单文件被人手改过 → 先提醒（重新比价按门店清单重新生成，会盖掉）。返回要不要继续"""
+        import order_edits as OE
+        from service import load_state
+        from erp_widgets import BusyDialog, excel_call
+
+        def scan():
+            out = []
+            for r in roots:
+                d = load_state(r) if r and os.path.isdir(r) else None
+                if d and d.get("state"):
+                    es = [e for e in OE.find(d) if e.get("kind") == "manual"]
+                    if es:
+                        out.append((os.path.basename(os.path.normpath(r)), es))
+            return out
+        found, err = BusyDialog.run(self, tr("检查订单文件"), tr("正在核对上次的订单文件…"), lambda: excel_call(scan))
+        if err or not found:
+            return True
+        lines = []
+        for store, es in found:
+            for e in es[:6]:
+                lines.append(f"{store} · {e['supplier']} · {e['desc'] or e['ean']}：{e['old']:g} → {e['new']:g}")
+            if len(es) > 6:
+                lines.append(tr("{0} · 还有 {1} 行", store, len(es) - 6))
+        box = QMessageBox(self)
+        box.setWindowTitle(tr("重新比价"))
+        box.setIcon(QMessageBox.Warning)
+        box.setText(tr("上次的订单文件里有人手改过的箱数"))
+        box.setInformativeText(tr("重新比价会按这次的门店清单重新生成订单文件，下面这些改动会没有。要保留的话先取消，把数量改进门店清单再比价。")
+                               + "\n\n" + "\n".join(lines))
+        go = box.addButton(tr("继续比价"), QMessageBox.AcceptRole)
+        box.addButton(tr("取消"), QMessageBox.RejectRole)
+        box.exec()
+        return box.clickedButton() is go
+
     # 修改分配 / 换方案写文件的几步（service.rewrite_assignment 的进度：<20 备份、20 主订单、30–92 供应商文件、92 起订单文件）
     RW_STAGES = ((0, "备份原始文件"), (20, "更新主订单"), (30, "回写供应商文件"), (92, "生成订单文件和缺失报告"))
 
@@ -6145,6 +6292,9 @@ class MainWindow(QMainWindow):
 
     def _on_rewrite_done(self, payload):
         out, n, err = payload
+        after, self._after_rewrite = getattr(self, "_after_rewrite", None), None
+        if after and not err and out:
+            QTimer.singleShot(0, after)          # 同步订单文件以后接着做原来要做的（修改分配 / 换方案）
         dlg = getattr(self, "_rw_task", None)
         if dlg is not None and not dlg.is_done:
             dlg.post_finished(not err and bool(out), tr("已重新写入 {0} 个商品", n) if not err and out else (err or tr("处理没有完成")))
@@ -6305,7 +6455,7 @@ class MainWindow(QMainWindow):
                 self.scen_switch_lay.addWidget(b)
         self.scen_switch_lay.addStretch(1)
 
-    def switch_scenario(self, idx):
+    def switch_scenario(self, idx, _ok=False):
         """结果页换方案：用当时算好的分配，只重新写入换了供应商的商品；历史记录同一条跟着改"""
         from service import can_switch_scenario
         if self.running:
@@ -6313,6 +6463,9 @@ class MainWindow(QMainWindow):
         data = self.last_summary or {}
         res = data.get("scenarios") or []
         if not can_switch_scenario(data) or not self._is_current(data) or not 0 <= idx < len(res):
+            return
+        if not _ok:
+            self._check_order_edits(data, lambda: self.switch_scenario(idx, _ok=True), tr("继续换方案"))
             return
         st = data["state"]
         new = st["scenario_assigns"][idx]
@@ -6517,6 +6670,7 @@ class MainWindow(QMainWindow):
             host = self.stack.widget(keys.index("result")) if "result" in keys else None
         if host is None or host.isVisible():
             self._fill_result_now()
+        self._scan_order_edits(s, current)
 
     def _fill_result_now(self):
         """比价结果页面（门店胶囊、批发商卡…）：看不见时只记下来，切到第 4 步再画（2026-11-20 stall.log）"""

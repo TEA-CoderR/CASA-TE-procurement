@@ -2974,6 +2974,8 @@ class OrderCheck:
         if not self._confirm_big_lines():
             return
         folders = {sid: R.batch_store_folder(root_dir, sid) for sid in self.meta["stores"] if self._to_order(sid)}
+        if hasattr(self.win, "warn_order_edits") and not self.win.warn_order_edits(list(folders.values())):
+            return                                     # 今天已经比过、订单文件被人手改过：先提醒会盖掉
         self._save_memory(confirmed=True)              # 整张清单都审核过了：以后清单改了 / 重新计算，只审新加和改过的
         tag = datetime.now().strftime("%Y%m%d_%H%M")
         day_dir = R.batch_folder(root_dir)
