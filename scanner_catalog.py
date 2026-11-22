@@ -34,6 +34,9 @@ def _ean(v):
     return s if s.isdigit() else ""
 
 
+SEND_COST = False      # 进价（批发商最便宜件价 / 数据库进价）发不发给门店扫码枪：2026-11-22 用户定不显示，也不发
+
+
 def build(grid, quotes, subs=None, scheda=None, week=""):
     """
     grid = griglia.load 的结果（可以 None）；quotes = {批发商: {条码: {desc, price…}}}；
@@ -103,8 +106,9 @@ def build(grid, quotes, subs=None, scheda=None, week=""):
             v = ((scheda or {}).get("items") or {}).get((sup, k.lstrip("0")))
             x["pk"] = _pack(v[0] if v else None)
     # 2026-11-21 第 8–10 项：每箱件数 · 这周批发商最便宜件价 · 最便宜那家（下标）——门店数据没算到也看得到箱规和价格
+    # 2026-11-22 用户：扫码枪上不显示进价 → 进价也不发给门店（位置留着，写空）
     rows = [[e, x["name"][:80], x["g"], sorted(x["w"]), x["s"], x["sn"][:80], x["d"],
-             x["pk"], _r2(x["p"]), x["ps"]]
+             x["pk"], _r2(x["p"]) if SEND_COST else None, x["ps"] if SEND_COST else -1]
             for e, x in sorted(items.items())]
     meta = {"week": str(week or ""), "sources": sources, "directs": directs, "griglia": os.path.basename(grid.get("path") or ""),
             "counts": {"griglia": sum(1 for r in rows if r[2] == 1), "stopped": sum(1 for r in rows if r[2] == 2),
@@ -376,13 +380,17 @@ def store_data(settings, rows, quotes, log=print, stores=STORE_IDS):
             nums = light_numbers(db, sid, code_list, today)
             sys_box = {}
             if grid_codes:
-                df = R.compute_suggestions(db, sid, grid_codes, p["days"], p["cycle"], None,
-                                           use_supplier_cycles=p["use_cfg"], algo=p["algo"])
-                res = R.to_rows(df, [], p["days"])
-                for x in res:
-                    x["file_qty"] = 0                  # 门店还没说要：只要系统自己算的箱数（不套「门店点名要」的保护）
-                CR.init_boxes(res, None, p["algo"], settings.get("reorder") or {})
-                sys_box = {x["code"]: x.get("sys_box") for x in res}
+                # 建议箱数算不出来（数据库慢 / 某个商品数据怪）也照样发这家店的库存 / 销量 / 价格：扫码枪会按 30 天销量估一个
+                try:
+                    df = R.compute_suggestions(db, sid, grid_codes, p["days"], p["cycle"], None,
+                                               use_supplier_cycles=p["use_cfg"], algo=p["algo"])
+                    res = R.to_rows(df, [], p["days"])
+                    for x in res:
+                        x["file_qty"] = 0              # 门店还没说要：只要系统自己算的箱数（不套「门店点名要」的保护）
+                    CR.init_boxes(res, None, p["algo"], settings.get("reorder") or {})
+                    sys_box = {x["code"]: x.get("sys_box") for x in res}
+                except Exception as e:
+                    log(f"⚠ 扫码枪门店数据：{R.STORES.get(sid, sid)} 建议箱数没算出来（{e}），只发库存 / 销量 / 价格")
             try:
                 promos = R.query_promos(db, sid, code_list)
             except Exception:
@@ -394,7 +402,7 @@ def store_data(settings, rows, quotes, log=print, stores=STORE_IDS):
                 m = dict(nums.get(code) or {}, pack=pr.get("qtasmallbox"))
                 t = REC.lookup(transit, sid, ean, code) if transit else None
                 tb = int(t["colli"]) if t else 0
-                out.append(store_row(ean, m, tb, cheapest(quotes, ean) or pr.get("PrezzoForn"), pr.get("PrezzoVedi1"),
+                out.append(store_row(ean, m, tb, (cheapest(quotes, ean) or pr.get("PrezzoForn")) if SEND_COST else None, pr.get("PrezzoVedi1"),
                                      promos.get(code), sys_box.get(code)))
             return out
         from concurrent.futures import ThreadPoolExecutor
