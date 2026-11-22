@@ -20,7 +20,7 @@ def _cred(monkeypatch, tmp_path):
 
 
 GRID = {"path": "/x/ELENCO_DETERSIVI.xlsx",
-        "items": {"8001": {"name": "SVELTO 1000"}, "8002": {"name": "DIXAN 40"}, "8004": {"name": "NUOVO"}},
+        "items": {"8001": {"name": "SVELTO 1000", "pack": 12}, "8002": {"name": "DIXAN 40"}, "8004": {"name": "NUOVO"}},
         "struck": {"8003": {"name": "SVELTO 980"}}}
 QUOTES = {"MELONI": {"8001": {"price": 1.2, "desc": "SVELTO PIATTI 1000"}, "08005": {"price": 2, "desc": "FUORI GRIGLIA"},
                      "8002": {"price": 0, "desc": "omaggio"}},
@@ -32,13 +32,13 @@ def test_catalog_rows_griglia_state_wholesalers_substitute_direct():
                           {"ean": {"5005": "BAMA", "8005": "BAMA"}}, week="2026-W47")
     by = {r[0]: r for r in rows}
     assert meta["sources"] == ["MELONI", "PETRILLO"] and meta["directs"] == ["BAMA"]
-    assert by["8001"] == ["8001", "SVELTO 1000", 1, [0, 1], "", "", -1]
+    assert by["8001"] == ["8001", "SVELTO 1000", 1, [0, 1], "", "", -1, 12, 1.1, 1]   # 箱规 · 最便宜件价 · 哪家
     assert by["8002"][3] == []                      # 价格 0 的行不算有货
     assert by["8003"][2] == 2 and by["8003"][4:6] == ["8004", "NUOVO"]
-    assert by["8005"] == ["8005", "FUORI GRIGLIA", 0, [0], "", "", 0]   # 前面的 0 去掉
+    assert by["8005"] == ["8005", "FUORI GRIGLIA", 0, [0], "", "", 0, None, 2, 0]   # 前面的 0 去掉
     assert by["5005"][2] == 0 and by["5005"][6] == 0
     assert meta["counts"] == {"griglia": 3, "stopped": 1, "items": 6}
-    assert all(len(r) == 7 for r in rows)
+    assert all(len(r) == 10 for r in rows)
 
 
 def test_publish_in_parts_and_only_when_changed(tmp_path, monkeypatch):

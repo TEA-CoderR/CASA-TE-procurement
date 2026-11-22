@@ -50,7 +50,7 @@ def build(grid, quotes, subs=None, scheda=None, week=""):
     def get(e):
         it = items.get(e)
         if it is None:
-            it = items[e] = {"name": "", "g": 0, "w": set(), "s": "", "sn": "", "d": -1}
+            it = items[e] = {"name": "", "g": 0, "w": set(), "s": "", "sn": "", "d": -1, "pk": None, "p": None, "ps": -1}
         return it
 
     for e, it in (grid.get("struck") or {}).items():
@@ -63,6 +63,7 @@ def build(grid, quotes, subs=None, scheda=None, week=""):
         if k:
             x = get(k)
             x["g"], x["name"] = 1, it.get("name") or x["name"]
+            x["pk"] = _pack(it.get("pack")) or x["pk"]
     for sup in sources:
         for e, q in (quotes.get(sup) or {}).items():
             k = _ean(e)
@@ -76,6 +77,11 @@ def build(grid, quotes, subs=None, scheda=None, week=""):
                 continue
             x = get(k)
             x["w"].add(src_idx[sup])
+            pr = float(q.get("price") or 0)
+            if x["p"] is None or pr < x["p"]:
+                x["p"], x["ps"] = pr, src_idx[sup]
+            if not x["pk"]:
+                x["pk"] = _pack(q.get("pack"))
             if not x["name"]:
                 x["name"] = str((q or {}).get("desc") or "").strip()
     for old, s in (subs or {}).items():
@@ -92,12 +98,22 @@ def build(grid, quotes, subs=None, scheda=None, week=""):
             d_idx[sup] = len(directs)
             directs.append(sup)
         get(k)["d"] = d_idx[sup]
-    rows = [[e, x["name"][:80], x["g"], sorted(x["w"]), x["s"], x["sn"][:80], x["d"]]
+    # 2026-11-21 第 8–10 项：每箱件数 · 这周批发商最便宜件价 · 最便宜那家（下标）——门店数据没算到也看得到箱规和价格
+    rows = [[e, x["name"][:80], x["g"], sorted(x["w"]), x["s"], x["sn"][:80], x["d"],
+             x["pk"], _r2(x["p"]), x["ps"]]
             for e, x in sorted(items.items())]
     meta = {"week": str(week or ""), "sources": sources, "directs": directs, "griglia": os.path.basename(grid.get("path") or ""),
             "counts": {"griglia": sum(1 for r in rows if r[2] == 1), "stopped": sum(1 for r in rows if r[2] == 2),
                        "items": len(rows)}}
     return meta, rows
+
+
+def _pack(v):
+    try:
+        f = float(v or 0)
+    except (TypeError, ValueError):
+        return None
+    return (int(f) if f == int(f) else round(f, 2)) if f > 0 else None
 
 
 def fingerprint(meta, rows):
@@ -117,8 +133,8 @@ def publish(settings, meta, rows, by, session=None, progress=None, stores=None):
     res = None
     for k, (sid, part) in enumerate(parts, 1):
         body = {"upload": upload, "part": k, "parts": len(parts), "items": part, "by": by or "?"}
-        if k == 1:
-            body["meta"] = meta
+        if k == 1:      # 图片地址模板跟着目录发（扫码枪按条码取商品图片）
+            body["meta"] = dict(meta, imageUrl=(settings or {}).get("image_url") or "https://img.casaete.top/prodotti/{ean}/01.webp")
         if sid is not None:
             body["store"] = sid
         res = BA._call(settings, "POST", "/api/erp/catalog", body=body, session=session)
