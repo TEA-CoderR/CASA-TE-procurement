@@ -117,11 +117,68 @@ def _save_cache(data, path=None):
         pass
 
 
-CACHE_VER = 1
+CACHE_VER = 2
 
 
-def read_list(path, cache=None):
-    """一个名单文件 → {"name", "file", "start", "end"（iso 或 None）, "items": [{code, ean, name, price, normal}]}"""
+_NOT_ORDER = re.compile(r"NON\s*(?:E|È|E')?\s*ORDINABIL", re.I)
+
+
+def _yellow(fill):
+    """格子底色是黄 / 橙黄（FFC000、FFFF00 这种；浅米色 FFF2CC、绿、红都不算）"""
+    try:
+        if not fill or fill.fill_type != "solid":
+            return False
+        c = fill.fgColor
+        if c is None:
+            return False
+        if c.type == "theme":
+            return c.theme == 7 and (c.tint or 0) <= 0.2          # Office 主题「金色」= FFC000
+        if c.type == "indexed":
+            return c.indexed in (5, 13, 51, 52)                 # 老调色板的黄 / 金
+        rgb = str(c.rgb or "")[-6:]
+        r, g, b = int(rgb[0:2], 16), int(rgb[2:4], 16), int(rgb[4:6], 16)
+        return r >= 0xE0 and g >= 0xA0 and b <= 0x80
+    except (TypeError, ValueError, AttributeError):
+        return False
+
+
+def not_ordered(path, data):
+    """
+    这一期名单里标出来不用订的（2026-11-22 用户：名单里标黄的不用订）：条码 / 编号 / 名称格底色是黄色，
+    或者这一行写了「NON E ORDINABILE」→ 每个这样的商品 item["skip"] = 原因
+    """
+    from openpyxl import load_workbook
+    rows = {x["row"]: x for x in data["items"] if x.get("row")}
+    if not rows or not data.get("sheet"):
+        return 0
+    cols = data.get("cols") or []
+    wb = load_workbook(path, read_only=True)
+    n = 0
+    try:
+        ws = wb[data["sheet"]]
+        if hasattr(ws, "reset_dimensions"):
+            ws.reset_dimensions()
+        for i, row in enumerate(ws.iter_rows(min_row=1, max_row=max(rows)), 1):
+            x = rows.get(i)
+            if x is None:
+                continue
+            row = list(row)
+            why = None
+            if any(_NOT_ORDER.search(str(getattr(c, "value", "") or "")) for c in row):
+                why = "NON E ORDINABILE"
+            elif any(c < len(row) and _yellow(getattr(row[c], "fill", None)) for c in cols):
+                why = "名单里标黄 · 不用订"
+            if why:
+                x["skip"] = why
+                n += 1
+    finally:
+        wb.close()
+    return n
+
+
+def read_list(path, cache=None, marks=False):
+    """一个名单文件 → {"name", "file", "start", "end"（iso 或 None）, "items": [{code, ean, name, price, normal}]}
+    marks：这一期的名单，标出不用订的（not_ordered，item["skip"]）"""
     import volantino as V
     st = os.stat(path)
     sig = [CACHE_VER, st.st_size, int(st.st_mtime)]
@@ -131,7 +188,9 @@ def read_list(path, cache=None):
     data = {"name": p.get("name") or os.path.splitext(os.path.basename(path))[0], "file": path,
             "start": p["start"].isoformat() if p.get("start") else None,
             "end": p["end"].isoformat() if p.get("end") else None,
-            "items": [dict(x) for x in p.get("items") or []]}
+            "items": [dict(x) for x in p.get("items") or []], "sheet": p.get("sheet"), "cols": p.get("cols") or []}
+    if marks:
+        not_ordered(path, data)
     if cache is not None:
         cache[path] = {"sig": sig, "data": data}
     return data
@@ -306,7 +365,7 @@ def boxes_for(expected, stock, pack, transit_pcs=0.0):
 
 # ---------------------------------------------------------------- 计算
 def compute(db, new, hist, quotes, list_rows, transit=None, stores=STORE_IDS, log=print, progress=None, today=None,
-            upto=None, deduct_transit=True):
+            upto=None, deduct_transit=False):
     """
     new = read_list 的结果（这一期，要有 start / end）；hist = history()；quotes = price_check.best_quotes（这周报价）；
     list_rows = {门店号: parse_order_file 的 rows}（现在清单里写的箱数）；transit = order_record.cached
@@ -325,6 +384,9 @@ def compute(db, new, hist, quotes, list_rows, transit=None, stores=STORE_IDS, lo
     say = progress or (lambda *_: None)
     items, skipped, seen = [], [], set()
     for x in new["items"]:
+        if x.get("skip"):                                   # 名单里标黄 / NON E ORDINABILE：不用订
+            skipped.append({"ean": x.get("ean") or "", "name": x.get("name") or "", "why": x["skip"]})
+            continue
         k = _key(x.get("ean"))
         if not k or k in seen:
             if not k:
@@ -623,6 +685,11 @@ def undo_lists(undo):
     return left
 
 
+WHY_IT = {"这周批发商报价里没有": "Non nei listini dei grossisti", "数据库里没有这个商品": "Non nel database",
+          "名单里没有条码": "Senza codice a barre", "名单里标黄 · 不用订": "Evidenziato in giallo · da non ordinare",
+          "NON E ORDINABILE": "Non è ordinabile"}
+
+
 def export(res, path):
     """计算结果导出 Excel（每家店一页 + 批发商没有的）"""
     import xlsx_report as XR
@@ -649,6 +716,6 @@ def export(res, path):
     if res["skipped"]:
         XR.add_sheet(wb, "Non dai grossisti", "Articoli non inseriti", sub,
                      [XR.Col("EAN", 15, "ean", "id"), XR.Col("Descrizione", 50, "txt", "id"), XR.Col("Motivo", 30, "txt", "warn")],
-                     [[s["ean"], s["name"], s["why"]] for s in res["skipped"]])
+                     [[s["ean"], s["name"], WHY_IT.get(s["why"], s["why"])] for s in res["skipped"]])
     wb.save(path)
     return path

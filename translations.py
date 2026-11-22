@@ -4820,4 +4820,5 @@ TRANSLATIONS = {
     '扣掉在途': ('Subtract in transit', 'Togli in arrivo'),
     '勾上：建议箱数再减掉已经订了还没到的货（在途件数），写进门店清单时注明，「开始检查」时这几行不再扣一次。\n不勾：这里不扣，「开始检查」时照常扣掉。\n人手改过「改成」的行不变': ('Checked: the suggestion also subtracts goods already ordered and not arrived (in-transit pieces), noted when written into the store list so "Start check" does not subtract them again.\nUnchecked: not subtracted here, "Start check" subtracts them as usual.\nRows edited by hand stay as they are', 'Selezionato: la proposta toglie anche la merce già ordinata e non arrivata (pezzi in arrivo), annotato nella lista così "Avvia controllo" non la toglie di nuovo.\nNon selezionato: non si toglie qui, la toglie "Avvia controllo".\nLe righe modificate a mano restano uguali'),
     '已经订了还没到：{0:g} 件，建议里已经扣掉': ('Ordered, not arrived yet: {0:g} pcs, already subtracted from the suggestion', 'Ordinato, non ancora arrivato: {0:g} pz, già tolti dalla proposta'),
+    '名单里标黄 · 不用订': ('Highlighted yellow in the list · do not order', 'Evidenziato in giallo · da non ordinare'),
 }

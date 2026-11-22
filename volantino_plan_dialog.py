@@ -56,7 +56,7 @@ def open_plan(win):
         import order_record as REC
         import price_check as PC
         import workspace as W
-        new = VP.read_list(path)
+        new = VP.read_list(path, marks=True)
         new["file"] = path
         if not new.get("start") or not new.get("end"):
             raise ValueError(tr("名单里看不出促销是哪几天（start / end 两列）"))
@@ -76,7 +76,7 @@ def open_plan(win):
                 transit = REC.cached(settings) if REC.tracking_folder(settings) else None
             except Exception:
                 transit = None
-            on = bool((settings.get("volantino") or {}).get("plan_deduct", True))
+            on = bool((settings.get("volantino") or {}).get("plan_deduct", False))
             res = VP.compute(db, new, hist, quotes, lists, transit, log=log, deduct_transit=on)
             res["deduct"] = on
             res["paths"], res["file"] = paths, path
@@ -151,7 +151,7 @@ class PlanDialog(QDialog):
         self.deduct = QCheckBox(tr("扣掉在途"))
         self.deduct.setToolTip(tr("勾上：建议箱数再减掉已经订了还没到的货（在途件数），写进门店清单时注明，"
                                   "「开始检查」时这几行不再扣一次。\n不勾：这里不扣，「开始检查」时照常扣掉。\n人手改过「改成」的行不变"))
-        self.deduct.setChecked(bool(res.get("deduct", True)))
+        self.deduct.setChecked(bool(res.get("deduct", False)))
         self.deduct.toggled.connect(self._toggle_deduct)
         head.addWidget(self.deduct)
         v.addLayout(head)

@@ -162,3 +162,21 @@ def test_tag_not_confused_with_store_reason_and_appended(tmp_path):
                    backup_dir=str(tmp_path / "old"))
     got = R.parse_order_file(lf)["rows"][0]
     assert got["qty"] == 4 and got["reason"] == "Richiesto da un cliente | " + reason and VP.transit_done(got["reason"])
+
+
+def test_yellow_rows_and_non_ordinabile_not_ordered(tmp_path):
+    from openpyxl.styles import PatternFill
+    f = str(tmp_path / "DIC.xlsx")
+    _list_file(f, [("8000000000011", "ACE"), ("8000000000028", "DIXAN"), ("8000000000035", "PERLANA"),
+                   ("8000000000042", "BIANCO")], date(2026, 12, 3), date(2026, 12, 20))
+    from openpyxl import load_workbook
+    wb = load_workbook(f)
+    ws = wb.active
+    ws.cell(3, 3).fill = PatternFill("solid", fgColor="FFFFC000")          # 黄：不用订
+    ws.cell(4, 8).value = "NON E ORDINABILE"
+    ws.cell(5, 3).fill = PatternFill("solid", fgColor="FFFFF2CC")          # 浅米色：照常
+    wb.save(f)
+    new = VP.read_list(f, marks=True)
+    assert {x["ean"]: x.get("skip") for x in new["items"]} == {
+        "8000000000011": None, "8000000000028": "名单里标黄 · 不用订", "8000000000035": "NON E ORDINABILE",
+        "8000000000042": None}
