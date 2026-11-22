@@ -169,3 +169,13 @@ def test_import_lists_places_file_marks_received_and_feedback(tmp_path, monkeypa
     assert fb["8000036022017"] == {"boxes": 0, "note": "Non ordinato"}       # 门店 2 的不算
     assert fb["8004"] == {"boxes": 1} and "8001090213465" not in fb
     assert SC.send_check_feedback({"booking": {"url": "https://x"}}, rows, [dst], log=lambda *_: None) == 0   # 只发一次
+
+
+def test_office_note_tells_store_why():
+    assert SC.office_note({"list_reason": "Promozione o volantino", "fbox": 3, "sbox": 3}, 3, 3) == "Accettato · motivo: Promozione o volantino"
+    assert SC.office_note({"transit_cut": 2, "fbox": 1, "sbox": 1}, 3, 1) == "Ridotto da 3 a 1: già in arrivo 2 colli"
+    assert SC.office_note({"cover_now": 95.4, "fbox": 0, "sbox": 0}, 2, 0) == "Non ordinato: scorta per ~95 giorni"
+    assert SC.office_note({"fbox": 1, "sbox": 2}, 2, 1) == "Ridotto da 2 a 1: deciso dall'ufficio acquisti"
+    assert SC.office_note({"fbox": 4, "sbox": 2}, 2, 4) == "Aumentato da 2 a 4 dall'ufficio acquisti"
+    assert SC.office_note({"list_reason": "URGENTE", "urgent": True, "fbox": 2, "sbox": 2}, 2, 2) in ("", "Accettato · motivo: URGENTE")
+    assert SC.office_note(None, 2, 2) == ""

@@ -571,23 +571,58 @@ def feedback_for(list_lines, rows):
     """确认比价时每个商品最后定了几箱 → 平台上那张清单的结果 {"lines": {条码: {"boxes", "note"}}}。
     rows = 检查清单的行（store / ean / fbox / repl）；清单里有、检查里找不到的写 0 箱"""
     final = {}
+    row_of = {}
     for x in rows:
         e = _ean(x.get("ean"))
         if e:
             final[e] = final.get(e, 0) + int(x.get("fbox") or 0)
+            row_of.setdefault(e, x)
         rp = x.get("repl") or {}
         old = _ean(rp.get("old_ean") if isinstance(rp, dict) else "")
         if old and old not in final:
             final[old] = int(x.get("fbox") or 0)
+            row_of.setdefault(old, x)
     lines = {}
     for e, asked in (list_lines or {}).items():
         if asked <= 0:
             continue
         got = final.get(_ean(e), 0)
         lines[e] = {"boxes": got}
-        if got < asked:
-            lines[e]["note"] = "Non ordinato" if got <= 0 else f"Ridotto da {asked} a {got}"
+        note = office_note(row_of.get(_ean(e)), asked, got)
+        if note:
+            lines[e]["note"] = note
     return {"lines": lines}
+
+
+def office_note(x, asked, got):
+    """采购部最后的决定写成一句意大利文，门店扫码枪上看得到（2026-11-22 用户：门店写了原因要知道接不接受、为什么改）"""
+    from check_rules import store_reason
+    x = x or {}
+    reason = store_reason(x)
+    why = []
+    cut = int(x.get("transit_cut") or 0)
+    if cut and got < asked:
+        why.append(f"già in arrivo {cut} {'collo' if cut == 1 else 'colli'}")
+    cover = x.get("cover_now")
+    try:
+        cover = float(cover)
+    except (TypeError, ValueError):
+        cover = None
+    if got < asked and not cut and cover is not None and cover != float("inf") and cover >= 30:
+        why.append(f"scorta per ~{int(round(cover))} giorni")
+    edited = x and x.get("sbox") is not None and int(x.get("fbox") or 0) != int(x.get("sbox") or 0)
+    if got < asked and edited:
+        why.append("deciso dall'ufficio acquisti")
+    tail = (": " + ", ".join(why)) if why else ""
+    if got <= 0:
+        return ("Non ordinato" + tail)[:160]
+    if got < asked:
+        return (f"Ridotto da {asked} a {got}" + tail)[:160]
+    if got > asked:
+        return f"Aumentato da {asked} a {got} dall'ufficio acquisti"
+    if reason:
+        return ("Accettato · motivo: " + reason)[:160]
+    return ""
 
 
 def send_check_feedback(settings, rows, list_paths, log=print):
