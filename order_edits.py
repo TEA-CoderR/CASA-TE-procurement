@@ -12,6 +12,7 @@ DETERSIVO 比价生成的订单文件（门店比价文件夹\\Ordini\\Ordine_�
 """
 import json
 import os
+import re
 
 from openpyxl import load_workbook
 
@@ -160,7 +161,28 @@ def _head_copy(ws):
     return h
 
 
+_READ = {}
+
+
 def read_boxes(path):
+    """同一个文件（大小 + 修改时间一样）读过就直接用，见 _read_boxes"""
+    try:
+        s = os.stat(path)
+        key = (os.path.normcase(os.path.abspath(path)), s.st_size, s.st_mtime_ns)
+    except OSError:
+        key = None
+    if key and key in _READ:
+        lay, items = _READ[key]
+        return lay, {k: dict(v) for k, v in items.items()}
+    lay, items = _read_boxes(path)
+    if key:
+        if len(_READ) > 40:
+            _READ.clear()
+        _READ[key] = (lay, {k: dict(v) for k, v in items.items()})
+    return lay, items
+
+
+def _read_boxes(path):
     """
     订单文件 / 工作副本里订了货的行：(结构, {键: {box 箱数, row, ean, desc, pack 每箱件数, price 件价}})；
     键 = 条码，没条码的用名称。同一个键几行的箱数加起来
@@ -256,7 +278,7 @@ def expected(st, f):
     return want
 
 
-def find(data, log=None, check_all=False):
+def find(data, log=None, check_all=False, paths=None, strict=False):
     """
     订单文件和程序对不上的行：[{kind, file 供应商文件, supplier 名称, path 订单文件, key, ean, desc,
     old 程序里的箱数, new 订单文件里的箱数, pack, price, row 主订单行号 或 None}]
@@ -272,13 +294,18 @@ def find(data, log=None, check_all=False):
     rows, asg = st.get("rows") or [], st.get("assignment") or {}
     out = []
     smt = _state_mtime(st)
+    want_paths = {os.path.normcase(os.path.abspath(p)) for p in paths} if paths else None
     for f, name, path, rec in files_of(data):
+        if want_paths is not None and os.path.normcase(os.path.abspath(path)) not in want_paths:
+            continue
         if not (check_all is True or (check_all == "old" and rec is None)) and not _changed_since(path, rec, smt):
             continue
         try:
             _l1, a = read_boxes(SV._supplier_work_path(os.path.join(dist, f)))
             _l2, b = read_boxes(path)
         except Exception as e:
+            if strict:                                     # 发信前的检查：读不出来就不能当成没问题
+                raise ValueError(tr("订单文件 {0} 没读出来：{1}", os.path.basename(path), e))
             log(tr("⚠ 订单文件 {0} 没读出来：{1}", os.path.basename(path), e))
             continue
         exp = expected(st, f)
@@ -382,6 +409,43 @@ def apply(data, edits, log, progress=None, store=None):
     out, _n = SV.rewrite_assignment(data, dict(st["assignment"]), sources, log, progress, force=True,
                                     qty=qty, new_rows=new_rows)
     return out, len(edits)
+
+
+def send_check(paths, log=None):
+    """
+    发订单邮件之前最后一道检查（2026-11-22：发出去的单里多了以前比价留下的 93 行、€2,889）：
+    附件是 DETERSIVO 比价结果的订单文件（…\\门店\\Ordini\\…）→ 每一行都要和程序这次的分配对得上。
+    返回 [对不上的行]（kind stale = 程序没分给这家的数量；manual = 人手改的）；不是比价订单文件的附件不管
+    """
+    import service as SV
+    by_store = {}
+    for p in paths:
+        d = os.path.dirname(os.path.abspath(p))
+        if os.path.basename(d) == SV.ORDERS_DIR:
+            by_store.setdefault(os.path.dirname(d), []).append(p)
+    out = []
+    for store_dir, ps in by_store.items():
+        data = SV.load_state(store_dir) or _raw_state(store_dir)
+        if not data or not data.get("state"):                # 比价结果的订单文件却找不到比价记录：不能当成没问题
+            raise ValueError(tr("{0} 找不到这次比价的记录（_备份\\last_allocation.json），没法核对订单文件",
+                                os.path.basename(store_dir)))
+        st = data["state"]
+        st["distribuire_path"] = os.path.join(store_dir, re.split(r"[\\/]", (st.get("distribuire_path") or "distribuire").rstrip("\\/"))[-1])
+        out += find(data, log, check_all=True, paths=ps, strict=True)
+    return out
+
+
+def _raw_state(store_dir):
+    """直接读 _备份\\last_allocation.json（主订单路径对不上时 load_state 不给，发信前核对只要分配）"""
+    try:
+        with open(os.path.join(store_dir, "_备份", "last_allocation.json"), encoding="utf-8") as fh:
+            data = json.load(fh)
+        st = data["state"]
+        for k in ("assignment", "baseline", "sources"):
+            st[k] = {int(r): v for r, v in (st.get(k) or {}).items()}
+        return data
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
 
 
 # ---- 订单跟踪读回 DETERSIVO 单的箱数、金额 ----

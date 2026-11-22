@@ -916,6 +916,7 @@ def send_order(settings, st, ids, frm, to, cc, subject, body, files, via="deskto
     for p, _n in files:
         if not os.path.exists(p):
             raise RuntimeError(tr("附件找不到：{0}", p))
+    _check_attachments(files)
     msg = MS.build(acc["address"], to, cc, subject, body, files)
     mid, saved = MS.send(acc, pw, msg, smtp_factory=smtp_factory, imap_factory=imap_factory)
     supplier = str(st.orders[ids[0]].get("supplier") or "")
@@ -928,6 +929,26 @@ def send_order(settings, st, ids, frm, to, cc, subject, body, files, via="deskto
                                      "files": [n_ for _p, n_ in files], "force": force},
           {"message_id": mid, "saved_in_sent": saved, "orders": n})
     return {"mid": mid, "saved": saved, "n": n}
+
+
+def _check_attachments(files):
+    """
+    发信前最后一道检查（2026-11-22：发出去的单里多了以前比价留下的 93 行、€2,889）：DETERSIVO 订单文件里有
+    程序这次没分给这家的数量 → 不发，列出来。人手改的（AMBROSIO 那种）不拦，是有人特意改的
+    """
+    import order_edits as OE
+    try:
+        bad = [e for e in OE.send_check([p for p, _n in files]) if e.get("kind") == "stale"]
+    except Exception as e:                                   # 检查本身出错：照样不发，说清楚
+        raise RuntimeError(tr("发信前核对订单文件没做成，先不发：{0}", e))
+    if not bad:
+        return
+    lines = [tr("{0} · {1}：订单文件 {2:g} 箱，程序这次 {3:g} 箱", e["supplier"], e["desc"] or e["ean"], e["new"], e["old"])
+             for e in bad[:12]]
+    if len(bad) > 12:
+        lines.append(tr("还有 {0} 行", len(bad) - 12))
+    raise RuntimeError(tr("订单文件里有程序这次没分给这家的数量（以前比价留下的），没有发送。先到比价结果点「订单文件和程序对不上」→「同步进程序」清掉，再发：")
+                       + "\n" + "\n".join(lines))
 
 
 def mail_apply(st, sugs, via="desktop"):

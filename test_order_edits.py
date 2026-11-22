@@ -138,3 +138,17 @@ def test_tracking_reads_detersivo_order_file(tmp_path, monkeypatch):
     colli, amt, _mt, f = REC._wholesale_total(o, date.today(), 60, None)
     assert (colli, amt) == (6.0, 36.0) and f == str(order)
     assert REC._wholesale_total(dict(o, state="cancel"), date.today(), 60, None) is None
+
+
+def test_send_blocked_when_order_file_has_leftover_quantities(tmp_path, monkeypatch):
+    """发信前最后一道检查：订单文件里有程序没分给这家的数量 → 不发；人手改的不拦；同步后能发"""
+    import pytest
+    import commands as CMD
+    data, root, order = _setup(tmp_path, monkeypatch)
+    with pytest.raises(RuntimeError) as e:                       # VECCHIO 1 箱是以前留下的
+        CMD._check_attachments([(str(order), "Ordine.xlsx")])
+    assert "VECCHIO" in str(e.value)
+    CMD._check_attachments([(str(tmp_path / "x.xlsx"), "x.xlsx")])   # 不是比价订单文件：不管
+    out, _n = OE.apply(data, [x for x in OE.find(data, check_all=True) if x["kind"] == "stale"], lambda *a: None)
+    _edit(order, {2: 5})                                         # 人手改的：照样能发
+    CMD._check_attachments([(str(order), "Ordine.xlsx")])
