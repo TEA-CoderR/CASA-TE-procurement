@@ -212,12 +212,14 @@ class _ProductDelegate(QStyledItemDelegate):
             p.fillRect(QRectF(r.left(), r.top(), 3, r.height()), QColor(T("accent")))
         ean = idx.sibling(idx.row(), self.ean_col).data() or ""
         name = idx.data(Qt.DisplayRole) or ""
-        dot, tier = None, ""
+        dot, tier, bad = None, "", False
         if self.badge is not None:
             try:
-                dot, tier = self.badge(idx.model().index(idx.row(), 0).data(Qt.UserRole))
+                b = self.badge(idx.model().index(idx.row(), 0).data(Qt.UserRole))
+                dot, tier = b[0], b[1]
+                bad = bool(b[2]) if len(b) > 2 else False
             except Exception:
-                dot, tier = None, ""
+                dot, tier, bad = None, "", False
         if dot:                                       # 要审核、还没看过：左边一个小圆点（看过 / 改过就没了）
             p.setPen(Qt.NoPen)
             p.setBrush(QColor(T(dot)))
@@ -255,7 +257,15 @@ class _ProductDelegate(QStyledItemDelegate):
         f2 = QFont(NUM_FONT)
         f2.setPixelSize(11)
         p.setFont(f2)
-        p.setPen(QColor(T("faint")))
+        if bad and ean:
+            # 2026-11-22 用户：有 2025-01-08 以前（错的）入库记录的商品，条码标颜色（红底红字，一眼看出要核对）
+            bw = QFontMetrics(f2).horizontalAdvance(str(ean)) + 8
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor(T("err_soft")))
+            p.drawRoundedRect(QRectF(tx - 4, r.top() + 30, bw, 15), 4, 4)
+            p.setPen(QColor(T("err")))
+        else:
+            p.setPen(QColor(T("faint")))
         p.drawText(QRectF(tx, r.top() + 29, tw, 16), Qt.AlignLeft | Qt.AlignVCenter, str(ean))
         if tier in ("A", "B", "C"):
             # 等级小标签不用彩色（2026-11-19 用户问要不要标颜色）：表格里红 / 黄 / 绿 / 蓝 / 紫都已经有意思了
@@ -827,7 +837,7 @@ class OrderCheck:
         self.table.cellDoubleClicked.connect(self._edit_transfer)     # 双击「调货」：选调出门店、填件数
         self.table.cellDoubleClicked.connect(self._open_transit)      # 双击「在途箱数」：看是哪几张单、标到货
         self.table.cellDoubleClicked.connect(self._open_card)         # 双击商品：商品详情窗口
-        self.table.horizontalHeaderItem(_col(3)).setToolTip(tr("双击打开商品详情（入库记录、每天销量、各店库存）；名称红色 = 门店在促销"))
+        self.table.horizontalHeaderItem(_col(3)).setToolTip(tr("双击打开商品详情（入库记录、每天销量、各店库存）；名称红色 = 门店在促销；条码红底 = 有 08/01/2025 以前的入库记录（数据有误）"))
         self.table.horizontalHeaderItem(_col(TRANSFER_COL)).setText(tr("调货") + " ✎")
         self._plan_timer = QTimer()
         self._plan_timer.setSingleShot(True)
@@ -2160,7 +2170,7 @@ class OrderCheck:
             return None, ""
         x = self.rows[i]
         dot = "warn" if (i not in self._seen and not _edited(x) and self._needs_review(x)) else None
-        return dot, str(x.get("tier") or "")
+        return dot, str(x.get("tier") or ""), bool(x.get("old_rec"))
 
     def _todo_rows(self):
         """现在看得见的行里：要审核、还没看过也没改过的（按表格现在的顺序）"""
