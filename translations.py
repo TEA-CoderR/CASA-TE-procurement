@@ -4746,4 +4746,8 @@ TRANSLATIONS = {
     '[检查清单] {0}：{1} 个商品有 {2} 以前的入库记录（数据有误）': ('[List check] {0}: {1} items have receipt records before {2} (wrong data)', '[Controllo lista] {0}: {1} articoli hanno carichi prima del {2} (dati errati)'),
     '这家店有 {0} 条 08/01/2025 以前的入库记录（最早 {1}），那之前的入库记录是错的：库存、进价可能不准，打开商品详情核对': ('This store has {0} receipt records before 08/01/2025 (first {1}); records before that date are wrong: stock and cost may be off, check the product details', 'Questo negozio ha {0} carichi prima del 08/01/2025 (il primo {1}); i carichi prima di quella data sono errati: giacenza e costo potrebbero essere sbagliati, controlla la scheda articolo'),
     '双击打开商品详情（入库记录、每天销量、各店库存）；名称红色 = 门店在促销；条码红底 = 有 08/01/2025 以前的入库记录（数据有误）': ('Double-click for product details (receipts, daily sales, stock per store); red name = on promotion in the store; barcode on red = receipt records before 08/01/2025 (wrong data)', 'Doppio clic per la scheda articolo (carichi, vendite giornaliere, giacenza per negozio); nome rosso = in promozione nel negozio; codice su sfondo rosso = carichi prima del 08/01/2025 (dati errati)'),
+    '入库有误 {0} 件': ('Wrong receipts {0} pcs', 'Carichi errati {0} pz'),
+    '入库有误 {0} 条': ('Wrong receipts: {0} records', 'Carichi errati: {0} righe'),
+    '这家店有 {0} 条 08/01/2025 以前的入库记录（最早 {1}，合计 {2} 件），那之前的入库记录是错的：库存、进价可能不准': ('This store has {0} receipt records before 08/01/2025 (first {1}, {2} pcs in total); records before that date are wrong: stock and cost may be off', 'Questo negozio ha {0} carichi prima del 08/01/2025 (il primo {1}, {2} pz in totale); i carichi prima di quella data sono errati: giacenza e costo potrebbero essere sbagliati'),
+    '现在库存 {0} 件': ('Stock now {0} pcs', 'Giacenza attuale {0} pz'),
 }

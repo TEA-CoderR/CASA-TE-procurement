@@ -521,5 +521,7 @@ def test_old_receipts_flag_shown_first_in_tags():
     """2025-01-08 以前的入库记录是错的：详情栏第一个标签写出来（判断后面也有「入库记录有误」）"""
     import order_check as OC
     from datetime import date
-    x = dict(in_db=True, lbox=1, sbox=1, sys_box=1, protect=None, old_rec=(date(2025, 1, 3), 1))
-    assert OC.key_tags(x)[0] == ("入库记录有误", "err")
+    x = dict(in_db=True, lbox=1, sbox=1, sys_box=1, protect=None, old_rec=(date(2025, 1, 3), 2, 53.0))
+    assert OC.key_tags(x)[0] == ("入库有误 53 件", "err")
+    assert "合计 53 件" in OC.old_rec_tip(x["old_rec"], 4.0) and "现在库存 4 件" in OC.old_rec_tip(x["old_rec"], 4.0)
+    assert OC.old_rec_short((date(2025, 1, 3), 1)) == "入库有误 1 条"

@@ -140,11 +140,11 @@ def test_old_receipts_before_2025_01_08_flagged_per_store():
     import sqlite3
     import pandas as pd
     con = sqlite3.connect(":memory:")
-    con.execute("CREATE TABLE caricolistalist (CodArticolo INT, Cdata TEXT, Negozio INT)")
-    con.executemany("INSERT INTO caricolistalist VALUES (?,?,?)", [
-        (1, "2025-01-03 00:00:00", 2), (1, "2024-11-20 00:00:00", 2), (1, "2026-11-10 00:00:00", 2),
-        (2, "2025-01-08 00:00:00", 2),            # 当天开始的不算
-        (3, "2025-01-02 00:00:00", 1)])           # 别的门店
+    con.execute("CREATE TABLE caricolistalist (CodArticolo INT, Cdata TEXT, Negozio INT, Quantita REAL)")
+    con.executemany("INSERT INTO caricolistalist VALUES (?,?,?,?)", [
+        (1, "2025-01-03 00:00:00", 2, 24), (1, "2024-11-20 00:00:00", 2, 29), (1, "2026-11-10 00:00:00", 2, 6),
+        (2, "2025-01-08 00:00:00", 2, 12),            # 当天开始的不算
+        (3, "2025-01-02 00:00:00", 1, 12)])           # 别的门店
     orig = pd.read_sql
     pd.read_sql = lambda q, engine, params=None: orig(q.replace("%s", "?"), con, params=params)
     try:
@@ -152,4 +152,4 @@ def test_old_receipts_before_2025_01_08_flagged_per_store():
         got = R.old_receipts(db, 2, ["1", "2", "3", "x"])
     finally:
         pd.read_sql = orig
-    assert got == {"1": (date(2024, 11, 20), 2)}
+    assert got == {"1": (date(2024, 11, 20), 2, 53.0)}

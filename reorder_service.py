@@ -665,19 +665,19 @@ OLD_RECEIPTS_BEFORE = "2025-01-08"
 
 
 def old_receipts(db, store_id, codes, before=OLD_RECEIPTS_BEFORE):
-    """这家店这些商品在 before 之前的入库记录（是错的）→ {编号: (最早那天 date, 几条)}；只读"""
+    """这家店这些商品在 before 之前的入库记录（是错的）→ {编号: (最早那天 date, 几条, 合计件数)}；只读"""
     import pandas as pd
     codes = sorted({str(c) for c in codes or () if str(c).isdigit()})
     out = {}
     for i in range(0, len(codes), 2000):
         chunk = codes[i:i + 2000]
         ph = ", ".join(["%s"] * len(chunk))
-        df = pd.read_sql(f"SELECT CodArticolo, MIN(Cdata) AS d, COUNT(*) AS n FROM caricolistalist "
+        df = pd.read_sql(f"SELECT CodArticolo, MIN(Cdata) AS d, COUNT(*) AS n, SUM(Quantita) AS q FROM caricolistalist "
                          f"WHERE Negozio = %s AND Cdata < %s AND CodArticolo IN ({ph}) GROUP BY CodArticolo",
                          db.engine, params=(int(store_id), before, *chunk))
-        for c, d, n in zip(df["CodArticolo"], df["d"], df["n"]):
+        for c, d, n, q in zip(df["CodArticolo"], df["d"], df["n"], df["q"]):
             try:
-                out[str(int(float(c)))] = (_day(d), int(n or 0))
+                out[str(int(float(c)))] = (_day(d), int(n or 0), _num(q))
             except (TypeError, ValueError):
                 continue
     return out

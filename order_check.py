@@ -105,6 +105,23 @@ def _cover(x, pieces=0):
 def _days(v):
     import store_orders as SO
     return SO.days_text(v)
+def old_rec_short(orc):
+    """入库记录有误的短文字：「入库有误 53 件」（2026-11-22 用户：数量放在外面，不用点进去数）"""
+    q = orc[2] if len(orc) > 2 else None
+    if q:
+        return tr("入库有误 {0} 件", f"{q:g}")
+    return tr("入库有误 {0} 条", orc[1])
+
+
+def old_rec_tip(orc, stock=None):
+    q = orc[2] if len(orc) > 2 else None
+    t = tr("这家店有 {0} 条 08/01/2025 以前的入库记录（最早 {1}，合计 {2} 件），那之前的入库记录是错的：库存、进价可能不准",
+           orc[1], orc[0].strftime("%d/%m/%Y") if orc[0] else "—", f"{q or 0:g}")
+    if stock is not None:
+        t += "\n" + tr("现在库存 {0} 件", f"{stock:g}")
+    return t
+
+
 def key_tags(x, transit_boxes=0, edited=False):
     """
     详情栏「为什么」的精华：几个短标签 [(文字, 颜色 token)]，最要紧的在前（2026-11-07 用户：审核时看不了那么多字）。
@@ -112,7 +129,7 @@ def key_tags(x, transit_boxes=0, edited=False):
     """
     out = []
     if x.get("old_rec"):
-        out.append((tr("入库记录有误"), "err"))     # 2025-01-08 以前的入库记录是错的（2026-11-22 用户）
+        out.append((old_rec_short(x["old_rec"]), "err"))     # 2025-01-08 以前的入库记录是错的（2026-11-22 用户）
     if not x.get("in_db", True):
         return [(tr("数据库没有"), "err")]
     cut = x.get("transit_cut") or 0
@@ -1390,9 +1407,12 @@ class OrderCheck:
                                                    x.get("review_prev"), x.get("lbox"))))
         orc = x.get("old_rec")
         if orc:
-            rv.append(("oldrec", tr("入库记录有误"),
-                       tr("这家店有 {0} 条 08/01/2025 以前的入库记录（最早 {1}），那之前的入库记录是错的：库存、进价可能不准，打开商品详情核对",
-                          orc[1], orc[0].strftime("%d/%m/%Y") if orc[0] else "—")))
+            st = x.get("store_inv")
+            try:
+                st = float(st) if st is not None else None
+            except (TypeError, ValueError):
+                st = None
+            rv.append(("oldrec", old_rec_short(orc), old_rec_tip(orc, st)))
         if x.get("merged"):
             rv.append(("merged", tr("合并 {0} 行", len(x["merged"]) + 1),
                        tr("清单里这几行是同一个商品，合成一行（箱数加在一起）：") + "\n" + "\n".join(
@@ -1631,7 +1651,7 @@ class OrderCheck:
         threading.Thread(target=work, daemon=True).start()
 
     def _oldrec_arrived(self, payload):
-        """2025-01-08 之前有入库记录的商品：x["old_rec"] = (最早那天, 几条)，判断后面「入库记录有误」"""
+        """2025-01-08 之前有入库记录的商品：x["old_rec"] = (最早那天, 几条, 合计件数)，判断后面「入库有误 n 件」"""
         token, sid, data = payload
         if token != getattr(self, "_m24_token", None):
             return
