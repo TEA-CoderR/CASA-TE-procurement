@@ -29,7 +29,7 @@ QUOTES = {"MELONI": {"8001": {"price": 1.2, "desc": "SVELTO PIATTI 1000"}, "0800
 
 def test_catalog_rows_griglia_state_wholesalers_substitute_direct():
     meta, rows = SC.build(GRID, QUOTES, {"8003": {"ean": "8004", "name": "NUOVO"}},
-                          {"ean": {"5005": "BAMA", "8005": "BAMA"}}, week="2026-W47")
+                          {"ean": {"5005": "BAMA", "8005": "BAMA"}, "items": {("BAMA", "5005"): [6.0, 1.2]}}, week="2026-W47")
     by = {r[0]: r for r in rows}
     assert meta["sources"] == ["MELONI", "PETRILLO"] and meta["directs"] == ["BAMA"]
     assert by["8001"] == ["8001", "SVELTO 1000", 1, [0, 1], "", "", -1, 12, 1.1, 1]   # 箱规 · 最便宜件价 · 哪家
@@ -37,6 +37,7 @@ def test_catalog_rows_griglia_state_wholesalers_substitute_direct():
     assert by["8003"][2] == 2 and by["8003"][4:6] == ["8004", "NUOVO"]
     assert by["8005"] == ["8005", "FUORI GRIGLIA", 0, [0], "", "", 0, None, 2, 0]   # 前面的 0 去掉
     assert by["5005"][2] == 0 and by["5005"][6] == 0
+    assert by["5005"][7] == 6                       # 直厂商品的箱规从 SCHEDA 来
     assert meta["counts"] == {"griglia": 3, "stopped": 1, "items": 6}
     assert all(len(r) == 10 for r in rows)
 

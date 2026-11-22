@@ -97,7 +97,11 @@ def build(grid, quotes, subs=None, scheda=None, week=""):
         if sup not in d_idx:
             d_idx[sup] = len(directs)
             directs.append(sup)
-        get(k)["d"] = d_idx[sup]
+        x = get(k)
+        x["d"] = d_idx[sup]
+        if not x["pk"]:                               # 直厂商品：箱规用 SCHEDA 里的每箱件数
+            v = ((scheda or {}).get("items") or {}).get((sup, k.lstrip("0")))
+            x["pk"] = _pack(v[0] if v else None)
     # 2026-11-21 第 8–10 项：每箱件数 · 这周批发商最便宜件价 · 最便宜那家（下标）——门店数据没算到也看得到箱规和价格
     rows = [[e, x["name"][:80], x["g"], sorted(x["w"]), x["s"], x["sn"][:80], x["d"],
              x["pk"], _r2(x["p"]), x["ps"]]
