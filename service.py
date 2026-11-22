@@ -2067,6 +2067,71 @@ def track_orders(dist, rows, assign, mapping, settings, log):
         return None
 
 
+# 发给供应商之前订单文件要多两列的批发商（2026-11-22 用户给的模板 Ordine_MARLIA_MELONI_1511.xlsx）：
+#   原来 ORDINE 那列（箱数）表头空着；右边插两列 —— 件数 =箱数 × UDV（表头改成 ORDINE，MELONI 按件读订单）、
+#   金额 =件数 × PREZZO NETTO（表头空）；每一行都写公式，和模板一样
+PIECES_AMOUNT = ("MELONI",)
+
+
+def needs_pieces_amount(name):
+    n = str(name or "").upper()
+    return any(k in n for k in PIECES_AMOUNT)
+
+
+def add_pieces_amount(path):
+    """照模板给订单文件加 件数 / 金额 两列（只改 Ordini 里发给供应商的那份，distribuire 工作副本不动）→ 有箱数的行数"""
+    from copy import copy
+    from openpyxl import load_workbook
+    from openpyxl.utils import get_column_letter as gl
+    import quote_prepare as QP
+    wb = load_workbook(path)
+    try:
+        ws = hdr = None
+        cols = {}
+        for w in wb.worksheets:
+            for r in range(1, 11):
+                names = {str(w.cell(r, c).value or "").strip().upper(): c for c in range(1, min(w.max_column, 60) + 1)}
+                if "ORDINE" in names and "UDV" in names and "PREZZO NETTO" in names:
+                    ws, hdr = w, r
+                    cols = {"o": names["ORDINE"], "u": names["UDV"], "p": names["PREZZO NETTO"]}
+                    break
+            if ws is not None:
+                break
+        if ws is None:
+            raise ValueError("找不到 ORDINE / UDV / PREZZO NETTO 这几列")
+        o = cols["o"]
+        QP.insert_col(ws, o + 1)
+        QP.insert_col(ws, o + 1)
+        u = cols["u"] + (2 if cols["u"] > o else 0)
+        p = cols["p"] + (2 if cols["p"] > o else 0)
+        L, M, N, U, P = gl(o), gl(o + 1), gl(o + 2), gl(u), gl(p)
+        head = ws.cell(hdr, o)
+        ws.cell(hdr, o + 1).value = head.value               # 「ORDINE」挪到件数那列
+        if head.has_style:
+            ws.cell(hdr, o + 1)._style = copy(head._style)
+        head.value = None
+        ws.cell(hdr, o + 2).value = None
+        ws.column_dimensions[M].width = 11.5
+        ws.column_dimensions[N].width = 13
+        n = 0
+        for r in range(hdr + 1, ws.max_row + 1):
+            ws[f"{M}{r}"] = f"={L}{r}*{U}{r}"
+            ws[f"{N}{r}"] = f"={M}{r}*{P}{r}"
+            v = ws[f"{L}{r}"].value
+            if isinstance(v, (int, float)) and v > 0:
+                n += 1
+        try:
+            wb.calculation.fullCalcOnLoad = True             # 打开时 Excel 重新算一遍（openpyxl 写的公式没有结果）
+        except Exception:
+            pass
+        tmp = path + ".casate_tmp"
+        wb.save(tmp)
+    finally:
+        wb.close()
+    os.replace(tmp, path)
+    return n
+
+
 def export_orders(dist, purchased, log=None, labels=None, settings=None, mapping=None):
     """
     门店比价文件夹里建 Ordini：只放采购了的供应商的订单，文件名 Ordine_门店名_供应商名_日期.xlsx；
@@ -2102,6 +2167,11 @@ def export_orders(dist, purchased, log=None, labels=None, settings=None, mapping
         used.add(fn.lower())
         try:
             shutil.copy2(src, os.path.join(dest, fn))
+            if needs_pieces_amount(name):
+                try:
+                    add_pieces_amount(os.path.join(dest, fn))
+                except Exception as e:                  # 加不上照样发箱数的那份，日志里写明
+                    log(tr("⚠ {0} 没加上件数 / 金额两列：{1}", fn, e))
             out.append(os.path.join(dest, fn))
             if mapping is not None:
                 mapping[f] = (name, os.path.join(dest, fn))
