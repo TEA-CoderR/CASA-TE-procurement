@@ -347,3 +347,49 @@ def test_deter_orders_one_mail_from_bms_with_each_store_address_boxes_amount(tmp
     assert d2["from"] == "INFO@BMSPSRL.COM" and d2["subject"] == "Ordine PETRILLO FOIANO 2211"
     assert "lucas@casa-te.com" in d2["cc"]
     assert MS.greet_name("Buon pomeriggio Andrea, \nx") == "Andrea" and MS.greet_name("In allegato") is None
+
+
+def test_no_second_copy_in_sent_when_server_already_saved_it():
+    """2026-11-22 用户：发一封订单信「已发送」里有两封——阿里邮箱 SMTP 发信自己会存一份，程序再 APPEND 就重复了"""
+    from email.message import EmailMessage
+
+    class _Imap:
+        def __init__(self, has):
+            self.has, self.appended, self.searched = has, [], []
+
+        def login(self, u, p):
+            pass
+
+        def _simple_command(self, *a):
+            pass
+
+        def list(self):
+            return "OK", [b'(\\HasNoChildren) "/" "INBOX"', b'(\\HasNoChildren \\Sent) "/" "&XfJT0ZAB-"']
+
+        def select(self, f, readonly=False):
+            return "OK", [b"1"]
+
+        def uid(self, cmd, *args):
+            self.searched.append(args)
+            return "OK", [b"57" if self.has else b""]
+
+        def append(self, *a):
+            self.appended.append(a)
+            return "OK", []
+
+        def close(self):
+            pass
+
+        def logout(self):
+            pass
+
+    acc = {"address": "info@bmspsrl.com", "host": "imap.x", "port": 993}
+    for has, n_append in ((True, 0), (False, 1)):
+        msg = EmailMessage()
+        msg["Message-ID"] = "<abc@BMSPSRL.COM>"
+        msg["Subject"] = "Ordine MELONI 5PDV 2211"
+        msg.set_content("x")
+        imap = _Imap(has)
+        mid, saved = MS.send(acc, "pw", msg, smtp_factory=_SMTP, imap_factory=lambda h, p: imap, wait=(0, 0))
+        assert saved and len(imap.appended) == n_append
+        assert any("<abc@BMSPSRL.COM>" in " ".join(map(str, a)) for a in imap.searched)

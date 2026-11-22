@@ -480,7 +480,31 @@ def split_addrs(text):
     return [a.strip() for a in re.split(r"[;,\s]+", text or "") if a.strip()]
 
 
-def send(acc, password, msg, smtp_factory=None, imap_factory=None):
+def already_in(conn, folder, mid, wait=(0, 2, 3)):
+    """
+    「已发送」里是不是已经有这封信（按 Message-ID 找）。2026-11-22 用户：发一封订单信「已发送」里出现两封——
+    阿里企业邮箱用 SMTP 发信时自己会存一份到「已发送」，程序再放一份就重复了。服务器存得慢一点，所以隔几秒多找几次
+    """
+    import time
+    import mail_client as MC
+    if not mid:
+        return False
+    for w in wait:
+        if w:
+            time.sleep(w)
+        try:
+            typ, _ = conn.select(MC._quote(folder), readonly=True)
+            if typ != "OK":
+                return False
+            typ, data = conn.uid("SEARCH", None, "HEADER", "Message-ID", f'"{mid}"')
+            if typ == "OK" and data and data[0] and data[0].split():
+                return True
+        except Exception:
+            return False
+    return False
+
+
+def send(acc, password, msg, smtp_factory=None, imap_factory=None, wait=(0, 2, 3)):
     """
     用这个邮箱的 SMTP 发出去（SSL 465），再在服务器「已发送」里放一份（IMAP APPEND，标已读），
     大家在网页邮箱 / 以后的邮件核对里都看得到。放「已发送」失败不算发送失败。返回 (Message-ID, 放进已发送了没有)
@@ -503,7 +527,9 @@ def send(acc, password, msg, smtp_factory=None, imap_factory=None):
         conn = MC.connect(acc, password, factory=imap_factory)
         try:
             sent = [f for f in MC.pick_folders(MC.folders(conn)) if f[0].upper() != "INBOX"]
-            if sent:
+            if sent and already_in(conn, sent[0][0], msg["Message-ID"], wait=wait):
+                saved = True             # 服务器自己已经放进「已发送」了（阿里邮箱客户端发信默认保存）：不再放第二份
+            elif sent:
                 typ, _ = conn.append(MC._quote(sent[0][0]), "(\\Seen)", imaplib.Time2Internaldate(datetime.now().timestamp()),
                                      msg.as_bytes())
                 saved = typ == "OK"
