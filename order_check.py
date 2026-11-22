@@ -84,7 +84,7 @@ PCS_COL = _col(14)            # 确定件数（= 箱数 × 每箱件数，默认
 from check_rules import (  # noqa: F401  业务规则搬到 check_rules.py（2026-11-06），这里照旧能用这些名字
     _pk, PROB_KINDS_TIPS, _prob_title, _issue, _situation, _edited, _issue_text, _problem, PROB_TABS, _tab_of,
     _report_rows, report_name, _advice, write_problem_report, _can_transfer, _set_box, is_new_item, store_reason,
-    REVIEW_DEFAULTS, review_rules, _cover_now, PHANTOM_MIN_DAYS, PHANTOM_UNITS, censored_info, phantom_info,
+    REVIEW_DEFAULTS, review_rules, review_days_for, _cover_now, PHANTOM_MIN_DAYS, PHANTOM_UNITS, censored_info, phantom_info,
     init_boxes)
 
 AFTER_COL = _col(20)          # 确定订后够卖（跟着确定件数变）
@@ -1386,9 +1386,33 @@ class OrderCheck:
             lines.append(tr("现在确定 {0:,} 箱（手动改过）", x["fbox"]))
         return lines
 
+    def _too_much(self, x):
+        """
+        订太多（2026-11-22 用户：清单 300 箱程序也照清单订、不用审核）：确定箱数比系统建议多，
+        订完够卖的天数超过这一等级的「可不订」天数（A 180 / B 120 / C 90）→ (够卖天数, 门槛)；不是 → None。
+        只标出来要人看，不自动改箱数。没销量算不出天数的不管（新品另有规则）
+        """
+        if not x.get("in_db", True) or not x.get("fbox"):
+            return None
+        sys_ = x.get("sys_box") if x.get("sys_box") is not None else x.get("sbox")
+        if x["fbox"] <= int(sys_ or 0):                   # 系统自己算的（照清单 / 保护之前）
+            return None
+        v = self._arrive_days(x)
+        if v is None or v == float("inf"):
+            return None
+        free = (x.get("review_days") or review_days_for(review_rules(self.cfg), x.get("tier")))[1]
+        return (v, free) if v > free else None
+
     def _marks(self, x):
         """判断后面的提醒：新加 / 清单改过（要审核）；慢销（订了要卖很久）；库存可能不准（虚库存）"""
         rv = []
+        tm = self._too_much(x)
+        if tm:
+            rv.append(("much", tr("订太多 · 够卖 {0} 天", _days(tm[0])),
+                       tr("确定 {0} 箱，比系统建议的 {1} 箱多，订完够卖 {2} 天（{3} 类超过 {4:g} 天就算库存多）。"
+                          "门店清单可能写错了（例如件数写成了箱数），请核对", x["fbox"],
+                          int(x.get("sys_box") if x.get("sys_box") is not None else x.get("sbox") or 0),
+                          _days(tm[0]), x.get("tier") or "B", tm[1])))
         sr = x.get("stock_report")
         if sr:
             rv.append(("stock", tr("门店报库存 {0}", sr.get("counted")),
@@ -1788,8 +1812,11 @@ class OrderCheck:
                          tok if kind != "same" else None, extra)
         reasons = "\n".join(["· " + l for l in self._reason_lines(x)] + ["⚠ " + m[2] for m in self._marks(x)] +
                             (["🏷 " + self._promo_tip(x)] if x.get("promo") else []))
-        dr.show_tags(key_tags(x, self._transit_boxes(x) if x.get("transit_pcs") or self._transit_of(x) else 0,
-                              _edited(x)), reasons)
+        tags = key_tags(x, self._transit_boxes(x) if x.get("transit_pcs") or self._transit_of(x) else 0, _edited(x))
+        tm = self._too_much(x)
+        if tm:
+            tags = [(tr("订太多 · 够卖 {0} 天", _days(tm[0])), "err")] + tags
+        dr.show_tags(tags, reasons)
         # 四个数（够卖都含在途；订了的是订后够卖）
         if x.get("in_db", True):
             inv = x.get("store_inv")
@@ -2182,6 +2209,8 @@ class OrderCheck:
             return True
         if rv == "kept":
             return False
+        if self._too_much(x):
+            return True                                   # 订完要卖很久：一定要人看（清单可能写错）
         return self._verdict(x)[0] in ("transfer", "more", "less", "none")
 
     def _row_badge(self, i):
@@ -2614,7 +2643,9 @@ class OrderCheck:
         marks = self._marks(x)
         vc = self.table.item(k, _col(0))         # 「判断」列（以前写成第 0 列 = 门店列，门店名被判断盖掉）
         vc.setText(" · ".join([vt] + [m[1] for m in marks]))
-        vc.setForeground(QColor(T("warn") if (marks and kind in ("same", "more")) else T(VERDICT_TOKEN.get(kind, "text"))))
+        much = any(m[0] == "much" for m in marks)           # 订太多：红色，一眼看到
+        vc.setForeground(QColor(T("err") if much else T("warn") if (marks and kind in ("same", "more"))
+                                else T(VERDICT_TOKEN.get(kind, "text"))))
         f = vc.font()
         f.setBold(kind in ("transfer", "more", "less", "none"))
         vc.setFont(f)

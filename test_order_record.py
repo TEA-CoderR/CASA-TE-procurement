@@ -271,3 +271,19 @@ def test_transit_tags_do_not_contradict_verdict():
     OC.init_boxes([row2])
     assert row2["sbox"] == 3 and row2["transit_cut"] == 1
     assert OC.key_tags(row2, 1)[0][0] == "在途 1 箱 · 少订 1 箱"
+
+
+def test_list_far_more_than_needed_is_flagged_for_review():
+    """2026-11-22 用户：MARLIA 清单 SVELTO 写了 300 箱，程序照清单订、不用审核 → 订完够卖超过可不订天数就标「订太多」、算要审核"""
+    import types
+    import order_check as OC
+    row = {"in_db": True, "pack": 12, "file_qty": 300, "suggested": 12, "inv0": 56, "daily0": 0.7, "daily": 0.7,
+           "cycle": 30, "tier": "A", "sales": [21, 40, 60, 120]}
+    OC.init_boxes([row])
+    assert row["fbox"] == 300                                  # 箱数不自动改，只标出来
+    fake = types.SimpleNamespace(cfg={}, _arrive_days=lambda x: OC._cover(x, x["final"]))
+    tm = OC.OrderCheck._too_much(fake, row)
+    assert tm and tm[0] > 5000 and tm[1] == 180
+    ok = dict(row, file_qty=1)
+    OC.init_boxes([ok])
+    assert OC.OrderCheck._too_much(fake, ok) is None           # 清单正常：不标

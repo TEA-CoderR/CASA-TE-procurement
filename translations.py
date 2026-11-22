@@ -4750,4 +4750,6 @@ TRANSLATIONS = {
     '入库有误 {0} 条': ('Wrong receipts: {0} records', 'Carichi errati: {0} righe'),
     '这家店有 {0} 条 08/01/2025 以前的入库记录（最早 {1}，合计 {2} 件），那之前的入库记录是错的：库存、进价可能不准': ('This store has {0} receipt records before 08/01/2025 (first {1}, {2} pcs in total); records before that date are wrong: stock and cost may be off', 'Questo negozio ha {0} carichi prima del 08/01/2025 (il primo {1}, {2} pz in totale); i carichi prima di quella data sono errati: giacenza e costo potrebbero essere sbagliati'),
     '现在库存 {0} 件': ('Stock now {0} pcs', 'Giacenza attuale {0} pz'),
+    '订太多 · 够卖 {0} 天': ('Too much · covers {0} days', 'Troppo · copre {0} giorni'),
+    '确定 {0} 箱，比系统建议的 {1} 箱多，订完够卖 {2} 天（{3} 类超过 {4:g} 天就算库存多）。门店清单可能写错了（例如件数写成了箱数），请核对': ('{0} boxes confirmed, more than the {1} suggested by the system: after the order stock covers {2} days (for class {3} more than {4:g} days counts as overstock). The store list may be wrong (e.g. pieces written as boxes), please check', 'Confermati {0} colli, più dei {1} suggeriti dal sistema: dopo l\'ordine la scorta copre {2} giorni (per la classe {3} oltre {4:g} giorni è troppa). La lista del negozio potrebbe essere sbagliata (es. pezzi scritti come colli), controlla'),
 }
