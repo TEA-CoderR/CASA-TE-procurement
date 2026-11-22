@@ -166,17 +166,16 @@ def compose_deter(supplier, orders, settings, day=None, name=None, now=None):
     d0 = min((OT.to_date(o.get("date")) or day) for _i, o in rows) if rows else day
     n = len(rows)
     first = STORE_UPPER.get(str(rows[0][1].get("store")), "") if rows else ""
-    # 订单号（2026-11-22 用户要加）：主题写第一家店那张的号（回信保留主题就能对到这一批），正文每家店写自己的
-    main_no = order_no(*rows[0]) if rows else ""
-    subject = f"Ordine {sup} {f'{n}PDV' if n > 1 else first} {d0:%d%m}" + (f" · {main_no}" if main_no else "")
+    # 2026-11-22 18:00 用户：不加订单号（试过一版主题 / 正文带订单号，用户说太麻烦，改回来）
+    subject = f"Ordine {sup} {f'{n}PDV' if n > 1 else first} {d0:%d%m}"
     who = f"{hello(now)} {name}," if name else f"{hello(now)},"
     dest = ("tutti i 5 punti vendita" if n == 5 else f"{n} punti vendita" if n > 1 else f"il punto vendita di {first}")
     parts, tc, ta = [], 0.0, 0.0
-    for oid, o in rows:
+    for _oid, o in rows:
         code = str(o.get("store") or "")
         p = profile(settings, code)
         c, a = _num(o.get("colli")), _num(o.get("amount"))
-        lines = [f"{STORE_UPPER.get(code, code)} – ordine n. {order_no(oid, o)}", p["name"], p["address"]]
+        lines = [f"{STORE_UPPER.get(code, code)} – {p['name']}", p["address"]]
         if p.get("phone"):
             lines.append(f"Contatto scarico: {p['phone']}")
         vals = ([f"Colli: {c:g}"] if c else []) + ([f"Importo: {eur_it(a)}"] if a else [])
@@ -185,8 +184,7 @@ def compose_deter(supplier, orders, settings, day=None, name=None, now=None):
         tc += c or 0
         ta += a or 0
         parts.append("\n".join(lines))
-    body = (f"{who}\nin allegato trovi gli ordini di {sup} per {dest}. Ogni punto vendita ha il suo numero d'ordine: "
-            "ti chiediamo di riportarlo sul documento di trasporto (DDT).\n\n" + "\n\n".join(parts))
+    body = f"{who}\nin allegato trovi gli ordini di {sup} per {dest}.\n\n" + "\n\n".join(parts)
     if n > 1 and (tc or ta):
         body += "\n\nTotale: " + " · ".join(([f"{tc:g} colli"] if tc else []) + ([eur_it(ta)] if ta else []))
     body += "\n\nGrazie.\n\nSaluti,\nUfficio Acquisti\nCASA & TE"
