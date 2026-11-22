@@ -176,11 +176,18 @@ def best_quotes(files):
             p = q.get("price")
             if not p or p <= 0:
                 continue
+            packs = best[ean]["packs"] if ean in best else []
+            packs.append(float(q.get("pack") or 1))
             if ean not in best or p < best[ean]["price"]:
-                best[ean] = {"price": float(p), "pack": float(q.get("pack") or 1), "supplier": label}
+                best[ean] = {"price": float(p), "pack": float(q.get("pack") or 1), "supplier": label, "packs": packs}
                 if q.get("desc"):
                     best[ean]["desc"] = str(q["desc"]).strip()
     return best
+
+
+# 数据库箱规比每家批发商的都大这么多倍 → 不是门店 / 批发商用的那种箱（例如直厂的整箱、一托），不用它
+# （2026-11-22 bug：VIT BOBINA DOPPIA 数据库每箱 56 件、批发商都是 1 件一卖，门店清单 60 → 订了 3360 件 €14,253）
+PACK_FAR = 3
 
 
 def apply_quotes(rows, quotes):
@@ -200,7 +207,11 @@ def apply_quotes(rows, quotes):
             continue
         x["db_pack"], x["db_price"] = x.get("pack"), x.get("price")
         x["price"], x["quote_sup"], x["quote_pack"] = q["price"], q["supplier"], q["pack"]
+        x.pop("pack_far", None)
         if not (x.get("db_pack") and float(x["db_pack"]) > 0):
+            x["pack"] = q["pack"]
+        elif float(x["db_pack"]) >= PACK_FAR * max(q.get("packs") or [q["pack"]]):
+            x["pack_far"] = float(x["db_pack"])          # 审核时标出来、一定要人看
             x["pack"] = q["pack"]
         if not str(x.get("name") or "").strip() and q.get("desc"):
             x["name"] = q["desc"]

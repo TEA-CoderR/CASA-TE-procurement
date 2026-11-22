@@ -105,6 +105,9 @@ def _cover(x, pieces=0):
 def _days(v):
     import store_orders as SO
     return SO.days_text(v)
+BIG_LINE_EUR = 1000          # 开始比价前：单行超过这个金额的商品先列出来核对
+
+
 def old_rec_short(orc):
     """入库记录有误的短文字：「入库有误 53 件」（2026-11-22 用户：数量放在外面，不用点进去数）"""
     q = orc[2] if len(orc) > 2 else None
@@ -1239,6 +1242,45 @@ class OrderCheck:
             return 0.0
         return b * _pk(x) * (p if p == p else 0.0)
 
+    def _big_lines(self):
+        """开始比价前最后一道关（2026-11-22 用户：MARLIA €42,404 这种问题千万不能出现）：
+        单行金额 ≥ BIG_LINE_EUR，或者订完够卖超过 1 年且金额 ≥ €100 → [(行, 金额, 够卖天数)]，金额大的在前"""
+        out = []
+        for x in self.rows:
+            if not x.get("fbox"):
+                continue
+            a = self._amount(x)
+            v = self._arrive_days(x)
+            far = v is not None and v != float("inf") and v > 365
+            if a >= BIG_LINE_EUR or (far and a >= 100):
+                out.append((x, a, v))
+        return sorted(out, key=lambda t: -t[1])
+
+    def _confirm_big_lines(self):
+        """有特别大的行：先列出来问一句，默认「回去检查」"""
+        big = self._big_lines()
+        if not big:
+            return True
+        lines = [f"{store_label(x.get('store'))} · {str(x.get('name') or '')[:38]} · {x['fbox']:,} " + tr("箱") +
+                 f" · €{a:,.0f}" + (" · " + tr("够卖 {0} 天", _days(v)) if v and v != float("inf") else "")
+                 for x, a, v in big[:12]]
+        more = tr("…还有 {0} 行", len(big) - 12) if len(big) > 12 else ""
+        box = QMessageBox(self.window)
+        box.setIcon(QMessageBox.Warning)
+        box.setWindowTitle(tr("金额异常的商品"))
+        box.setText(tr("{0} 行单个商品金额特别大，或者订完要卖一年以上，请先核对：", len(big)))
+        box.setInformativeText("\n".join(lines + ([more] if more else [])))
+        back = box.addButton(tr("回去检查"), QMessageBox.RejectRole)
+        box.addButton(tr("确认无误，继续比价"), QMessageBox.AcceptRole)
+        box.setDefaultButton(back)
+        box.exec()
+        if box.clickedButton() is back:
+            self.win.log(tr("[检查清单] 有 {0} 行金额异常，回去检查", len(big)))
+            return False
+        self.win.log(tr("[检查清单] 有 {0} 行金额异常，确认无误继续比价：{1}", len(big),
+                        "；".join(f"{x.get('name')} {x['fbox']} 箱 €{a:,.0f}" for x, a, _v in big[:20])))
+        return True
+
     def _amount_text(self, x):
         a = self._amount(x)
         return f"{a:,.2f}" if a > 0 else ""
@@ -1406,7 +1448,18 @@ class OrderCheck:
     def _marks(self, x):
         """判断后面的提醒：新加 / 清单改过（要审核）；慢销（订了要卖很久）；库存可能不准（虚库存）"""
         rv = []
-        tm = self._too_much(x)
+        cm = x.get("cut_much")
+        if cm:
+            rv.append(("much", tr("清单 {0} → 砍到 {1} 箱", cm[0], cm[1]),
+                       tr("门店清单 {0} 箱，比系统建议多 10 倍以上，照清单订完要卖 {2} 天：多半写错了（例如件数写成了箱数），"
+                          "已经自动砍到够卖 {3:g} 天的 {1} 箱。真要这么多请直接改确定箱数",
+                          cm[0], cm[1], _days(cm[2]), (x.get("review_days") or review_days_for(review_rules(self.cfg), x.get("tier")))[1])))
+        pf = x.get("pack_far")
+        if pf:
+            rv.append(("packfar", tr("箱规不一致 · 数据库 {0:g} 件", pf),
+                       tr("数据库里每箱 {0:g} 件，批发商报价每箱只有 {1:g} 件（差很多，多半是直厂的整箱 / 一托）。"
+                          "这里的箱数按批发商的箱算（每箱 {1:g} 件），请核对门店清单的数量", pf, _pk(x))))
+        tm = None if cm else self._too_much(x)
         if tm:
             rv.append(("much", tr("订太多 · 够卖 {0} 天", _days(tm[0])),
                        tr("确定 {0} 箱，比系统建议的 {1} 箱多，订完够卖 {2} 天（{3} 类超过 {4:g} 天就算库存多）。"
@@ -1813,9 +1866,14 @@ class OrderCheck:
         reasons = "\n".join(["· " + l for l in self._reason_lines(x)] + ["⚠ " + m[2] for m in self._marks(x)] +
                             (["🏷 " + self._promo_tip(x)] if x.get("promo") else []))
         tags = key_tags(x, self._transit_boxes(x) if x.get("transit_pcs") or self._transit_of(x) else 0, _edited(x))
-        tm = self._too_much(x)
-        if tm:
+        cm = x.get("cut_much")
+        tm = None if cm else self._too_much(x)
+        if cm:
+            tags = [(tr("清单 {0} → 砍到 {1} 箱", cm[0], cm[1]), "err")] + tags
+        elif tm:
             tags = [(tr("订太多 · 够卖 {0} 天", _days(tm[0])), "err")] + tags
+        if x.get("pack_far"):
+            tags = [(tr("箱规不一致 · 数据库 {0:g} 件", x["pack_far"]), "warn")] + tags
         dr.show_tags(tags, reasons)
         # 四个数（够卖都含在途；订了的是订后够卖）
         if x.get("in_db", True):
@@ -2209,8 +2267,8 @@ class OrderCheck:
             return True
         if rv == "kept":
             return False
-        if self._too_much(x):
-            return True                                   # 订完要卖很久：一定要人看（清单可能写错）
+        if x.get("cut_much") or x.get("pack_far") or self._too_much(x):
+            return True                                   # 订完要卖很久 / 自动砍过 / 箱规对不上：一定要人看
         return self._verdict(x)[0] in ("transfer", "more", "less", "none")
 
     def _row_badge(self, i):
@@ -2908,6 +2966,8 @@ class OrderCheck:
         root_dir = self.win.ws_root() if hasattr(self.win, "ws_root") else self.batch_root()
         if not root_dir:
             QMessageBox.warning(self.win, tr("确认，开始比价"), tr("还没有工作文件夹。"))
+            return
+        if not self._confirm_big_lines():
             return
         folders = {sid: R.batch_store_folder(root_dir, sid) for sid in self.meta["stores"] if self._to_order(sid)}
         self._save_memory(confirmed=True)              # 整张清单都审核过了：以后清单改了 / 重新计算，只审新加和改过的

@@ -89,6 +89,33 @@ def _price_row_base(row, qty, unit, packs, ean, articolo, base):
             "unfit": unfit}
 
 
+BIG_LINE_EUR = 1000      # 一个商品一家批发商超过这个金额：比价结果「要你看的」里红字列出来（2026-11-22 MARLIA €42,404）
+
+
+def big_lines(rows, assign):
+    """单行金额 ≥ BIG_LINE_EUR 的商品：[{row, ean, articolo, qty, supplier, pack, colli, got, amount}]，金额大的在前"""
+    out = []
+    for r in rows or []:
+        s = (assign.get(r["row"]) or assign.get(str(r["row"]))) if assign else None
+        if not s:
+            continue
+        p = (r.get("unit") or {}).get(s)
+        if p is None:
+            continue
+        pk = float((r.get("packs") or {}).get(s) or 1)
+        try:
+            q = float(r.get("qty") or 0)
+        except (TypeError, ValueError):
+            q = 0.0
+        c = (r.get("colli") or {}).get(s)
+        c = float(c) if c is not None else q
+        amount = c * pk * float(p)
+        if amount >= BIG_LINE_EUR:
+            out.append({"row": r["row"], "ean": r.get("ean", ""), "articolo": r.get("articolo", ""), "qty": q,
+                        "supplier": s, "pack": pk, "colli": c, "got": c * pk, "amount": amount})
+    return sorted(out, key=lambda x: -x["amount"])
+
+
 def pack_changes(rows, assign):
     """按批发商箱规换算以后件数和门店要的不一样的商品：[{行, ean, 商品, 要的件数, 供应商, 每箱, 箱数, 订到件数}]"""
     out = []
@@ -1075,6 +1102,10 @@ def run_process(ordine_file, eliminare_path, distribuire_path, log, progress=Non
         for x in summary["pack_changes"][:30]:
             log(tr("  {0}：要 {1:g} 件 → {2} {3} 箱 × {4:g} = {5:g} 件", x["articolo"] or x["ean"], x["need"],
                    normalize(x["supplier"]), x["colli"], x["pack"], x["got"]))
+    summary["big_lines"] = big_lines(rows_data, assignment)
+    for x in summary["big_lines"]:
+        log(tr("⚠ 金额异常：{0} → {1} {2:g} 箱 × {3:g} = {4:g} 件，€{5:,.0f}（门店清单 {6:g} 箱），发订单前请核对",
+               x["articolo"] or x["ean"], normalize(x["supplier"]), x["colli"], x["pack"], x["got"], x["amount"], x["qty"]))
     # 调货：主订单 PEZZI 改成减完的件数，备注写从哪家店调了几件；全部靠调货的商品不向批发商订
     for i, t in transfer_rows.items():
         r = row_by_i.get(i)

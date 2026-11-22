@@ -525,3 +525,19 @@ def test_old_receipts_flag_shown_first_in_tags():
     assert OC.key_tags(x)[0] == ("入库有误 53 件", "err")
     assert "合计 53 件" in OC.old_rec_tip(x["old_rec"], 4.0) and "现在库存 4 件" in OC.old_rec_tip(x["old_rec"], 4.0)
     assert OC.old_rec_short((date(2025, 1, 3), 1)) == "入库有误 1 条"
+
+
+def test_list_ten_times_system_and_over_a_year_cut_to_free_days():
+    """2026-11-22 用户定 B：清单比系统建议多 10 倍以上、订完够卖超过一年 → 自动砍到够卖「可不订」天数，标出来要审核"""
+    import order_check as OC
+    x = dict(in_db=True, pack=12, file_qty=300, suggested=12, inv0=56, daily0=0.72, daily=0.72, cycle=30, tier="A",
+             sales=[21, 40, 60, 120])
+    OC.init_boxes([x])
+    assert x["cut_much"][0] == 300 and x["fbox"] == x["cut_much"][1] < 300
+    assert (56 + x["fbox"] * 12) / 0.72 <= 180 + 12 / 0.72            # 砍到 A 类 180 天左右
+    y = dict(x, file_qty=3)
+    OC.init_boxes([y])
+    assert "cut_much" not in y and y["fbox"] == 3
+    z = dict(x, urgent=True)                                         # 门店标了紧急：不砍（照样要审核）
+    OC.init_boxes([z])
+    assert "cut_much" not in z

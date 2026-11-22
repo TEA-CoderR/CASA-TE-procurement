@@ -536,6 +536,33 @@ def phantom_info(x, today=None):
     return None
 
 
+# 清单明显写错（2026-11-22 用户定 B）：清单比系统建议多 MUCH_X 倍以上、而且订完够卖超过 MUCH_DAYS 天
+# → 自动砍到够卖「可不订」天数（A 180 / B 120 / C 90），至少 1 箱；x["cut_much"] = (清单箱数, 砍到几箱, 原来够卖几天)
+MUCH_X = 10
+MUCH_DAYS = 365
+
+
+def _cut_far_too_much(x, sys_, pk, transit, rr):
+    x.pop("cut_much", None)
+    if x.get("urgent") or x.get("protect") == "new" or not x.get("sbox") or pk <= 0:
+        return
+    if x["lbox"] < MUCH_X * max(int(sys_ or 0), 1):
+        return
+    d = x.get("daily0") if x.get("daily0") is not None else x.get("daily")
+    d = max(float(d or 0), float(x.get("slow_from") or 0))
+    if d <= 0:
+        return
+    inv = max(0.0, float(x.get("inv0") or 0))
+    days = (inv + transit + x["sbox"] * pk) / d
+    if days <= MUCH_DAYS:
+        return
+    free_d = review_days_for(rr, x.get("tier"))[1]
+    cap = max(1, int(math.ceil((free_d * d - inv - transit) / pk - 1e-9)))
+    if cap < x["sbox"]:
+        x["cut_much"] = (x["sbox"], cap, days)
+        x["sbox"] = cap
+
+
 def init_boxes(rows, units=None, algo=None, rules=None):
     """
     检查结果按箱算（2026-10-25 用户定）：门店清单的数量一律是箱（lbox）；
@@ -638,4 +665,5 @@ def init_boxes(rows, units=None, algo=None, rules=None):
             if cut > 0:
                 x["sbox"] -= cut
                 x["transit_cut"] = cut
+        _cut_far_too_much(x, sys_, pk, tp, rr)
         _set_box(x, x["sbox"])

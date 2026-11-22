@@ -382,3 +382,13 @@ def test_boxes_converted_per_wholesaler_pack_and_oversized_pack_not_auto_chosen(
     # 没有 CASSA_DB 的老主订单照旧：箱数原样搬
     r5 = S._price_row(8, 2, {"A": 1.0, "B": 0.9}, {"A": 6, "B": 10})
     assert "colli" not in r5 and S._order_qty(r5, "B") == 2
+
+
+def test_big_lines_listed_for_review():
+    """比价结果：单个商品超过 €1,000 的列出来（2026-11-22 MARLIA VIT 四行 €35k）"""
+    import service as S
+    rows = [{"row": 2, "qty": 60, "ean": "801", "articolo": "VIT BOBINA", "unit": {"G": 4.242}, "packs": {"G": 1},
+             "colli": {"G": 3360}},
+            {"row": 3, "qty": 1, "ean": "802", "articolo": "DASH", "unit": {"G": 4.9}, "packs": {"G": 4}}]
+    big = S.big_lines(rows, {"2": "G", 3: "G"})
+    assert [b["ean"] for b in big] == ["801"] and round(big[0]["amount"]) == 14253

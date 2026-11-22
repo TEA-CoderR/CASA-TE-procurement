@@ -277,13 +277,14 @@ def test_list_far_more_than_needed_is_flagged_for_review():
     """2026-11-22 用户：MARLIA 清单 SVELTO 写了 300 箱，程序照清单订、不用审核 → 订完够卖超过可不订天数就标「订太多」、算要审核"""
     import types
     import order_check as OC
-    row = {"in_db": True, "pack": 12, "file_qty": 300, "suggested": 12, "inv0": 56, "daily0": 0.7, "daily": 0.7,
+    # 15 箱：订完够卖 337 天（没到「明显写错」的一年、不自动砍），超过 A 类 180 天 → 标「订太多」
+    row = {"in_db": True, "pack": 12, "file_qty": 15, "suggested": 12, "inv0": 56, "daily0": 0.7, "daily": 0.7,
            "cycle": 30, "tier": "A", "sales": [21, 40, 60, 120]}
     OC.init_boxes([row])
-    assert row["fbox"] == 300                                  # 箱数不自动改，只标出来
+    assert row["fbox"] == 15 and "cut_much" not in row
     fake = types.SimpleNamespace(cfg={}, _arrive_days=lambda x: OC._cover(x, x["final"]))
     tm = OC.OrderCheck._too_much(fake, row)
-    assert tm and tm[0] > 5000 and tm[1] == 180
+    assert tm and 330 < tm[0] < 340 and tm[1] == 180
     ok = dict(row, file_qty=1)
     OC.init_boxes([ok])
     assert OC.OrderCheck._too_much(fake, ok) is None           # 清单正常：不标
