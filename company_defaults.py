@@ -4,7 +4,7 @@
 """
 import json
 
-COMPANY_DEFAULTS_VER = 21          # v3.3.25 发布时同步
+COMPANY_DEFAULTS_VER = 22          # v3.3.26 发布时同步
 
 COMPANY_DEFAULTS = json.loads(r'''
 {
@@ -41,6 +41,9 @@ COMPANY_DEFAULTS = json.loads(r'''
  },
  "allow_partial_purchase": false,
  "auto_backup": true,
+ "booking": {
+  "url": "https://prenota.casaete.top"
+ },
  "confirm_before_run": true,
  "deter_arrival": {
   "lines_cols_hidden": [],
@@ -254,28 +257,20 @@ COMPANY_DEFAULTS = json.loads(r'''
   },
   "card_rec_cols_hidden": [
    6,
-   7,
-   25634,
-   28034,
-   1177,
-   85196,
-   9363,
-   96515,
-   54686,
-   7168,
-   31284
+   7
   ],
-  "card_rec_cols_hidden_ver": 2,
+  "card_rec_cols_hidden_ver": 3,
   "card_rec_columns": [
    1,
    2,
    3,
    4,
+   8,
    5,
    6,
    7
   ],
-  "card_rec_columns_ver": 2,
+  "card_rec_columns_ver": 3,
   "card_rec_widths": {
    "1": 106,
    "2": 70,
@@ -283,7 +278,8 @@ COMPANY_DEFAULTS = json.loads(r'''
    "4": 165,
    "5": 150,
    "6": 0,
-   "7": 0
+   "7": 0,
+   "8": 220
   },
   "check_cols_hidden": [
    1,
@@ -296,7 +292,6 @@ COMPANY_DEFAULTS = json.loads(r'''
    10,
    12,
    13,
-   14,
    17,
    18,
    19,
@@ -304,9 +299,7 @@ COMPANY_DEFAULTS = json.loads(r'''
    23,
    25,
    26,
-   27,
-   29,
-   30
+   27
   ],
   "check_cols_hidden_ver": 8,
   "check_columns": [
@@ -317,14 +310,15 @@ COMPANY_DEFAULTS = json.loads(r'''
    28,
    11,
    15,
+   14,
    20,
    0,
    30,
+   29,
    22,
    27,
    9,
    10,
-   29,
    24,
    2,
    26,
@@ -334,7 +328,6 @@ COMPANY_DEFAULTS = json.loads(r'''
    6,
    7,
    8,
-   14,
    12,
    13,
    19,
@@ -355,9 +348,9 @@ COMPANY_DEFAULTS = json.loads(r'''
    "11": 52,
    "12": 0,
    "13": 0,
-   "14": 0,
+   "14": 76,
    "15": 106,
-   "16": 287,
+   "16": 73,
    "17": 0,
    "18": 0,
    "19": 0,
@@ -371,11 +364,11 @@ COMPANY_DEFAULTS = json.loads(r'''
    "26": 0,
    "27": 0,
    "28": 65,
-   "29": 0,
-   "3": 433,
-   "30": 0,
+   "29": 94,
+   "3": 437,
+   "30": 201,
    "31": 56,
-   "4": 56,
+   "4": 60,
    "5": 0,
    "6": 0,
    "7": 0,
@@ -436,6 +429,38 @@ COMPANY_DEFAULTS = json.loads(r'''
    "min_colli": 0.0,
    "mode": "all",
    "name": "MELONI"
+  }
+ ],
+ "scenarios": [
+  {
+   "exclude": [],
+   "name": "全部供应商"
+  },
+  {
+   "exclude": [
+    "mega"
+   ],
+   "name": "排除 MEGA"
+  },
+  {
+   "exclude": [
+    "grieco"
+   ],
+   "name": "排除 NEW GRIECO"
+  },
+  {
+   "exclude": [
+    "mega",
+    "new grieco"
+   ],
+   "name": "新方案"
+  },
+  {
+   "exclude": [
+    "mega",
+    "petrillo"
+   ],
+   "name": "新方案"
   }
  ],
  "sellout": {
@@ -761,8 +786,10 @@ COMPANY_DEFAULTS = json.loads(r'''
   "Canvass 43 New Grieco(1).xlsx": "NEW GRIECO",
   "Canvass 46 New Grieco.xls": "NEW GRIECO",
   "Canvass 48 New Grieco.xlsx": "NEW GRIECO",
+  "Canvass 48 New Grieco.xlsx": "NEW GRIECO",
   "Listino_01 - Offerte.xlsx": "MELONI",
   "Listino_01 - Offerte(1).xlsx": "MELONI",
+  "Listino_01 - Offerte.xlsx": "MELONI",
   "Ordine FlliPetrillo Foiano 1810.xlsx": "Petrillo",
   "Ordine Mega Cash Foiano 1810.xlsx": "MEGA CASH",
   "Ordine Meloni Foiano 1810.xlsx": "MELONI",
@@ -794,7 +821,25 @@ COMPANY_DEFAULTS = json.loads(r'''
   "deduct_transit": true,
   "lines_cols_hidden": [],
   "lines_cols_hidden_ver": 1,
+  "lines_columns": [
+   0,
+   1,
+   2,
+   3,
+   4,
+   5,
+   6
+  ],
   "lines_columns_ver": 1,
+  "lines_widths": {
+   "0": 90,
+   "1": 127,
+   "2": 70,
+   "3": 374,
+   "4": 60,
+   "5": 60,
+   "6": 70
+  },
   "order_mails_cols_hidden": [],
   "order_mails_cols_hidden_ver": 1,
   "order_mails_columns_ver": 1,
@@ -895,7 +940,7 @@ COMPANY_DEFAULTS = json.loads(r'''
    "10": 74,
    "11": 74,
    "12": 74,
-   "13": 87,
+   "13": 74,
    "14": 74,
    "2": 130,
    "3": 66,
@@ -907,6 +952,46 @@ COMPANY_DEFAULTS = json.loads(r'''
    "9": 84
   },
   "kind": "volantino",
+  "plan_cols_cols_hidden": [
+   "ean"
+  ],
+  "plan_cols_cols_hidden_ver": 1,
+  "plan_cols_columns": [
+   "on",
+   "store",
+   "name",
+   "ean",
+   "basis",
+   "per_day",
+   "expected",
+   "stock",
+   "transit",
+   "pack",
+   "list",
+   "sugg",
+   "new",
+   "amount",
+   "warn"
+  ],
+  "plan_cols_columns_ver": 1,
+  "plan_cols_widths": {
+   "amount": 86,
+   "basis": 96,
+   "ean": 0,
+   "expected": 70,
+   "list": 76,
+   "name": 536,
+   "new": 104,
+   "on": 39,
+   "pack": 56,
+   "per_day": 76,
+   "stock": 64,
+   "store": 96,
+   "sugg": 60,
+   "transit": 86,
+   "warn": 173
+  },
+  "plan_deduct": true,
   "stores_cols_cols_hidden": [],
   "stores_cols_cols_hidden_ver": 1,
   "stores_cols_columns": [
