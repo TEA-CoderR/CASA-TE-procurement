@@ -301,3 +301,46 @@ def test_order_no_kept_after_send_and_replies_matched_by_it(tmp_path):
     res = MM.analyze(mails, st, {"x@casa-te.com"}, today=date(2026, 11, 21))
     ev = [e for e in res["events"] if e["kind"] == "confirm"]
     assert ev and ev[0]["orders"] == ["F1"]
+
+
+def test_deter_orders_one_mail_from_bms_with_each_store_address_boxes_amount(tmp_path, monkeypatch):
+    """2026-11-22 用户：DETERSIVO 的单不要确认、不要预约，一家批发商一封信、五家店一起，统一 BMS 邮箱发；
+    正文写每家店地址、卸货电话、箱数、金额；称呼用以前那封信的名字；附件 Ordine FOIANO MELONI 2211.xlsx"""
+    import json
+    import commands as CMD
+    import settings as SET
+    monkeypatch.setattr(SET, "app_dir", lambda: str(tmp_path))
+    (tmp_path / "cache" / "mail").mkdir(parents=True)
+    rows = {"578": {"from": "info@bmspsrl.com", "mailbox": "INFO@BMSPSRL.COM", "folder": "已发送", "uid": 578,
+                    "subject": "Ordine MELONI 5PDV", "attachments": ["Ordine FOIANO MELONI 1511.xlsx"],
+                    "date": "2026-11-15 15:10:00", "to": "alessandro.gianchecchi78@gmail.com",
+                    "cc": "matteohe@casa-te.com, benamar@casa-te.com"}}
+    (tmp_path / "cache" / "mail" / "bms.json").write_text(json.dumps({"已发送": {"validity": 1, "rows": rows}}),
+                                                          encoding="utf-8")
+    monkeypatch.setattr(CMD, "mail_view_body", lambda *a, **k: "Buonasera Alessandro, \nIn allegato trovi gli ordine")
+    st = _st(tmp_path / "tr")
+    for code, c, a in (("4", 118, 1399.83), ("1", 193, 2658.63), ("2", 143, 2285.2)):
+        f = tmp_path / f"Ordine_{code}_MELONI_2211.xlsx"
+        f.write_bytes(b"x")
+        st.set("D" + code, {"date": "2026-11-22", "store": code, "supplier": "MELONI", "draft": True, "colli": c,
+                            "amount": a, "file": str(f), "origin": "wholesale"})
+    st.set("P1", {"date": "2026-11-22", "store": "1", "supplier": "PETRILLO", "draft": True, "origin": "wholesale"})
+    st.set("O1", {"date": "2026-11-15", "store": "3", "supplier": "MELONI", "draft": True, "origin": "wholesale"})
+    accs = ACCS + [{"address": "ordine.foiano@casa-te.com"}]
+    cfg = {"mail": {"accounts": accs},
+           "order_mail": {"senders": {"1": "ordine.foiano@casa-te.com", "BMS": "INFO@BMSPSRL.COM"}}}
+    d = CMD.order_mail_draft(cfg, st, "D2", fetch_body=True, today=date(2026, 11, 22))
+    assert d["ids"] == ["D1", "D2", "D4"] and d["from"] == "INFO@BMSPSRL.COM"     # 别的批发商 / 上一批的不算
+    assert d["subject"] == "Ordine MELONI 3PDV 2211"
+    assert d["to"] == ["alessandro.gianchecchi78@gmail.com"]
+    b = d["body"]
+    assert "Alessandro," in b.splitlines()[0] and "3 punti vendita" in b
+    assert "FOIANO – CASA & TE SRL" in b and "Contatto scarico: 0575-1782904" in b
+    assert "Colli: 193 · Importo: € 2.658,63" in b and "Totale: 454 colli · € 6.343,66" in b
+    assert "prenota" not in b and "conferm" not in b.lower()
+    assert [n for _p, n, ok in d["files"]] == ["Ordine FOIANO MELONI 2211.xlsx", "Ordine MARLIA MELONI 2211.xlsx",
+                                              "Ordine S.MARCO MELONI 2211.xlsx"]
+    # 只有一家店订了也用 BMS 邮箱（不用门店自己的）
+    d2 = CMD.order_mail_draft(cfg, st, "P1", fetch_body=False, today=date(2026, 11, 22))
+    assert d2["from"] == "INFO@BMSPSRL.COM" and d2["subject"] == "Ordine PETRILLO FOIANO 2211"
+    assert MS.greet_name("Buon pomeriggio Andrea, \nx") == "Andrea" and MS.greet_name("In allegato") is None

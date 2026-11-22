@@ -222,7 +222,8 @@ class OrderMailboxDialog(QDialog):
                  (tr("发件邮箱"), tr("这家店的订单从这个邮箱发；供应商回信也回到这里，邮件核对按它认门店")),
                  (tr("密码"), tr("邮箱的登录密码或安全密码。只加密保存在这台电脑，不同步；已经填过的留空 = 不改")),
                  (tr("送货抬头"), tr("订单邮件里「Consegna presso」写的公司名")),
-                 (tr("送货地址"), tr("订单邮件里写的送货地址"))]
+                 (tr("送货地址"), tr("订单邮件里写的送货地址")),
+                 (tr("卸货电话"), tr("DETERSIVO 订单邮件里每家店写的卸货联系电话"))]
         for c, (t, tip) in enumerate(heads):
             w = tip_label(t, tip) if tip else QLabel(t)
             w.setObjectName("Faint")
@@ -246,9 +247,11 @@ class OrderMailboxDialog(QDialog):
             name.setMinimumWidth(190)
             dest = QLineEdit(p["address"])
             dest.setMinimumWidth(240)
-            for c, w in enumerate((addr, pw, name, dest), start=1):
+            tel = QLineEdit(p.get("phone", ""))
+            tel.setFixedWidth(120)
+            for c, w in enumerate((addr, pw, name, dest, tel), start=1):
                 g.addWidget(w, r, c)
-            self.rows[code] = (addr, pw, name, dest)
+            self.rows[code] = (addr, pw, name, dest, tel)
         g.setColumnStretch(1, 1)
         g.setColumnStretch(4, 1)
         v.addLayout(g)
@@ -282,16 +285,16 @@ class OrderMailboxDialog(QDialog):
         cfg = self.settings.setdefault("order_mail", {})
         snd, stores = {}, {}
         try:
-            for code, (addr, pw, name, dest) in self.rows.items():
+            for code, (addr, pw, name, dest, tel) in self.rows.items():
                 a = addr.text().strip()
                 if a:
                     CMD.mail_save_account(self.settings, a, pw.text() or None,
                                           store=(code if code != "BMS" else False))
                     snd[code] = a
                 d = self.MS.DEFAULT_PROFILES.get(code, {})
-                n_, ad = name.text().strip(), dest.text().strip()
-                if n_ != d.get("name") or ad != d.get("address"):
-                    stores[code] = {"name": n_, "address": ad}
+                n_, ad, ph = name.text().strip(), dest.text().strip(), tel.text().strip()
+                if n_ != d.get("name") or ad != d.get("address") or ph != d.get("phone", ""):
+                    stores[code] = {"name": n_, "address": ad, "phone": ph}
         except ValueError as e:
             QMessageBox.warning(self, tr("订单发件邮箱"), str(e))
             return False

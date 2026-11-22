@@ -6105,13 +6105,7 @@ class MainWindow(QMainWindow):
                 sources.pop(row, None)
             else:
                 sources[row] = "手动"
-        self.running = True
-        self.btn_run.setEnabled(False)
-        self.btn_edit.setEnabled(False)
-        self.go_page("order")
-        self.bar.setValue(0)
-        self.run_start = time.time()
-        self.tick.start()
+        self._start_rewrite(tr("正在修改分配"), tr("、").join(parts))
 
         def work():
             from service import rewrite_assignment
@@ -6127,8 +6121,33 @@ class MainWindow(QMainWindow):
 
         __import__("erp_widgets").run_excel_job(work)      # 用 Excel 的活排进同一条线程（一批门店比价不再卡死）
 
+    # 修改分配 / 换方案写文件的几步（service.rewrite_assignment 的进度：<20 备份、20 主订单、30–92 供应商文件、92 起订单文件）
+    RW_STAGES = ((0, "备份原始文件"), (20, "更新主订单"), (30, "回写供应商文件"), (92, "生成订单文件和缺失报告"))
+
+    def _start_rewrite(self, title, sub):
+        """
+        修改分配 / 换方案开始写文件：弹进度窗口（2026-11-22 用户：点「改用方案」没有进度条——以前只跳到 DETERSIVO 页、
+        进度在第 3 步卡片上，方案对比窗口还挡在前面，什么都看不到）
+        """
+        from erp_widgets import TaskDialog
+        from PySide6.QtWidgets import QDialog
+        w = self.scen_panel.window() if getattr(self, "scen_panel", None) is not None else None
+        if isinstance(w, QDialog) and w is not self:
+            w.accept()                                     # 方案对比窗口先关掉（不然挡着进度窗口）
+        self.running = True
+        self.btn_run.setEnabled(False)
+        self.btn_edit.setEnabled(False)
+        self.bar.setValue(0)
+        self.run_start = time.time()
+        self.tick.start()
+        self._rw_task = TaskDialog(self, title, sub, [tr(t) for _, t in self.RW_STAGES], cancellable=False)
+        self._rw_task.show()
+
     def _on_rewrite_done(self, payload):
         out, n, err = payload
+        dlg = getattr(self, "_rw_task", None)
+        if dlg is not None and not dlg.is_done:
+            dlg.post_finished(not err and bool(out), tr("已重新写入 {0} 个商品", n) if not err and out else (err or tr("处理没有完成")))
         if getattr(self, "tracking", None) is not None:
             self.tracking.check_badge()
         self.running = False
@@ -6159,6 +6178,11 @@ class MainWindow(QMainWindow):
         if time.time() - getattr(self, "_cp_last", 0) > 0.4:      # 第 3 步每家门店那几行（别画得太勤）
             self._cp_last = time.time()
             __import__("deter_steps").render_compare(self)
+        rw = getattr(self, "_rw_task", None)
+        if rw is not None and not rw.is_done:
+            rw.post_step(max(k for k, (lo, _) in enumerate(self.RW_STAGES) if pct >= lo), "running", "", text)
+            rw.post_progress(pct)
+            return
         dlg = getattr(self, "_cmp_task", None)
         if dlg is not None and not dlg.is_done:
             i = max(k for k, (lo, _) in enumerate(CMP_STAGES) if pct >= lo)
@@ -6301,13 +6325,7 @@ class MainWindow(QMainWindow):
         msg += tr("\n\n历史记录里这一条也会改成新方案。")
         if QMessageBox.question(self, tr("换方案"), msg) != QMessageBox.Yes:
             return
-        self.running = True
-        self.btn_run.setEnabled(False)
-        self.btn_edit.setEnabled(False)
-        self.go_page("order")
-        self.bar.setValue(0)
-        self.run_start = time.time()
-        self.tick.start()
+        self._start_rewrite(tr("正在换方案"), tr("改用「{0}」 · {1} 个商品换供应商", tr(res[idx]["name"]), n))
 
         def work():
             from service import switch_scenario
