@@ -331,16 +331,19 @@ def test_deter_orders_one_mail_from_bms_with_each_store_address_boxes_amount(tmp
            "order_mail": {"senders": {"1": "ordine.foiano@casa-te.com", "BMS": "INFO@BMSPSRL.COM"}}}
     d = CMD.order_mail_draft(cfg, st, "D2", fetch_body=True, today=date(2026, 11, 22))
     assert d["ids"] == ["D1", "D2", "D4"] and d["from"] == "INFO@BMSPSRL.COM"     # 别的批发商 / 上一批的不算
-    assert d["subject"] == "Ordine MELONI 3PDV 2211"
+    assert d["subject"] == f"Ordine MELONI 3PDV 2211 · {d['nos']['D1']}"
     assert d["to"] == ["alessandro.gianchecchi78@gmail.com"]
+    assert d["cc"] == ["benamar@casa-te.com", "matteohe@casa-te.com", "lucas@casa-te.com"]
     b = d["body"]
     assert "Alessandro," in b.splitlines()[0] and "3 punti vendita" in b
-    assert "FOIANO – CASA & TE SRL" in b and "Contatto scarico: 0575-1782904" in b
+    assert f"FOIANO – ordine n. {d['nos']['D1']}\nCASA & TE SRL" in b and "Contatto scarico: 0575-1782904" in b
+    assert d["nos"]["D4"] in b and d["nos"]["D4"].startswith("SM-2211-")
     assert "Colli: 193 · Importo: € 2.658,63" in b and "Totale: 454 colli · € 6.343,66" in b
     assert "prenota" not in b and "conferm" not in b.lower()
     assert [n for _p, n, ok in d["files"]] == ["Ordine FOIANO MELONI 2211.xlsx", "Ordine MARLIA MELONI 2211.xlsx",
                                               "Ordine S.MARCO MELONI 2211.xlsx"]
     # 只有一家店订了也用 BMS 邮箱（不用门店自己的）
     d2 = CMD.order_mail_draft(cfg, st, "P1", fetch_body=False, today=date(2026, 11, 22))
-    assert d2["from"] == "INFO@BMSPSRL.COM" and d2["subject"] == "Ordine PETRILLO FOIANO 2211"
+    assert d2["from"] == "INFO@BMSPSRL.COM" and d2["subject"].startswith("Ordine PETRILLO FOIANO 2211 · FO-2211-")
+    assert "lucas@casa-te.com" in d2["cc"]
     assert MS.greet_name("Buon pomeriggio Andrea, \nx") == "Andrea" and MS.greet_name("In allegato") is None

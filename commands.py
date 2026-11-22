@@ -863,10 +863,13 @@ def order_mail_draft(settings, st, oid, fetch_body=True, factory=None, today=Non
         f = str(o.get("file") or "").strip()
         if f:
             files.append((f, MS.attachment_name(subject, f), os.path.exists(f)))
+    cc = MS.usual_cc(hist)
+    if deter:                                  # DETERSIVO 一定抄送 lucas@（2026-11-22 用户）
+        cc += [a for a in MS.deter_cc(settings) if a.lower() not in {x.lower() for x in cc + to}]
     return {"ids": ids, "stores": stores, "supplier": supplier, "from": acc["address"], "accounts": accs,
             "from_locked": bool(MS.senders(settings)),
             "nos": {k: MS.order_no(k, st.orders[k]) for k in ids},
-            "to": to, "to_src": to_src, "cc": MS.usual_cc(hist), "subject": subject, "body": body, "body_src": body_src,
+            "to": to, "to_src": to_src, "cc": cc, "subject": subject, "body": body, "body_src": body_src,
             "files": files, "last": last, "need_last": need_last,
             "amount": sum(float((st.orders.get(k) or {}).get("amount") or 0) for k in ids),
             "sent_before": [k for k in ids if (st.orders.get(k) or {}).get("sent")]}
