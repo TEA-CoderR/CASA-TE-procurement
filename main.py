@@ -3173,6 +3173,40 @@ class MainWindow(QMainWindow):
         if self.NAV[self.stack.currentIndex()][0] == "home":
             self.dashboard.refresh()
         QTimer.singleShot(8000, self._check_setup)
+        # 门店扫码枪的建议箱数每天按新数据重算、重新发布（门店照着订：不能等有人打开 Griglia 页才更新）
+        self.scanner_timer = QTimer(self, interval=30 * 60 * 1000, timeout=self._auto_scanner_publish)
+        self.scanner_timer.start()
+        QTimer.singleShot(3 * 60 * 1000, self._auto_scanner_publish)
+
+    def _auto_scanner_publish(self):
+        """每天一次（早上 7 点以后数据库同步完）：门店扫码枪的目录 + 门店数据重新发布；没连预约平台 / 没设工作文件夹不做。
+        Griglia、报价在 Excel 那条线程读，查数据库在 Excel 那条线程外面（几分钟），日志写进运行日志"""
+        try:
+            import booking_api as BA
+            if not BA.ready(settings) or not settings.get("wholesale_root"):
+                return
+        except Exception:
+            return
+        now = datetime.now()
+        if now.hour < 7 or getattr(self, "_scanner_pub_day", None) == now.date() or getattr(self, "_scanner_pub_busy", False):
+            return
+        self._scanner_pub_busy = True
+        me = (settings.get("tracking") or {}).get("me") or settings.get("user_name") or "?"
+        log = self.bridge.log.emit
+
+        def work():
+            try:
+                import scanner_catalog as SC
+                from erp_widgets import excel_call
+                meta, rows, quotes = excel_call(lambda: SC.build_from_workspace(settings, log=lambda *_: None, with_quotes=True))
+                stores, ctx = SC.cached_store_data(settings, rows, quotes, log=log, with_ctx=True)
+                SC.publish_if_changed(settings, dict(meta, advice=ctx) if ctx else meta, rows, me, log=log, stores=stores)
+                self._scanner_pub_day = now.date()
+            except Exception as e:
+                log(tr("⚠ 扫码枪目录自动发布没成功：{0}", e))
+            finally:
+                self._scanner_pub_busy = False
+        threading.Thread(target=work, name="scanner-auto", daemon=True).start()
 
     def _check_setup(self):
         """打开程序后看一下一定要设置的（数据库、同步文件夹）有没有设好；没有就提示一次，点一下去设置"""

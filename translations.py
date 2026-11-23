@@ -4880,4 +4880,5 @@ TRANSLATIONS = {
     '还有 {0} 行': ('{0} more lines', 'altre {0} righe'),
     '订单文件里有程序这次没分给这家的数量（以前比价留下的），没有发送。先到比价结果点「订单文件和程序对不上」→「同步进程序」清掉，再发：': ('The order file contains quantities the program did not allocate to this supplier this time (left from earlier comparisons); not sent. Go to the result, "Order files differ from the program" → "Sync into program" to clear them, then send:', 'Il file ordine contiene quantità che il programma questa volta non ha assegnato a questo fornitore (rimaste da confronti precedenti); non inviato. Vai al risultato, «File ordine diversi dal programma» → «Sincronizza nel programma» per azzerarle, poi invia:'),
     '{0} 找不到这次比价的记录（_备份\\last_allocation.json），没法核对订单文件': ('{0}: no comparison record found (_备份\\last_allocation.json), cannot check the order files', '{0}: nessun record del confronto (_备份\\last_allocation.json), impossibile verificare i file ordine'),
+    '⚠ 扫码枪目录自动发布没成功：{0}': ('⚠ Scanner catalog auto-publish failed: {0}', '⚠ Pubblicazione automatica del catalogo scanner non riuscita: {0}'),
 }

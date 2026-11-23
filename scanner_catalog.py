@@ -250,15 +250,18 @@ def stock_suspect(stock, s30, s90, last_days):
     return last_days >= max(7, math.ceil(3 / daily))
 
 
-def store_row(ean, m, transit_boxes, cost, price, promo, sys_box=None):
+def store_row(ean, m, transit_boxes, cost, price, promo, sys_box=None, pack=None):
     """一个商品在一家店的数据行（扫码枪 StoreInfo 的顺序）：
     [条码, 库存, 30 天销量, 在途箱数, 建议箱数, 进价, 卖价, 打折价, 打折到, 每箱件数, 几天没卖, 库存可能不准 0/1]
-    m = 门店数字 {stock, s30, s90, last_days, pack}；sys_box = 检查清单算法算的箱数（只有 Griglia 商品有）"""
-    pack = _r2(m.get("pack")) if m.get("pack") else None
-    sugg = None if sys_box is None else max(0, int(sys_box) - int(transit_boxes or 0))
+    m = 门店数字 {stock, s30, s90, last_days, pack}；sys_box = 给门店的建议箱数（store_advice，已经扣过在途；
+    只有 Griglia 商品 + 替代商品有）；pack = 审核时用的每箱件数（数据库箱规和批发商差太多时是批发商的），
+    在途箱数也按它折（在途件数 ÷ pack）"""
+    pk = pack if pack else m.get("pack")
+    pk = _r2(pk) if pk else None
+    sugg = None if sys_box is None else max(0, int(sys_box))
     last = m.get("last_days")
     return [ean, _r2(m.get("stock")), _r2(m.get("s30")), _r2(transit_boxes or 0), sugg,
-            _r2(cost), _r2(price), _r2((promo or {}).get("price")), _promo_end(promo), pack,
+            _r2(cost), _r2(price), _r2((promo or {}).get("price")), _promo_end(promo), pk,
             None if last is None else int(last),
             1 if stock_suspect(m.get("stock"), m.get("s30"), m.get("s90"), last) else 0]
 
@@ -334,25 +337,63 @@ def light_numbers(db, sid, codes, today=None):
     return out
 
 
-def store_data(settings, rows, quotes, log=print, stores=STORE_IDS):
+def advice_context(settings, db, log=print, rule=None, now=None):
+    """建议箱数的日历（store_advice.context）：数据库数据的日期、下一个截止（预约平台的设置，读不到星期天 10:00）、
+    到货天数（设置 scanner.lead_days；没设按订单跟踪里 DETERSIVO 单下单到收货的中位数；都没有 3 天）"""
+    import reorder_service as R
+    import store_advice as SA
+    try:
+        latest = R.sales_latest(db)
+    except Exception as e:
+        latest = None
+        log(f"⚠ 扫码枪建议：数据库最新销售日期没查到（{e}），按今天算")
+    if rule is None:
+        try:
+            rule = deadline_rule(settings) if BA.ready(settings) else None
+        except Exception:
+            rule = None
+    rule = rule or {"day": 7, "time": "10:00"}
+    lead = (settings.get("scanner") or {}).get("lead_days")
+    n = 0
+    if not lead:
+        lead = SA.DEFAULT_LEAD
+        try:
+            import commands as CMD
+            import order_tracking as OT
+            lead, n = SA.lead_from_tracking(OT.rows(CMD.tracking_store(settings)))
+        except Exception:
+            pass
+    ctx = SA.context(latest, rule, int(lead), now=now)
+    log(f"扫码枪建议：数据 {ctx['dataDate']} · 截止 {ctx['deadline']} · 到货 {ctx['lead']} 天"
+        + (f"（订单跟踪 {n} 张单）" if n else "") + f" → 备 {ctx['horizon']} 天的货")
+    if ctx["stale"]:
+        log(f"⚠ 扫码枪建议：数据库数据只到 {ctx['dataDate']}，门店看到的建议可能不准")
+    return ctx
+
+
+def store_data(settings, rows, quotes, log=print, stores=STORE_IDS, with_ctx=False):
     """
     rows = build 的目录行。每家店：目录里**所有在数据库里的商品**（Griglia 的、不在 Griglia 只能紧急订的、直厂的）
-    都给 库存 / 销量 / 最后卖出 / 进价 / 卖价 / 打折价（light_numbers，三条查询）；
-    Griglia 商品 + 替代商品另外按检查清单的算法算建议箱数（compute_suggestions，慢）。
-    → {门店号: [门店数据行]}。查数据库（只读），出错的门店跳过（日志里写）。
+    都给 库存 / 销量 / 最后卖出 / 卖价 / 打折价（light_numbers，三条查询）；
+    Griglia 商品 + 替代商品另外算给门店的建议箱数（store_advice：一周订一次的节奏 + 检查清单同一套新算法，慢）。
+    → {门店号: [门店数据行]}（with_ctx：(数据, 日历)）。查数据库（只读），出错的门店跳过（日志里写）。
     """
-    import check_rules as CR
-    import commands as CMD
     import order_record as REC
+    import price_check as PC
     import reorder_service as R
+    import store_advice as SA
+    import commands as CMD
     from datetime import date
     want_grid = {r[0] for r in rows if r[2] in (1, 2)} | {r[4] for r in rows if r[4]}
     want = sorted({r[0] for r in rows} | want_grid)
     if not want:
-        return {}
+        return ({}, None) if with_ctx else {}
     p = CMD.check_params(settings)
     db = R.make_db(settings.get("db") or None)
     try:
+        ctx = advice_context(settings, db, log)
+        algo = SA.algo_for(p["algo"], ctx)
+        best = PC.best_quotes(quotes or {})
         codes = R.codes_from_eans(db, want)
         by_code = {}
         for e, c in codes.items():
@@ -378,32 +419,46 @@ def store_data(settings, rows, quotes, log=print, stores=STORE_IDS):
 
         def one(sid):
             nums = light_numbers(db, sid, code_list, today)
-            sys_box = {}
+            calc = {}
             if grid_codes:
-                # 建议箱数算不出来（数据库慢 / 某个商品数据怪）也照样发这家店的库存 / 销量 / 价格：扫码枪会按 30 天销量估一个
+                # 建议箱数算不出来（数据库慢 / 某个商品数据怪）也照样发这家店的库存 / 销量 / 价格：扫码枪会按销量估一个
                 try:
-                    df = R.compute_suggestions(db, sid, grid_codes, p["days"], p["cycle"], None,
-                                               use_supplier_cycles=p["use_cfg"], algo=p["algo"])
+                    df = R.compute_suggestions(db, sid, grid_codes, p["days"], SA.REVIEW, None,
+                                               use_supplier_cycles=False, algo=algo)
                     res = R.to_rows(df, [], p["days"])
-                    for x in res:
-                        x["file_qty"] = 0              # 门店还没说要：只要系统自己算的箱数（不套「门店点名要」的保护）
-                    CR.init_boxes(res, None, p["algo"], settings.get("reorder") or {})
-                    sys_box = {x["code"]: x.get("sys_box") for x in res}
+                    PC.apply_quotes(res, best)          # ① 箱规和检查清单一样
+                    calc = {x["code"]: x for x in res}
                 except Exception as e:
                     log(f"⚠ 扫码枪门店数据：{R.STORES.get(sid, sid)} 建议箱数没算出来（{e}），只发库存 / 销量 / 价格")
             try:
                 promos = R.query_promos(db, sid, code_list)
             except Exception:
                 promos = {}
-            out = []
+            out, n_cap, n_cens, big = [], 0, 0, []
             for code in code_list:
                 ean = by_code[code]
                 pr = prod.get(code) or {}
                 m = dict(nums.get(code) or {}, pack=pr.get("qtasmallbox"))
                 t = REC.lookup(transit, sid, ean, code) if transit else None
-                tb = int(t["colli"]) if t else 0
-                out.append(store_row(ean, m, tb, (cheapest(quotes, ean) or pr.get("PrezzoForn")) if SEND_COST else None, pr.get("PrezzoVedi1"),
-                                     promos.get(code), sys_box.get(code)))
+                tpcs = float(t.get("pcs") or 0) if t else 0.0
+                x = calc.get(code)
+                pack = float((x or {}).get("pack") or m.get("pack") or 0) or None
+                tb = round(tpcs / pack, 1) if (tpcs and pack) else (float(t.get("colli") or 0) if t else 0)
+                boxes = None
+                if x is not None:
+                    boxes, flags = SA.advise(x, algo, ctx, tpcs)
+                    n_cap += "capped" in flags
+                    n_cens += "censored" in flags
+                    price = (best.get(ean) or {}).get("price") or x.get("price") or 0
+                    if boxes and pack and price and boxes * pack * float(price) >= BIG_ADVICE_EUR:
+                        big.append(f"{x.get('name') or ean} {boxes} × {pack:g} = €{boxes * pack * float(price):,.0f}")
+                out.append(store_row(ean, m, tb, (cheapest(quotes, ean) or pr.get("PrezzoForn")) if SEND_COST else None,
+                                     pr.get("PrezzoVedi1"), promos.get(code), boxes, pack))
+            name = R.STORES.get(sid, sid)
+            if n_cens or n_cap:
+                log(f"扫码枪建议 {name}：断货补算 {n_cens} 个 · 封顶砍过 {n_cap} 个")
+            for b in big:
+                log(f"⚠ 扫码枪建议 {name}：金额很大，看一下 · {b}")
             return out
         from concurrent.futures import ThreadPoolExecutor
         out = {}
@@ -414,12 +469,15 @@ def store_data(settings, rows, quotes, log=print, stores=STORE_IDS):
                     out[sid] = f.result()
                 except Exception as e:
                     log(f"⚠ 扫码枪门店数据：{R.STORES.get(sid, sid)} 没算出来（{e}）")
-        return out
+        return (out, ctx) if with_ctx else out
     finally:
         try:
             db.engine.dispose()
         except Exception:
             pass
+
+
+BIG_ADVICE_EUR = 300      # 给门店的单个建议金额超过这么多：日志里列出来看一眼（门店会照着订）
 
 
 def _store_cache_path():
@@ -430,27 +488,32 @@ def _store_cache_path():
         return None
 
 
-def cached_store_data(settings, rows, quotes, log=print, force=False, path=None, now=None):
-    """门店数据 STORE_MAX_AGE 内算过就用上次的（Griglia 页每次刷新都发布，不用每次都查几分钟数据库）"""
+def cached_store_data(settings, rows, quotes, log=print, force=False, path=None, now=None, with_ctx=False):
+    """门店数据 STORE_MAX_AGE 内算过、而且还是同一天算的就用上次的（Griglia 页每次刷新都发布，不用每次都查几分钟数据库；
+    过了一天建议要按新的日历重算）。with_ctx：(数据, 建议的日历)"""
     import time
     path = path or _store_cache_path()
     now = now or time.time()
+    day = time.strftime("%Y-%m-%d", time.localtime(now))
     if path and not force and os.path.exists(path):
         try:
             with open(path, encoding="utf-8") as f:
                 c = json.load(f)
-            if now - float(c.get("at") or 0) < STORE_MAX_AGE and c.get("data"):
-                return {int(k): v for k, v in c["data"].items()}
+            if now - float(c.get("at") or 0) < STORE_MAX_AGE and c.get("data") \
+                    and (c.get("day") or day) == day:
+                data = {int(k): v for k, v in c["data"].items()}
+                return (data, c.get("ctx")) if with_ctx else data
         except (OSError, ValueError):
             pass
     t0 = time.time()
-    data = store_data(settings, rows, quotes, log)
+    res = store_data(settings, rows, quotes, log, with_ctx=True)
+    data, ctx = res if isinstance(res, tuple) else (res, None)
     log(f"扫码枪门店数据：{len(data)} 家门店，用了 {time.time() - t0:.0f} 秒")
     if path and data:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w", encoding="utf-8", newline="") as f:
-            json.dump({"at": now, "data": {str(k): v for k, v in data.items()}}, f)
-    return data
+            json.dump({"at": now, "day": day, "ctx": ctx, "data": {str(k): v for k, v in data.items()}}, f)
+    return (data, ctx) if with_ctx else data
 
 
 # ===================================================================== 门店清单（扫码枪做的）

@@ -297,7 +297,9 @@ class ScannerDialog(QDialog):
 
         def work():
             meta, rows, quotes = excel_call(lambda: SC.build_from_workspace(self.settings, log=lambda *_: None, with_quotes=True))
-            stores = SC.cached_store_data(self.settings, rows, quotes, log=logs.append, force=True)
+            stores, ctx = SC.cached_store_data(self.settings, rows, quotes, log=logs.append, force=True, with_ctx=True)
+            if ctx:
+                meta = dict(meta, advice=ctx)
             return SC.publish(self.settings, meta, rows, me or "?", stores=stores), len(rows), len(stores)
         res, err = _busy(self, tr("正在发布目录（读 Griglia、这周报价，查五家门店的库存 / 销量 / 价格，要几分钟）…"), work)
         for m in logs:

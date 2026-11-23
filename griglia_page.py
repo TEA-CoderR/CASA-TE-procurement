@@ -572,8 +572,9 @@ class GrigliaPage:
         def send():
             """每家门店的库存 / 销量 / 价格要查数据库（几分钟）：单独一条线程（不占 Excel 那条线程，也不用 Excel）"""
             try:
-                stores = SC.cached_store_data(self.settings, rows, quotes, log=self.sig.log.emit)
-                SC.publish_if_changed(self.settings, meta, rows, me, log=self.sig.log.emit, stores=stores)
+                stores, ctx = SC.cached_store_data(self.settings, rows, quotes, log=self.sig.log.emit, with_ctx=True)
+                SC.publish_if_changed(self.settings, dict(meta, advice=ctx) if ctx else meta, rows, me,
+                                      log=self.sig.log.emit, stores=stores)
             except Exception as e:
                 self.sig.log.emit(tr("⚠ 扫码枪目录没发布：{0}", e))
         import threading

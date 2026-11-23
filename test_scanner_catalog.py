@@ -73,13 +73,13 @@ def test_device_accounts_go_through_platform():
     assert s.calls[1][3] == {"action": "deactivate"}
 
 
-def test_store_data_row_suggestion_minus_transit_and_prices():
+def test_store_data_row_advice_and_prices():
     from datetime import date
     m = {"stock": 9.0, "s30": 22, "s90": 60, "last_days": 1, "pack": 6.0}
     r = SC.store_row("8001", m, 1, 1.104, 2.49, {"price": 1.99, "end": date(2026, 11, 30)}, sys_box=3)
-    assert r == ["8001", 9.0, 22.0, 1.0, 2, 1.1, 2.49, 1.99, "30/11", 6.0, 1, 0]
+    assert r == ["8001", 9.0, 22.0, 1.0, 3, 1.1, 2.49, 1.99, "30/11", 6.0, 1, 0]   # 建议已经扣过在途（store_advice）
     assert SC.store_row("8001", {}, 0, None, None, None)[4] is None              # 不在 Griglia：没有建议箱数，价格照样有
-    assert SC.store_row("8001", {}, 3, None, None, None, sys_box=1)[4] == 0       # 在途比建议多：不建议
+    assert SC.store_row("8001", {"pack": 56}, 0, None, None, None, sys_box=1, pack=1)[9] == 1   # 审核用的箱规（批发商的）
     assert SC.cheapest(QUOTES, "8001") == 1.1 and SC.cheapest(QUOTES, "8002") is None
 
 
