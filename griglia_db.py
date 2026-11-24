@@ -293,6 +293,7 @@ class Catalog:
         self.labels = sorted((self.auto.get("files") or {}).keys())
         self.items = []
         replaced = replaced or {}
+        self._rows, self._replaced = rows, replaced
         for i, r in enumerate(rows):
             p = by_row.get(i + 2) or {}
             self.items.append(self._item(i, r, p, replaced))
@@ -302,6 +303,33 @@ class Catalog:
 
     def _fields(self):
         return field_cols(self.heads)
+
+    def apply_local(self, ev):
+        """
+        刚存好的一条 edit 记录直接套到内存里这个商品上（表格里改一格不用整份重读）→ 新的商品 dict。
+        只管 edit；新增 / 分类表 / 撤销照旧整份重读（load）
+        """
+        x = self.by_ean.get(ev.get("ean"))
+        if ev.get("op") != "edit" or x is None:
+            return None
+        i = x["i"]
+        r = self._rows[i]
+        width = len(self.columns)
+        r["v"] = list(r["v"]) + [None] * (width - len(r["v"]))
+        r["f"] = dict(r.get("f") or {})
+        for ch in ev.get("changes") or ():
+            _apply_change(r, ch["f"], ch.get("new"), self.col)
+        parsed = G.parse_rows([[c["name"] for c in self.columns], r["v"]], struck={2} if r.get("struck") else set())
+        p = {}
+        for src in (parsed["items"], parsed["struck"]):
+            for it in src.values():
+                p = it
+        nx = self._item(i, r, p, self._replaced)
+        self.items[i] = nx
+        if self.by_ean.get(nx["ean"]) is x:
+            self.by_ean[nx["ean"]] = nx
+        self.events.append(ev)
+        return nx
 
     # ---- 编辑（第 2 步）----
     def category_paths(self):

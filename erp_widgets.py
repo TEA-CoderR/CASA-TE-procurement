@@ -2235,7 +2235,10 @@ def remember_columns(table, cfg, key, fields, save, ver=1):
     def store():
         n = table.columnCount()
         cfg[key + "_columns"] = [fields[hh.logicalIndex(v)] for v in range(n)]
-        cfg[key + "_widths"] = {str(fields[c]): table.columnWidth(c) for c in range(n)}
+        old = cfg.get(key + "_widths") or {}
+        # 藏起来的列宽度是 0：记原来的宽度（不然再显示出来时列宽回到默认）
+        cfg[key + "_widths"] = {str(fields[c]): (old.get(str(fields[c]), 0) if table.isColumnHidden(c)
+                                                 else table.columnWidth(c)) for c in range(n)}
         save()
 
     timer.timeout.connect(store)
