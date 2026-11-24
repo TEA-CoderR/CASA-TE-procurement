@@ -99,6 +99,7 @@ class ScannerDialog(QDialog):
         v.addLayout(bl)
         from erp_widgets import fit_to_screen
         fit_to_screen(self)
+        self._start_poll()
         self.load()
         if tab == "lists":
             self.tabs.setCurrentIndex(1)
@@ -137,15 +138,24 @@ class ScannerDialog(QDialog):
         self.cat_lbl = QLabel("")
         self.cat_lbl.setObjectName("PageSub")
         cat.addWidget(self.cat_lbl, 1)
+        self.ref_lbl = QLabel("")
+        self.ref_lbl.setObjectName("PageSub")
+        cat.addWidget(self.ref_lbl)
+        self.b_ref = QPushButton(tr("刷新"))
+        self.b_ref.setToolTip(tr("马上重新读一次扫码枪的状态（窗口开着时也会自动刷新：有扫码枪在等配对时每 {0} 秒一次）",
+                                 self.POLL_FAST // 1000))
+        self.b_ref.clicked.connect(lambda: self.load(quiet=True))
+        cat.addWidget(self.b_ref)
         b = QPushButton(tr("发布目录"))
         b.setToolTip(tr("把现在的 Griglia、这周批发商报价、替代商品、直厂商品，还有每家门店的库存 / 销量 / 在途 / 建议箱数 / 进价 / 卖价 / "
                         "打折价发到扫码枪（每家店只收到自己的；Griglia 页刷新时也会自动发布，门店数据最多 4 小时重算一次）"))
         b.clicked.connect(self.publish)
         cat.addWidget(b)
         v.addLayout(cat)
-        self.t = self._table(self.COLS, (200, 110, 200))
-        self.t.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.t = self._table(self.COLS, (220, 110, 220))
+        self.t.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.t.itemSelectionChanged.connect(self._sel)
+        self.t.doubleClicked.connect(lambda _ix: self.edit())
         v.addWidget(self.t, 1)
         bl = QHBoxLayout()
         self.b_add = QPushButton(tr("新增扫码枪"))
@@ -154,37 +164,129 @@ class ScannerDialog(QDialog):
         self.b_code = QPushButton(tr("重新配对"))
         self.b_code.setToolTip(tr("扫码枪丢了 / 重置了：生成新的配对码，原来那台马上不能用"))
         self.b_code.clicked.connect(self.renew)
+        self.b_edit = QPushButton(tr("编辑"))
+        self.b_edit.setToolTip(tr("改名称、换门店（扫码枪不用重新配对；换门店后它收到新门店的库存 / 销量，清单算新门店的）"))
+        self.b_edit.clicked.connect(self.edit)
         self.b_off = QPushButton(tr("停用"))
         self.b_off.clicked.connect(self.toggle)
-        for b in (self.b_add, self.b_code, self.b_off):
+        self.b_del = QPushButton(tr("删除"))
+        self.b_del.clicked.connect(self.delete)
+        for b in (self.b_add, self.b_code, self.b_edit, self.b_off, self.b_del):
             bl.addWidget(b)
         bl.addStretch(1)
+        self.dev_sum = QLabel("")
+        self.dev_sum.setObjectName("PageSub")
+        bl.addWidget(self.dev_sum)
         v.addLayout(bl)
         self._sel()
         return w
 
+    def _picked(self):
+        rows = sorted({i.row() for i in self.t.selectedIndexes()})
+        return [self.devices[r] for r in rows if 0 <= r < len(self.devices)]
+
     def _current(self):
-        r = self.t.currentRow()
-        return self.devices[r] if 0 <= r < len(self.devices) else None
+        p = self._picked()
+        return p[0] if len(p) == 1 else None
 
     def _sel(self):
-        d = self._current()
+        p = self._picked()
+        d = p[0] if len(p) == 1 else None
         self.b_code.setEnabled(bool(d))
+        self.b_edit.setEnabled(bool(d))
         self.b_off.setEnabled(bool(d))
         self.b_off.setText(tr("启用") if d and not d.get("active") else tr("停用"))
+        stopped = bool(p) and all(not x.get("active") for x in p)
+        self.b_del.setEnabled(stopped)
+        self.b_del.setToolTip(tr("永久删除选中的扫码枪账号（可以按住 Ctrl / Shift 一次选几台）") if stopped
+                              else tr("只能删除已停用的扫码枪：先选中点「停用」，再删除"))
 
-    def load(self):
+    def load(self, quiet=False):
+        """读扫码枪列表；quiet = 不弹进度窗口（刷新按钮 / 自动刷新在后台读）"""
+        if quiet:
+            self._poll_now(force=True)
+            return
         res, err = _busy(self, tr("正在读取扫码枪…"), lambda: SC.devices(self.settings))
+        self._polled(res, err)
+
+    # 后台自动刷新：有扫码枪等配对 / 配对码窗口开着时 8 秒一次，不然 1 分钟一次（只改文字，不重建窗口）
+    POLL_FAST, POLL_SLOW = 8000, 60000
+
+    def _start_poll(self):
+        from PySide6.QtCore import QObject, QTimer, Signal
+
+        class _Bridge(QObject):
+            done = Signal(object, object)
+        self._bridge = _Bridge(self)
+        self._bridge.done.connect(self._polled)
+        self._polling, self._code_box, self._last_poll = False, None, 0.0
+        self._timer = QTimer(self)
+        self._timer.setInterval(2000)
+        self._timer.timeout.connect(self._tick)
+        self._timer.start()
+
+    def _tick(self):
+        import time
+        if not self.isVisible() or self._polling:
+            return
+        fast = SC.waiting(self.devices) > 0 or self._code_box is not None
+        if self.tabs.currentIndex() != 0 and self._code_box is None:
+            return
+        if (time.monotonic() - self._last_poll) * 1000 >= (self.POLL_FAST if fast else self.POLL_SLOW):
+            self._poll_now()
+
+    def _poll_now(self, force=False):
+        import threading
+        import time
+        if self._polling and not force:
+            return
+        self._polling = True
+        self._last_poll = time.monotonic()
+        self.b_ref.setEnabled(False)
+        self.ref_lbl.setText(tr("正在刷新…"))
+
+        def work():
+            try:
+                self._bridge.done.emit(SC.devices(self.settings), None)
+            except Exception as e:          # noqa: BLE001 — 连不上平台只在标签上写，不弹窗
+                self._bridge.done.emit(None, e)
+        threading.Thread(target=work, daemon=True).start()
+
+    def _polled(self, res, err):
+        import time
+        self._polling = False
+        self._last_poll = time.monotonic()
+        if hasattr(self, "b_ref"):
+            self.b_ref.setEnabled(True)
         if err:
+            self.ref_lbl.setText("")
             self.cat_lbl.setText("⚠ " + str(err))
             self.cat_lbl.setStyleSheet(f"color:{theme.T('err')};")
             return
-        self.devices, cat = res
+        devs, cat = res
+        before = {d.get("id"): d for d in self.devices}
+        newly = [d for d in devs if d.get("paired") and d.get("active")
+                 and before.get(d.get("id")) and not before[d.get("id")].get("paired")]
         self.cat_lbl.setStyleSheet("")
         self.cat_lbl.setText(tr("目录：{0} 发布 · {1} 个商品 · {2}", _when(cat["createdAt"]), cat["itemCount"], cat["createdBy"])
                              if cat else tr("目录还没发布过"))
-        self.t.setRowCount(len(self.devices))
-        for k, d in enumerate(self.devices):
+        self.ref_lbl.setText(tr("{0} 刷新", datetime.now().strftime("%H:%M:%S")))
+        self._fill_devices(SC.sort_devices(devs))
+        box = self._code_box
+        for d in newly:
+            if box and box[0] == d.get("id"):
+                box[1].setText(tr("✓ 已配对，可以关掉这个窗口了"))
+                box[1].setStyleSheet(f"color:{theme.T('ok')};font-weight:600;")
+            self.win.show_toast(tr("✓ {0} 已配对", d.get("name") or ""))
+
+    def _fill_devices(self, devs):
+        keep = {d.get("id") for d in self._picked()} if self.devices else set()
+        self.devices = devs
+        self.t.blockSignals(True)
+        self.t.setRowCount(len(devs))
+        sel = self.t.selectionModel()
+        sel.clearSelection()
+        for k, d in enumerate(devs):
             if not d.get("active"):
                 st, tok = tr("已停用"), "muted"
             elif d.get("paired"):
@@ -193,10 +295,29 @@ class ScannerDialog(QDialog):
                 st, tok = tr("等待配对（{0} 前）", _when(d.get("pairExpiresAt"))), "warn"
             vals = [d.get("name") or "", STORE_NAMES.get(d.get("entityCode"), ""), st, _when(d.get("lastSeenAt"))]
             for c, val in enumerate(vals):
-                it = QTableWidgetItem(val)
+                it = self.t.item(k, c)
+                if it is None:
+                    it = QTableWidgetItem()
+                    self.t.setItem(k, c, it)
+                it.setText(val)
                 if c == 2:
                     it.setForeground(QColor(theme.T(tok)))
-                self.t.setItem(k, c, it)
+                elif not d.get("active"):
+                    it.setForeground(QColor(theme.T("muted")))
+                else:
+                    it.setData(Qt.ForegroundRole, None)
+            if d.get("id") in keep:
+                sel.select(self.t.model().index(k, 0), sel.SelectionFlag.Select | sel.SelectionFlag.Rows)
+        self.t.blockSignals(False)
+        n_on = sum(1 for d in devs if d.get("active") and d.get("paired"))
+        n_wait = SC.waiting(devs)
+        n_off = sum(1 for d in devs if not d.get("active"))
+        parts = [tr("{0} 台在用", n_on)]
+        if n_wait:
+            parts.append(tr("{0} 台等待配对", n_wait))
+        if n_off:
+            parts.append(tr("{0} 台已停用", n_off))
+        self.dev_sum.setText(" · ".join(parts))
         self._sel()
 
     def _show_code(self, device, code):
@@ -218,24 +339,42 @@ class ScannerDialog(QDialog):
         lay.addWidget(tip_label(tr("{0} 前有效 · 只能用一次", _when(device.get("pairExpiresAt"))),
                                 tr("扫码枪上：浏览器打开 {0}/app 下载安装 → 打开 CASA&TE Scanner → 输入这个码 → Collega。"
                                    "这个码只显示这一次，关掉窗口后看不到了（可以再点「重新配对」）。", BA.base_url(self.settings))))
+        state = QLabel(tr("等待扫码枪输入配对码…"))
+        state.setObjectName("PageSub")
+        state.setAlignment(Qt.AlignCenter)
+        state.setToolTip(tr("窗口开着时每 {0} 秒查一次，配对好了这里会变成绿色", self.POLL_FAST // 1000))
+        lay.addWidget(state)
         ok = QPushButton(tr("关闭"))
         ok.setObjectName("Primary")
         ok.clicked.connect(d.accept)
         lay.addWidget(ok)
-        d.exec()
+        self._code_box = (device.get("id"), state)
+        try:
+            d.exec()
+        finally:
+            self._code_box = None
 
-    def add(self):
+    def _store_box(self, code=None):
+        store = QComboBox()
+        for c, n in ((1, "FOIANO"), (2, "MARLIA"), (3, "S.FILIPPO"), (4, "S.MARCO"), (5, "S.CONCORDIO"), (0, "BMS")):
+            store.addItem(n, c)
+        if code is not None and store.findData(code) >= 0:
+            store.setCurrentIndex(store.findData(code))
+        return store
+
+    def _name_dialog(self, title, ok_text, name0="", code0=None):
+        """名称 + 门店小窗口 → (名称, 门店号) 或 None"""
         d = QDialog(self)
-        d.setWindowTitle(tr("新增扫码枪"))
+        d.setWindowTitle(title)
         g = QGridLayout(d)
         g.setContentsMargins(20, 18, 20, 16)
         g.setHorizontalSpacing(12)
         g.setVerticalSpacing(10)
-        name = QLineEdit()
+        name = QLineEdit(name0)
+        name.setMaxLength(60)
         name.setPlaceholderText(tr("例如 TC22 FOIANO 1"))
-        store = QComboBox()
-        for code, n in ((1, "FOIANO"), (2, "MARLIA"), (3, "S.FILIPPO"), (4, "S.MARCO"), (5, "S.CONCORDIO"), (0, "BMS")):
-            store.addItem(n, code)
+        name.setMinimumWidth(260)
+        store = self._store_box(code0)
         g.addWidget(QLabel(tr("名称")), 0, 0)
         g.addWidget(name, 0, 1)
         g.addWidget(QLabel(tr("门店")), 1, 0)
@@ -244,24 +383,95 @@ class ScannerDialog(QDialog):
         b.addStretch(1)
         c = QPushButton(tr("取消"))
         c.clicked.connect(d.reject)
-        ok = QPushButton(tr("新增"))
+        ok = QPushButton(ok_text)
         ok.setObjectName("Primary")
         ok.clicked.connect(lambda: d.accept() if name.text().strip() else name.setFocus())
         b.addWidget(c)
         b.addWidget(ok)
         g.addLayout(b, 2, 0, 1, 2)
-        store.currentIndexChanged.connect(lambda _i: name.setText(name.text() or f"TC22 {store.currentText()}"))
-        name.setText(f"TC22 {store.currentText()}")
+        if not name0:
+            store.currentIndexChanged.connect(lambda _i: name.setText(f"TC22 {store.currentText()}"))
+            name.setText(f"TC22 {store.currentText()}")
+        name.selectAll()
         if d.exec() != QDialog.Accepted:
+            return None
+        return name.text().strip(), store.currentData()
+
+    @staticmethod
+    def _store_arg(code):
+        return "BMS" if code == 0 else str(code)
+
+    def _api_error(self, title, err):
+        msg = str(err)
+        if getattr(err, "code", "") == "VALIDATION" or "VALIDATION" in msg:
+            msg = tr("预约平台还不能做这个操作：要先在服务器上更新预约平台（合并「改名 / 删除扫码枪」那次更新，再跑一次 deploy/update.sh）。")
+        QMessageBox.warning(self, title, msg)
+
+    def add(self):
+        got = self._name_dialog(tr("新增扫码枪"), tr("新增"))
+        if not got:
             return
-        sid = store.currentData()
-        res, err = _busy(self, tr("正在新增扫码枪…"),
-                         lambda: SC.add_device(self.settings, name.text().strip(), "BMS" if sid == 0 else str(sid)))
+        nm, sid = got
+        res, err = _busy(self, tr("正在新增扫码枪…"), lambda: SC.add_device(self.settings, nm, self._store_arg(sid)))
         if err:
             QMessageBox.warning(self, tr("新增扫码枪"), str(err))
             return
         self.load()
         self._show_code(*res)
+
+    def edit(self):
+        d = self._current()
+        if not d:
+            return
+        got = self._name_dialog(tr("编辑扫码枪"), tr("保存"), d.get("name") or "", d.get("entityCode"))
+        if not got:
+            return
+        nm, sid = got
+        old_nm, old_sid = d.get("name") or "", d.get("entityCode")
+        if nm == old_nm and sid == old_sid:
+            return
+        _r, err = _busy(self, tr("正在保存…"), lambda: SC.update_device(
+            self.settings, d["id"], nm, self._store_arg(sid) if sid != old_sid else None))
+        if err:
+            self._api_error(tr("编辑扫码枪"), err)
+            return
+        self.load(quiet=True)
+
+        def undo():
+            _u, e = _busy(self, tr("正在撤销…"), lambda: SC.update_device(
+                self.settings, d["id"], old_nm, self._store_arg(old_sid) if sid != old_sid and old_sid is not None else None))
+            if e:
+                QMessageBox.warning(self, tr("编辑扫码枪"), str(e))
+            if self.isVisible():
+                self.load(quiet=True)
+        txt = tr("✓ 扫码枪已改名：{0} → {1}", old_nm, nm) if nm != old_nm else tr("✓ {0} 已改到 {1}", nm, STORE_NAMES.get(sid, ""))
+        if nm != old_nm and sid != old_sid:
+            txt += " · " + STORE_NAMES.get(sid, "")
+        self.win.show_toast(txt, 6000, action=(tr("撤销"), undo))
+
+    def delete(self):
+        p = [d for d in self._picked() if not d.get("active")]
+        if not p:
+            return
+        names = "\n".join("· " + (d.get("name") or "") + " · " + STORE_NAMES.get(d.get("entityCode"), "") for d in p[:15])
+        if len(p) > 15:
+            names += "\n" + tr("…还有 {0} 台", len(p) - 15)
+        if QMessageBox.question(self, tr("删除"), tr(
+                "永久删除这 {0} 台已停用的扫码枪？\n\n{1}\n\n删除后不能撤销；以后要再用这台扫码枪，点「新增扫码枪」重新配对。"
+                "门店已经交过的清单、库存报错不受影响。", len(p), names)) != QMessageBox.Yes:
+            return
+        done = []
+
+        def work():
+            for d in p:
+                SC.delete_device(self.settings, d["id"])
+                done.append(d)
+        _r, err = _busy(self, tr("正在删除…"), work)
+        if err:
+            self._api_error(tr("删除"), err)
+        if done:
+            self.win.show_toast(tr("✓ 已删除 {0} 台扫码枪", len(done)))
+        self.load(quiet=True)
 
     def renew(self):
         d = self._current()
@@ -419,7 +629,7 @@ class ScannerDialog(QDialog):
         l = self.lists[rows[0]]
         d = QDialog(self)
         d.setWindowTitle(tr("{0} · {1} 的清单", STORE_NAMES.get(l.get("entityCode"), ""), _day(l.get("week"))))
-        d.resize(760, 520)
+        d.resize(860, 560)
         v = QVBoxLayout(d)
         cols = ("条码", "商品", "箱数", "类型", "原因 / 原商品", "扫码枪")
         t = self._table(cols, (130, 260, 56, 80, 200))
@@ -439,6 +649,8 @@ class ScannerDialog(QDialog):
                 if x.get("kind") == "urgent" and c in (3, 4):
                     it.setForeground(QColor(theme.T("err")))
                 t.setItem(k, c, it)
+        import product_images as PI
+        PI.add_thumbs(t, 1, 0, self.settings)
         v.addWidget(t, 1)
         ok = QPushButton(tr("关闭"))
         ok.clicked.connect(d.accept)
@@ -521,6 +733,8 @@ class ScannerDialog(QDialog):
         self.rt = self._table(self.RCOLS, (100, 230, 120, 56, 56, 56, 100, 100))
         for c in (3, 4, 5):
             self.rt.horizontalHeaderItem(c).setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        import product_images as PI
+        PI.add_thumbs(self.rt, 1, 2, self.settings)
         self.rt.itemSelectionChanged.connect(self._rsel)
         v.addWidget(self.rt, 1)
         bl = QHBoxLayout()

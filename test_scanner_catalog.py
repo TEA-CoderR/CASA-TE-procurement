@@ -73,6 +73,21 @@ def test_device_accounts_go_through_platform():
     assert s.calls[1][3] == {"action": "deactivate"}
 
 
+def test_rename_move_delete_and_sort_devices():
+    BA.set_token("k" * 40)
+    s = FakeSession({("POST", "/api/erp/scanners/4"): (200, {"device": {"id": 4, "name": "TC22 MARLIA"}, "deleted": 4})})
+    assert SC.update_device({}, 4, " TC22 MARLIA ", session=s)["name"] == "TC22 MARLIA"
+    assert s.calls[0][3] == {"action": "update", "name": "TC22 MARLIA"}        # 门店不改就不发
+    SC.update_device({}, 4, "X", "BMS", session=s)
+    assert s.calls[1][3] == {"action": "update", "name": "X", "entityCode": 0}
+    SC.delete_device({}, 4, session=s)
+    assert s.calls[2][3] == {"action": "delete"}
+    devs = [{"id": 1, "name": "b", "active": False}, {"id": 2, "name": "z", "entityCode": 4, "active": True, "paired": False},
+            {"id": 3, "name": "a", "entityCode": 4, "active": True, "paired": True}, {"id": 4, "name": "c", "entityCode": 1, "active": True}]
+    assert [d["id"] for d in SC.sort_devices(devs)] == [4, 3, 2, 1]        # 在用的在前，停用的最后
+    assert SC.waiting(devs) == 2
+
+
 def test_store_data_row_advice_and_prices():
     from datetime import date
     m = {"stock": 9.0, "s30": 22, "s90": 60, "last_days": 1, "pack": 6.0}

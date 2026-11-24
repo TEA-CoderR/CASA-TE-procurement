@@ -779,6 +779,37 @@ def set_active(settings, device_id, active, session=None):
     return data["device"]
 
 
+def update_device(settings, device_id, name=None, store=None, session=None):
+    """改名 / 换门店（配对不受影响）；store = 门店号 "1"–"5" / "BMS"，None = 不改"""
+    body = {"action": "update"}
+    if name is not None:
+        body["name"] = str(name).strip()
+    if store is not None:
+        body["entityCode"] = BA.entity_of(store)
+    data = BA._call(settings, "POST", f"/api/erp/scanners/{int(device_id)}", body=body, session=session)
+    return data["device"]
+
+
+def delete_device(settings, device_id, session=None):
+    """删掉扫码枪账号（平台只让删已停用的）"""
+    BA._call(settings, "POST", f"/api/erp/scanners/{int(device_id)}", body={"action": "delete"}, session=session)
+
+
+def waiting(devs):
+    """还在等配对的扫码枪个数（启用中、还没配对）"""
+    return sum(1 for d in devs or [] if d.get("active") and not d.get("paired"))
+
+
+def sort_devices(devs):
+    """在用的在前（门店 → 名称），停用的放最后"""
+    import re
+
+    def nat(name):                       # TC22 S.MARCO 2 排在 TC22 S.MARCO 10 前面
+        return [(0, int(p), "") if p.isdigit() else (1, 0, p) for p in re.split(r"(\d+)", str(name or "").upper()) if p]
+    return sorted(devs or [], key=lambda d: (not d.get("active"), d.get("entityCode") is None,
+                                             d.get("entityCode") or 0, nat(d.get("name"))))
+
+
 def pretty_code(code):
     c = str(code or "")
     return f"{c[:4]}-{c[4:]}" if len(c) == 8 else c
