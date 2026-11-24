@@ -4,7 +4,7 @@
 """
 import json
 
-COMPANY_DEFAULTS_VER = 22          # v3.3.26 发布时同步
+COMPANY_DEFAULTS_VER = 23          # v3.3.27 发布时同步
 
 COMPANY_DEFAULTS = json.loads(r'''
 {
@@ -797,6 +797,13 @@ COMPANY_DEFAULTS = json.loads(r'''
   "formattato_059603.xlsx": "MEGA CASH"
  },
  "table_widths": {
+  "FillItemsDialog|名称|EAN|在订单里|日均 ↓|本店库存|库存够卖（天）|已订（箱）|每箱件数|一箱 €|加（箱） ✎|订后够卖（天）|加的金额 €": {
+   "1": 145,
+   "10": 109,
+   "4": 79,
+   "5": 107,
+   "6": 97
+  },
   "MainWindow||供应商|起订量|各店|星期": {
    "1": 113
   },
@@ -908,7 +915,7 @@ COMPANY_DEFAULTS = json.loads(r'''
   "transit_dlg_cols_hidden": [],
   "transit_dlg_cols_hidden_ver": 1,
   "transit_dlg_columns_ver": 1,
-  "written_at": "11-15 14:40"
+  "written_at": "11-22 19:30"
  },
  "update_auto": true,
  "volantino": {

@@ -11,7 +11,7 @@ from PySide6.QtCore import Qt, QByteArray
 from PySide6.QtGui import QColor, QPainter, QPen, QIcon, QPixmap, QLinearGradient, QFont
 from PySide6.QtSvg import QSvgRenderer
 
-APP_VERSION = "v3.3.26"
+APP_VERSION = "v3.3.27"
 FONT_DIR = os.path.join(getattr(sys, "_MEIPASS", None) or os.path.dirname(os.path.abspath(__file__)), "fonts")
 # 中文字体：Windows 上用微软雅黑 UI（2026-11-16 用户：有的字看着糊——设计稿的 Noto Sans SC 没有屏幕微调信息，
 # 在 Windows 的小字号下发虚；雅黑是专门为 Windows 屏幕调过的）；别的系统才用程序带的 Noto Sans SC
@@ -606,6 +606,10 @@ def build_qss():
     #DialogFoot {{ background: {t['surface2']}; border-top: 1px solid {t['line']}; }}
     #WinTitle {{ font-size: 17px; font-weight: 700; }}
     #StatusBar {{ background: {t['side'] if dark else t['surface']}; border-top: 1px solid {t['line']}; }}
+    QTreeWidget#SideTree {{ background: transparent; border: none; outline: 0; }}
+    QTreeWidget#SideTree::item {{ padding: 5px 2px; border: none; border-radius: 6px; }}
+    QTreeWidget#SideTree::item:hover {{ background: {t['hover']}; }}
+    QTreeWidget#SideTree::item:selected {{ background: {t['accent_soft']}; color: {t['accent']}; }}
     QTableWidget#ReviewTable, QTableWidget#CleanTable {{ background: {t['canvas']}; selection-background-color: {'#101B33' if dark else t['accent_soft']}; }}
     QTableWidget#ReviewTable::item, QTableWidget#CleanTable::item {{ border-right: none; border-bottom: 1px solid {'#121A2D' if dark else t['line']}; padding: 4px 10px; }}
     #ReviewTable QHeaderView::section, #CleanTable QHeaderView::section {{ background: {'#0A1020' if dark else t['surface2']}; color: {t['muted']};

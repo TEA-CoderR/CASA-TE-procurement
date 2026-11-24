@@ -2901,7 +2901,7 @@ class MainWindow(QMainWindow):
     NAV_GROUPS = [
         (tr("概览"), [("home", tr("驾驶舱"))]),
         (tr("采购管理"), [("store_orders", tr("LUCAS定制采购")), ("order", tr("DETERSIVO采购")),
-                        ("tracking", tr("采购订单跟踪"))]),
+                        ("tracking", tr("采购订单跟踪")), ("grid_db", tr("Griglia 商品目录"))]),
         (tr("销售分析"), [("volantino", tr("促销分析")), ("sellout", tr("SELL OUT 分析"))]),
         (tr("分货管理"), [("distribution", tr("分货数据处理")), ("import", tr("导入 / 导出"))]),
         (tr("系统"), [("settings", tr("系统设置")), ("log", tr("运行日志"))]),
@@ -2911,8 +2911,10 @@ class MainWindow(QMainWindow):
     # 直送 / 并 BMS）；门店采购 = 门店自己采购的供应商（PDV 文件夹，一张单一家店）
     SUB_PAGES = {"store_orders": [("store_orders", tr("总仓采购")), ("store_pdv", tr("门店采购"))],
                  "order": [("order", tr("比价处理")), ("result", tr("比价结果")), ("history", tr("历史记录")),
-                           ("rules", tr("起订规则")), ("search", tr("缺失查找")),
-                           ("griglia", tr("Griglia"))]}
+                           ("rules", tr("起订规则")), ("search", tr("缺失查找"))],
+                 # 2026-11-24 Griglia 搬进程序（第 1 步）：图标栏「订单」下面一个入口，商品目录 + 原来的统计页
+                 "grid_db": [("grid_db", tr("Griglia 商品目录")), ("grid_cats", tr("Griglia 分类")),
+                             ("grid_hist", tr("Griglia 改动记录")), ("griglia", tr("Griglia 统计"))]}
     SUB_PARENT = {k: parent for parent, subs in SUB_PAGES.items() for k, _ in subs}
     NAV_SIDE = [item for _, items in NAV_GROUPS for item in items]          # 侧边栏上的
     NAV = _all_pages(NAV_SIDE, SUB_PAGES)                                    # 所有页面（含标签页）
@@ -2924,7 +2926,8 @@ class MainWindow(QMainWindow):
             ("buy", tr("采购"), "cart",
              ["store_orders", "store_pdv", "order", "result", "history", "rules", "search"]),
             ("tracking", tr("订单"), "truck", ["tracking"]),
-            ("analysis", tr("分析"), "result", ["sellout", "volantino", "griglia"]),
+            ("grid", tr("Griglia"), "griglia", ["grid_db", "grid_cats", "grid_hist", "griglia"]),
+            ("analysis", tr("分析"), "result", ["sellout", "volantino"]),
             ("data", tr("数据"), "db", ["distribution", "import"]),
             ("settings", tr("设置"), "rules", ["settings", "log"])]
     # 2026-11-16 用户：点图标栏弹出的小菜单只放这一级的页面——比价结果 / 历史记录 / 起订规则 / 缺失查找是 DETERSIVO采购
@@ -2997,6 +3000,11 @@ class MainWindow(QMainWindow):
         self.distribution = self.import_page = None     # 分货 / 导入页要用 pandas（加载要 1 秒左右）：第一次建页面时才加载
         from griglia_page import GrigliaPage
         self.griglia_page = GrigliaPage(self, settings, _UI)
+        from griglia_catalog_page import GrigliaCatalogPage
+        self.grid_db = GrigliaCatalogPage(self, settings, _UI)
+        from griglia_edit_page import HistoryPage, CategoryPage
+        self.grid_hist = HistoryPage(self, settings, _UI)
+        self.grid_cats = CategoryPage(self, settings, _UI)
         from tracking_page import TrackingPage
         self.tracking = TrackingPage(self, settings, _UI)
         from volantino_page import VolantinoPage
@@ -3015,6 +3023,9 @@ class MainWindow(QMainWindow):
             "rules": lambda: (self._page_rules(), True),
             "search": lambda: (self._page_missing(), True),
             "griglia": lambda: (self.griglia_page.build(), False),
+            "grid_db": lambda: (self.grid_db.build(), False),
+            "grid_cats": lambda: (self.grid_cats.build(), False),
+            "grid_hist": lambda: (self.grid_hist.build(), False),
             "tracking": lambda: (self.tracking.build(), False),
             "volantino": lambda: (self.volantino.build(), False),
             "sellout": lambda: (self.sellout.build(), False),
@@ -3852,7 +3863,8 @@ class MainWindow(QMainWindow):
     # 每一页的「页面对象」（有 restyle()）：换颜色时只马上刷新正在看的这一页，别的页第一次切过去时再刷新
     PAGE_OBJ = {"home": "dashboard", "store_orders": "store_orders", "store_pdv": "store_pdv",
                 "settings": "settings_page", "order": "order_check", "distribution": "distribution",
-                "import": "import_page", "griglia": "griglia_page", "tracking": "tracking",
+                "import": "import_page", "griglia": "griglia_page", "grid_db": "grid_db", "grid_cats": "grid_cats",
+                "grid_hist": "grid_hist", "tracking": "tracking",
                 "volantino": "volantino", "sellout": "sellout"}
 
     def apply_theme(self, qss=True):
