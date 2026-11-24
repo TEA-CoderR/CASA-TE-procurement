@@ -827,26 +827,49 @@ def order_mail_draft(settings, st, oid, fetch_body=True, factory=None, today=Non
         raise RuntimeError(tr("还没设置邮箱（系统设置 → 邮箱）"))
     own = {a["address"].lower() for a in accs}
     hist = _sent_history(st, own)
+    deter = all(MS.is_deter(st.orders[k]) for k in ids)     # DETERSIVO：一律 BMS 邮箱、五家店一封、不要确认 / 预约
     if MS.senders(settings):                   # 设了订单发件邮箱：严格照它，没设这家就不能发
-        bad = MS.sender_problem(stores, settings, accs)
+        bad = MS.sender_problem(stores, settings, accs, deter=deter)
         if bad:
             raise RuntimeError(bad)
-    acc = MS.sender_for(stores, accs, settings)
+    acc = MS.sender_for(stores, accs, settings, deter=deter)
+    if acc is None:
+        raise RuntimeError(tr("没有能用的发件邮箱（系统设置 → 邮箱 → 订单发件邮箱）"))
     supplier = str(o.get("supplier") or "")
     to, to_src = MS.recipients(st, supplier, hist)
+    name = None
+    if deter:
+        # 称呼：以前发给这家的订单信开头的名字（「Buonasera Alessandro,」）；读过的正文直接用，fetch_body 时没读过的现在读
+        prev = MS.last_sent(hist, st, supplier)
+        text = _cached_body(prev)
+        if text is None and prev and fetch_body:
+            try:
+                text = mail_view_body(settings, prev, factory=factory)
+            except Exception:
+                text = None
+        name = MS.greet_name(text)
     # 2026-11-21：正文一律按订单数据填固定模板（不再照搬上一封信，以前常对不上）
-    subject, body = MS.compose(supplier, [(k, st.orders[k]) for k in ids], settings, today)
+    subject, body = MS.compose(supplier, [(k, st.orders[k]) for k in ids], settings, today, name=name)
     body_src = "template"
     last = MS.last_sent(hist, st, supplier, acc["address"])
     need_last = False
     files = []
-    f = str(o.get("file") or "").strip()
-    if f:
-        files.append((f, MS.attachment_name(subject, f), os.path.exists(f)))
+    if deter:
+        for k in ids:                          # 每家店一个订单文件：Ordine FOIANO MELONI 2211.xlsx
+            f = str(st.orders[k].get("file") or "").strip()
+            if f:
+                files.append((f, MS.deter_attachment(st.orders[k], supplier, f, today), os.path.exists(f)))
+    else:
+        f = str(o.get("file") or "").strip()
+        if f:
+            files.append((f, MS.attachment_name(subject, f), os.path.exists(f)))
+    cc = MS.usual_cc(hist)
+    if deter:                                  # DETERSIVO 一定抄送 lucas@（2026-11-22 用户）
+        cc += [a for a in MS.deter_cc(settings) if a.lower() not in {x.lower() for x in cc + to}]
     return {"ids": ids, "stores": stores, "supplier": supplier, "from": acc["address"], "accounts": accs,
             "from_locked": bool(MS.senders(settings)),
             "nos": {k: MS.order_no(k, st.orders[k]) for k in ids},
-            "to": to, "to_src": to_src, "cc": MS.usual_cc(hist), "subject": subject, "body": body, "body_src": body_src,
+            "to": to, "to_src": to_src, "cc": cc, "subject": subject, "body": body, "body_src": body_src,
             "files": files, "last": last, "need_last": need_last,
             "amount": sum(float((st.orders.get(k) or {}).get("amount") or 0) for k in ids),
             "sent_before": [k for k in ids if (st.orders.get(k) or {}).get("sent")]}
@@ -893,6 +916,7 @@ def send_order(settings, st, ids, frm, to, cc, subject, body, files, via="deskto
     for p, _n in files:
         if not os.path.exists(p):
             raise RuntimeError(tr("附件找不到：{0}", p))
+    _check_attachments(files)
     msg = MS.build(acc["address"], to, cc, subject, body, files)
     mid, saved = MS.send(acc, pw, msg, smtp_factory=smtp_factory, imap_factory=imap_factory)
     supplier = str(st.orders[ids[0]].get("supplier") or "")
@@ -905,6 +929,26 @@ def send_order(settings, st, ids, frm, to, cc, subject, body, files, via="deskto
                                      "files": [n_ for _p, n_ in files], "force": force},
           {"message_id": mid, "saved_in_sent": saved, "orders": n})
     return {"mid": mid, "saved": saved, "n": n}
+
+
+def _check_attachments(files):
+    """
+    发信前最后一道检查（2026-11-22：发出去的单里多了以前比价留下的 93 行、€2,889）：DETERSIVO 订单文件里有
+    程序这次没分给这家的数量 → 不发，列出来。人手改的（AMBROSIO 那种）不拦，是有人特意改的
+    """
+    import order_edits as OE
+    try:
+        bad = [e for e in OE.send_check([p for p, _n in files]) if e.get("kind") == "stale"]
+    except Exception as e:                                   # 检查本身出错：照样不发，说清楚
+        raise RuntimeError(tr("发信前核对订单文件没做成，先不发：{0}", e))
+    if not bad:
+        return
+    lines = [tr("{0} · {1}：订单文件 {2:g} 箱，程序这次 {3:g} 箱", e["supplier"], e["desc"] or e["ean"], e["new"], e["old"])
+             for e in bad[:12]]
+    if len(bad) > 12:
+        lines.append(tr("还有 {0} 行", len(bad) - 12))
+    raise RuntimeError(tr("订单文件里有程序这次没分给这家的数量（以前比价留下的），没有发送。先到比价结果点「订单文件和程序对不上」→「同步进程序」清掉，再发：")
+                       + "\n" + "\n".join(lines))
 
 
 def mail_apply(st, sugs, via="desktop"):

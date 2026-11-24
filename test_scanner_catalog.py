@@ -32,10 +32,10 @@ def test_catalog_rows_griglia_state_wholesalers_substitute_direct():
                           {"ean": {"5005": "BAMA", "8005": "BAMA"}, "items": {("BAMA", "5005"): [6.0, 1.2]}}, week="2026-W47")
     by = {r[0]: r for r in rows}
     assert meta["sources"] == ["MELONI", "PETRILLO"] and meta["directs"] == ["BAMA"]
-    assert by["8001"] == ["8001", "SVELTO 1000", 1, [0, 1], "", "", -1, 12, 1.1, 1]   # 箱规 · 最便宜件价 · 哪家
+    assert by["8001"] == ["8001", "SVELTO 1000", 1, [0, 1], "", "", -1, 12, None, -1]   # 箱规；进价不发给门店（2026-11-22）
     assert by["8002"][3] == []                      # 价格 0 的行不算有货
     assert by["8003"][2] == 2 and by["8003"][4:6] == ["8004", "NUOVO"]
-    assert by["8005"] == ["8005", "FUORI GRIGLIA", 0, [0], "", "", 0, None, 2, 0]   # 前面的 0 去掉
+    assert by["8005"] == ["8005", "FUORI GRIGLIA", 0, [0], "", "", 0, None, None, -1]   # 前面的 0 去掉
     assert by["5005"][2] == 0 and by["5005"][6] == 0
     assert by["5005"][7] == 6                       # 直厂商品的箱规从 SCHEDA 来
     assert meta["counts"] == {"griglia": 3, "stopped": 1, "items": 6}
@@ -73,13 +73,13 @@ def test_device_accounts_go_through_platform():
     assert s.calls[1][3] == {"action": "deactivate"}
 
 
-def test_store_data_row_suggestion_minus_transit_and_prices():
+def test_store_data_row_advice_and_prices():
     from datetime import date
     m = {"stock": 9.0, "s30": 22, "s90": 60, "last_days": 1, "pack": 6.0}
     r = SC.store_row("8001", m, 1, 1.104, 2.49, {"price": 1.99, "end": date(2026, 11, 30)}, sys_box=3)
-    assert r == ["8001", 9.0, 22.0, 1.0, 2, 1.1, 2.49, 1.99, "30/11", 6.0, 1, 0]
+    assert r == ["8001", 9.0, 22.0, 1.0, 3, 1.1, 2.49, 1.99, "30/11", 6.0, 1, 0]   # 建议已经扣过在途（store_advice）
     assert SC.store_row("8001", {}, 0, None, None, None)[4] is None              # 不在 Griglia：没有建议箱数，价格照样有
-    assert SC.store_row("8001", {}, 3, None, None, None, sys_box=1)[4] == 0       # 在途比建议多：不建议
+    assert SC.store_row("8001", {"pack": 56}, 0, None, None, None, sys_box=1, pack=1)[9] == 1   # 审核用的箱规（批发商的）
     assert SC.cheapest(QUOTES, "8001") == 1.1 and SC.cheapest(QUOTES, "8002") is None
 
 

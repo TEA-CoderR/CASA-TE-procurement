@@ -1311,6 +1311,12 @@ def run_process(ordine_file, eliminare_path, distribuire_path, log, progress=Non
         cleared = _clear_previous(ws, col_ord, order_input, supplier_ean_index, prev_written.get(file, {}))
         if cleared:
             log(tr("  {0}：清掉上次写入的 {1} 个数量", file, cleared))
+        # 剩下的数量都不是上次程序写的（以前几次比价留下的 / 人手改的）：也清掉，这次只写这次分的
+        # （2026-11-22：MARLIA 的 MEGA / NEW GRIECO 单里还有上午那次 3360 箱 bug 留下的 BOBINA VIT 200 箱）
+        _s, _c, stale = _reconcile_orders(ws, work_path, col_ord, supplier_ean_index, order_input, {}, {}, {})
+        if stale:
+            log(tr("  ⚠ {0}：{1} 个数量不是这次分给它的（以前比价留下的），已清掉：{2}", file, len(stale),
+                   "、".join(f"{d} {q:g}" for d, q in stale[:8]) + (" …" if len(stale) > 8 else "")))
 
         count = 0
         main_last = get_last_row(ws_main, col_ean_main)
@@ -1410,6 +1416,7 @@ def run_process(ordine_file, eliminare_path, distribuire_path, log, progress=Non
         "labels": summary.get("supplier_labels") or {},
         # 写完以后的文件指纹：下次处理时认出「还是程序写的」→ 恢复原文件再算
         "written": _written_fingerprints(ordine_file, distribuire_path),
+        "reconciled": True,          # 供应商文件里只有这次分的数量（以前留下的已清掉）
     }
     planned = bool(snapshot) and snapshot.get("planned_transfers") is not None
     if not planned:
@@ -1580,6 +1587,53 @@ def _clear_previous(ws, col_ord, order_input, index, prev):
             hit = True
         n += hit
     return n
+
+
+def _reconcile_orders(ws, work, col_ord, index, order_input, want_f, manual_f, prev_f=None):
+    """
+    供应商工作副本的订货数量改成正好等于程序的分配：want_f {条码: 箱数}（写在 index 那一行），manual_f {键: 箱数}
+    （订单文件里人手加的、没条码的行，order_edits 记的）；别的行有数量一律清掉。
+    prev_f：程序上次给这家写的 {键: 箱数}，清掉的数量不是上次写的 → 算「以前留下的」报出来。
+    返回 (写了几个, 清了几个, [(名称, 原来的数量)] 以前留下的)
+    """
+    import order_edits as OE
+    c_ean, r_ean, _c, r_ord = QF.ean_ord(ws)
+    header = max(r_ean or 0, r_ord or 0)
+    desc_col = OE._desc_col(ws, header, c_ean) if c_ean else None
+    box_col = order_input[0] if order_input else col_ord
+    row_ean = {j: e for e, j in (index or {}).items()}
+    done_manual = set()
+    set_n = clear_n = 0
+    stale = []
+    for j in range(header + 1, (ws.max_row or 0) + 1):
+        cur = OE._num(ws.cell(j, box_col).value)
+        if cur is None:                                  # 公式 / 文字：不是数量，不动
+            continue
+        e = row_ean.get(j)
+        k = None
+        if e:
+            des = float(want_f.get(e) or 0)
+        else:
+            raw = clean_ean(ws.cell(j, c_ean).value) if c_ean else ""
+            desc = str(ws.cell(j, desc_col).value or "").strip() if desc_col else ""
+            k = OE._key("" if isinstance(raw, str) and raw.startswith("=") else raw, desc, j)
+            des = 0.0
+            if k in manual_f and k not in done_manual:
+                des = float(manual_f[k] or 0)
+                done_manual.add(k)
+        if abs(cur - des) < 1e-9:
+            continue
+        v = (int(des) if float(des).is_integer() else des) if des else None
+        _write_order(ws, j, col_ord, order_input, v)
+        if des:
+            set_n += 1
+        else:
+            clear_n += 1
+            k0 = e or k
+            if prev_f is None or abs(float(prev_f.get(k0) or 0) - cur) > 1e-9:
+                name = str(ws.cell(j, desc_col).value or "").strip() if desc_col else ""
+                stale.append((name or e or f"#{j}", cur))
+    return set_n, clear_n, stale
 
 
 def _write_order(ws, j, col_ord, order_input, colli):
@@ -2154,6 +2208,7 @@ def export_orders(dist, purchased, log=None, labels=None, settings=None, mapping
                 log(tr("⚠ {0} 删不掉（可能被 Excel 打开了）：{1}", f, e))
     settings = settings if settings is not None else load_settings()
     out, used = [], set()
+    made = {} if mapping is None else mapping
     for f in sorted(purchased):
         src = _supplier_work_path(os.path.join(dist, f))
         if not src or not os.path.exists(src):
@@ -2173,8 +2228,7 @@ def export_orders(dist, purchased, log=None, labels=None, settings=None, mapping
                 except Exception as e:                  # 加不上照样发箱数的那份，日志里写明
                     log(tr("⚠ {0} 没加上件数 / 金额两列：{1}", fn, e))
             out.append(os.path.join(dest, fn))
-            if mapping is not None:
-                mapping[f] = (name, os.path.join(dest, fn))
+            made[f] = (name, os.path.join(dest, fn))
         except OSError as e:
             log(tr("⚠ {0} 没复制成功：{1}", fn, e))
     rep = os.path.join(dist, "缺失报告.xlsx")
@@ -2183,6 +2237,11 @@ def export_orders(dist, purchased, log=None, labels=None, settings=None, mapping
             shutil.copy2(rep, os.path.join(store_dir, f"缺失报告_{_safe_name(store)}_{tag}.xlsx"))
         except OSError:
             pass
+    try:                                   # 记下生成时的样子：之后人手改了订单文件看得出来（order_edits）
+        import order_edits as OE
+        OE.save_log(dist, made)
+    except Exception as e:
+        log(tr("⚠ {0}", e))
     _hide_folder(dist)
     log(tr("[订单] {0}：{1} 家供应商的订单放在 {2}", store, len(out), ORDERS_DIR))
     return out
@@ -2298,8 +2357,17 @@ def rewrite_assignment(data, new_assign, new_sources, log, progress=None, force=
                 want.pop((s_, r["ean"]), None)          # 数量改成 0：从供应商订单里清掉
                 continue
             want[(s_, r["ean"])] = v
+    import order_edits as OE
     written_delta = defaultdict(int)
-    files = sorted(affected)
+    manual = st.get("manual") or {}
+    # 每个供应商文件都对一遍：数量正好等于程序的分配（以前比价留下的、不是这次分的数量一律清掉，2026-11-22：
+    # MARLIA 发出去的 MEGA 单里多了 113 箱别家已经订了的商品）
+    files = _price_files(dist)
+    if st.get("reconciled"):         # 上次已经对过：只看要改的，和上次写完以后被动过的（快）
+        import originals as OG
+        fp = (st.get("written") or {}).get("distribuire") or {}
+        files = [f for f in files if f in affected or f in manual
+                 or fp.get(f) != OG.fingerprint(os.path.join(dist, f))]
     for n, file in enumerate(files):
         P(30 + int(60 * n / max(1, len(files))), tr("回写订单 {0}/{1}: {2}", n + 1, len(files), file))
         try:
@@ -2311,22 +2379,19 @@ def rewrite_assignment(data, new_assign, new_sources, log, progress=None, force=
                 log(tr("⚠ {0} 缺少必要列 ({1}/{2})", file, COL_CODICE_EAN, COL_ORDINE))
                 wb_s.close()
                 continue
-            set_n = clear_n = 0
-            for e in affected[file]:
-                j = index.get(e)
-                if not j:
-                    continue
-                v = want.get((file, e))
-                _write_order(ws_s, j, col_ord, order_input, v)
-                if v is None:
-                    clear_n += 1
-                else:
-                    set_n += 1
-            wb_s.save(work)
+            want_f = {e: v for (s_, e), v in want.items() if s_ == file}
+            set_n, clear_n, stale = _reconcile_orders(ws_s, work, col_ord, index, order_input, want_f,
+                                                      manual.get(file) or {}, OE.expected(st, file))
+            if set_n or clear_n:
+                wb_s.save(work)
             wb_s.close()
             written_delta[file] = sum(1 for r in changed if new_assign.get(r["row"]) == file) - \
                 sum(1 for r in changed if old.get(r["row"]) == file)
-            log(tr("  {0} ✔ 写入 {1} 个，清除 {2} 个", file, set_n, clear_n))
+            if set_n or clear_n:
+                log(tr("  {0} ✔ 写入 {1} 个，清除 {2} 个", file, set_n, clear_n))
+            if stale:
+                log(tr("  ⚠ {0}：{1} 个数量不是这次分给它的（以前比价留下的），已清掉：{2}", file, len(stale),
+                       "、".join(f"{d} {q:g}" for d, q in stale[:8]) + (" …" if len(stale) > 8 else "")))
         except Exception as e:
             log(tr("❌ 保存失败: {0} | 错误: {1}", file, e))
 
@@ -2360,7 +2425,8 @@ def rewrite_assignment(data, new_assign, new_sources, log, progress=None, force=
     mo.update(rules=rep["rules"], extra_cost=rep["extra_cost"], changes=len(rep["changes"]),
               warning=None if all(r["status"] != "未达标" for r in rep["rules"])
               else tr("有起订供应商没有达标，请检查"))
-    out["state"] = dict(st, assignment=dict(new_assign), sources=dict(new_sources), rows=rows, baseline=dict(baseline))
+    out["state"] = dict(st, assignment=dict(new_assign), sources=dict(new_sources), rows=rows, baseline=dict(baseline),
+                        reconciled=True)
     try:
         out["state"]["written"] = _written_fingerprints(ordine_file, dist)
     except Exception as e:

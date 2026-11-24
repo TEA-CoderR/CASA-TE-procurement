@@ -316,3 +316,26 @@ def test_find_excel_prefers_nuovo_original():
     assert OT.prefer_original(os.path.join(d, "PIANO ACQUISTO MESILE  NUOVO.xlsx")) is None
     os.remove(os.path.join(d, "PIANO ACQUISTO MESILE  NUOVO.xlsx"))
     assert OT.prefer_original(cp) is None
+
+
+def test_block_with_empty_fornitore_header_still_read():
+    """2026-11-22：NOV 表 S.Marco 那块的「Fornitore」表头被清空 → 整块读不到、程序的新单写不进去"""
+    from openpyxl import Workbook
+    import order_tracking as OT
+    import excel_sync as XS
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "NOV"
+    heads = ["Data\nOrdine", "Fornitore", "Ordine\nDa", "Importo\nInponibile", "Data \nconfermato", "Data \narrivato", "Gg.\ncons.", None]
+    for i, title in enumerate(["Gli ordini per Foiano", "Gli ordini per San Marco"]):
+        c = 1 + 8 * i
+        ws.cell(1, c, title)
+        for k, h in enumerate(heads):
+            ws.cell(8, c + k, h)
+    ws.cell(8, 10, None)                                   # S.Marco 的 Fornitore 表头空了
+    hr, blocks = OT._layout(ws)
+    assert hr == 8 and [b[1] for b in blocks] == ["1", "4"]
+
+    class _St:
+        xstate = {"failed": {"append|x": "'v'"}}          # 以前（旧规矩）写不进去的：换代后再试一次
+    assert XS._failed(_St()) == {"_ver": XS.FAILED_VER}

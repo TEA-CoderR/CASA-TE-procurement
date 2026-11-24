@@ -662,6 +662,27 @@ def _sig_iso(ts):
     return datetime.fromtimestamp(ts, timezone.utc).isoformat().replace("+00:00", "Z")
 
 
+WHOLESALE = "wholesale"                           # DETERSIVO 比价生成的单
+
+
+def _wholesale_total(o, today, max_days, log):
+    """DETERSIVO 单的订单文件（这台电脑上有的）现在几箱、多少钱 → (箱数, 金额, 修改时间, 文件) 或 None"""
+    if o.get("state") == "cancel":
+        return None
+    p = str(o.get("file") or "")
+    d = _to_date(o.get("date"))
+    if not p or d is None or (today - d).days > max_days or not os.path.exists(p):
+        return None
+    try:
+        import order_edits as OE
+        colli, amt = OE.file_totals(p)
+        return colli, amt, os.path.getmtime(p), p
+    except Exception as e:
+        if log:
+            log(f"⚠ {os.path.basename(p)} 读不了：{e}")
+        return None
+
+
 def file_totals(st, today=None, index=None, root=None, log=None, max_days=MAX_DAYS):
     """
     程序生成的单（总仓 / 门店采购）→ 它的订单文件现在一共几箱、多少钱：{单号: (箱数, 金额 或 None, 文件修改时间, 文件)}。
@@ -671,7 +692,13 @@ def file_totals(st, today=None, index=None, root=None, log=None, max_days=MAX_DA
     """
     today = today or date.today()
     cand, direct = [], {}
+    out = {}
     for oid, o in st.orders.items():
+        if o.get("origin") == WHOLESALE:                # DETERSIVO：比价生成的 Ordini 订单文件（2026-11-22 用户）
+            got = _wholesale_total(o, today, max_days, log)
+            if got:
+                out[oid] = got
+            continue
         if o.get("origin") not in SYNC_SOURCES:
             continue
         p = str(o.get("file") or "")
@@ -684,10 +711,9 @@ def file_totals(st, today=None, index=None, root=None, log=None, max_days=MAX_DA
             continue
         cand.append(dict(o, id=oid, date=d))
     if not cand:
-        return {}
+        return out
     res = resolve(cand, [], root)
     idx = index or Index(None)
-    out = {}
     for o in cand:
         f, how = res.get(o["id"], (None, "none"))
         if f is None or how not in ("manual", "program"):

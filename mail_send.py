@@ -42,14 +42,25 @@ STORE_ABBR = {"1": "FO", "2": "MA", "3": "FI", "4": "SM", "5": "SC", "BMS": "BMS
 ORDER_NO_RE = OT.ORDER_NO_RE
 BOOKING_URL = "https://prenota.casaete.top"
 # 送货抬头 / 地址（来自门店采购 SCHEDA 的「Luogo di destinazione」；在「订单发件邮箱」窗口里可以改）
+# 地址 / 卸货电话照以前发给批发商的订单信（2026-11-22 用户发来的 MEGA CASH / MELONI 订单信 + 「已发送」里读过的几封）
 DEFAULT_PROFILES = {
-    "1": {"name": "CASA & TE SRL", "address": "Via d'Arezzo 159/r, 52045 Foiano della Chiana"},
-    "2": {"name": "CASA & TE GROUP SRL", "address": "Viale Europa 434, Capannori"},
-    "3": {"name": "CASA & TE S.FILIPPO SRL", "address": "Via di Tiglio 1893, Lucca"},
-    "4": {"name": "CASA & TE S.MARCO SRL", "address": "Via del Brennero 844, Lucca"},
-    "5": {"name": "CASA & TE S.CONCORDIO SRL", "address": "Via Savonarola 50"},
-    "BMS": {"name": "BMS PARTNERS SRL", "address": "Via di Tiglio 1893, Lucca"},
+    "1": {"name": "CASA & TE SRL", "address": "Via d'Arezzo 159/r, 52045 Foiano della Chiana (AR)", "phone": "0575-1782904"},
+    "2": {"name": "CASA & TE GROUP SRL", "address": "Viale Europa 434, 55012 Capannori (LU)", "phone": "0583-1808252"},
+    "3": {"name": "CASA & TE S.FILIPPO SRL", "address": "Via di Tiglio 1893, 55100 Lucca (LU)", "phone": "0583-570716"},
+    "4": {"name": "CASA & TE S.MARCO SRL", "address": "Via del Brennero 844, 55100 Lucca (LU)", "phone": "0583-323749"},
+    "5": {"name": "CASA & TE S.CONCORDIO SRL", "address": "Via Savonarola 50, 55100 Lucca (LU)", "phone": "339 2254525"},
+    "BMS": {"name": "BMS PARTNERS SRL", "address": "Via di Tiglio 1893, 55100 Lucca (LU)", "phone": ""},
 }
+# DETERSIVO 的单（批发商比价生成的，origin wholesale）：2026-11-22 用户定——批发商送货都准时，不要确认信、不要预约；
+# 一家批发商一封信，五家门店的单一起，统一用 BMS 的邮箱发，正文写每家店的地址、卸货电话、箱数、金额
+DETER_ORIGIN = "wholesale"
+STORE_UPPER = {"1": "FOIANO", "2": "MARLIA", "3": "S.FILIPPO", "4": "S.MARCO", "5": "S.CONCORDIO", "BMS": "BMS"}
+DETER_CC = ("lucas@casa-te.com",)                 # DETERSIVO 订单信一定抄送（2026-11-22 用户），设置 order_mail.deter_cc 可改
+
+
+def deter_cc(settings):
+    v = order_cfg(settings).get("deter_cc")
+    return [a.strip() for a in (v if isinstance(v, list) else DETER_CC) if str(a or "").strip()]
 SENDER_CODES = ("1", "2", "3", "4", "5", "BMS")
 
 
@@ -89,9 +100,14 @@ def order_no(oid, o):
 find_order_nos = OT.find_order_nos
 
 
-def sender_problem(stores, settings, accounts):
-    """要用的发件邮箱有问题时返回给人看的一句话，没问题返回 None"""
-    code = stores[0] if len(stores) == 1 else "BMS"
+def is_deter(o):
+    """DETERSIVO 的单（批发商比价生成的）"""
+    return str((o or {}).get("origin") or "") == DETER_ORIGIN
+
+
+def sender_problem(stores, settings, accounts, deter=False):
+    """要用的发件邮箱有问题时返回给人看的一句话，没问题返回 None（deter = DETERSIVO 的单，一律 BMS 邮箱）"""
+    code = "BMS" if deter else stores[0] if len(stores) == 1 else "BMS"
     label = STORE_LABEL.get(code, code)
     addr = senders(settings).get(code)
     if not addr:
@@ -101,12 +117,88 @@ def sender_problem(stores, settings, accounts):
     return None
 
 
-def compose(supplier, orders, settings, day=None):
+def greet_name(text):
+    """以前那封信开头称呼的名字（「Buonasera Alessandro,」→ Alessandro）；认不出返回 None"""
+    for line in str(text or "").splitlines():
+        if not line.strip():
+            continue
+        m = re.match(r"\s*(?:ciao|salve|gentile|buongiorno|buonasera|buon\s*giorno|buona\s*sera|buon\s+pomeriggio)\s+"
+                     r"([A-Za-zÀ-ÿ'’]{2,30})\s*[,!]?\s*$", line, re.I)
+        return m.group(1).capitalize() if m else None
+    return None
+
+
+def hello(now=None):
+    h = (now or datetime.now()).hour
+    return "Buongiorno" if h < 13 else "Buon pomeriggio" if h < 17 else "Buonasera"
+
+
+def eur_it(v):
+    """意大利写法：€ 2.285,20"""
+    return "€ " + f"{float(v):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+def _num(v):
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def deter_attachment(o, supplier, path, day=None):
+    """DETERSIVO 订单附件名：Ordine FOIANO MELONI 2211.xlsx（照以前手发的叫法）"""
+    d = OT.to_date(o.get("date")) or day or date.today()
+    ext = os.path.splitext(path or "")[1] or ".xlsx"
+    code = str(o.get("store") or "")
+    name = f"Ordine {STORE_UPPER.get(code, code)} {str(supplier or '').strip()} {d:%d%m}"
+    return re.sub(r'[\\/:*?"<>|]+', "_", name).strip() + ext
+
+
+def compose_deter(supplier, orders, settings, day=None, name=None, now=None):
+    """
+    DETERSIVO 订单信（2026-11-22 用户的模板）：主题「Ordine MELONI 5PDV 2211」；正文问候 + 每家店 地址 · 卸货电话 ·
+    箱数 · 金额，最后合计。不要确认、不要预约。返回 (主题, 正文)
+    """
+    day = day or date.today()
+    sup = str(supplier or "").strip()
+    order = {c: i for i, c in enumerate(SENDER_CODES)}
+    rows = sorted(orders, key=lambda r: order.get(str(r[1].get("store")), 9))
+    d0 = min((OT.to_date(o.get("date")) or day) for _i, o in rows) if rows else day
+    n = len(rows)
+    first = STORE_UPPER.get(str(rows[0][1].get("store")), "") if rows else ""
+    # 2026-11-22 18:00 用户：不加订单号（试过一版主题 / 正文带订单号，用户说太麻烦，改回来）
+    subject = f"Ordine {sup} {f'{n}PDV' if n > 1 else first} {d0:%d%m}"
+    who = f"{hello(now)} {name}," if name else f"{hello(now)},"
+    dest = ("tutti i 5 punti vendita" if n == 5 else f"{n} punti vendita" if n > 1 else f"il punto vendita di {first}")
+    parts, tc, ta = [], 0.0, 0.0
+    for _oid, o in rows:
+        code = str(o.get("store") or "")
+        p = profile(settings, code)
+        c, a = _num(o.get("colli")), _num(o.get("amount"))
+        lines = [f"{STORE_UPPER.get(code, code)} – {p['name']}", p["address"]]
+        if p.get("phone"):
+            lines.append(f"Contatto scarico: {p['phone']}")
+        vals = ([f"Colli: {c:g}"] if c else []) + ([f"Importo: {eur_it(a)}"] if a else [])
+        if vals:
+            lines.append(" · ".join(vals))
+        tc += c or 0
+        ta += a or 0
+        parts.append("\n".join(lines))
+    body = f"{who}\nin allegato trovi gli ordini di {sup} per {dest}.\n\n" + "\n\n".join(parts)
+    if n > 1 and (tc or ta):
+        body += "\n\nTotale: " + " · ".join(([f"{tc:g} colli"] if tc else []) + ([eur_it(ta)] if ta else []))
+    body += "\n\nGrazie.\n\nSaluti,\nUfficio Acquisti\nCASA & TE"
+    return subject, body
+
+
+def compose(supplier, orders, settings, day=None, name=None):
     """
     固定模板（意大利文）：orders = [(单号 oid, 单 o)]，一封信管的几张单。返回 (主题, 正文)。
     一家店：主题「Ordine FO-2011-3F9A · CASA&TE Foiano · ACME」；几家店一起（总仓采购一个文件）：
     主题用 BMS 那张（没有就第一张）的订单号，正文按门店分段写每张的订单号和送货地址
     """
+    if orders and all(is_deter(o) for _i, o in orders):
+        return compose_deter(supplier, orders, settings, day, name=name)
     day = day or date.today()
     sup = str(supplier or "").strip()
     url = booking_url(settings)
@@ -161,7 +253,14 @@ def group_of(st, oid):
     f = str(o.get("file") or "").strip()
     sk = st.canon(OT.sup_key(o.get("supplier")))
     ids = [oid]
-    if f:
+    if is_deter(o):
+        # DETERSIVO：同一次比价（同一天）这家批发商几家门店的单一封信（2026-11-22 用户：用 BMS 邮箱一起发五家店）
+        ids = [k for k, x in st.orders.items()
+               if is_deter(x) and bool(x.get("draft")) == bool(o.get("draft")) and x.get("date") == o.get("date")
+               and x.get("state") != "cancel" and st.canon(OT.sup_key(x.get("supplier"))) == sk]
+        if oid not in ids:
+            ids.append(oid)
+    elif f:
         ids = [k for k, x in st.orders.items()
                if x.get("draft") and str(x.get("file") or "").strip() == f and st.canon(OT.sup_key(x.get("supplier"))) == sk]
         if oid not in ids:
@@ -197,7 +296,7 @@ def attachment_name(subject, path):
 
 
 # ===================================================================== 用哪个邮箱发
-def sender_for(stores, accounts, settings=None):
+def sender_for(stores, accounts, settings=None, deter=False):
     """
     「订单发件邮箱」设了 → 严格照它：一家店 = 这家店的邮箱，BMS / 几家店一起（总仓采购一个文件）= BMS 的邮箱，
     没设这家 → None（不能发，窗口里写原因）。一个都没设（老设置）→ 照以前的猜法
@@ -207,10 +306,10 @@ def sender_for(stores, accounts, settings=None):
         return None
     snd = senders(settings)
     if snd:
-        addr = snd.get(stores[0] if len(stores) == 1 else "BMS")
+        addr = snd.get("BMS" if deter or len(stores) != 1 else stores[0])
         return next((a for a in accounts if addr and a["address"].lower() == addr.lower()), None)
     bms = next((a for a in accounts if "bmspsrl" in a["address"].lower()), None)
-    if len(stores) == 1 and stores[0] != "BMS":
+    if len(stores) == 1 and stores[0] != "BMS" and not deter:
         own = next((a for a in accounts if str(a.get("store") or "") == stores[0]), None) or \
             next((a for a in accounts if MM.default_store(a["address"]) == stores[0]), None)
         if own:
@@ -320,13 +419,14 @@ def recipients(st, supplier, history, contacts=None):
     return [], ""
 
 
-def last_sent(history, st, supplier, mailbox=None):
-    """以前发给这家的最近一封订单信（拿它的正文当模板）；没有就这个邮箱最近发的任何一封订单信"""
+def last_sent(history, st, supplier, mailbox=None, strict=False):
+    """以前发给这家的最近一封订单信（拿它的正文当模板）；没有就这个邮箱最近发的任何一封订单信（strict 时不找别家的）"""
     sk = st.canon(OT.sup_key(supplier))
     for h in history:
         if h["sup"] == sk or MM._like(h["sup"], sk):
-            return h
-    if mailbox:
+            if not mailbox or not strict or (h["mailbox"] or "").lower() == mailbox.lower():
+                return h
+    if mailbox and not strict:
         for h in history:
             if (h["mailbox"] or "").lower() == mailbox.lower():
                 return h
@@ -380,7 +480,31 @@ def split_addrs(text):
     return [a.strip() for a in re.split(r"[;,\s]+", text or "") if a.strip()]
 
 
-def send(acc, password, msg, smtp_factory=None, imap_factory=None):
+def already_in(conn, folder, mid, wait=(0, 2, 3)):
+    """
+    「已发送」里是不是已经有这封信（按 Message-ID 找）。2026-11-22 用户：发一封订单信「已发送」里出现两封——
+    阿里企业邮箱用 SMTP 发信时自己会存一份到「已发送」，程序再放一份就重复了。服务器存得慢一点，所以隔几秒多找几次
+    """
+    import time
+    import mail_client as MC
+    if not mid:
+        return False
+    for w in wait:
+        if w:
+            time.sleep(w)
+        try:
+            typ, _ = conn.select(MC._quote(folder), readonly=True)
+            if typ != "OK":
+                return False
+            typ, data = conn.uid("SEARCH", None, "HEADER", "Message-ID", f'"{mid}"')
+            if typ == "OK" and data and data[0] and data[0].split():
+                return True
+        except Exception:
+            return False
+    return False
+
+
+def send(acc, password, msg, smtp_factory=None, imap_factory=None, wait=(0, 2, 3)):
     """
     用这个邮箱的 SMTP 发出去（SSL 465），再在服务器「已发送」里放一份（IMAP APPEND，标已读），
     大家在网页邮箱 / 以后的邮件核对里都看得到。放「已发送」失败不算发送失败。返回 (Message-ID, 放进已发送了没有)
@@ -403,7 +527,9 @@ def send(acc, password, msg, smtp_factory=None, imap_factory=None):
         conn = MC.connect(acc, password, factory=imap_factory)
         try:
             sent = [f for f in MC.pick_folders(MC.folders(conn)) if f[0].upper() != "INBOX"]
-            if sent:
+            if sent and already_in(conn, sent[0][0], msg["Message-ID"], wait=wait):
+                saved = True             # 服务器自己已经放进「已发送」了（阿里邮箱客户端发信默认保存）：不再放第二份
+            elif sent:
                 typ, _ = conn.append(MC._quote(sent[0][0]), "(\\Seen)", imaplib.Time2Internaldate(datetime.now().timestamp()),
                                      msg.as_bytes())
                 saved = typ == "OK"

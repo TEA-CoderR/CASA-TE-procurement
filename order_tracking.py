@@ -606,7 +606,11 @@ def _layout(ws, unknown=None):
         return None, []
     blocks = []
     for c in starts:
-        if _norm(ws.cell(hr, c + 1).value) != "FORNITORE":
+        # 「Fornitore」表头：2026-11-22 NOV 表 S.Marco 那块的 Z8 被人清空了 → 整块（47 张单）读不到、程序新单也写不进去。
+        # 表头空着、但后面几列还是 Ordine Da / Importo 的，照样当一块（读不出供应商的块才跳过）
+        h1 = _norm(ws.cell(hr, c + 1).value)
+        if h1 != "FORNITORE" and not (h1 == "" and _norm(ws.cell(hr, c + 2).value).startswith("ORDINEDA")
+                                      and _norm(ws.cell(hr, c + 3).value).startswith("IMPORTO")):
             continue
         # 块标题「Gli ordini per …」：不一定正好在「Data Ordine」那一列上面（OTT / SET / Agosto / NOV 的 Capannori
         # 标题在 H 列、表头从 I 列开始）→ 在左右两列里找，取最近的一个
