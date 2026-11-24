@@ -14,7 +14,7 @@ Griglia → 商品目录（2026-11-24 第 1 步：只看）。数据见 griglia_
 import os
 import threading
 
-from PySide6.QtCore import Qt, QObject, Signal, QEvent
+from PySide6.QtCore import Qt, QObject, Signal, QEvent, QTimer
 from PySide6.QtGui import QColor, QKeySequence, QShortcut
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QFrame, QStackedWidget,
                                QTreeWidget, QTreeWidgetItem, QScrollArea, QPushButton, QButtonGroup, QSlider,
@@ -79,6 +79,11 @@ class GrigliaCatalogPage:
         self._rows, self._keys, self._hay = [], [], []
         self._loading = self._pricing = False
         self._built_cols = None
+        self._view = None               # "excel" = 原表全部列（和 Excel 一样）/ "simple" = 精简
+        self._filling = False
+        self._editable = set()          # 原表能直接改的列号（表格里双击 / 直接打字改）
+        self._changed = {}
+        self.thumb2 = None
         self._zoom = 1.0
         self._px = FONT0
         self.page = None
@@ -179,6 +184,7 @@ class GrigliaCatalogPage:
         self.left_stack.addWidget(sw)
         left.v.addWidget(self.left_stack, 1)
         bh.addWidget(left)
+        self.left = left
 
         # 中间：表格
         mid = Card(margins=(16, 12, 16, 10))
@@ -195,6 +201,18 @@ class GrigliaCatalogPage:
         self.tags.setSpacing(6)
         bar.addLayout(self.tags)
         bar.addStretch()
+        self.view_seg = Seg([("excel", tr("原表")), ("simple", tr("精简"))], self._cfg().get("view") or "excel",
+                            tip=tr("原表 = 和 Excel 一样显示全部列、按原来的顺序，格子能直接改（双击或直接打字）；"
+                                   "精简 = 只放常看的几列。两种看法各自记住列宽和顺序"))
+        self.view_seg.changed.connect(self.set_view)
+        bar.addWidget(self.view_seg)
+        self.b_side = QPushButton(tr("分类栏"))
+        self.b_side.setObjectName("Chip")
+        self.b_side.setCheckable(True)
+        self.b_side.setCursor(Qt.PointingHandCursor)
+        self.b_side.setToolTip(tr("左边的分类 / 供应商：收起来表格更宽（选好的筛选照样有效）"))
+        self.b_side.toggled.connect(self._toggle_side)
+        bar.addWidget(self.b_side)
         self.b_drawer = QPushButton(tr("详情栏"))
         self.b_drawer.setObjectName("Chip")
         self.b_drawer.setCheckable(True)
@@ -282,6 +300,9 @@ class GrigliaCatalogPage:
             sc.activated.connect(fn)
         show = self._cfg().get("drawer", True)
         self.b_drawer.setChecked(bool(show))
+        side = self._cfg().get("side", True)
+        self.b_side.setChecked(bool(side))
+        self.left.setVisible(bool(side))
         self.drawer.setVisible(bool(show))
         w.showEvent = lambda e: (QWidget.showEvent(w, e), self._first_show())
         self.page = w
@@ -290,6 +311,11 @@ class GrigliaCatalogPage:
 
     def _left_page(self, k):
         self.left_stack.setCurrentIndex(0 if k == "cat" else 1)
+
+    def _toggle_side(self, on):
+        self.left.setVisible(on)
+        self._cfg()["side"] = bool(on)
+        self._save()
 
     def _toggle_drawer(self, on):
         self.drawer.setVisible(on)
@@ -317,7 +343,8 @@ class GrigliaCatalogPage:
         t.itemSelectionChanged.connect(self._selected)
         t.setSelectionMode(QAbstractItemView.ExtendedSelection)
         t.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        t.doubleClicked.connect(lambda _ix: self.edit_item())
+        t.doubleClicked.connect(self._double)
+        t.itemChanged.connect(self._item_changed)
         t.viewport().installEventFilter(_WheelZoom(self))
         self.ctl = TableSortFilter(t, lambda: len(self._rows), lambda i, c: self._rows[i][c], self._fill,
                                    key=lambda i, c: self._keys[i][c], hide=self._hidden,
@@ -350,6 +377,8 @@ class GrigliaCatalogPage:
         t.horizontalHeader().setStyleSheet(
             f"QHeaderView::section {{ font-size: {max(8, int(round(HEAD0 * z)))}px; "
             f"padding: {max(3, int(round(9 * z)))}px {max(3, int(round(8 * z)))}px; }}")
+        if self.thumb2 is not None:
+            self.thumb2.size = max(18, int(round(THUMB0 * z)))
         if self.thumb is not None:
             self.thumb.size = max(18, int(round(THUMB0 * z)))
             rowh = max(int(round(30 * z)), self.thumb.size + 8)
@@ -385,7 +414,21 @@ class GrigliaCatalogPage:
         fids = [f for f, _h, _k in COLS] + [100 + k for k in range(len(names))]
         cfg = self.settings.setdefault("griglia_db_cols", {})
         self.ctl.remember(cfg, "catalog", self._save, fids, default_hidden=[f for f in HIDDEN if f in fids], ver=2)
+        self._fids = fids
+        # 原表的图片列（Immagine）：按条码画小图（原表里是 IMAGE 公式 / 浮着的图片）
+        img = [k for k, c in enumerate(cat.columns) if c.get("img")]
+        if self._images and img and cat.col.get("ean") is not None:
+            import product_images as PI
+            self.thumb2 = PI.ThumbDelegate(self.t, base + cat.col["ean"], max(18, int(round(THUMB0 * self._zoom))),
+                                           self.settings)
+            self.t.setItemDelegateForColumn(base + img[0], self.thumb2)
+        self._editable = set(cat.editable_columns())
+        for k in range(len(names)):
+            hi = self.t.horizontalHeaderItem(base + k)
+            if k not in self._editable:
+                hi.setToolTip(hi.toolTip() + "\n" + tr("这一列不能直接改（程序按报价 / 数据库算，或分类 / 状态请用「编辑商品」）"))
         self._built_cols = sig
+        self._view = None
 
     def _is_num_col(self, k):
         n = 0
@@ -446,7 +489,10 @@ class GrigliaCatalogPage:
             return
         self.stack.setCurrentIndex(1)
         self._rebuild_columns()
+        self._changed_cells()
         self._build_rows()
+        if self._view is None:
+            self._init_view()
         self._fill_status()
         self._fill_tree()
         self._fill_sups()
@@ -501,38 +547,236 @@ class GrigliaCatalogPage:
 
     # ------------------------------------------------------------------ 行
     def _build_rows(self):
-        cat = self.cat
         rows, keys, hay = [], [], []
-        T = dict(STATUS_TEXT)
-        for x in cat.items:
-            c1, c2, c3 = (x["cats"] + ["", "", ""])[:3]
-            iss = "、".join(tr(dict(_issue_names())[k]) for k in x["issues"] if k not in ("off", "replaced"))
-            vals = {0: x["ean"], 1: x["name"], 2: x["code"], 3: x["brand"], 4: c1, 5: c2, 6: c3,
-                    7: x.get("direct_short") or x["direct"], 8: x["pack"], 9: x.get("best_short") or "",
-                    10: x["best"], 15: x["pvp"], 16: x["mrg"], 17: tr(T[x["status"]]), 18: iss}
-            r, k = [], []
-            for f, _h, kind in COLS:
-                v = vals.get(f)
-                if kind == "txt":
-                    r.append(str(v or ""))
-                    k.append(str(v or "").lower())
-                elif kind == "price":
-                    r.append(_p(v))
-                    k.append(v if v is not None else -1)
-                elif kind == "pct":
-                    r.append("" if v is None else f"{v * 100:.1f}%")
-                    k.append(v if v is not None else -9)
-                else:
-                    r.append("" if v is None else (str(int(v)) if float(v).is_integer() else f"{v:g}"))
-                    k.append(v if v is not None else -1)
-            for c in range(len(cat.columns)):
-                v = self._shown_value(x, c)
-                r.append(_fmt_col(cat.heads[c], v))
-                k.append(v if isinstance(v, (int, float)) and not isinstance(v, bool) else str(v or "").lower())
+        for x in self.cat.items:
+            r, k, h = self._row_for(x)
             rows.append(r)
             keys.append(k)
-            hay.append(" ".join((x["ean"], x["name"], x["code"], x["brand"])).lower())
+            hay.append(h)
         self._rows, self._keys, self._hay = rows, keys, hay
+
+    def _row_for(self, x):
+        """一个商品在表格里的一行：显示的文字、排序用的值、搜索用的字"""
+        cat = self.cat
+        T = dict(STATUS_TEXT)
+        c1, c2, c3 = (x["cats"] + ["", "", ""])[:3]
+        iss = "、".join(tr(dict(_issue_names())[k]) for k in x["issues"] if k not in ("off", "replaced"))
+        vals = {0: x["ean"], 1: x["name"], 2: x["code"], 3: x["brand"], 4: c1, 5: c2, 6: c3,
+                7: x.get("direct_short") or x["direct"], 8: x["pack"], 9: x.get("best_short") or "",
+                10: x["best"], 15: x["pvp"], 16: x["mrg"], 17: tr(T[x["status"]]), 18: iss}
+        r, k = [], []
+        for f, _h, kind in COLS:
+            v = vals.get(f)
+            if kind == "txt":
+                r.append(str(v or ""))
+                k.append(str(v or "").lower())
+            elif kind == "price":
+                r.append(_p(v))
+                k.append(v if v is not None else -1)
+            elif kind == "pct":
+                r.append("" if v is None else f"{v * 100:.1f}%")
+                k.append(v if v is not None else -9)
+            else:
+                r.append("" if v is None else (str(int(v)) if float(v).is_integer() else f"{v:g}"))
+                k.append(v if v is not None else -1)
+        for c in range(len(cat.columns)):
+            if cat.columns[c].get("img"):             # 图片列：画小图，不写 IMAGE 公式
+                r.append("")
+                k.append("")
+                continue
+            v = self._shown_value(x, c)
+            r.append(_fmt_col(cat.heads[c], v))
+            k.append(v if isinstance(v, (int, float)) and not isinstance(v, bool) else str(v or "").lower())
+        return r, k, " ".join((x["ean"], x["name"], x["code"], x["brand"])).lower()
+
+    # ------------------------------------------------------------------ 原表 / 精简 两种看法（2026-11-24 用户：和 Excel 一样显示所有列）
+    def _view_preset(self, mode):
+        """没调过的时候这种看法默认什么样：(藏哪些列, 列的顺序, 列宽)"""
+        cat, z = self.cat, self._zoom
+        prog = [f for f, _h, _k in COLS]
+        orig = [100 + k for k in range(len(cat.columns))]
+        if mode == "excel":
+            widths = {}
+            for k in range(len(cat.columns)):
+                if cat.columns[k].get("img"):
+                    widths[str(100 + k)] = int(round((THUMB0 + 14) * z))
+                    continue
+                head = cat.columns[k]["name"].replace("\n", " ").strip()
+                lens = sorted(len(self._rows[i][len(COLS) + k]) for i in range(min(len(self._rows), 400)))
+                p90 = lens[int(len(lens) * 0.9)] if lens else 0
+                cw = 9 if (len(COLS) + k) in getattr(self.t, "_numeric", ()) else 7.5   # 数字用等宽字，宽一点
+                w = max(min(len(head), 18) * 7 + 24, p90 * cw + 26)
+                widths[str(100 + k)] = int(round(max(48, min(300, w)) * z))
+            return prog, orig + prog, widths
+        widths = {0: 120, 1: 300 + (THUMB0 + 10 if self._images else 0), 2: 78, 3: 110, 4: 130, 5: 130, 6: 120,
+                  7: 140, 8: 56, 9: 120, 10: 84, 15: 72, 16: 70, 17: 70, 18: 160}
+        return ([f for f in HIDDEN if f in self._fids], prog + orig,
+                {str(f): int(round(widths.get(f, 90) * z)) for f in prog})
+
+    def _init_view(self):
+        want = self._cfg().get("view") or "excel"
+        cfg = self.settings.setdefault("griglia_db_cols", {})
+        if cfg.get("catalog_view_cur") == want:          # 上次就是这种看法：remember 已经照原样摆好了
+            self._view = want
+            self._view_triggers()
+            return
+        self._view = cfg.get("catalog_view_cur") or "simple"
+        self.set_view(want, force=True)
+
+    def set_view(self, mode, force=False):
+        """换看法：先记下现在这种的列（顺序 / 宽度 / 藏哪些），再摆出另一种上次的样子（没有就用默认）"""
+        if self.cat is None or (mode == self._view and not force):
+            return
+        cfg = self.settings.setdefault("griglia_db_cols", {})
+        t, hh = self.t, self.t.horizontalHeader()
+        def widths_now(prev):
+            # 藏起来的列宽度读出来是 0：用上次记的
+            return {str(self._fids[c]): (prev.get(str(self._fids[c]), 0) if t.isColumnHidden(c) else t.columnWidth(c))
+                    for c in range(t.columnCount())}
+        if self._view and self._view != mode:
+            prev = (cfg.get("catalog_view_" + self._view) or {}).get("widths") or cfg.get("catalog_widths") or {}
+            cfg["catalog_view_" + self._view] = {
+                "columns": [self._fids[hh.logicalIndex(v)] for v in range(t.columnCount())],
+                "widths": widths_now(prev),
+                "hidden": list(cfg.get("catalog_cols_hidden") or [])}
+        snap = cfg.get("catalog_view_" + mode)
+        p_hidden, p_order, p_widths = self._view_preset(mode)
+        if snap and snap.get("columns"):
+            hidden, order = snap.get("hidden") or [], snap["columns"]
+            widths = dict(p_widths, **{f: w for f, w in (snap.get("widths") or {}).items() if w and w > 20})
+        else:
+            hidden, order, widths = p_hidden, p_order, p_widths
+        cfg["catalog_cols_hidden"] = sorted(hidden, key=str)
+        if getattr(self.ctl, "_chooser", None) is not None:
+            self.ctl._chooser.apply()                      # 先显示 / 藏好，藏着的列设不了宽度
+        col_of = {str(f): c for c, f in enumerate(self._fids)}
+        hh.blockSignals(True)
+        try:
+            v = 0
+            for f in order:
+                c = col_of.get(str(f))
+                if c is None:
+                    continue
+                cur = hh.visualIndex(c)
+                if cur != v:
+                    hh.moveSection(cur, v)
+                v += 1
+            for f, wd in widths.items():
+                c = col_of.get(str(f))
+                if c is not None and wd:
+                    t.setColumnWidth(c, int(wd))
+        finally:
+            hh.blockSignals(False)
+        cfg["catalog_columns"] = [self._fids[hh.logicalIndex(v)] for v in range(t.columnCount())]
+        cfg["catalog_widths"] = widths_now({str(f): w for f, w in widths.items()})
+        cfg["catalog_view_cur"] = mode
+        self._view = mode
+        self._cfg()["view"] = mode
+        self.view_seg.set_current(mode)
+        self._save()
+        self._view_triggers()
+        hh.setSortIndicatorShown(True)
+
+    def _view_triggers(self):
+        """原表看法：格子能直接改（双击 / F2 / 直接打字），和 Excel 一样；精简看法：双击 = 编辑商品窗口"""
+        T = QAbstractItemView
+        self.t.setEditTriggers(T.DoubleClicked | T.EditKeyPressed | T.AnyKeyPressed if self._view == "excel"
+                               else T.NoEditTriggers)
+
+    def _double(self, ix):
+        """双击：原表看法里能改的格子 Qt 自己打开编辑框；别的格子（程序算的 / 分类 / 状态）打开编辑商品窗口"""
+        if self._view == "excel":
+            base = len(COLS)
+            c = ix.column()
+            if c >= base and (c - base) in self._editable:
+                return
+            h = self.cat.heads[c - base] if c >= base else ""
+            if c >= base and h in __import__("griglia_db").AUTO_HEADS:
+                self.win.show_toast(tr("「{0}」是程序按这周报价 / 数据库自动算的，不用改",
+                                       self.cat.columns[c - base]["name"].replace("\n", " ")))
+                return
+        self.edit_item()
+
+    def _item_changed(self, it):
+        """格子里改完（Qt 已经写进格子）：等编辑框关掉再处理（CLAUDE.md：不能在这里马上重画这一行）"""
+        if self._filling or self.cat is None or self._view != "excel":
+            return
+        k, c = it.row(), it.column()
+        text = it.text()
+        QTimer.singleShot(0, lambda: self._cell_edited(k, c, text))
+
+    def _cell_edited(self, k, c, text):
+        import griglia_db as D
+        base = len(COLS)
+        if not (0 <= k < len(self.ctl.visible)) or c < base:
+            return
+        i = self.ctl.visible[k]
+        x, col = self.cat.items[i], c - base
+        f = f"c{col}"
+        text = text.strip()
+        new = None if text == "" else text
+        if new is not None and (col == self.cat.col.get("pack") or self._is_num_col(col)):
+            n = D._num_or_none(text.replace("€", "").replace("%", ""))
+            if n is not None:
+                new = int(n) if n.is_integer() else n
+        old = D.current(self.cat, x, f)
+        ch = [{"f": f, "old": old, "new": new}]
+        if D._norm_v(old) == D._norm_v(new):
+            self._redraw(i)
+            return
+        db_codes = self._db_codes_for([(x, ch)])
+        found = D.check(self.cat, x, ch, db_codes=db_codes)
+        reds = [t2 for lv, t2 in found if lv == "red"]
+        yellows = [t2 for lv, t2 in found if lv == "yellow"]
+        name = self.cat.columns[col]["name"].replace("\n", " ").strip()
+        if reds:
+            QMessageBox.warning(self.win, tr("没有保存"), "\n".join("• " + r for r in reds))
+            self._redraw(i)
+            return
+        if yellows and QMessageBox.question(
+                self.win, tr("请确认"), f"{x['name']} · {name}：{D.show_value(f, old)} → {D.show_value(f, new)}\n\n"
+                + "\n".join("• " + y for y in yellows) + "\n\n" + tr("还是要改吗？")) != QMessageBox.Yes:
+            self._redraw(i)
+            return
+        try:
+            ev = D.save(self._root(), [D.make_edit(self.cat, x["ean"], ch)])[0]
+        except OSError as e:
+            QMessageBox.warning(self.win, tr("没有保存"), tr("写不进同步文件夹：{0}", e))
+            self._redraw(i)
+            return
+        nx = self.cat.apply_local(ev)
+        self._changed.setdefault(nx["ean"], set()).add(col)
+        self._redraw(i)
+        if self.drawer.isVisible() and self.drawer.x is not None and self.drawer.x["ean"] == nx["ean"]:
+            self.drawer.show_item(nx)
+        self._log(tr("Griglia 改动：{0}", f"{x['name']} · {name}：{D.show_value(f, old)} → {D.show_value(f, new)}"))
+
+        def undo():
+            D.undo(self._root(), ev["id"])
+            self.reload(then_price=False)
+            self.win.show_toast(tr("已撤销"))
+        self.win.show_toast(tr("已保存：{0} → {1}", name, D.show_value(f, new)), action=(tr("撤销"), undo))
+
+    def _changed_cells(self):
+        """程序里改过（导入以后、没撤销）的格子：{条码: {原表列号}}，表格里浅蓝底（和订单跟踪写进 Excel 的标记一样）"""
+        import griglia_db as D
+        out = {}
+        act, _ = D.active_events(self.cat.events, self.cat.imp)
+        for e in act:
+            if e["op"] == "edit":
+                for ch in e.get("changes") or ():
+                    f = str(ch["f"])
+                    if f[1:].isdigit():
+                        out.setdefault(e.get("ean"), set()).add(int(f[1:]))
+        self._changed = out
+
+    def _redraw(self, i):
+        """一个商品的行重新算、重画（不重读整份、不重新排序，光标留在原地）"""
+        x = self.cat.items[i]
+        self._rows[i], self._keys[i], self._hay[i] = self._row_for(x)
+        k = self.ctl.pos.get(i)
+        if k is not None:
+            self._fill(i, k)
 
     def _shown_value(self, x, c):
         """原表第 c 列显示什么：程序自动的列用这周算的；公式列（PVI / Margine / Mrg% / PREZZO NETTO）用程序算的"""
@@ -548,10 +792,27 @@ class GrigliaCatalogPage:
         return self.cat.value(x, c)
 
     def _fill(self, i, k):
+        self._filling = True
+        try:
+            self._fill_row(i, k)
+        finally:
+            self._filling = False
+
+    def _fill_row(self, i, k):
         from main import table_set_row
         x = self.cat.items[i]
         t = self.t
         table_set_row(t, k, self._rows[i])
+        base = len(COLS)
+        for c in range(t.columnCount()):            # 原表能改的列才能在格子里改
+            it = t.item(k, c)
+            if it is not None and not (c >= base and (c - base) in self._editable):
+                it.setFlags(it.flags() & ~Qt.ItemIsEditable)
+        for col in getattr(self, "_changed", {}).get(x["ean"], ()):     # 程序里改过的格子：浅蓝底
+            it = t.item(k, base + col)
+            if it is not None:
+                it.setBackground(QColor(self.ui.T("accent_soft")))
+                it.setToolTip(tr("在程序里改过（改动记录里能看、能撤销）"))
         T = self.ui.T
         px = self._px
         for c in range(t.columnCount()):            # 缩放：每一格的字号

@@ -305,3 +305,19 @@ def test_db_lookup_prefill_and_codes(monkeypatch):
     assert p == {"code": "123", "name": "PROVA 1L", "pack": 6, "cod_forn": "AB-9", "direct": "HENKEL ITALIA SRL"}
     assert D.db_lookup(db, "8001090000064") == {}
     assert D.db_codes(db, ["123", "999", "", "x"]) == {"123"}
+
+
+def test_apply_local_same_as_reload(tmp_path):
+    """表格里改一格：直接套到内存里的结果 = 整份重读的结果"""
+    root, *_ = _import(tmp_path)
+    cat = D.load(root, replaced={})
+    x = cat.items[0]
+    pc, bc = cat.col["pack"], cat.col["brand"]
+    ev = D.make_edit(cat, x["ean"], [{"f": f"c{pc}", "old": D.current(cat, x, f"c{pc}"), "new": 24},
+                                     {"f": f"c{bc}", "old": D.current(cat, x, f"c{bc}"), "new": "NUOVA"}])
+    saved = D.save(root, [ev])
+    y = cat.apply_local(saved[0])
+    z = D.load(root, replaced={}).by_ean[x["ean"]]
+    for k in ("pack", "brand", "name", "code", "cats", "status", "issues", "v", "direct"):
+        assert y[k] == z[k], k
+    assert cat.by_ean[x["ean"]] is y and y["pack"] == 24
