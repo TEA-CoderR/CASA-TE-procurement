@@ -90,9 +90,9 @@ def add_event(store, ev, pc=None, usr=None):
     return ev
 
 
-def current_import(store):
+def current_import(store, events=None):
     """最近一次导入的记录（base / template 文件还在的）；没导入过返回 None"""
-    for ev in reversed(read_events(store)):
+    for ev in reversed(read_events(store) if events is None else events):
         if ev.get("op") == "import" and os.path.isfile(os.path.join(store, "base", ev.get("base") or "")):
             return ev
     return None
@@ -244,6 +244,31 @@ def read_excel(path, progress=None):
 
 
 # ------------------------------------------------------------------ 目录（导入的 + 程序算的）
+def field_cols(heads):
+    """表头（大写）→ 字段在第几列：名称 / 编号 / 条码 / 箱规 / 品牌 / 直厂 / 分类两套 / 批发商价格列…"""
+    col = {}
+    for i, h in enumerate(heads):
+        f = G._FIELDS.get(h)
+        if f and f not in col:
+            col[f] = i
+        if h.startswith("FORNITOR") and "DIRETT" in h:
+            col.setdefault("direct", i)
+    for f, h in (("iva", "IVA%"), ("pvi", "PVI"), ("stato", "STATO PRODOTTO"), ("ruolo_promo", "RUOLO PROMOZIONE"),
+                 ("reparto", "DESCR.REPARTO"), ("gruppo", "DESCR.GRUPPO"), ("sgruppo", "DESCR.SOTTOGRUPPO"),
+                 ("cod_forn", "CODICE FORNITORE"), ("strato", "STRATO"), ("pallet", "QTA_X_PALLET")):
+        if h in heads:
+            col[f] = heads.index(h)
+    col["sup"] = {h: i for i, h in enumerate(heads) if h in G._SUP_COLS}
+    col["store"] = {h: i for i, h in enumerate(heads) if h in G.STORES}
+    left = [col.get(f) for f in ("cat1", "cat2", "cat3")]
+    right = []
+    for f, h in (("cat1", "CAT.1"), ("cat2", "CAT.2"), ("cat3", "CAT.3")):
+        idx = [i for i, x in enumerate(heads) if x == h and i != col.get(f)]
+        right.append(idx[-1] if idx else None)
+    col["left"], col["right"] = left, right
+    return col
+
+
 class Catalog:
     """
     snap = 导入的快照，auto = auto.json，replaced = {原条码: 新条码}（替换记录）。
@@ -252,6 +277,7 @@ class Catalog:
 
     def __init__(self, snap, auto=None, replaced=None, imp=None):
         self.snap, self.auto, self.imp = snap, auto or {}, imp or {}
+        self.events = []
         self.columns = snap["columns"]
         self.heads = [G._norm(c["name"]) for c in self.columns]
         self.col = self._fields()
@@ -275,27 +301,38 @@ class Catalog:
             self.by_ean.setdefault(x["ean"], x)
 
     def _fields(self):
-        col = {}
-        for i, h in enumerate(self.heads):
-            f = G._FIELDS.get(h)
-            if f and f not in col:
-                col[f] = i
-            if h.startswith("FORNITOR") and "DIRETT" in h:
-                col.setdefault("direct", i)
-        for f, h in (("iva", "IVA%"), ("pvi", "PVI"), ("stato", "STATO PRODOTTO"), ("ruolo_promo", "RUOLO PROMOZIONE"),
-                     ("reparto", "DESCR.REPARTO"), ("gruppo", "DESCR.GRUPPO"), ("sgruppo", "DESCR.SOTTOGRUPPO"),
-                     ("cod_forn", "CODICE FORNITORE"), ("strato", "STRATO"), ("pallet", "QTA_X_PALLET")):
-            if h in self.heads:
-                col[f] = self.heads.index(h)
-        col["sup"] = {h: i for i, h in enumerate(self.heads) if h in G._SUP_COLS}
-        col["store"] = {h: i for i, h in enumerate(self.heads) if h in G.STORES}
-        left = [col.get(f) for f in ("cat1", "cat2", "cat3")]
-        right = []
-        for f, h in (("cat1", "CAT.1"), ("cat2", "CAT.2"), ("cat3", "CAT.3")):
-            idx = [i for i, x in enumerate(self.heads) if x == h and i != col.get(f)]
-            right.append(idx[-1] if idx else None)
-        col["left"], col["right"] = left, right
-        return col
+        return field_cols(self.heads)
+
+    # ---- 编辑（第 2 步）----
+    def category_paths(self):
+        """分类表：现在用到的 + 分类页加的（{(大类,), (大类, 中类), (大类, 中类, 小类)}，空的不算）"""
+        out = set()
+        for x in self.items:
+            c = [s for s in (x["cats"] + ["", "", ""])[:3]]
+            for k in range(3):
+                if not c[k]:
+                    break
+                out.add(tuple(c[:k + 1]))
+        for p in self.snap.get("extra_cats") or ():
+            for k in range(len(p)):
+                out.add(tuple(p[:k + 1]))
+        return out
+
+    def editable_columns(self):
+        """人可以改的原表列号（程序算的、公式列、图片、订单那几列、卖价 / IVA（跟数据库）不让改；分类和状态另外改）"""
+        col = self.col
+        skip = set(col["sup"].values()) | set(c for c in (col.get("best"), col.get("supplier"), col.get("pvp"),
+                                                         col.get("iva"), col.get("stato")) if c is not None)
+        skip |= {c for c in col["left"] + col["right"] if c is not None}
+        out = []
+        for c, cdef in enumerate(self.columns):
+            h = self.heads[c]
+            if c in skip or cdef.get("img") or cdef.get("tpl") or h in ORDER_HEADS or h in AUTO_HEADS:
+                continue
+            if h in ("PVI", "MARGINE", "MRG%", "QTÀ ORDINE", "IMPORTO", "PREZZO NETTO", "NO.", "CODICE EAN"):
+                continue
+            out.append(c)
+        return out
 
     def cell(self, x, field):
         c = self.col.get(field)
@@ -330,7 +367,8 @@ class Catalog:
         x["best"] = a.get("best") if self.auto else (p.get("best") or p.get("price"))
         x["best_sup"] = a.get("sup") if self.auto else (p.get("supplier") or "")
         x["pvp"] = a.get("pvp") if a.get("pvp") else G._num(g(col.get("pvp")))
-        x["in_quotes"] = bool(a.get("p")) if self.auto else None
+        # 程序里新加、价格还没重算过的商品：先不算「暂停」（下次更新价格就知道了）
+        x["in_quotes"] = bool(a.get("p")) if self.auto and (a or not r.get("added")) else None
         pr = {h: v for h, v in x["prices"].items() if v}
         x["best_short"] = short_wholesaler(min(pr, key=lambda h: (pr[h], h))) if pr else ""
         x["direct_short"] = short_company(x["direct"])
@@ -350,8 +388,13 @@ class Catalog:
         x["pvi"] = x["pvp"] / (1 + iva) if x["pvp"] else None
         x["margin"] = (x["pvi"] - x["best"]) if x["pvi"] and x["best"] else None
         x["mrg"] = x["margin"] / x["pvi"] if x["margin"] is not None and x["pvi"] else None
-        # 状态
-        if ean in replaced:
+        # 状态：在程序里改过的（第 2 步）优先，其次替换记录 / 删除线 / STATO PRODOTTO
+        st_set = r.get("status_set")
+        if st_set == "replaced":
+            x["status"], x["new_ean"] = "replaced", r.get("new_ean") or replaced.get(ean) or ""
+        elif st_set in ("off", "new", "active"):
+            x["status"] = st_set
+        elif ean in replaced:
             x["status"], x["new_ean"] = "replaced", replaced[ean]
         elif x["struck"]:
             x["status"] = "off"
@@ -373,6 +416,7 @@ class Catalog:
             iss.append("below_cost")
         if r.get("dup"):
             iss.append("dup")
+        x["added"] = bool(r.get("added"))
         if x["status"] in ("off", "replaced"):
             iss.append(x["status"])
         return x
@@ -447,15 +491,19 @@ def load_auto(store):
 
 
 def load(root, replaced=None, source=None):
-    """同步文件夹里程序的 Griglia → Catalog；还没导入过返回 None"""
+    """同步文件夹里程序的 Griglia → Catalog（导入的那一份 + 之后每一条改动）；还没导入过返回 None"""
     store = store_dir(root)
-    ev = current_import(store)
+    events = read_events(store)
+    ev = current_import(store, events)
     if not ev:
         return None
     snap = load_snapshot(os.path.join(store, "base", ev["base"]))
+    snap = apply_events(snap, events, ev)
     if replaced is None:
         replaced = replaced_from_log(root, source)
-    return Catalog(snap, load_auto(store), replaced, ev)
+    cat = Catalog(snap, load_auto(store), replaced, ev)
+    cat.events = events
+    return cat
 
 
 def replaced_from_log(root, source=None):
@@ -533,6 +581,10 @@ def compute_auto(cat, quotes, files=None, pvp=None, now=None):
         raw = {h: (quotes.get(lab) or {}).get(e, {}).get("price") for h, lab in colmap.items()}
         p = _clean_prices({h: float(v) for h, v in raw.items() if v})
         d = {"p": {h: round(v, 4) for h, v in p.items()}}
+        k = {h: (quotes.get(lab) or {}).get(e, {}).get("pack") for h, lab in colmap.items()}
+        k = {h: float(v) for h, v in k.items() if v and _num_or_none(v)}
+        if k:
+            d["k"] = k                                   # 每家批发商的箱规（改箱规时核对，PACK_FAR）
         if p:
             h = min(p, key=lambda k: (p[k], k))
             d["best"] = round(p[h], 4)
@@ -587,6 +639,45 @@ def db_prices(db, cat):
                 for e in by_code.get(str(int(r["CodArticolo"])), ()):
                     out[e] = float(v)
     return out
+
+
+
+def db_codes(db, codes):
+    """这几个商品编号数据库里有哪些（保存前检查 Cod.Art.，只读）→ set(str)"""
+    import pandas as pd
+    import reorder_service as R
+    nums = sorted({int(c) for c in codes if str(c).strip().isdigit()})
+    out = set()
+    for i in range(0, len(nums), 2000):
+        chunk = nums[i:i + 2000]
+        ph = ", ".join(["%s"] * len(chunk))
+        df = pd.read_sql(f"SELECT CodArticolo FROM prodotti WHERE CodArticolo IN ({ph})", db.engine, params=tuple(chunk))
+        out |= {str(int(r["CodArticolo"])) for r in R.records(df)}
+    return out
+
+
+def db_lookup(db, ean):
+    """新增商品预填：按条码查数据库（只读）→ {code, name, pack, cod_forn, direct}；没有返回 {}"""
+    import pandas as pd
+    import reorder_service as R
+    code = R.codes_from_eans(db, [ean]).get(ean)
+    if not code:
+        return {}
+    out = {"code": code}
+    df = pd.read_sql("SELECT * FROM prodotti WHERE CodArticolo = %s", db.engine, params=(int(code),))
+    rows = R.records(df)
+    if rows:
+        r = rows[0]
+        out["name"] = str(r.get("Descrizione") or "").strip()
+        n = _num_or_none(r.get("qtasmallbox"))
+        if n and n > 0:
+            out["pack"] = int(n) if n.is_integer() else n
+    try:
+        cf, sup = R.supplier_info(db, [code]).get(code, ("", ""))
+        out["cod_forn"], out["direct"] = cf, sup
+    except Exception:
+        pass
+    return {k: v for k, v in out.items() if v not in (None, "")}
 
 
 # ------------------------------------------------------------------ 导出（和原表一样）
@@ -717,4 +808,346 @@ def compare(cat, grid):
     for e, y in list(ex.items()) + list(ex_off.items()):
         if e not in mine:
             out.append({"ean": e, "name": y.get("name") or "", "kind": "only_excel", "diff": []})
+    return out
+
+
+
+# ------------------------------------------------------------------ 编辑（第 2 步）
+# 每一次保存 = 一条记录（只加不改）：
+#   edit       {"ean", "changes": [{"f", "old", "new"}]}      f = "c<列号>"（原表的一列）/ "cats"（[大类, 中类, 小类]）/
+#                                                             "status"（active / new / off / replaced:新条码）
+#   add        {"ean", "values": {"<列号>": 值}, "cats": [...], "status"}   新增商品
+#   cat_add    {"path": [...]}                                 分类表加一个类
+#   cat_rename {"path": [...], "to": "新名字"}                  改名（改成已有的名字 = 合并）
+#   undo       {"target": 记录 id}                              撤销某一条（不删原来的）
+# 都带 "base"（改的是哪一次导入的数据；重新导入以后，以前的改动不再套用）
+EDIT_OPS = ("edit", "add", "cat_add", "cat_rename")
+PCT_WARN = 0.30          # 箱规一次改变 ≥ 30%：提醒，写明改前改后
+
+
+def new_id():
+    import uuid
+    return uuid.uuid4().hex[:12]
+
+
+def active_events(events, imp):
+    """这一次导入以后、没被撤销的改动（按时间）"""
+    base = (imp or {}).get("base")
+    undone = {e.get("target") for e in events if e.get("op") == "undo"}
+    act = [e for e in events if e.get("op") in EDIT_OPS and e.get("base") == base and e.get("id") not in undone]
+    act.sort(key=lambda e: e.get("t") or "")
+    return act, undone
+
+
+def _cat_cols(col):
+    left = {f: c for f, c in zip(("cat1", "cat2", "cat3"), col["left"]) if c is not None}
+    right = {f: c for f, c in zip(("cat1", "cat2", "cat3"), col["right"]) if c is not None}
+    return left, right
+
+
+def _row_cats(r, col):
+    left, right = _cat_cols(col)
+    return [re.sub(r"\s+", " ", c).strip() for c in G._cats(r["v"], left, right)]
+
+
+def _set_cats(r, cats, col):
+    cats = (list(cats or []) + ["", "", ""])[:3]
+    for side in (col["left"], col["right"]):
+        for c, v in zip(side, cats):
+            if c is not None and c < len(r["v"]):
+                r["v"][c] = v or None
+                r["f"][str(c)] = None if v else ""
+
+
+def _apply_change(r, f, new, col):
+    if f == "cats":
+        _set_cats(r, new, col)
+    elif f == "status":
+        st, _, ne = str(new or "active").partition(":")
+        r["status_set"], r["new_ean"] = st, (ne or None)
+        r["struck"] = st in ("off", "replaced")
+        c = col.get("stato")
+        if c is not None:
+            cur = str(r["v"][c] or "").strip().upper()
+            if st == "new":
+                r["v"][c] = "NUOVO"
+            elif cur == "NUOVO":
+                r["v"][c] = None
+    elif str(f).startswith("c"):
+        c = int(f[1:])
+        if c < len(r["v"]):
+            r["v"][c] = new
+            r["f"][str(c)] = None if new not in (None, "") else ""
+
+
+def apply_events(snap, events, imp):
+    """导入的快照 + 改动记录 → 现在的样子（不改原来的 snap）"""
+    act, _undone = active_events(events, imp)
+    if not act:
+        return snap
+    snap = dict(snap)
+    width = len(snap["columns"])
+    rows = [dict(r, v=list(r["v"]) + [None] * (width - len(r["v"])), f=dict(r.get("f") or {})) for r in snap["rows"]]
+    snap["rows"] = rows
+    heads = [G._norm(c["name"]) for c in snap["columns"]]
+    col = field_cols(heads)
+    by = {r["ean"]: r for r in rows if r.get("ean")}
+    extra = [list(p) for p in snap.get("extra_cats") or ()]
+    for e in act:
+        op = e["op"]
+        if op == "add":
+            ean = e.get("ean")
+            if not ean or ean in by:
+                continue
+            r = {"n": None, "ean": ean, "v": [None] * width, "f": {}, "struck": False, "added": True, "ev": e.get("id")}
+            if col.get("ean") is not None:
+                r["v"][col["ean"]] = ean
+            for c, v in (e.get("values") or {}).items():
+                if int(c) < width:
+                    r["v"][int(c)] = v
+            if e.get("cats"):
+                _set_cats(r, e["cats"], col)
+            if e.get("status"):
+                _apply_change(r, "status", e["status"], col)
+            # 新加的放在停用的前面（导出时停用 / 被替换的本来就排最后）
+            rows.append(r)
+            by[ean] = r
+        elif op == "edit":
+            r = by.get(e.get("ean"))
+            if r is None:
+                continue
+            for ch in e.get("changes") or ():
+                _apply_change(r, ch.get("f"), ch.get("new"), col)
+        elif op == "cat_add":
+            if e.get("path"):
+                extra.append(list(e["path"]))
+        elif op == "cat_rename":
+            path, to = list(e.get("path") or []), str(e.get("to") or "").strip()
+            if not path or not to:
+                continue
+            k = len(path) - 1
+            for r in rows:
+                if not r.get("ean"):
+                    continue
+                cs = _row_cats(r, col)
+                if [c.upper() for c in cs[:k + 1]] == [c.upper() for c in path]:
+                    cs[k] = to
+                    _set_cats(r, cs, col)
+            for p in extra:
+                if [c.upper() for c in p[:k + 1]] == [c.upper() for c in path]:
+                    p[k] = to
+    snap["extra_cats"] = extra
+    return snap
+
+
+def valid_ean(e):
+    """条码对不对：8 / 12 / 13 / 14 位数字、最后一位校验位对"""
+    e = str(e or "").strip()
+    if not e.isdigit() or len(e) not in (8, 12, 13, 14):
+        return False
+    digits = [int(d) for d in e]
+    total = sum(d * (3 if i % 2 == 0 else 1) for i, d in enumerate(reversed(digits[:-1])))
+    return (10 - total % 10) % 10 == digits[-1]
+
+
+def field_label(cat, f):
+    if f == "cats":
+        return "分类"
+    if f == "status":
+        return "状态"
+    if str(f).startswith("c"):
+        c = int(f[1:])
+        if c < len(cat.columns):
+            return cat.columns[c]["name"].replace("\n", " ").strip() or f"#{c + 1}"
+    return str(f)
+
+
+def show_value(f, v):
+    """改动记录里怎么写这个值"""
+    if f == "cats":
+        return " › ".join(c for c in (v or []) if c) or "—"
+    if f == "status":
+        st, _, ne = str(v or "").partition(":")
+        name = {"active": "在售", "new": "新品", "off": "停用", "replaced": "被替换", "paused": "暂停"}.get(st, st)
+        return name + (f" → {ne}" if ne else "")
+    if v in (None, ""):
+        return "—"
+    if isinstance(v, float):
+        return f"{v:g}"
+    return str(v)
+
+
+def current(cat, x, f):
+    """这个商品这一项现在是什么（做 old 用）"""
+    if f == "cats":
+        return list((x["cats"] + ["", "", ""])[:3])
+    if f == "status":
+        st = x["status"] if x["status"] != "paused" else ("new" if x["stato"] == "NUOVO" else "active")
+        return st + (":" + x["new_ean"] if st == "replaced" and x.get("new_ean") else "")
+    c = int(f[1:])
+    return x["v"][c] if c < len(x["v"]) else None
+
+
+def _num_or_none(v):
+    try:
+        return float(str(v).replace(",", "."))
+    except (TypeError, ValueError):
+        return None
+
+
+def check(cat, x, changes, new_ean=None, db_codes=None):
+    """
+    保存前的合理性检查（设计「改动规则和合理性检查」）→ [(级别, 说明)]；级别 "red" 不让存、"yellow" 提醒但能存。
+    x = 改的商品（新增时 None，new_ean = 新条码）；changes = [{"f", "old", "new"}]；
+    db_codes = 数据库里有的商品编号集合（查不了就 None，不检查）
+    """
+    out = []
+    col = cat.col
+    if new_ean is not None:
+        if not valid_ean(new_ean):
+            out.append(("red", f"条码 {new_ean} 不对：要 8 / 12 / 13 / 14 位数字，最后一位校验位要对"))
+        elif new_ean in cat.by_ean:
+            out.append(("red", f"条码 {new_ean} Griglia 里已经有了：{cat.by_ean[new_ean]['name']}"))
+    paths = cat.category_paths()
+    for ch in changes:
+        f, old, new = ch["f"], ch.get("old"), ch.get("new")
+        if f == "cats":
+            cs = [c for c in (new or []) if c]
+            if not cs:
+                out.append(("red", "分类至少要有大类"))
+            else:
+                for k in range(len(cs)):
+                    if tuple(cs[:k + 1]) not in paths:
+                        out.append(("red", f"分类「{' › '.join(cs[:k + 1])}」分类表里没有：只能从分类表里选（要新类先在「分类」页加）"))
+                        break
+        elif f == "status":
+            st, _, ne = str(new or "").partition(":")
+            if st == "replaced":
+                if not ne:
+                    out.append(("red", "被替换要写新商品的条码"))
+                elif not valid_ean(ne):
+                    out.append(("red", f"新商品条码 {ne} 不对"))
+                elif x is not None and ne == x["ean"]:
+                    out.append(("red", "新商品不能是它自己"))
+            if st in ("off", "replaced") and x is not None:
+                out.append(("yellow", f"{x['name']} 改成「{show_value('status', new)}」：门店清单 / 扫码枪上以后显示"
+                                      f"{'停用' if st == 'off' else '换成新商品'}，审核清单里这个商品算非 Griglia 商品"))
+        elif str(f).startswith("c"):
+            c = int(f[1:])
+            if c == col.get("name") and not str(new or "").strip():
+                out.append(("red", "名称不能空"))
+            if c == col.get("pack"):
+                n = _num_or_none(new)
+                if new not in (None, "") and (n is None or n <= 0):
+                    out.append(("red", f"箱规 {new} 不对：要大于 0 的数"))
+                elif n:
+                    o = _num_or_none(old)
+                    if o and abs(n - o) / o >= PCT_WARN:
+                        out.append(("yellow", f"箱规一次改了 {abs(n - o) / o:.0%}：{o:g} → {n:g}"))
+                    packs = [p for p in ((cat.auto.get("items") or {}).get(x["ean"] if x else new_ean, {}).get("k") or {}).values() if p]
+                    import price_check as PC
+                    if packs and (n >= PC.PACK_FAR * max(packs) or max(packs) >= PC.PACK_FAR * n):
+                        out.append(("yellow", f"箱规不一致：这里 {n:g} 件，批发商 {' / '.join(f'{p:g}' for p in sorted(set(packs)))} 件"))
+            if c == col.get("code") and db_codes is not None:
+                code = str(new or "").strip()
+                if code and code not in db_codes:
+                    out.append(("yellow", f"Cod.Art. {code} 数据库里没有（新品常见）"))
+    if x is not None and x.get("mrg") is not None and x["mrg"] < MARGIN_LOW and \
+            any(ch["f"] == f"c{col.get('pack')}" for ch in changes):
+        out.append(("yellow", f"毛利率只有 {x['mrg']:.0%}（低于 {MARGIN_LOW:.0%}）"))
+    return out
+
+
+def make_edit(cat, ean, changes):
+    """一次保存 → 一条 edit 记录（只留真的改了的项）"""
+    ch = [dict(c) for c in changes if _norm_v(c.get("old")) != _norm_v(c.get("new"))]
+    if not ch:
+        return None
+    return {"op": "edit", "id": new_id(), "base": cat.imp.get("base"), "ean": ean, "changes": ch}
+
+
+def _norm_v(v):
+    if isinstance(v, list):
+        return [str(s or "").strip().upper() for s in v]
+    if isinstance(v, float) and v.is_integer():
+        return int(v)
+    if isinstance(v, str):
+        n = _num_or_none(v)
+        return (int(n) if n is not None and n.is_integer() else n) if n is not None and v.strip() else v.strip()
+    return v
+
+
+def make_add(cat, ean, values, cats, status="new"):
+    return {"op": "add", "id": new_id(), "base": cat.imp.get("base"), "ean": ean,
+            "values": {str(k): v for k, v in values.items() if v not in (None, "")}, "cats": list(cats or []),
+            "status": status}
+
+
+def save(root, evs, pc=None, usr=None):
+    """把几条记录写进这台电脑的改动记录（同一批用同一个时间）"""
+    store = store_dir(root)
+    t = datetime.now().isoformat(timespec="seconds")
+    out = []
+    for e in evs:
+        if e:
+            e = dict(e)
+            e.setdefault("t", t)
+            out.append(add_event(store, e, pc=pc, usr=usr))
+    return out
+
+
+def undo(root, ev_id, pc=None, usr=None):
+    return add_event(store_dir(root), {"op": "undo", "id": new_id(), "target": ev_id}, pc=pc, usr=usr)
+
+
+def history(cat, events=None):
+    """改动记录（新的在前）：每一项改动一行 {id, t, user, pc, ean, name, field, old, new, undone, op}"""
+    events = cat.events if events is None else events
+    base = cat.imp.get("base")
+    undone = {e.get("target") for e in events if e.get("op") == "undo"}
+    out = []
+    for e in events:
+        if e.get("op") not in EDIT_OPS or e.get("base") != base:
+            continue
+        x = cat.by_ean.get(e.get("ean")) if e.get("ean") else None
+        common = {"id": e.get("id"), "t": e.get("t"), "user": e.get("user"), "pc": e.get("pc"), "op": e["op"],
+                  "ean": e.get("ean") or "", "name": (x or {}).get("name", ""), "undone": e.get("id") in undone}
+        if e["op"] == "edit":
+            for ch in e.get("changes") or ():
+                out.append(dict(common, field=field_label(cat, ch["f"]), f=ch["f"],
+                                old=show_value(ch["f"], ch.get("old")), new=show_value(ch["f"], ch.get("new"))))
+        elif e["op"] == "add":
+            out.append(dict(common, field="新增商品", f="add", old="—", new=(x or {}).get("name") or e.get("ean")))
+        elif e["op"] == "cat_add":
+            out.append(dict(common, field="分类表 · 新加", f="cat", old="—", new=" › ".join(e.get("path") or [])))
+        elif e["op"] == "cat_rename":
+            out.append(dict(common, field="分类表 · 改名", f="cat", old=" › ".join(e.get("path") or []),
+                            new=e.get("to") or ""))
+    out.sort(key=lambda r: r["t"] or "", reverse=True)
+    return out
+
+
+def conflicts(cat, pc=None, usr=None, events=None):
+    """
+    两个人改了同一个商品的同一项：后改的算数，先改的人要知道 → [{id, t, user, ean, name, field, mine, theirs}]
+    （只看没撤销的；我改了以后别人又改了的那几项）
+    """
+    events = cat.events if events is None else events
+    pc, usr = pc or me(), usr or user()
+    act, _ = active_events(events, cat.imp)
+    last = {}
+    out = []
+    for e in act:
+        if e["op"] != "edit":
+            continue
+        who = (e.get("pc"), e.get("user"))
+        for ch in e.get("changes") or ():
+            k = (e.get("ean"), ch["f"])
+            prev = last.get(k)
+            if prev and prev[0] == (pc, usr) and who != (pc, usr):
+                x = cat.by_ean.get(e.get("ean")) or {}
+                out.append({"id": e.get("id"), "t": e.get("t"), "user": e.get("user"), "ean": e.get("ean"),
+                            "name": x.get("name", ""), "field": field_label(cat, ch["f"]),
+                            "mine": show_value(ch["f"], prev[1]), "theirs": show_value(ch["f"], ch.get("new"))})
+            last[k] = (who, ch.get("new"))
     return out

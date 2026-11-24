@@ -18,7 +18,8 @@ from PySide6.QtCore import Qt, QObject, Signal, QEvent
 from PySide6.QtGui import QColor, QKeySequence, QShortcut
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QFrame, QStackedWidget,
                                QTreeWidget, QTreeWidgetItem, QScrollArea, QPushButton, QButtonGroup, QSlider,
-                               QHeaderView, QDialog, QTabWidget, QFileDialog, QMessageBox, QGridLayout)
+                               QHeaderView, QDialog, QTabWidget, QFileDialog, QMessageBox, QGridLayout,
+                               QAbstractItemView)
 
 from i18n import tr
 
@@ -97,7 +98,7 @@ class GrigliaCatalogPage:
         lay = QVBoxLayout(w)
         lay.setContentsMargins(28, 22, 28, 20)
         lay.setSpacing(14)
-        tip = tr("以后 Griglia 在程序里管（现在第 1 步：只看，Excel 还是正本）。每家批发商价格、最低进价、Fornitore 按这周报价自动更新，卖价跟数据库")
+        tip = tr("Griglia 在程序里管：双击一行或「编辑商品」改，几行一起改用「批量修改」，每一次改动都记在改动记录里、能撤销。每家批发商价格、最低进价、Fornitore 按这周报价自动更新，卖价跟数据库；导出 Excel 带上程序里改的")
         self.hero = Hero(tr("Griglia 商品目录"), "", tip=tip)
         self.b_price = button(tr("更新价格"), lambda: self.update_prices(manual=True),
                               tip=tr("按「2 供应商报价」里这周的报价重算每家批发商价格、最低进价、Fornitore，卖价从数据库读"))
@@ -110,7 +111,13 @@ class GrigliaCatalogPage:
             None,
             (tr("打开文件夹"), self.open_dir, None),
         ])
-        for b in (self.b_price, self.b_exp, more):
+        self.b_add = button(tr("新增商品"), self.add_item, tip=tr("加一个 Griglia 里还没有的商品（扫条码，能从数据库预填）"))
+        from erp_widgets import CountButton as _CB
+        self.b_batch = _CB(tr("批量修改"), 0)
+        self.b_batch.setToolTip(tr("在表格里按住 Ctrl / Shift 选几行，一起改分类、直厂、品牌、状态…"))
+        self.b_batch.clicked.connect(self.batch_edit)
+        self.b_batch.setEnabled(False)
+        for b in (self.b_add, self.b_batch, self.b_price, self.b_exp, more):
             self.hero.add(b)
         lay.addWidget(self.hero)
 
@@ -129,7 +136,7 @@ class GrigliaCatalogPage:
         bh.setSpacing(14)
         # 左边：分类 / 供应商（切换，一次一样，整列高度给它）
         left = Card(margins=(12, 12, 12, 12))
-        left.setFixedWidth(250)
+        left.setFixedWidth(232)
         self.left_seg = Seg([("cat", tr("分类")), ("sup", tr("供应商"))], "cat",
                             tip=tr("分类 = 大类 › 中类 › 小类（原表右边那套 CAT.1 / CAT.2 / CAT.3，空着的用左边那套补）；"
                                    "供应商 = 直厂（FORNITORI DIRETTO）或这周最便宜的批发商。两样可以叠在一起筛"))
@@ -197,7 +204,7 @@ class GrigliaCatalogPage:
         bar.addWidget(self.b_drawer)
         mid.v.addLayout(bar)
         chips = QHBoxLayout()
-        chips.setSpacing(6)
+        chips.setSpacing(4)
         self.status_group = QButtonGroup(w)
         self.status_group.setExclusive(True)
         self.status_btns = {}
@@ -206,6 +213,7 @@ class GrigliaCatalogPage:
                 [("issues", tr("要看的"), tr("导入时发现要人看的（两套分类不一样、没有 Cod.Art.、卖价低于进价…）"))]:
             cb = CountButton(text, 0, show_zero=True)
             cb.setObjectName("Chip")
+            cb.setStyleSheet("padding-left: 8px;")      # 一排七个，1366 宽也放得下
             cb.setCheckable(True)
             cb.setCursor(Qt.PointingHandCursor)
             cb.setToolTip(tip)
@@ -215,16 +223,16 @@ class GrigliaCatalogPage:
             chips.addWidget(cb)
         self.status_btns[None].setChecked(True)
         chips.addStretch()
+        mid.v.addLayout(chips)
         self.count = QLabel("")
         self.count.setObjectName("Faint")
-        chips.addWidget(self.count)
-        mid.v.addLayout(chips)
         self.t = self.ui.make_table([tr(h) for _f, h, _k in COLS], stretch_col=None,
                                     numeric_cols=tuple(i for i, c in enumerate(COLS) if c[2] != "txt"))
         mid.v.addWidget(self.t, 1)
         foot = QHBoxLayout()
         foot.setSpacing(6)
-        hint = QLabel(tr("Ctrl + 滚轮缩放"))
+        foot.addWidget(self.count)
+        hint = QLabel("·  " + tr("Ctrl + 滚轮缩放"))
         hint.setObjectName("Faint")
         foot.addWidget(hint)
         foot.addStretch()
@@ -307,6 +315,9 @@ class GrigliaCatalogPage:
             self.thumb = PI.ThumbDelegate(t, 0, THUMB0, self.settings)
             t.setItemDelegateForColumn(1, self.thumb)
         t.itemSelectionChanged.connect(self._selected)
+        t.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        t.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        t.doubleClicked.connect(lambda _ix: self.edit_item())
         t.viewport().installEventFilter(_WheelZoom(self))
         self.ctl = TableSortFilter(t, lambda: len(self._rows), lambda i, c: self._rows[i][c], self._fill,
                                    key=lambda i, c: self._keys[i][c], hide=self._hidden,
@@ -450,6 +461,10 @@ class GrigliaCatalogPage:
         if k is not None:
             self.ctl.ensure(k)
             self.t.selectRow(k)                       # 详情栏一打开就有东西看
+        self._check_conflicts()
+        for p in (getattr(self.win, "grid_hist", None), getattr(self.win, "grid_cats", None)):
+            if p is not None and p.page is not None and p.page.isVisible():
+                p.refresh()
         if then_price and self._quotes_newer():
             self.update_prices(manual=False)
 
@@ -731,15 +746,89 @@ class GrigliaCatalogPage:
         self._render()
 
     # ------------------------------------------------------------------ 详情
+    def _sel_items(self):
+        rows = self.t.selectionModel().selectedRows() if self.t.selectionModel() else []
+        vis = self.ctl.visible
+        return [self.cat.items[vis[r.row()]] for r in sorted(rows, key=lambda r: r.row()) if 0 <= r.row() < len(vis)]
+
     def _selected(self):
-        if not self.drawer.isVisible() or self.cat is None:
+        if self.cat is None:
             return
         rows = self.t.selectionModel().selectedRows() if self.t.selectionModel() else []
+        self.b_batch.set_count(len(rows) if len(rows) > 1 else 0)
+        self.b_batch.setEnabled(len(rows) > 1)
+        if not self.drawer.isVisible():
+            return
         if not rows or not self.ctl.visible:
             return
         k = rows[0].row()
         if 0 <= k < len(self.ctl.visible):
             self.drawer.show_item(self.cat.items[self.ctl.visible[k]])
+
+    # ------------------------------------------------------------------ 改（第 2 步，界面在 griglia_edit_page）
+    def edit_item(self, x=None):
+        if self.cat is None:
+            return
+        x = x or (self._sel_items() or [None])[0]
+        if x is None:
+            return
+        from griglia_edit_page import ProductDialog
+        ProductDialog(self, x).exec()
+
+    def add_item(self):
+        if self.cat is None:
+            return
+        from griglia_edit_page import ProductDialog
+        ProductDialog(self, None).exec()
+
+    def batch_edit(self):
+        items = self._sel_items() if self.cat is not None else []
+        if len(items) < 2:
+            return
+        from griglia_edit_page import BatchDialog
+        BatchDialog(self, items).exec()
+
+    def _db(self):
+        import reorder_service as R
+        return R.make_db(self.settings.get("db") or None)
+
+    def _db_codes_for(self, items_changes, add=None):
+        """改了 / 新加的 Cod.Art. 数据库里有没有（BusyDialog 查；查不了 = None，不检查）"""
+        c = self.cat.col.get("code") if self.cat else None
+        if c is None:
+            return None
+        codes = [str(ch.get("new") or "").strip() for _x, chs in items_changes for ch in chs if ch["f"] == f"c{c}"]
+        codes = [k for k in codes if k]
+        if not codes:
+            return None
+        from erp_widgets import BusyDialog
+        import griglia_db as D
+        res, err = BusyDialog.run(self.win, tr("核对商品编号"), tr("正在查数据库"), lambda: D.db_codes(self._db(), codes))
+        return None if err else res
+
+    def lookup(self, ean):
+        import griglia_db as D
+        return D.db_lookup(self._db(), ean)
+
+    def _check_conflicts(self):
+        """别人后来改了我改过的同一项：提醒一次（看过的记在 settings griglia_db.seen）"""
+        import griglia_db as D
+        try:
+            cs = D.conflicts(self.cat)
+        except Exception:
+            return
+        seen = set(self._cfg().get("seen") or [])
+        new = [c for c in cs if c["id"] not in seen]
+        if not new:
+            return
+        self._cfg()["seen"] = sorted(seen | {c["id"] for c in cs})[-500:]
+        self._save()
+
+        def show():
+            text = "\n".join(tr("{0} · {1}：你改成 {2}，{3} 后来改成 {4}", c["name"] or c["ean"], tr(c["field"]), c["mine"],
+                                c["user"], c["theirs"]) for c in new[:15])
+            QMessageBox.information(self.win, tr("你改过的被别人改了"), text + "\n\n" + tr("按最后改的算；不对的话在改动记录里撤销"))
+        self.win.show_toast(tr("你改过的 {0} 项被别人改了", len(new)), action=(tr("查看"), show))
 
     # ------------------------------------------------------------------ 操作
     def open_dir(self):
@@ -992,7 +1081,7 @@ class _Drawer(QScrollArea):
         super().__init__()
         self.page = page
         self.setWidgetResizable(True)
-        self.setFixedWidth(290)
+        self.setFixedWidth(272)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.setFrameShape(QFrame.NoFrame)
         self.body = QWidget()
@@ -1013,6 +1102,12 @@ class _Drawer(QScrollArea):
         self.sub.setWordWrap(True)
         self.sub.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.v.addWidget(self.sub)
+        self.b_edit = QPushButton(tr("编辑商品"))
+        self.b_edit.setObjectName("Primary")
+        self.b_edit.setToolTip(tr("改名称、编号、箱规、分类、直厂、状态…（双击表格里的一行也行）"))
+        self.b_edit.clicked.connect(lambda: page.edit_item(self.x))
+        self.b_edit.setEnabled(False)
+        self.v.addWidget(self.b_edit)
         self.fields = QWidget()
         self.fv = QVBoxLayout(self.fields)
         self.fv.setContentsMargins(0, 4, 0, 0)
@@ -1030,6 +1125,7 @@ class _Drawer(QScrollArea):
         import griglia_db as D
         import product_images as PI
         self.x = x
+        self.b_edit.setEnabled(True)
         page, cat, T = self.page, self.page.cat, self.page.ui.T
         try:
             self.img._img_click = True

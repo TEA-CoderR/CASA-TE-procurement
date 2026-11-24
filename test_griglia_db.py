@@ -182,3 +182,126 @@ def test_latest_import_from_any_pc_wins(tmp_path):
 def test_category_sets_differ_only_on_real_difference():
     assert not D.cats_differ(["CAPELLI ", "", ""], ["capelli", "SHAMPOO", ""])
     assert D.cats_differ(["DETERSIVI", "BUCATO", ""], ["DETERSIVI", "SUPERFICI", ""])
+
+
+# ------------------------------------------------------------------ 第 2 步：编辑 / 改动记录 / 撤销 / 合理性检查
+def _edit(root, cat, ean, f, new, pc="PC1", usr="anna", t=None):
+    x = cat.by_ean[ean]
+    ev = D.make_edit(cat, ean, [{"f": f, "old": D.current(cat, x, f), "new": new}])
+    if t:
+        ev["t"] = t
+    return D.save(root, [ev], pc=pc, usr=usr)[0]
+
+
+def test_edits_apply_and_undo(tmp_path):
+    root, *_ = _import(tmp_path)
+    cat = D.load(root, replaced={})
+    e = "8410436235549"
+    _edit(root, cat, e, f"c{C['PZ*COLLI']}", 12)
+    ev = _edit(root, cat, e, "cats", ["CURA PERSONE", "CAPELLI", ""])
+    _edit(root, cat, "8001090000017", "status", "off")
+    cat = D.load(root, replaced={})
+    x = cat.by_ean[e]
+    assert x["pack"] == 12 and x["cats"] == ["CURA PERSONE", "CAPELLI", ""]
+    assert cat.by_ean["8001090000017"]["status"] == "off"
+    D.undo(root, ev["id"], pc="PC1", usr="anna")
+    cat = D.load(root, replaced={})
+    assert cat.by_ean[e]["cats"] == ["CURA PERSONE", "CAPELLI", "SHAMPOO"] and cat.by_ean[e]["pack"] == 12
+    h = D.history(cat)
+    assert len(h) == 3 and [r for r in h if r["f"] == "cats"][0]["undone"]
+    # 导出跟着改动：停用的划线、箱规写新的
+    out = str(tmp_path / "o.xlsx")
+    D.export(root, cat, out)
+    g = G.load(out)
+    assert g["items"][e]["pack"] == 12 and "8001090000017" in g["struck"]
+
+
+def test_add_item_and_category_table(tmp_path):
+    root, *_ = _import(tmp_path)
+    cat = D.load(root, replaced={})
+    assert ("CURA PERSONE", "CAPELLI", "SHAMPOO") in cat.category_paths()
+    D.save(root, [{"op": "cat_add", "id": D.new_id(), "base": cat.imp["base"], "path": ["CURA PERSONE", "CAPELLI", "BALSAMO"]}])
+    cat = D.load(root, replaced={})
+    assert ("CURA PERSONE", "CAPELLI", "BALSAMO") in cat.category_paths()
+    ean = "8001090000057"
+    assert D.valid_ean(ean)
+    ch = [{"f": "cats", "old": None, "new": ["CURA PERSONE", "CAPELLI", "BALSAMO"]}]
+    assert D.check(cat, None, ch, new_ean=ean) == []
+    assert any(l == "red" for l, _ in D.check(cat, None, ch, new_ean="8001090000055"))          # 校验位错
+    assert any(l == "red" for l, _ in D.check(cat, None, ch, new_ean="8410436235549"))          # 已经有了
+    D.save(root, [D.make_add(cat, ean, {C["Descrizione Prodotto"]: "GLISS BALSAMO", C["PZ*COLLI"]: 6},
+                             ["CURA PERSONE", "CAPELLI", "BALSAMO"])])
+    cat = D.load(root, replaced={})
+    x = cat.by_ean[ean]
+    assert x["status"] == "new" and x["added"] and x["name"] == "GLISS BALSAMO" and x["cats"][2] == "BALSAMO"
+    # 改名 = 整个类跟着改；改成已有的名字 = 合并
+    D.save(root, [{"op": "cat_rename", "id": D.new_id(), "base": cat.imp["base"], "path": ["CURA PERSONE", "CAPELLI"], "to": "HAIR"}])
+    cat = D.load(root, replaced={})
+    assert cat.by_ean[ean]["cats"][:2] == ["CURA PERSONE", "HAIR"] and cat.by_ean["8410436235549"]["cats"][1] == "HAIR"
+    out = str(tmp_path / "o.xlsx")
+    assert D.export(root, cat, out) == 5
+    assert G.load(out)["items"][ean]["name"] == "GLISS BALSAMO"
+
+
+def test_checks_red_and_yellow(tmp_path):
+    root, *_ = _import(tmp_path)
+    cat = D.load(root, replaced={})
+    x = cat.by_ean["8410436235549"]
+    pc = f"c{C['PZ*COLLI']}"
+    lv = lambda ch: [l for l, _ in D.check(cat, x, ch)]
+    assert lv([{"f": pc, "old": 6, "new": 0}]) == ["red"]
+    assert lv([{"f": pc, "old": 6, "new": 12}]) == ["yellow"]           # 一次改 100%
+    assert lv([{"f": pc, "old": 6, "new": 7}]) == []
+    assert lv([{"f": "cats", "old": None, "new": ["NUOVA CATEGORIA", "", ""]}]) == ["red"]
+    assert lv([{"f": "cats", "old": None, "new": ["", "", ""]}]) == ["red"]
+    assert lv([{"f": "status", "old": "active", "new": "replaced:123"}])[0] == "red"
+    assert lv([{"f": f"c{C['Descrizione Prodotto']}", "old": "A", "new": " "}]) == ["red"]
+    # 批发商箱规差很多倍
+    D.save_auto(root, D.compute_auto(cat, {"MELONI": {"8410436235549": {"price": 1.4, "pack": 6}}}))
+    cat = D.load(root, replaced={})
+    assert "yellow" in [l for l, _ in D.check(cat, cat.by_ean["8410436235549"], [{"f": pc, "old": 6, "new": 24}])]
+    # 没改的不记
+    assert D.make_edit(cat, "8410436235549", [{"f": pc, "old": 6, "new": "6"}]) is None
+
+
+def test_reimport_drops_old_edits_and_conflicts_reported(tmp_path):
+    root, src, *_ = _import(tmp_path)
+    cat = D.load(root, replaced={})
+    e = "8410436235549"
+    f = f"c{C['Marca']}"
+    _edit(root, cat, e, f, "GLISS KUR", pc="PC1", usr="anna", t="2099-01-01T10:00:00")
+    _edit(root, cat, e, f, "SCHWARZKOPF", pc="PC2", usr="marco", t="2099-01-01T10:05:00")
+    cat = D.load(root, replaced={})
+    assert cat.by_ean[e]["brand"] == "SCHWARZKOPF"                    # 后改的算数
+    c = D.conflicts(cat, pc="PC1", usr="anna")
+    assert len(c) == 1 and c[0]["user"] == "marco" and c[0]["mine"] == "GLISS KUR" and c[0]["theirs"] == "SCHWARZKOPF"
+    assert D.conflicts(cat, pc="PC2", usr="marco") == []
+    from datetime import datetime, timedelta
+    D.save_import(root, D.read_excel(src), src, pc="PC1", usr="anna", now=datetime(2099, 1, 2))
+    assert D.load(root, replaced={}).by_ean[e]["brand"] == "GLISS"
+
+
+def test_ean_check_digit():
+    assert D.valid_ean("8410436235549") and D.valid_ean("96385074") and not D.valid_ean("8410436235548")
+    assert not D.valid_ean("12345") and not D.valid_ean("84104362355a9")
+
+
+def test_db_lookup_prefill_and_codes(monkeypatch):
+    """新增商品从数据库预填（只读）、保存前核对 Cod.Art."""
+    import sqlite3
+    import pandas as pd
+    con = sqlite3.connect(":memory:")
+    con.execute("CREATE TABLE prodotti (CodArticolo INT, CodBarre TEXT, Descrizione TEXT, qtasmallbox INT,"
+                " ArticoloForn TEXT, IDFornitore INT)")
+    con.execute("CREATE TABLE codbarre (CodArticolo INT, CodBarre TEXT)")
+    con.execute("CREATE TABLE fornitore (IDFornitore INT, Nome TEXT)")
+    con.execute("INSERT INTO prodotti VALUES (123, '8001090000057', 'PROVA 1L', 6, 'AB-9', 7)")
+    con.execute("INSERT INTO fornitore VALUES (7, 'HENKEL ITALIA SRL')")
+    con.commit()
+    orig = pd.read_sql
+    monkeypatch.setattr(pd, "read_sql", lambda q, engine, params=None: orig(q.replace("%s", "?"), con, params=params))
+    db = type("DB", (), {"engine": None})()
+    p = D.db_lookup(db, "8001090000057")
+    assert p == {"code": "123", "name": "PROVA 1L", "pack": 6, "cod_forn": "AB-9", "direct": "HENKEL ITALIA SRL"}
+    assert D.db_lookup(db, "8001090000064") == {}
+    assert D.db_codes(db, ["123", "999", "", "x"]) == {"123"}

@@ -35,7 +35,7 @@ SKIP_IN = {"store_orders": {"folder", "day", "skip", "moq_override", "stores", "
            # 确认收货：上次选的卸货人是每台电脑自己的（卸货人名单 people 照常统一）
            "receiving": {"last_by"},
            # Griglia 商品目录：表格缩放、详情栏开不开是每个人自己的（2026-11-24）
-           "griglia_db": {"zoom", "drawer"},
+           "griglia_db": {"zoom", "drawer", "seen"},
            "sellout": {"preset", "start", "end", "stores", "sups", "cats", "mids", "subs", "view", "last_dir", "exp_dir"}}
 _SECRET = re.compile(r"pass|pwd|token|secret|api_?key|credential", re.I)
 _PATHLIKE = re.compile(r"^[A-Za-z]:[\\/]|^\\\\|^/(home|Users|mnt|tmp)/")
