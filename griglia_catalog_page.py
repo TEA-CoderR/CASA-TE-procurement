@@ -3,18 +3,21 @@
 Griglia → 商品目录（2026-11-24 第 1 步：只看）。数据见 griglia_db.py。
 
   页头：几个商品 · 什么时候从哪份 Excel 导入 · 价格什么时候更新；右边 更新价格 · 导出 Excel · ⋯（从 Excel 导入 / 和 Excel 对比 / 导入检查 / 打开文件夹）
-  左边：状态 · 分类三级树（大类 › 中类 › 小类，每级几个商品）· 供应商（直厂 / 这周最便宜的批发商，能搜），几样可以叠在一起筛
-  中间：商品表（TableSortFilter：点表头排序、右键表头筛选；原表 67 列都在「显示哪些列」里）
-  右边：选中商品的详情（照原表的分组；程序自动的列写「自动」）
+  左边：「分类 | 供应商」切换，一次只看一样、整列高度给它：分类三级树（大类 › 中类 › 小类，每级几个商品）/
+        供应商（直厂 / 这周最便宜的批发商，能搜）；两样可以叠在一起筛
+  中间：搜索 + 已选的筛选小标签 · 状态一排按钮（带个数）· 商品表（TableSortFilter；原表 67 列都在「显示哪些列」里）·
+        右下角像 Excel 一样缩放（− 滑块 +，Ctrl + 滚轮 / Ctrl + / Ctrl − / Ctrl 0），记在本机
+  右边：选中商品的详情（照原表的分组），可以收起
 第 1 步 Excel 还是正本：这里只看、不改；价格每次报价换了自动更新。
+（11-24 用户：操作起来费劲 → 状态挪到表格上面一排、左边分类 / 供应商切换、表格能缩放、行矮一点、名字写短的、详情栏能收起）
 """
 import os
 import threading
 
-from PySide6.QtCore import Qt, QObject, Signal
-from PySide6.QtGui import QColor
+from PySide6.QtCore import Qt, QObject, Signal, QEvent
+from PySide6.QtGui import QColor, QKeySequence, QShortcut
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QFrame, QStackedWidget,
-                               QTreeWidget, QTreeWidgetItem, QScrollArea, QPushButton,
+                               QTreeWidget, QTreeWidgetItem, QScrollArea, QPushButton, QButtonGroup, QSlider,
                                QHeaderView, QDialog, QTabWidget, QFileDialog, QMessageBox, QGridLayout)
 
 from i18n import tr
@@ -33,6 +36,9 @@ COLS = [(0, "条码", "txt"), (1, "商品", "txt"), (2, "Cod.Art.", "txt"), (3, 
         (9, "最便宜批发商", "txt"), (10, "最低进价", "price"), (15, "卖价", "price"), (16, "毛利率", "pct"),
         (17, "状态", "txt"), (18, "要看的", "txt")]
 HIDDEN = [0, 3, 6] + [100 + c for c in range(200)]
+ZOOM_MIN, ZOOM_MAX, ZOOM_STEP = 0.6, 1.6, 0.1
+THUMB0 = 40                  # 100% 时的小图（以前用设置里的「中」64，行太高、一屏看不了几个）
+FONT0, HEAD0 = 13, 12        # 100% 时正文 / 表头字号（像素）
 
 
 def _p(v):
@@ -42,6 +48,22 @@ def _p(v):
 class _Sig(QObject):
     loaded = Signal(object)
     priced = Signal(object)
+
+
+class _WheelZoom(QObject):
+    """表格上 Ctrl + 滚轮 = 缩放（和 Excel 一样）；不按 Ctrl 照常滚动"""
+
+    def __init__(self, page):
+        super().__init__(page.t)
+        self.page = page
+
+    def eventFilter(self, obj, e):
+        if e.type() == QEvent.Wheel and e.modifiers() & Qt.ControlModifier:
+            d = e.angleDelta().y()
+            if d:
+                self.page.zoom_by(ZOOM_STEP if d > 0 else -ZOOM_STEP)
+            return True
+        return False
 
 
 class GrigliaCatalogPage:
@@ -56,12 +78,21 @@ class GrigliaCatalogPage:
         self._rows, self._keys, self._hay = [], [], []
         self._loading = self._pricing = False
         self._built_cols = None
+        self._zoom = 1.0
+        self._px = FONT0
         self.page = None
+
+    def _cfg(self):
+        return self.settings.setdefault("griglia_db", {})
+
+    def _save(self):
+        import settings as ST
+        ST.save_settings(self.settings)
 
     # ------------------------------------------------------------------ 界面
     def build(self):
         from page_kit import Hero, Card, button, more_menu, Seg
-        from erp_widgets import EmptyState
+        from erp_widgets import EmptyState, CountButton
         w = QWidget()
         lay = QVBoxLayout(w)
         lay.setContentsMargins(28, 22, 28, 20)
@@ -96,55 +127,133 @@ class GrigliaCatalogPage:
         bh = QHBoxLayout(body)
         bh.setContentsMargins(0, 0, 0, 0)
         bh.setSpacing(14)
-        # 左边：状态 / 分类 / 供应商
-        left = Card(margins=(14, 12, 14, 12))
-        left.setFixedWidth(240)
-        self.status_list = _two_col()
-        self.status_list.itemClicked.connect(self._status_clicked)
-        left.v.addWidget(self._small(tr("状态")))
-        left.v.addWidget(self.status_list)
-        left.v.addWidget(self._small(tr("分类"), tr("大类 › 中类 › 小类（原表右边那套 CAT.1 / CAT.2 / CAT.3，空着的用左边那套补）")))
+        # 左边：分类 / 供应商（切换，一次一样，整列高度给它）
+        left = Card(margins=(12, 12, 12, 12))
+        left.setFixedWidth(250)
+        self.left_seg = Seg([("cat", tr("分类")), ("sup", tr("供应商"))], "cat",
+                            tip=tr("分类 = 大类 › 中类 › 小类（原表右边那套 CAT.1 / CAT.2 / CAT.3，空着的用左边那套补）；"
+                                   "供应商 = 直厂（FORNITORI DIRETTO）或这周最便宜的批发商。两样可以叠在一起筛"))
+        self.left_seg.changed.connect(self._left_page)
+        left.v.addWidget(self.left_seg)
+        self.left_stack = QStackedWidget()
         self.tree = _two_col(root=True)
         self.tree.itemClicked.connect(self._tree_clicked)
-        left.v.addWidget(self.tree, 3)
-        sh = QHBoxLayout()
-        sh.addWidget(self._small(tr("供应商")))
-        sh.addStretch()
-        self.sup_seg = Seg([("direct", tr("直厂")), ("best", tr("批发商"))], "direct",
-                           tip=tr("直厂 = 原表 FORNITORI DIRETTO；批发商 = 这周最便宜的那家"))
-        self.sup_seg.setFixedHeight(30)
-        self.sup_seg.changed.connect(self._sup_kind)
-        sh.addWidget(self.sup_seg)
-        left.v.addLayout(sh)
+        self.left_stack.addWidget(self.tree)
+        sw = QWidget()
+        sv = QVBoxLayout(sw)
+        sv.setContentsMargins(0, 0, 0, 0)
+        sv.setSpacing(8)
+        kr = QHBoxLayout()
+        kr.setSpacing(6)
+        self.kind_btns = {}
+        kg = QButtonGroup(w)
+        for k, text, tip in (("direct", tr("直厂"), tr("原表 FORNITORI DIRETTO")),
+                             ("best", tr("最便宜批发商"), tr("这周报价里件价最低的那家批发商"))):
+            kb = QPushButton(text)
+            kb.setObjectName("Chip")
+            kb.setCheckable(True)
+            kb.setChecked(k == "direct")
+            kb.setCursor(Qt.PointingHandCursor)
+            kb.setToolTip(tip)
+            kb.clicked.connect(lambda _=False, kk=k: self._sup_kind(kk))
+            kg.addButton(kb)
+            kr.addWidget(kb)
+            self.kind_btns[k] = kb
+        kr.addStretch()
+        sv.addLayout(kr)
         self.sup_search = QLineEdit()
         self.sup_search.setPlaceholderText(tr("搜供应商"))
+        self.sup_search.setClearButtonEnabled(True)
         self.sup_search.textChanged.connect(lambda _t: self._fill_sups())
-        left.v.addWidget(self.sup_search)
+        sv.addWidget(self.sup_search)
         self.sup_list = _two_col()
         self.sup_list.itemClicked.connect(self._sup_clicked)
-        left.v.addWidget(self.sup_list, 2)
+        sv.addWidget(self.sup_list, 1)
+        self.left_stack.addWidget(sw)
+        left.v.addWidget(self.left_stack, 1)
         bh.addWidget(left)
 
         # 中间：表格
-        mid = Card(margins=(16, 12, 16, 12))
+        mid = Card(margins=(16, 12, 16, 10))
+        mid.v.setSpacing(10)
         bar = QHBoxLayout()
         bar.setSpacing(8)
         self.search = QLineEdit()
         self.search.setPlaceholderText(tr("名称 / 条码 / Cod.Art. / 品牌"))
-        self.search.setFixedWidth(260)
+        self.search.setClearButtonEnabled(True)
+        self.search.setFixedWidth(280)
         self.search.textChanged.connect(lambda _t: self._render())
         bar.addWidget(self.search)
         self.tags = QHBoxLayout()
         self.tags.setSpacing(6)
         bar.addLayout(self.tags)
         bar.addStretch()
+        self.b_drawer = QPushButton(tr("详情栏"))
+        self.b_drawer.setObjectName("Chip")
+        self.b_drawer.setCheckable(True)
+        self.b_drawer.setCursor(Qt.PointingHandCursor)
+        self.b_drawer.setToolTip(tr("右边的商品详情：收起来表格更宽"))
+        self.b_drawer.toggled.connect(self._toggle_drawer)
+        bar.addWidget(self.b_drawer)
+        mid.v.addLayout(bar)
+        chips = QHBoxLayout()
+        chips.setSpacing(6)
+        self.status_group = QButtonGroup(w)
+        self.status_group.setExclusive(True)
+        self.status_btns = {}
+        for key, text, tip in [(None, tr("全部"), "")] + \
+                [(s, tr(STATUS_TEXT[s]), tr(STATUS_TIP[s])) for s in ("active", "new", "paused", "off", "replaced")] + \
+                [("issues", tr("要看的"), tr("导入时发现要人看的（两套分类不一样、没有 Cod.Art.、卖价低于进价…）"))]:
+            cb = CountButton(text, 0, show_zero=True)
+            cb.setObjectName("Chip")
+            cb.setCheckable(True)
+            cb.setCursor(Qt.PointingHandCursor)
+            cb.setToolTip(tip)
+            cb.clicked.connect(lambda _=False, k=key: self._status_clicked(k))
+            self.status_group.addButton(cb)
+            self.status_btns[key] = cb
+            chips.addWidget(cb)
+        self.status_btns[None].setChecked(True)
+        chips.addStretch()
         self.count = QLabel("")
         self.count.setObjectName("Faint")
-        bar.addWidget(self.count)
-        mid.v.addLayout(bar)
+        chips.addWidget(self.count)
+        mid.v.addLayout(chips)
         self.t = self.ui.make_table([tr(h) for _f, h, _k in COLS], stretch_col=None,
                                     numeric_cols=tuple(i for i, c in enumerate(COLS) if c[2] != "txt"))
         mid.v.addWidget(self.t, 1)
+        foot = QHBoxLayout()
+        foot.setSpacing(6)
+        hint = QLabel(tr("Ctrl + 滚轮缩放"))
+        hint.setObjectName("Faint")
+        foot.addWidget(hint)
+        foot.addStretch()
+        b_out = QPushButton("−")
+        b_in = QPushButton("+")
+        for b in (b_out, b_in):
+            b.setFixedSize(30, 28)
+            b.setStyleSheet("QPushButton { padding: 0; min-height: 0; font-size: 16px; font-weight: 600; }")
+            b.setCursor(Qt.PointingHandCursor)
+        b_out.setToolTip(tr("缩小（Ctrl −）"))
+        b_in.setToolTip(tr("放大（Ctrl +）"))
+        b_out.clicked.connect(lambda: self.zoom_by(-ZOOM_STEP))
+        b_in.clicked.connect(lambda: self.zoom_by(ZOOM_STEP))
+        self.zoom_slider = QSlider(Qt.Horizontal)
+        self.zoom_slider.setRange(int(ZOOM_MIN * 100), int(ZOOM_MAX * 100))
+        self.zoom_slider.setSingleStep(10)
+        self.zoom_slider.setPageStep(10)
+        self.zoom_slider.setFixedWidth(120)
+        self.zoom_slider.setValue(100)
+        self.zoom_slider.valueChanged.connect(lambda v: self.zoom_to(v / 100.0))
+        self.zoom_lbl = QPushButton("100%")
+        self.zoom_lbl.setFixedSize(60, 28)
+        self.zoom_lbl.setStyleSheet("QPushButton { padding: 0; min-height: 0; }")
+        self.zoom_lbl.setCursor(Qt.PointingHandCursor)
+        self.zoom_lbl.setToolTip(tr("点一下回到 100%（Ctrl 0）"))
+        self.zoom_lbl.clicked.connect(lambda: self.zoom_to(1.0))
+        for x in (b_out, self.zoom_slider, b_in, self.zoom_lbl):
+            foot.addWidget(x)
+        mid.v.addLayout(foot)
         bh.addWidget(mid, 1)
 
         # 右边：详情
@@ -157,20 +266,29 @@ class GrigliaCatalogPage:
         self.stack.addWidget(self.busy)
         lay.addWidget(self.stack, 1)
         self._setup_table()
+        for seq, fn in ((QKeySequence.ZoomIn, lambda: self.zoom_by(ZOOM_STEP)), ("Ctrl+=", lambda: self.zoom_by(ZOOM_STEP)),
+                        (QKeySequence.ZoomOut, lambda: self.zoom_by(-ZOOM_STEP)), ("Ctrl+0", lambda: self.zoom_to(1.0)),
+                        (QKeySequence.Find, lambda: (self.search.setFocus(), self.search.selectAll()))):
+            sc = QShortcut(QKeySequence(seq), w)
+            sc.setContext(Qt.WidgetWithChildrenShortcut)
+            sc.activated.connect(fn)
+        show = self._cfg().get("drawer", True)
+        self.b_drawer.setChecked(bool(show))
+        self.drawer.setVisible(bool(show))
         w.showEvent = lambda e: (QWidget.showEvent(w, e), self._first_show())
         self.page = w
         self._shown = False
         return w
 
-    def _small(self, text, tip=None):
-        lb = QLabel(text + ("  ⓘ" if tip else ""))
-        lb.setObjectName("Faint")
-        if tip:
-            lb.setToolTip(tip)
-        f = lb.font()
-        f.setBold(True)
-        lb.setFont(f)
-        return lb
+    def _left_page(self, k):
+        self.left_stack.setCurrentIndex(0 if k == "cat" else 1)
+
+    def _toggle_drawer(self, on):
+        self.drawer.setVisible(on)
+        self._cfg()["drawer"] = bool(on)
+        self._save()
+        if on:
+            self._selected()
 
     def _setup_table(self):
         import product_images as PI
@@ -179,23 +297,64 @@ class GrigliaCatalogPage:
         hh = t.horizontalHeader()
         hh.setSectionResizeMode(QHeaderView.Interactive)
         hh.setStretchLastSection(False)
-        thumb = PI.thumb_size(self.settings) if self.settings.get("show_images", True) else 0
-        widths = {0: 120, 1: 300 + thumb, 2: 78, 3: 110, 4: 130, 5: 130, 6: 120, 7: 160, 8: 56, 9: 140, 10: 84,
-                  15: 72, 16: 70, 17: 70, 18: 160}
+        self._images = bool(self.settings.get("show_images", True))
+        widths = {0: 120, 1: 300 + (THUMB0 + 10 if self._images else 0), 2: 78, 3: 110, 4: 130, 5: 130, 6: 120,
+                  7: 140, 8: 56, 9: 120, 10: 84, 15: 72, 16: 70, 17: 70, 18: 160}
         for c, (f, _h, _k) in enumerate(COLS):
             t.setColumnWidth(c, widths.get(f, 90))
-        if self.settings.get("show_images", True):
-            t.setItemDelegateForColumn(1, PI.ThumbDelegate(t, 0, None, self.settings))
-            t.verticalHeader().setDefaultSectionSize(PI.row_height(self.settings))
+        self.thumb = None
+        if self._images:
+            self.thumb = PI.ThumbDelegate(t, 0, THUMB0, self.settings)
+            t.setItemDelegateForColumn(1, self.thumb)
         t.itemSelectionChanged.connect(self._selected)
+        t.viewport().installEventFilter(_WheelZoom(self))
         self.ctl = TableSortFilter(t, lambda: len(self._rows), lambda i, c: self._rows[i][c], self._fill,
                                    key=lambda i, c: self._keys[i][c], hide=self._hidden,
                                    numeric=[i for i, c in enumerate(COLS) if c[2] != "txt"], lazy=True)
         self.ctl.rendered.connect(lambda n, tot: self.count.setText(tr("{0:,} / {1:,}", n, tot)))
+        self._apply_zoom(float(self._cfg().get("zoom") or 1.0), scale_cols=False, render=False)
+
+    # ------------------------------------------------------------------ 缩放（像 Excel）
+    def zoom_by(self, d):
+        self.zoom_to(self._zoom + d)
+
+    def zoom_to(self, z):
+        z = round(max(ZOOM_MIN, min(ZOOM_MAX, z)), 2)
+        if abs(z - self._zoom) < 1e-6:
+            return
+        self._apply_zoom(z)
+        self._cfg()["zoom"] = z
+        self._save()
+
+    def _apply_zoom(self, z, scale_cols=True, render=True):
+        """字号、表头、小图、行高按比例；列宽跟着放大缩小（列宽记的是缩放后的宽度，所以重开程序不会再乘一次）"""
+        t = self.t
+        ratio = z / self._zoom if self._zoom else 1.0
+        self._zoom = z
+        if scale_cols and abs(ratio - 1) > 1e-6:
+            for c in range(t.columnCount()):
+                t.setColumnWidth(c, max(28, int(round(t.columnWidth(c) * ratio))))
+        self._px = max(8, int(round(FONT0 * z)))
+        t.setStyleSheet(f"QTableWidget::item {{ padding: 2px {max(3, int(round(8 * z)))}px; }}")
+        t.horizontalHeader().setStyleSheet(
+            f"QHeaderView::section {{ font-size: {max(8, int(round(HEAD0 * z)))}px; "
+            f"padding: {max(3, int(round(9 * z)))}px {max(3, int(round(8 * z)))}px; }}")
+        if self.thumb is not None:
+            self.thumb.size = max(18, int(round(THUMB0 * z)))
+            rowh = max(int(round(30 * z)), self.thumb.size + 8)
+        else:
+            rowh = max(20, int(round(34 * z)))
+        t.verticalHeader().setDefaultSectionSize(rowh)
+        pct = int(round(z * 100))
+        self.zoom_lbl.setText(f"{pct}%")
+        self.zoom_slider.blockSignals(True)
+        self.zoom_slider.setValue(pct)
+        self.zoom_slider.blockSignals(False)
+        if render and self.cat is not None:
+            self.ctl.render()
 
     def _rebuild_columns(self):
         """原表的每一列也放进表格（默认藏着，右键表头「显示哪些列」打开）；列的设置记在 settings griglia_db_cols"""
-        import settings as ST
         from PySide6.QtWidgets import QTableWidgetItem
         cat = self.cat
         names = [c["name"].replace("\n", " ").strip() or f"#{i + 1}" for i, c in enumerate(cat.columns)]
@@ -208,14 +367,13 @@ class GrigliaCatalogPage:
             it = QTableWidgetItem(n)
             it.setToolTip(tr("原表第 {0} 列 · {1}", k + 1, cat.columns[k].get("group") or ""))
             self.t.setHorizontalHeaderItem(base + k, it)
-            self.t.setColumnWidth(base + k, 100)
+            self.t.setColumnWidth(base + k, int(round(100 * self._zoom)))
         self.t._numeric = set(getattr(self.t, "_numeric", ())) | {base + k for k in range(len(names))
                                                                     if self._is_num_col(k)}
         self.ctl.titles = [self.t.horizontalHeaderItem(c).text() for c in range(self.t.columnCount())]
         fids = [f for f, _h, _k in COLS] + [100 + k for k in range(len(names))]
         cfg = self.settings.setdefault("griglia_db_cols", {})
-        self.ctl.remember(cfg, "catalog", lambda: ST.save_settings(self.settings), fids,
-                          default_hidden=[f for f in HIDDEN if f in fids], ver=1)
+        self.ctl.remember(cfg, "catalog", self._save, fids, default_hidden=[f for f in HIDDEN if f in fids], ver=2)
         self._built_cols = sig
 
     def _is_num_col(self, k):
@@ -249,7 +407,8 @@ class GrigliaCatalogPage:
             self.stack.setCurrentIndex(0)
             return
         self._loading = True
-        self.stack.setCurrentIndex(2)
+        if self.cat is None:
+            self.stack.setCurrentIndex(2)
 
         def work():
             import griglia_db as D
@@ -268,6 +427,7 @@ class GrigliaCatalogPage:
             self._log(tr("⚠ 读不了程序里的 Griglia：{0}", err))
             self.win.show_toast(tr("读不了程序里的 Griglia：{0}", err))
             return
+        sel = self.drawer.x["ean"] if self.drawer.x else None
         self.cat = cat
         if cat is None:
             self.stack.setCurrentIndex(0)
@@ -281,8 +441,15 @@ class GrigliaCatalogPage:
         self._fill_sups()
         self._update_sub()
         self._render()
-        if self.ctl.visible and self.drawer.x is None:
-            self.t.selectRow(0)                       # 详情栏一打开就有东西看
+        k = None
+        if sel and sel in cat.by_ean:
+            i = cat.by_ean[sel]["i"]
+            k = self.ctl.pos.get(i)
+        if k is None and self.ctl.visible:
+            k = 0
+        if k is not None:
+            self.ctl.ensure(k)
+            self.t.selectRow(k)                       # 详情栏一打开就有东西看
         if then_price and self._quotes_newer():
             self.update_prices(manual=False)
 
@@ -325,9 +492,9 @@ class GrigliaCatalogPage:
         for x in cat.items:
             c1, c2, c3 = (x["cats"] + ["", "", ""])[:3]
             iss = "、".join(tr(dict(_issue_names())[k]) for k in x["issues"] if k not in ("off", "replaced"))
-            vals = {0: x["ean"], 1: x["name"], 2: x["code"], 3: x["brand"], 4: c1, 5: c2, 6: c3, 7: x["direct"],
-                    8: x["pack"], 9: x.get("best_sup") or "", 10: x["best"], 15: x["pvp"], 16: x["mrg"],
-                    17: tr(T[x["status"]]), 18: iss}
+            vals = {0: x["ean"], 1: x["name"], 2: x["code"], 3: x["brand"], 4: c1, 5: c2, 6: c3,
+                    7: x.get("direct_short") or x["direct"], 8: x["pack"], 9: x.get("best_short") or "",
+                    10: x["best"], 15: x["pvp"], 16: x["mrg"], 17: tr(T[x["status"]]), 18: iss}
             r, k = [], []
             for f, _h, kind in COLS:
                 v = vals.get(f)
@@ -368,14 +535,30 @@ class GrigliaCatalogPage:
     def _fill(self, i, k):
         from main import table_set_row
         x = self.cat.items[i]
-        table_set_row(self.t, k, self._rows[i])
+        t = self.t
+        table_set_row(t, k, self._rows[i])
         T = self.ui.T
-        it = self.t.item(k, 1)
+        px = self._px
+        for c in range(t.columnCount()):            # 缩放：每一格的字号
+            it = t.item(k, c)
+            if it is not None:
+                f = it.font()
+                f.setPixelSize(px)
+                it.setFont(f)
+        it = t.item(k, 1)
         if it is not None:
             it.setToolTip(f"{x['name']}\n{x['ean']}")
+        dc = [i2 for i2, c in enumerate(COLS) if c[0] == 7][0]
+        it = t.item(k, dc)
+        if it is not None and x["direct"]:
+            it.setToolTip(x["direct"])
+        bc = [i2 for i2, c in enumerate(COLS) if c[0] == 9][0]
+        it = t.item(k, bc)
+        if it is not None and x.get("best_sup"):
+            it.setToolTip(x["best_sup"])
         tok = STATUS_TOKEN.get(x["status"])
         sc = [i2 for i2, c in enumerate(COLS) if c[0] == 17][0]
-        it = self.t.item(k, sc)
+        it = t.item(k, sc)
         if it is not None:
             it.setToolTip(tr(STATUS_TIP[x["status"]]) + (f" → {x.get('new_ean')}" if x.get("new_ean") else ""))
             if tok:
@@ -384,14 +567,14 @@ class GrigliaCatalogPage:
                 f.setBold(True)
                 it.setFont(f)
         if x["status"] in ("off", "replaced"):
-            it = self.t.item(k, 1)
+            it = t.item(k, 1)
             if it is not None:
                 f = it.font()
                 f.setStrikeOut(True)
                 it.setFont(f)
                 it.setForeground(QColor(T("faint")))
         mc = [i2 for i2, c in enumerate(COLS) if c[0] == 16][0]
-        it = self.t.item(k, mc)
+        it = t.item(k, mc)
         if it is not None and x["mrg"] is not None:
             import griglia_db as D
             if x["mrg"] < 0:
@@ -399,24 +582,25 @@ class GrigliaCatalogPage:
             elif x["mrg"] < D.MARGIN_LOW:
                 it.setForeground(QColor(T("warn")))
         ic = [i2 for i2, c in enumerate(COLS) if c[0] == 18][0]
-        it = self.t.item(k, ic)
+        it = t.item(k, ic)
         if it is not None and self._rows[i][ic]:
             it.setForeground(QColor(T("warn")))
 
-    def _hidden(self, i):
+    def _hidden(self, i, status=True):
         x = self.cat.items[i]
-        if self.f_status == "issues":
-            if not [k for k in x["issues"] if k not in ("off", "replaced")]:
+        if status:
+            if self.f_status == "issues":
+                if not [k for k in x["issues"] if k not in ("off", "replaced")]:
+                    return True
+            elif self.f_status and x["status"] != self.f_status:
                 return True
-        elif self.f_status and x["status"] != self.f_status:
-            return True
         if self.f_cat:
             cs = [(c or NONE) for c in (x["cats"] + ["", "", ""])[:3]]
             if cs[:len(self.f_cat)] != list(self.f_cat):
                 return True
         if self.f_sup:
             kind, name = self.f_sup
-            v = x["direct"] if kind == "direct" else (x.get("best_sup") or "")
+            v = x["direct"] if kind == "direct" else x.get("best_short")
             if (v or NONE) != name:
                 return True
         q = self.search.text().strip().lower()
@@ -429,37 +613,40 @@ class GrigliaCatalogPage:
             return
         self.ctl.render()
         self._fill_tags()
+        self._fill_status()
 
-    # ------------------------------------------------------------------ 左边
+    # ------------------------------------------------------------------ 状态 / 分类 / 供应商
     def _fill_status(self):
+        """状态按钮上的个数 = 按现在别的筛选（分类 / 供应商 / 搜索）算的，一看就知道点了会剩几个"""
         cat = self.cat
-        cnt = cat.counts()
-        n_iss = sum(1 for x in cat.items if [k for k in x["issues"] if k not in ("off", "replaced")])
-        self.status_list.clear()
-        for key, text, n, tip in [(None, tr("全部"), len(cat.items), "")] + \
-                [(s, tr(STATUS_TEXT[s]), cnt[s], tr(STATUS_TIP[s])) for s in ("active", "new", "paused", "off", "replaced")] + \
-                [("issues", tr("要看的"), n_iss, tr("导入时发现要人看的（两套分类不一样、没有 Cod.Art.、卖价低于进价…）"))]:
-            it = _row(self.status_list, None, text, n, key, self.ui.T)
-            it.setToolTip(0, tip)
-            tok = STATUS_TOKEN.get(key) if key not in (None, "issues") else ("warn" if key == "issues" and n else None)
-            if tok:
-                it.setForeground(0, QColor(self.ui.T(tok)))
-            if key == self.f_status:
-                it.setSelected(True)
-        _fit_height(self.status_list)
+        from collections import Counter
+        c, n_iss, n_all = Counter(), 0, 0
+        for i, x in enumerate(cat.items):
+            if self._hidden(i, status=False):
+                continue
+            n_all += 1
+            c[x["status"]] += 1
+            if [k for k in x["issues"] if k not in ("off", "replaced")]:
+                n_iss += 1
+        for key, b in self.status_btns.items():
+            n = n_all if key is None else n_iss if key == "issues" else c.get(key, 0)
+            b.set_count(n, tone=("warn" if key == "issues" and n else "accent"))
+            b.setChecked(key == self.f_status)
 
-    def _status_clicked(self, it, _col=0):
-        self.f_status = it.data(0, Qt.UserRole)
+    def _status_clicked(self, key):
+        self.f_status = key
         self._render()
 
     def _fill_tree(self):
         self.tree.clear()
         tree = self.cat.tree()
-        _row(self.tree, None, tr("全部分类"), len(self.cat.items), (), self.ui.T)
+        top = _row(self.tree, None, tr("全部分类"), len(self.cat.items), (), self.ui.T)
+        if not self.f_cat:
+            top.setSelected(True)
 
         def add(parent, name, n, path):
             it = _row(self.tree, parent, name or tr(NONE), n, path, self.ui.T)
-            it.setToolTip(0, " › ".join(path))
+            it.setToolTip(0, " › ".join(tr(p) if p == NONE else p for p in path))
             if path == self.f_cat:
                 it.setSelected(True)
             return it
@@ -477,25 +664,30 @@ class GrigliaCatalogPage:
     def _tree_clicked(self, it, _col=0):
         path = tuple(it.data(0, Qt.UserRole) or ())
         self.f_cat = () if path == self.f_cat else path
+        if path and it.childCount():
+            it.setExpanded(True)
         if not self.f_cat:
             self.tree.clearSelection()
         self._render()
 
     def _sup_kind(self, k):
         self.sup_kind = k
+        if k in getattr(self, "kind_btns", {}):
+            self.kind_btns[k].setChecked(True)
         self._fill_sups()
 
     def _fill_sups(self):
         if self.cat is None:
             return
+        import griglia_db as D
         q = self.sup_search.text().strip().lower()
         self.sup_list.clear()
         for name, n in self.cat.suppliers(self.sup_kind):
-            label = name or tr(NONE)
-            if q and q not in label.lower():
+            label = (D.short_company(name) if self.sup_kind == "direct" else name) or tr(NONE)
+            if q and q not in (name or "").lower() and q not in label.lower():
                 continue
             it = _row(self.sup_list, None, label, n, name or NONE, self.ui.T)
-            it.setToolTip(0, label)
+            it.setToolTip(0, name or tr(NONE))
             if self.f_sup == (self.sup_kind, name or NONE):
                 it.setSelected(True)
 
@@ -507,18 +699,18 @@ class GrigliaCatalogPage:
         self._render()
 
     def _fill_tags(self):
+        import griglia_db as D
         while self.tags.count():
             w = self.tags.takeAt(0).widget()
             if w is not None:
                 w.setParent(None)
         tags = []
-        if self.f_status:
-            tags.append((tr("要看的") if self.f_status == "issues" else tr(STATUS_TEXT[self.f_status]), "status"))
         if self.f_cat:
             tags.append((" › ".join(tr(c) if c == NONE else c for c in self.f_cat), "cat"))
         if self.f_sup:
             kind, name = self.f_sup
-            tags.append(((tr("直厂") if kind == "direct" else tr("批发商")) + " · " + (tr(name) if name == NONE else name), "sup"))
+            label = tr(NONE) if name == NONE else (D.short_company(name) if kind == "direct" else name)
+            tags.append(((tr("直厂") if kind == "direct" else tr("最便宜批发商")) + " · " + label, "sup"))
         for text, key in tags:
             b = QPushButton(text + "  ✕")
             b.setObjectName("Chip")
@@ -530,10 +722,7 @@ class GrigliaCatalogPage:
             self.tags.addWidget(b)
 
     def _clear(self, key):
-        if key == "status":
-            self.f_status = None
-            self.status_list.clearSelection()
-        elif key == "cat":
+        if key == "cat":
             self.f_cat = ()
             self.tree.clearSelection()
         else:
@@ -543,6 +732,8 @@ class GrigliaCatalogPage:
 
     # ------------------------------------------------------------------ 详情
     def _selected(self):
+        if not self.drawer.isVisible() or self.cat is None:
+            return
         rows = self.t.selectionModel().selectedRows() if self.t.selectionModel() else []
         if not rows or not self.ctl.visible:
             return
@@ -795,7 +986,7 @@ def _quote_files(settings, d):
 
 
 class _Drawer(QScrollArea):
-    """右边详情：图 + 名称 + 条码 / 编号 + 状态；下面按原表的分组一项一项（程序自动的写「自动」）"""
+    """右边详情：图 + 名称 + 条码 / 编号 + 状态；下面按原表的分组一项一项（程序算的列鼠标停上去有说明）"""
 
     def __init__(self, page):
         super().__init__()
@@ -870,7 +1061,7 @@ class _Drawer(QScrollArea):
         key = QGridLayout()
         key.setHorizontalSpacing(10)
         key.setVerticalSpacing(4)
-        for i, (lab, val) in enumerate(((tr("最低进价"), _p(x["best"])), (tr("最便宜"), x.get("best_sup") or "—"),
+        for i, (lab, val) in enumerate(((tr("最低进价"), _p(x["best"])), (tr("最便宜"), x.get("best_short") or "—"),
                                         (tr("卖价"), _p(x["pvp"])),
                                         (tr("毛利率"), "" if x["mrg"] is None else f"{x['mrg'] * 100:.1f}%"))):
             a, b = QLabel(lab), QLabel(val or "—")
@@ -882,7 +1073,8 @@ class _Drawer(QScrollArea):
         kw.setLayout(key)
         self.fv.addWidget(kw)
         if x["prices"]:
-            pr = QLabel("  ·  ".join(f"{h} {_p(v)}" for h, v in sorted(x["prices"].items(), key=lambda kv: kv[1])))
+            import griglia_db as D
+            pr = QLabel("  ·  ".join(f"{D.short_wholesaler(h)} {_p(v)}" for h, v in sorted(x["prices"].items(), key=lambda kv: kv[1])))
             pr.setWordWrap(True)
             pr.setObjectName("Faint")
             pr.setToolTip(tr("这周每家批发商的件价（报价里写错的价格不算）"))
@@ -916,7 +1108,7 @@ class _Drawer(QScrollArea):
             gl.addWidget(head, 0, 0, 1, 2)
             for i, (c, v) in enumerate(vals, 1):
                 name = cat.columns[c]["name"].replace("\n", " ").strip() or f"#{c + 1}"
-                a = QLabel(name + (" · " + tr("自动") if c in auto_cols else ""))
+                a = QLabel(name)
                 a.setObjectName("Faint")
                 a.setToolTip(tr("程序算的（按这周报价 / 数据库），以后不用人填") if c in auto_cols else "")
                 b = QLabel(_fmt_col(cat.heads[c], v))

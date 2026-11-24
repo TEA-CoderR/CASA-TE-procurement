@@ -4979,4 +4979,13 @@ TRANSLATIONS = {
     '自动': ('auto', 'auto'),
     'Griglia 统计': ('Griglia statistics', 'Statistiche Griglia'),
     '以后 Griglia 在程序里管（现在第 1 步：只看，Excel 还是正本）。每家批发商价格、最低进价、Fornitore 按这周报价自动更新，卖价跟数据库': ('From now on the Griglia is managed in the program (step 1: view only, Excel is still the master). Wholesaler prices, lowest cost and Fornitore update automatically from this week\'s price lists; sale price follows the database', 'D\'ora in poi la Griglia si gestisce nel programma (fase 1: solo consultazione, il file Excel resta il riferimento). Prezzi dei grossisti, costo più basso e Fornitore si aggiornano dai listini della settimana; il prezzo di vendita segue il database'),
+    '详情栏': ('Details', 'Dettagli'),
+    '右边的商品详情：收起来表格更宽': ('Item details on the right: hide them to widen the table', 'Dettagli articolo a destra: nascondili per allargare la tabella'),
+    'Ctrl + 滚轮缩放': ('Ctrl + wheel to zoom', 'Ctrl + rotellina per lo zoom'),
+    '缩小（Ctrl −）': ('Zoom out (Ctrl −)', 'Riduci (Ctrl −)'),
+    '放大（Ctrl +）': ('Zoom in (Ctrl +)', 'Ingrandisci (Ctrl +)'),
+    '点一下回到 100%（Ctrl 0）': ('Click to go back to 100% (Ctrl 0)', 'Clicca per tornare al 100% (Ctrl 0)'),
+    '分类 = 大类 › 中类 › 小类（原表右边那套 CAT.1 / CAT.2 / CAT.3，空着的用左边那套补）；供应商 = 直厂（FORNITORI DIRETTO）或这周最便宜的批发商。两样可以叠在一起筛': ("Category = category › subcategory › group (right-hand CAT.1 / CAT.2 / CAT.3 of the original sheet, blanks from the left-hand set); Supplier = direct supplier (FORNITORI DIRETTO) or this week's cheapest wholesaler. Both filters can be combined", 'Categoria = categoria › sottocategoria › gruppo (CAT.1 / CAT.2 / CAT.3 di destra del foglio originale, i vuoti da quelle di sinistra); Fornitore = fornitore diretto (FORNITORI DIRETTO) o il grossista più economico della settimana. I due filtri si possono combinare'),
+    '原表 FORNITORI DIRETTO': ('FORNITORI DIRETTO in the original sheet', 'FORNITORI DIRETTO del foglio originale'),
+    '这周报价里件价最低的那家批发商': ("The wholesaler with the lowest unit price in this week's price lists", 'Il grossista con il prezzo unitario più basso nei listini di questa settimana'),
 }

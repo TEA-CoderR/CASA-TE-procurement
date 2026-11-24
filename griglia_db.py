@@ -331,6 +331,9 @@ class Catalog:
         x["best_sup"] = a.get("sup") if self.auto else (p.get("supplier") or "")
         x["pvp"] = a.get("pvp") if a.get("pvp") else G._num(g(col.get("pvp")))
         x["in_quotes"] = bool(a.get("p")) if self.auto else None
+        pr = {h: v for h, v in x["prices"].items() if v}
+        x["best_short"] = short_wholesaler(min(pr, key=lambda h: (pr[h], h))) if pr else ""
+        x["direct_short"] = short_company(x["direct"])
         auto = {}
         if self.auto:
             for h, c in col["sup"].items():
@@ -398,8 +401,28 @@ class Catalog:
 
     def suppliers(self, kind):
         """kind = "direct"（直厂）/ "best"（这周最便宜的批发商）→ [(名称, 个数)] 多的在前"""
-        c = Counter((x["direct"] if kind == "direct" else (x.get("best_sup") or "")) for x in self.items)
+        c = Counter((x["direct"] if kind == "direct" else x["best_short"]) for x in self.items)
         return sorted(c.items(), key=lambda kv: (kv[0] == "", -kv[1], kv[0]))
+
+
+def short_wholesaler(col):
+    """Griglia 的价格列名 → 短名（F.LLI PETRILLO → PETRILLO）"""
+    return re.sub(r"^F\.?\s*LLI\s+", "", str(col or "").strip(), flags=re.I)
+
+
+_LEGAL = re.compile(r"[\s,.]+(S\.?\s?R\.?\s?L\.?S?|S\.?\s?P\.?\s?A\.?|S\.?\s?N\.?\s?C\.?|S\.?\s?A\.?\s?S\.?|"
+                    r"UNIPERSONALE|ITALIA|ITALY|& C\.?)\.?$", re.I)
+
+
+def short_company(name):
+    """表格里显示的短名：HENKEL ITALIA SRL - DIV.DETERSIVI E BEAUTY CARE → HENKEL；全名在鼠标提示里"""
+    s = re.split(r"\s+[-–]\s+", str(name or "").strip())[0]
+    s = re.split(r"\s(?:S\.?R\.?L\.?S?|S\.?P\.?A\.?|S\.?N\.?C\.?|S\.?A\.?S\.?)(?=\s|$|\.)", s, flags=re.I)[0]
+    prev = None
+    while s and s != prev:
+        prev = s
+        s = _LEGAL.sub("", s).strip(" ,.-")
+    return s or str(name or "").strip()
 
 
 def cats_differ(left, right):
