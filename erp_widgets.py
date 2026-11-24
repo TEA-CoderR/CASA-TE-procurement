@@ -1802,6 +1802,13 @@ def _header_text(view, cols):
 
 def copy_view_selection(view, whole_rows=False):
     from PySide6.QtWidgets import QApplication
+    view = getattr(view, "_copy_target", None) or view          # 冻结列的小表格：照大表格复制
+    func = getattr(view, "_copy_func", None)                    # 页面自己给的复制（按数据，没画出来的行也有）
+    if func is not None and not whole_rows:
+        text = func()
+        if text:
+            QApplication.clipboard().setText(text)
+            return True
     sel = view.selectionModel().selectedIndexes() if view.selectionModel() else []
     if not sel and view.currentIndex().isValid():
         sel = [view.currentIndex()]

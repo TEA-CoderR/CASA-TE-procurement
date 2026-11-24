@@ -67,6 +67,169 @@ class _WheelZoom(QObject):
         return False
 
 
+class _Keys(QObject):
+    """表格上的 Ctrl+V（一次粘贴一片格子）和 Delete（清空选中的格子），和 Excel 一样；只在「原表」看法里"""
+
+    def __init__(self, page, parent):
+        super().__init__(parent)
+        self.page = page
+
+    def eventFilter(self, obj, e):
+        p = self.page
+        if e.type() != QEvent.KeyPress or p._view != "excel" or p.cat is None:
+            return False
+        view = obj if isinstance(obj, QAbstractItemView) else None
+        if view is not None and view.state() == QAbstractItemView.EditingState:
+            return False                                  # 正在格子里打字：交给编辑框
+        if e.matches(QKeySequence.Paste):
+            p.paste()
+            return True
+        if e.key() in (Qt.Key_Delete, Qt.Key_Backspace) and not e.modifiers():
+            p.clear_cells()
+            return True
+        return False
+
+
+class FrozenCols(QObject):
+    """
+    冻结前几列（和 Excel「冻结窗格」一样）：表格左边盖一张只显示这几列的小表格，
+    和大表格用同一份数据、同一个选中，上下一起滚，左右滚时它不动。
+    冻到哪一列记在 settings griglia_db.freeze_<看法>（那一列的编号），太宽放不下时少冻几列
+    """
+    MAX_SHARE = 0.72              # 冻住的列最多占表格宽度的多少
+
+    def __init__(self, page):
+        from PySide6.QtWidgets import QTableView
+        super().__init__(page.t)
+        self.page, t = page, page.t
+        self.t = t
+        v = QTableView(t)
+        self.v = v
+        v.setObjectName(t.objectName())
+        v.setModel(t.model())
+        v.setSelectionModel(t.selectionModel())
+        v.setItemDelegate(t.itemDelegate())
+        v.verticalHeader().hide()
+        v.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        v.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        v.setFrameShape(QFrame.NoFrame)
+        v.setShowGrid(t.showGrid())
+        v.setWordWrap(t.wordWrap())
+        v.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
+        t.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
+        t.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
+        v.horizontalHeader().setSectionsMovable(False)
+        v.horizontalHeader().setHighlightSections(False)
+        v.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
+        v.setStyleSheet("QTableView { border-right: 2px solid " + page.ui.T("border") + "; }")
+        v._copy_target = t                                 # Ctrl+C 照大表格复制（erp_widgets.copy_view_selection）
+        self.thumbs = []
+        self.fids = []
+        self._busy = False
+        t.verticalScrollBar().valueChanged.connect(v.verticalScrollBar().setValue)
+        v.verticalScrollBar().valueChanged.connect(t.verticalScrollBar().setValue)
+        hh = t.horizontalHeader()
+        for sgn in (hh.sectionResized, hh.sectionMoved, hh.geometriesChanged, hh.sortIndicatorChanged):
+            sgn.connect(self.later)
+        v.horizontalHeader().sectionResized.connect(self._resized_here)
+        v.horizontalHeader().sectionClicked.connect(lambda c: hh.sectionClicked.emit(c))
+        vh = v.horizontalHeader()
+        vh.setContextMenuPolicy(Qt.CustomContextMenu)
+        vh.customContextMenuRequested.connect(
+            lambda pos: page.ctl.filter_menu(vh.logicalIndexAt(pos), vh.mapToGlobal(pos)))
+        v.doubleClicked.connect(lambda ix: page._double(ix, v))
+        v.viewport().installEventFilter(_WheelZoom(page))
+        v.installEventFilter(page._keys)
+        t.installEventFilter(self)
+        self._timer = QTimer(self)
+        self._timer.setSingleShot(True)
+        self._timer.setInterval(0)
+        self._timer.timeout.connect(self.sync)
+
+    def eventFilter(self, obj, e):
+        if obj is self.t and e.type() == QEvent.Resize:
+            self.later()
+        return False
+
+    def later(self, *_a):
+        if not self._busy:
+            self._timer.start()
+
+    def _resized_here(self, c, _old, new):
+        if not self._busy and new > 0:                   # 在冻住的表头上拖列宽 → 大表格跟着变
+            self.t.setColumnWidth(c, new)
+
+    def copy_delegates(self):
+        """小图要另外一份（每张表格自己的）"""
+        import product_images as PI
+        self.thumbs = []
+        for c in range(self.t.columnCount()):
+            d = self.t.itemDelegateForColumn(c)
+            if isinstance(d, PI.ThumbDelegate):
+                nd = PI.ThumbDelegate(self.v, d.ean_col, d.size, self.page.settings)
+                self.v.setItemDelegateForColumn(c, nd)
+                self.thumbs.append(nd)
+            else:
+                self.v.setItemDelegateForColumn(c, None)
+
+    def set_size(self, size):
+        for d in self.thumbs:
+            d.size = size
+
+    def sync(self):
+        """照大表格现在的列顺序 / 宽度 / 显示哪些列，摆好冻住的那几列"""
+        t, v, page = self.t, self.v, self.page
+        hh, vh = t.horizontalHeader(), v.horizontalHeader()
+        last = page.freeze_fid()
+        cols = []
+        if last is not None:
+            for vis in range(t.columnCount()):
+                c = hh.logicalIndex(vis)
+                if t.isColumnHidden(c):
+                    continue
+                cols.append(c)
+                if page._fids[c] == last:
+                    break
+            else:
+                cols = []
+        avail = t.viewport().width() * self.MAX_SHARE
+        while cols and sum(t.columnWidth(c) for c in cols) > avail:
+            cols.pop()                                    # 放不下：少冻几列
+        self.fids = [page._fids[c] for c in cols]
+        page._freeze_note(len(cols))
+        if not cols:
+            v.hide()
+            return
+        self._busy = True
+        try:
+            keep = set(cols)
+            for c in range(t.columnCount()):
+                v.setColumnHidden(c, c not in keep)
+            for pos, c in enumerate(cols):
+                cur = vh.visualIndex(c)
+                if cur != pos:
+                    vh.moveSection(cur, pos)
+                v.setColumnWidth(c, t.columnWidth(c))
+            v.verticalHeader().setDefaultSectionSize(t.verticalHeader().defaultSectionSize())
+            vh.setFixedHeight(hh.height())
+            vh.setDefaultAlignment(hh.defaultAlignment())
+            vh.setStyleSheet(hh.styleSheet())
+            v.setStyleSheet(t.styleSheet() + " QTableView { border-right: 2px solid " + page.ui.T("border") + "; }")
+            vh.setSortIndicatorShown(hh.isSortIndicatorShown())
+            vh.setSortIndicator(hh.sortIndicatorSection(), hh.sortIndicatorOrder())
+            v.setSelectionBehavior(t.selectionBehavior())
+            v.setSelectionMode(t.selectionMode())
+            v.setEditTriggers(t.editTriggers())
+            x0 = t.frameWidth() + (t.verticalHeader().width() if t.verticalHeader().isVisible() else 0)
+            w = sum(t.columnWidth(c) for c in cols)
+            v.setGeometry(x0, t.frameWidth(), w + 2, hh.height() + t.viewport().height())
+            v.verticalScrollBar().setValue(t.verticalScrollBar().value())
+            v.show()
+            v.raise_()
+        finally:
+            self._busy = False
+
+
 class GrigliaCatalogPage:
     def __init__(self, win, settings, ui):
         self.win, self.settings, self.ui = win, settings, ui
@@ -206,6 +369,15 @@ class GrigliaCatalogPage:
                                    "精简 = 只放常看的几列。两种看法各自记住列宽和顺序"))
         self.view_seg.changed.connect(self.set_view)
         bar.addWidget(self.view_seg)
+        from PySide6.QtWidgets import QMenu
+        self.b_freeze = QPushButton(tr("冻结列"))
+        self.b_freeze.setObjectName("Chip")
+        self.b_freeze.setCursor(Qt.PointingHandCursor)
+        self.b_freeze.setToolTip(tr("左右滚的时候前面几列不动（和 Excel「冻结窗格」一样）"))
+        self._freeze_menu = QMenu(self.b_freeze)
+        self._freeze_menu.aboutToShow.connect(self._fill_freeze_menu)
+        self.b_freeze.setMenu(self._freeze_menu)
+        bar.addWidget(self.b_freeze)
         self.b_side = QPushButton(tr("分类栏"))
         self.b_side.setObjectName("Chip")
         self.b_side.setCheckable(True)
@@ -346,6 +518,10 @@ class GrigliaCatalogPage:
         t.doubleClicked.connect(self._double)
         t.itemChanged.connect(self._item_changed)
         t.viewport().installEventFilter(_WheelZoom(self))
+        self._keys = _Keys(self, t)
+        t.installEventFilter(self._keys)
+        t._copy_func = self._copy_text                     # Ctrl+C：按显示的文字复制选中的一片（没画出来的行也有）
+        self.frozen = FrozenCols(self)
         self.ctl = TableSortFilter(t, lambda: len(self._rows), lambda i, c: self._rows[i][c], self._fill,
                                    key=lambda i, c: self._keys[i][c], hide=self._hidden,
                                    numeric=[i for i, c in enumerate(COLS) if c[2] != "txt"], lazy=True)
@@ -379,12 +555,14 @@ class GrigliaCatalogPage:
             f"padding: {max(3, int(round(9 * z)))}px {max(3, int(round(8 * z)))}px; }}")
         if self.thumb2 is not None:
             self.thumb2.size = max(18, int(round(THUMB0 * z)))
+        self.frozen.set_size(max(18, int(round(THUMB0 * z))))
         if self.thumb is not None:
             self.thumb.size = max(18, int(round(THUMB0 * z)))
             rowh = max(int(round(30 * z)), self.thumb.size + 8)
         else:
             rowh = max(20, int(round(34 * z)))
         t.verticalHeader().setDefaultSectionSize(rowh)
+        self.frozen.later()
         pct = int(round(z * 100))
         self.zoom_lbl.setText(f"{pct}%")
         self.zoom_slider.blockSignals(True)
@@ -428,6 +606,7 @@ class GrigliaCatalogPage:
             if k not in self._editable:
                 hi.setToolTip(hi.toolTip() + "\n" + tr("这一列不能直接改（程序按报价 / 数据库算，或分类 / 状态请用「编辑商品」）"))
         self._built_cols = sig
+        self.frozen.copy_delegates()
         self._view = None
 
     def _is_num_col(self, k):
@@ -599,7 +778,7 @@ class GrigliaCatalogPage:
             widths = {}
             for k in range(len(cat.columns)):
                 if cat.columns[k].get("img"):
-                    widths[str(100 + k)] = int(round((THUMB0 + 14) * z))
+                    widths[str(100 + k)] = int(round(max(THUMB0 + 14, 78) * z))
                     continue
                 head = cat.columns[k]["name"].replace("\n", " ").strip()
                 lens = sorted(len(self._rows[i][len(COLS) + k]) for i in range(min(len(self._rows), 400)))
@@ -682,9 +861,17 @@ class GrigliaCatalogPage:
         T = QAbstractItemView
         self.t.setEditTriggers(T.DoubleClicked | T.EditKeyPressed | T.AnyKeyPressed if self._view == "excel"
                                else T.NoEditTriggers)
+        # 原表：一格一格选（能选一片复制粘贴，和 Excel 一样）；精简：一次选一整行
+        self.t.setSelectionBehavior(T.SelectItems if self._view == "excel" else T.SelectRows)
+        self.frozen.later()
 
-    def _double(self, ix):
-        """双击：原表看法里能改的格子 Qt 自己打开编辑框；别的格子（程序算的 / 分类 / 状态）打开编辑商品窗口"""
+    def _double(self, ix, view=None):
+        """
+        双击：图片 → 放大看；原表看法里能改的格子 Qt 自己打开编辑框；
+        别的格子（程序算的 / 分类 / 状态）打开编辑商品窗口
+        """
+        if self._image_clicked(ix, view or self.t):
+            return
         if self._view == "excel":
             base = len(COLS)
             c = ix.column()
@@ -697,6 +884,238 @@ class GrigliaCatalogPage:
                 return
         self.edit_item()
 
+    def _image_clicked(self, ix, view):
+        """双击的是图片（原表的 Immagine 列，或精简看法商品列左边的小图）→ 放大看大图"""
+        from PySide6.QtGui import QCursor
+        import product_images as PI
+        c, k = ix.column(), ix.row()
+        base = len(COLS)
+        img_cols = {base + n for n, cd in enumerate(self.cat.columns) if cd.get("img")}
+        on_img = c in img_cols
+        if not on_img and c == 1 and self.thumb is not None:          # 商品列：左边那块小图
+            rect = view.visualRect(ix)
+            x = view.viewport().mapFromGlobal(QCursor.pos()).x() - rect.x()
+            on_img = 0 <= x <= self.thumb.size + 12
+        if not on_img or not (0 <= k < len(self.ctl.visible)):
+            return False
+        x = self.cat.items[self.ctl.visible[k]]
+        if not PI.store(self.settings).path(PI.norm_ean(x["ean"])):
+            self.win.show_toast(tr("这个商品还没有图片（图片服务器上没有，或者还在下载）"))
+            return True
+        PI.preview(self.win, x["ean"], self.settings)
+        return True
+
+    # ------------------------------------------------------------------ 冻结列
+    def freeze_fid(self):
+        """冻到哪一列（那一列的编号）；None = 不冻结"""
+        if not getattr(self, "_fids", None) or self.cat is None:
+            return None
+        v = self._cfg().get("freeze_" + (self._view or "excel"), "default")
+        if v == "default":
+            v = (100 + self.cat.col["name"]) if self._view == "excel" and self.cat.col.get("name") is not None else 1
+        return v if v in self._fids else None
+
+    def set_freeze(self, fid):
+        self._cfg()["freeze_" + (self._view or "excel")] = fid
+        self._save()
+        self.frozen.later()
+
+    def _freeze_note(self, n):
+        want = self.freeze_fid()
+        if want is None:
+            self.b_freeze.setText(tr("冻结列"))
+            return
+        self.b_freeze.setText(tr("冻结 {0} 列", n) if n else tr("冻结列"))
+        tip = tr("左右滚的时候前面几列不动（和 Excel「冻结窗格」一样）")
+        c = self._fids.index(want)
+        if not n or (self.frozen.fids and self.frozen.fids[-1] != want):
+            tip += "\n" + tr("表格太窄，想冻到「{0}」放不下，只冻了前 {1} 列。收起分类栏 / 详情栏或缩小一点就能多冻几列",
+                              self.t.horizontalHeaderItem(c).text(), n)
+        self.b_freeze.setToolTip(tip)
+
+    def _fill_freeze_menu(self):
+        m = self._freeze_menu
+        m.clear()
+        if self.cat is None:
+            return
+        t, hh = self.t, self.t.horizontalHeader()
+        cur = t.currentIndex()
+        if cur.isValid():
+            name = t.horizontalHeaderItem(cur.column()).text()
+            m.addAction(tr("冻结到选中的这一列「{0}」", name),
+                        lambda f=self._fids[cur.column()]: self.set_freeze(f))
+            m.addSeparator()
+        want = self.freeze_fid()
+        n = 0
+        for vis in range(t.columnCount()):
+            c = hh.logicalIndex(vis)
+            if t.isColumnHidden(c):
+                continue
+            a = m.addAction(tr("冻结到「{0}」", t.horizontalHeaderItem(c).text()),
+                            lambda f=self._fids[c]: self.set_freeze(f))
+            a.setCheckable(True)
+            a.setChecked(self._fids[c] == want)
+            n += 1
+            if n >= 8:
+                break
+        m.addSeparator()
+        m.addAction(tr("不冻结"), lambda: self.set_freeze(None))
+
+    # ------------------------------------------------------------------ 复制 / 粘贴 / 清空（和 Excel 一样）
+    def _sel_block(self):
+        """选中的格子 → (表格行号列表, 列号列表（按现在的列顺序、只算显示的列）)"""
+        sm = self.t.selectionModel()
+        ixs = sm.selectedIndexes() if sm else []
+        if not ixs and self.t.currentIndex().isValid():
+            ixs = [self.t.currentIndex()]
+        hh = self.t.horizontalHeader()
+        rows = sorted({ix.row() for ix in ixs})
+        cols = sorted({ix.column() for ix in ixs if not self.t.isColumnHidden(ix.column())}, key=hh.visualIndex)
+        return rows, cols, {(ix.row(), ix.column()) for ix in ixs}
+
+    def _copy_text(self):
+        rows, cols, cells = self._sel_block()
+        vis = self.ctl.visible
+        out = []
+        for k in rows:
+            if not (0 <= k < len(vis)):
+                continue
+            r = self._rows[vis[k]]
+            out.append("\t".join(r[c] if (k, c) in cells and c < len(r) else "" for c in cols))
+        return "\n".join(out)
+
+    def _coerce(self, col, text):
+        import griglia_db as D
+        text = (text or "").strip()
+        if text == "":
+            return None
+        if col == self.cat.col.get("pack") or self._is_num_col(col):
+            n = D._num_or_none(text.replace("€", "").replace("%", "").strip())
+            if n is not None:
+                return int(n) if n.is_integer() else n
+        return text
+
+    def paste(self):
+        """Ctrl+V：剪贴板里的一片（Excel 复制来的、Tab 分开）从选中的左上角那格往右下贴；只复制了一格 → 贴满选中的格子"""
+        from PySide6.QtWidgets import QApplication
+        text = QApplication.clipboard().text()
+        if not text:
+            return
+        lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+        while lines and lines[-1] == "":
+            lines.pop()
+        grid = [ln.split("\t") for ln in lines]
+        rows, cols, cells = self._sel_block()
+        if not rows or not cols:
+            return
+        hh = self.t.horizontalHeader()
+        targets = []
+        if len(grid) == 1 and len(grid[0]) == 1:
+            targets = [(k, c, grid[0][0]) for (k, c) in sorted(cells) if not self.t.isColumnHidden(c)]
+        else:
+            vis_cols = [hh.logicalIndex(v) for v in range(self.t.columnCount())
+                        if not self.t.isColumnHidden(hh.logicalIndex(v))]
+            start = vis_cols.index(cols[0])
+            for dr, vals in enumerate(grid):
+                k = rows[0] + dr
+                if k >= len(self.ctl.visible):
+                    break
+                for dc, val in enumerate(vals):
+                    if start + dc < len(vis_cols):
+                        targets.append((k, vis_cols[start + dc], val))
+        self._apply_cells(targets, tr("粘贴"))
+
+    def clear_cells(self):
+        rows, cols, cells = self._sel_block()
+        self._apply_cells([(k, c, "") for (k, c) in sorted(cells) if not self.t.isColumnHidden(c)], tr("清空"))
+
+    def _apply_cells(self, targets, what):
+        """一片格子一起改：只改原表能改的列 → 合理性检查（红的跳过、黄的列出来）→ 确认 → 一个商品一条改动记录 → 撤销一起撤"""
+        import griglia_db as D
+        base = len(COLS)
+        vis = self.ctl.visible
+        per, skipped, order = {}, 0, []
+        for k, c, val in targets:
+            col = c - base
+            if c < base or col not in self._editable or not (0 <= k < len(vis)):
+                skipped += 1
+                continue
+            i = vis[k]
+            x = self.cat.items[i]
+            f = f"c{col}"
+            new = self._coerce(col, val)
+            old = D.current(self.cat, x, f)
+            if D._norm_v(old) == D._norm_v(new):
+                continue
+            if i not in per:
+                per[i] = []
+                order.append(i)
+            per[i] = [ch for ch in per[i] if ch["f"] != f] + [{"f": f, "old": old, "new": new}]
+        if not per:
+            if skipped:
+                self.win.show_toast(tr("选中的格子不能直接改（程序算的列 / 分类 / 状态）"))
+            return
+        db_codes = self._db_codes_for([(self.cat.items[i], per[i]) for i in order])
+        reds, yellows, lines = [], [], []
+        for i in order:
+            x = self.cat.items[i]
+            bad = set()
+            for ch in per[i]:
+                for lv, msg in D.check(self.cat, x, [ch], db_codes=db_codes):
+                    (reds if lv == "red" else yellows).append(f"{x['name']} · {msg}")
+                    if lv == "red":
+                        bad.add(ch["f"])
+            per[i] = [ch for ch in per[i] if ch["f"] not in bad]
+            for ch in per[i]:
+                name = self.cat.columns[int(ch["f"][1:])]["name"].replace("\n", " ").strip()
+                lines.append(f"{x['name']} · {name}：{D.show_value(ch['f'], ch['old'])} → {D.show_value(ch['f'], ch['new'])}")
+        order = [i for i in order if per[i]]
+        n_cells = sum(len(per[i]) for i in order)
+        if not order:
+            QMessageBox.warning(self.win, tr("没有保存"), "\n".join("• " + r for r in reds[:15]))
+            for i in per:
+                self._redraw(i)
+            return
+        if n_cells > 1 or yellows or reds:
+            msg = tr("{0}：改 {1} 个商品、{2} 个格子", what, len(order), n_cells) + "\n\n" + "\n".join(lines[:15])
+            if len(lines) > 15:
+                msg += "\n" + tr("…还有 {0} 项", len(lines) - 15)
+            if reds:
+                msg += "\n\n" + tr("这些不改（不合理）：") + "\n" + "\n".join("• " + r for r in reds[:8])
+            if yellows:
+                msg += "\n\n" + tr("请注意：") + "\n" + "\n".join("• " + y for y in yellows[:8])
+            if skipped:
+                msg += "\n\n" + tr("{0} 个格子是程序算的 / 分类 / 状态，不在这里改", skipped)
+            msg += "\n\n" + tr("存在同步文件夹，办公室每台电脑都看得到；改动记录里能撤销。")
+            if QMessageBox.question(self.win, what, msg) != QMessageBox.Yes:
+                for i in order:
+                    self._redraw(i)
+                return
+        try:
+            saved = D.save(self._root(), [D.make_edit(self.cat, self.cat.items[i]["ean"], per[i]) for i in order])
+        except OSError as e:
+            QMessageBox.warning(self.win, tr("没有保存"), tr("写不进同步文件夹：{0}", e))
+            for i in order:
+                self._redraw(i)
+            return
+        for ev, i in zip(saved, order):
+            nx = self.cat.apply_local(ev)
+            for ch in ev["changes"]:
+                self._changed.setdefault(nx["ean"], set()).add(int(ch["f"][1:]))
+            self._redraw(i)
+        cur = self.drawer.x
+        if self.drawer.isVisible() and cur is not None and cur["ean"] in self.cat.by_ean:
+            self.drawer.show_item(self.cat.by_ean[cur["ean"]])
+        self._log(tr("Griglia 改动：{0}", "；".join(lines[:5]) + ("…" if len(lines) > 5 else "")))
+
+        def undo():
+            for ev in saved:
+                D.undo(self._root(), ev["id"])
+            self.reload(then_price=False)
+            self.win.show_toast(tr("已撤销"))
+        text = lines[0].split(" · ", 1)[-1] if n_cells == 1 else tr("已保存 {0} 个格子", n_cells)
+        self.win.show_toast(tr("已保存：{0}", text) if n_cells == 1 else text, action=(tr("撤销"), undo))
+
     def _item_changed(self, it):
         """格子里改完（Qt 已经写进格子）：等编辑框关掉再处理（CLAUDE.md：不能在这里马上重画这一行）"""
         if self._filling or self.cat is None or self._view != "excel":
@@ -706,56 +1125,9 @@ class GrigliaCatalogPage:
         QTimer.singleShot(0, lambda: self._cell_edited(k, c, text))
 
     def _cell_edited(self, k, c, text):
-        import griglia_db as D
-        base = len(COLS)
-        if not (0 <= k < len(self.ctl.visible)) or c < base:
-            return
-        i = self.ctl.visible[k]
-        x, col = self.cat.items[i], c - base
-        f = f"c{col}"
-        text = text.strip()
-        new = None if text == "" else text
-        if new is not None and (col == self.cat.col.get("pack") or self._is_num_col(col)):
-            n = D._num_or_none(text.replace("€", "").replace("%", ""))
-            if n is not None:
-                new = int(n) if n.is_integer() else n
-        old = D.current(self.cat, x, f)
-        ch = [{"f": f, "old": old, "new": new}]
-        if D._norm_v(old) == D._norm_v(new):
-            self._redraw(i)
-            return
-        db_codes = self._db_codes_for([(x, ch)])
-        found = D.check(self.cat, x, ch, db_codes=db_codes)
-        reds = [t2 for lv, t2 in found if lv == "red"]
-        yellows = [t2 for lv, t2 in found if lv == "yellow"]
-        name = self.cat.columns[col]["name"].replace("\n", " ").strip()
-        if reds:
-            QMessageBox.warning(self.win, tr("没有保存"), "\n".join("• " + r for r in reds))
-            self._redraw(i)
-            return
-        if yellows and QMessageBox.question(
-                self.win, tr("请确认"), f"{x['name']} · {name}：{D.show_value(f, old)} → {D.show_value(f, new)}\n\n"
-                + "\n".join("• " + y for y in yellows) + "\n\n" + tr("还是要改吗？")) != QMessageBox.Yes:
-            self._redraw(i)
-            return
-        try:
-            ev = D.save(self._root(), [D.make_edit(self.cat, x["ean"], ch)])[0]
-        except OSError as e:
-            QMessageBox.warning(self.win, tr("没有保存"), tr("写不进同步文件夹：{0}", e))
-            self._redraw(i)
-            return
-        nx = self.cat.apply_local(ev)
-        self._changed.setdefault(nx["ean"], set()).add(col)
-        self._redraw(i)
-        if self.drawer.isVisible() and self.drawer.x is not None and self.drawer.x["ean"] == nx["ean"]:
-            self.drawer.show_item(nx)
-        self._log(tr("Griglia 改动：{0}", f"{x['name']} · {name}：{D.show_value(f, old)} → {D.show_value(f, new)}"))
-
-        def undo():
-            D.undo(self._root(), ev["id"])
-            self.reload(then_price=False)
-            self.win.show_toast(tr("已撤销"))
-        self.win.show_toast(tr("已保存：{0} → {1}", name, D.show_value(f, new)), action=(tr("撤销"), undo))
+        """格子里改完一格：和粘贴走同一套（检查 → 保存 → 撤销）"""
+        if 0 <= k < len(self.ctl.visible):
+            self._apply_cells([(k, c, text)], tr("修改"))
 
     def _changed_cells(self):
         """程序里改过（导入以后、没撤销）的格子：{条码: {原表列号}}，表格里浅蓝底（和订单跟踪写进 Excel 的标记一样）"""
@@ -1007,22 +1379,27 @@ class GrigliaCatalogPage:
         self._render()
 
     # ------------------------------------------------------------------ 详情
+    def _sel_rows(self):
+        """选中的表格行号（选一整行或几格都算这一行）"""
+        sm = self.t.selectionModel()
+        return sorted({ix.row() for ix in sm.selectedIndexes()}) if sm else []
+
     def _sel_items(self):
-        rows = self.t.selectionModel().selectedRows() if self.t.selectionModel() else []
         vis = self.ctl.visible
-        return [self.cat.items[vis[r.row()]] for r in sorted(rows, key=lambda r: r.row()) if 0 <= r.row() < len(vis)]
+        return [self.cat.items[vis[k]] for k in self._sel_rows() if 0 <= k < len(vis)]
 
     def _selected(self):
         if self.cat is None:
             return
-        rows = self.t.selectionModel().selectedRows() if self.t.selectionModel() else []
+        rows = self._sel_rows()
         self.b_batch.set_count(len(rows) if len(rows) > 1 else 0)
         self.b_batch.setEnabled(len(rows) > 1)
         if not self.drawer.isVisible():
             return
         if not rows or not self.ctl.visible:
             return
-        k = rows[0].row()
+        cur = self.t.currentIndex()
+        k = cur.row() if cur.isValid() and cur.row() in rows else rows[0]
         if 0 <= k < len(self.ctl.visible):
             self.drawer.show_item(self.cat.items[self.ctl.visible[k]])
 
