@@ -11,7 +11,7 @@ from PySide6.QtCore import Qt, QByteArray
 from PySide6.QtGui import QColor, QPainter, QPen, QIcon, QPixmap, QLinearGradient, QFont
 from PySide6.QtSvg import QSvgRenderer
 
-APP_VERSION = "v3.3.28"
+APP_VERSION = "v3.3.29"
 FONT_DIR = os.path.join(getattr(sys, "_MEIPASS", None) or os.path.dirname(os.path.abspath(__file__)), "fonts")
 # 中文字体：Windows 上用微软雅黑 UI（2026-11-16 用户：有的字看着糊——设计稿的 Noto Sans SC 没有屏幕微调信息，
 # 在 Windows 的小字号下发虚；雅黑是专门为 Windows 屏幕调过的）；别的系统才用程序带的 Noto Sans SC
