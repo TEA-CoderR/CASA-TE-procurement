@@ -30,8 +30,8 @@ FIELD_ALIASES = {
     "qty": ["数量", "Quantità ordine", "Quantità", "Qtà ordine", "Qta ordine", "Qta", "Qtà", "Colli", "Ord.Colli"],
     "stock": ["库存", "Giacenza", "Inventario", "Stock"],
     "supplier": ["商家编号", "IDFornitore", "Fornitore"],
-    # 门店扫码枪做的清单（scanner_catalog.write_list_excel）多这两列：不在 Griglia、门店说紧急才从批发商订的
-    "urgent": ["URGENZA", "Urgente", "紧急"],
+    # 门店扫码枪做的清单（scanner_catalog.write_list_excel）多这两列：不在 Griglia、门店说明原因要从批发商订的（扫码枪 Non in Griglia；以前的文件表头是 URGENZA）
+    "urgent": ["NON IN GRIGLIA", "URGENZA", "Urgente", "紧急"],
     "reason": ["MOTIVO", "Motivo urgenza", "紧急原因"],
 }
 

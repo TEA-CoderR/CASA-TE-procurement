@@ -5101,4 +5101,9 @@ TRANSLATIONS = {
     '永久删除这 {0} 台已停用的扫码枪？\n\n{1}\n\n删除后不能撤销；以后要再用这台扫码枪，点「新增扫码枪」重新配对。门店已经交过的清单、库存报错不受影响。': ('Permanently delete these {0} deactivated scanners?\n\n{1}\n\nThis cannot be undone; to use a scanner again, click "Add scanner" and pair it again. Lists and stock reports the stores already sent are not affected.', 'Eliminare definitivamente questi {0} scanner disattivati?\n\n{1}\n\nNon si può annullare; per riusare uno scanner, clicca "Nuovo scanner" e riabbinalo. Le liste e le segnalazioni di giacenza già inviate dai negozi restano.'),
     '✓ 已删除 {0} 台扫码枪': ('✓ {0} scanners deleted', '✓ {0} scanner eliminati'),
     '✓ 已配对，可以关掉这个窗口了': ('✓ Paired, you can close this window', '✓ Abbinato, puoi chiudere questa finestra'),
+    '非 Griglia': ('Not in Griglia', 'Non in Griglia'),
+    '非 Griglia 商品': ('Not in Griglia', 'Non in Griglia'),
+    '非 Griglia · 门店要订': ('Not in Griglia · store wants it', 'Non in Griglia · richiesto dal negozio'),
+    '这个商品不在 Griglia，平常应该向直厂订；门店在扫码枪上（Non in Griglia）说等不及、要从批发商订，原因：{0}': ('This item is not in the Griglia and is normally ordered from the direct supplier; on the scanner (Non in Griglia) the store said it cannot wait and wants it from a wholesaler, reason: {0}', 'Questo articolo non è in Griglia e di solito si ordina dal fornitore diretto; sullo scanner (Non in Griglia) il negozio ha detto che non può aspettare e lo vuole dal grossista, motivo: {0}'),
+    '不在 Griglia、门店说等不及直厂、要从批发商订的商品（扫码枪上叫 Non in Griglia，门店要写原因）：检查清单里会写「非 Griglia · 门店要订」和原因': ('Items not in the Griglia that the store wants from a wholesaler because the direct supplier is too slow (on the scanner: Non in Griglia, with a reason): the review list shows "Not in Griglia · store wants it" and the reason', 'Articoli non in Griglia che il negozio vuole dal grossista perché il diretto è troppo lento (sullo scanner: Non in Griglia, con motivo): la verifica mostra "Non in Griglia · richiesto dal negozio" e il motivo'),
 }

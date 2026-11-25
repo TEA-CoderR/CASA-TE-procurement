@@ -158,6 +158,12 @@ def test_scanner_list_written_like_a_store_list_with_urgent_column(tmp_path):
     assert "8003" in rows["8004"]["reason"]
     out = R.check_rows(info["rows"], [], "colli")
     assert {x["ean"]: x.get("urgent") for x in out}["8000036022017"] is True
+    from openpyxl import load_workbook                      # 11-25 以前的文件表头是 URGENZA，照样认
+    wb = load_workbook(p)
+    assert wb.active["D1"].value == "NON IN GRIGLIA"
+    wb.active["D1"] = "URGENZA"
+    wb.save(p)
+    assert {r["ean"]: r["urgent"] for r in R.parse_order_file(p)["rows"]}["8000036022017"]
 
 
 def test_import_lists_places_file_marks_received_and_feedback(tmp_path, monkeypatch):

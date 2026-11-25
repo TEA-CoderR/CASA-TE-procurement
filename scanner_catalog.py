@@ -373,7 +373,7 @@ def advice_context(settings, db, log=print, rule=None, now=None):
 
 def store_data(settings, rows, quotes, log=print, stores=STORE_IDS, with_ctx=False):
     """
-    rows = build 的目录行。每家店：目录里**所有在数据库里的商品**（Griglia 的、不在 Griglia 只能紧急订的、直厂的）
+    rows = build 的目录行。每家店：目录里**所有在数据库里的商品**（Griglia 的、不在 Griglia 门店说明原因才订的、直厂的）
     都给 库存 / 销量 / 最后卖出 / 卖价 / 打折价（light_numbers，三条查询）；
     Griglia 商品 + 替代商品另外算给门店的建议箱数（store_advice：一周订一次的节奏 + 检查清单同一套新算法，慢）。
     → {门店号: [门店数据行]}（with_ctx：(数据, 日历)）。查数据库（只读），出错的门店跳过（日志里写）。
@@ -518,7 +518,7 @@ def cached_store_data(settings, rows, quotes, log=print, force=False, path=None,
 
 # ===================================================================== 门店清单（扫码枪做的）
 WEEKDAYS = ("星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期天")
-KIND_TEXT = {"griglia": "", "sub": "SOSTITUTO", "urgent": "URGENZA", "remind": "DA RICORDARE", "other": ""}
+KIND_TEXT = {"griglia": "", "sub": "SOSTITUTO", "urgent": "NON IN GRIGLIA", "remind": "DA RICORDARE", "other": ""}
 
 
 def deadline_rule(settings, session=None):
@@ -556,13 +556,13 @@ def list_file_name(lst):
 
 def write_list_excel(lst, path):
     """扫码枪的清单 → 和门店手做的清单一样的 Excel（reorder_service.parse_order_file 读得了），只写要订的（箱数 > 0）。
-    多两列：URGENZA（紧急的写 SI）、MOTIVO（紧急原因 / 替代了哪个商品），检查清单里会显示。"""
+    多两列：NON IN GRIGLIA（门店要从批发商订的非 Griglia 商品写 SI，2026-11-25 以前叫 URGENZA）、MOTIVO（原因 / 替代了哪个商品），检查清单里会显示。"""
     from openpyxl import Workbook
     from openpyxl.styles import Font, PatternFill
     wb = Workbook()
     ws = wb.active
     ws.title = "GRIGLIA"
-    ws.append(["Codice EAN", "Descrizione", "Colli", "URGENZA", "MOTIVO", "Tipo", "Inserito da"])
+    ws.append(["Codice EAN", "Descrizione", "Colli", "NON IN GRIGLIA", "MOTIVO", "Tipo", "Inserito da"])
     for c in ws[1]:
         c.font = Font(bold=True)
     red = PatternFill("solid", fgColor="FEE4E2")

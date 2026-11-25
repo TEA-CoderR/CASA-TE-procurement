@@ -42,6 +42,13 @@ def _busy(parent, text, fn):
     return BusyDialog.run(parent, tr("扫码枪"), text, fn)
 
 
+def _maximizable(d):
+    """窗口右上角有最大化按钮、双击标题栏全屏（门店清单明细 / 库存报错要看得多，2026-11-25 用户）"""
+    d.setWindowFlags(Qt.Window | Qt.WindowTitleHint | Qt.WindowSystemMenuHint
+                     | Qt.WindowMinMaxButtonsHint | Qt.WindowCloseButtonHint)
+    d.setSizeGripEnabled(True)
+
+
 def list_state(lst):
     """一张清单现在是什么状态 → (文字, 颜色 token)"""
     if lst.get("status") == "ordered":
@@ -60,13 +67,14 @@ def list_state(lst):
 
 class ScannerDialog(QDialog):
     COLS = ("名称", "门店", "状态", "最后在线")
-    LCOLS = ("门店", "截止", "状态", "商品", "箱数", "紧急", "提交时间", "提交人")
+    LCOLS = ("门店", "截止", "状态", "商品", "箱数", "非 Griglia", "提交时间", "提交人")
 
     def __init__(self, win, settings, tab="devices"):
         super().__init__(win)
         self.win, self.settings = win, settings
         self.devices, self.lists = [], []
         self.setWindowTitle(tr("扫码枪"))
+        _maximizable(self)
         self.resize(820, 520)
         v = QVBoxLayout(self)
         v.setContentsMargins(20, 18, 20, 16)
@@ -595,7 +603,7 @@ class ScannerDialog(QDialog):
                     it.setForeground(QColor(theme.T(tok)))
                 if c == 5 and val:
                     it.setForeground(QColor(theme.T("err")))
-                    it.setToolTip(tr("门店标了紧急的（不在 Griglia、从批发商订）：检查清单里会写「门店紧急」和原因"))
+                    it.setToolTip(tr("不在 Griglia、门店说等不及直厂、要从批发商订的商品（扫码枪上叫 Non in Griglia，门店要写原因）：检查清单里会写「非 Griglia · 门店要订」和原因"))
                 self.lt.setItem(k, c, it)
         self._lsel()
 
@@ -629,11 +637,12 @@ class ScannerDialog(QDialog):
         l = self.lists[rows[0]]
         d = QDialog(self)
         d.setWindowTitle(tr("{0} · {1} 的清单", STORE_NAMES.get(l.get("entityCode"), ""), _day(l.get("week"))))
+        _maximizable(d)
         d.resize(860, 560)
         v = QVBoxLayout(d)
         cols = ("条码", "商品", "箱数", "类型", "原因 / 原商品", "扫码枪")
         t = self._table(cols, (130, 260, 56, 80, 200))
-        kinds = {"griglia": "Griglia", "sub": tr("替代商品"), "urgent": tr("紧急"), "remind": tr("回来了提醒"), "other": ""}
+        kinds = {"griglia": "Griglia", "sub": tr("替代商品"), "urgent": tr("非 Griglia 商品"), "remind": tr("回来了提醒"), "other": ""}
         lines = l.get("lines") or []
         t.setRowCount(len(lines))
         for k, x in enumerate(lines):

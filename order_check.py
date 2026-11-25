@@ -1479,8 +1479,8 @@ class OrderCheck:
             rv.append(("store", tr("门店说明"), tr("系统本来不订（库存够 / 已在途），门店在扫码枪上说明了还要订：{0}。按门店清单订，请确认",
                                                   x.get("list_reason") or "—")))
         if x.get("urgent"):
-            rv.append(("urgent", tr("门店紧急"), tr("门店在扫码枪上标了紧急（原因：{0}）：这个商品不在 Griglia，平常应该向直厂订，"
-                                                  "门店说等不及才从批发商订", x.get("list_reason") or "—")))
+            rv.append(("urgent", tr("非 Griglia · 门店要订"), tr("这个商品不在 Griglia，平常应该向直厂订；门店在扫码枪上（Non in Griglia）"
+                                                         "说等不及、要从批发商订，原因：{0}", x.get("list_reason") or "—")))
         if x.get("review") == "new":
             rv.append(("review", tr("新加"), tr("上次审核时清单里没有这个商品（或者以前的程序没读到），要审核")))
         elif x.get("review") == "changed":
@@ -2265,7 +2265,7 @@ class OrderCheck:
         沿用了上次审核的（review = kept）不用再审
         """
         if x.get("urgent") or x.get("stock_report") or x.get("protect") == "store":
-            return True                                   # 门店在扫码枪上标了紧急 / 报了库存不对：一定要人看
+            return True                                   # 门店要订非 Griglia 商品 / 报了库存不对：一定要人看
         rv = x.get("review")
         if rv in ("new", "changed"):
             return True
