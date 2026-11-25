@@ -79,7 +79,8 @@ KEY_ROLE = Qt.UserRole + 2      # 排序用的值
 _TIER_RANK = {"A": 0, "B": 1, "C": 2}
 # 「看哪些」下拉框
 VIEWS = (("order", "只看要订的"), ("all", "全部商品"), ("changed", "只看有变化的"), ("transfer", "只看调货"),
-         ("edited", "只看手动改过的"), ("urgent", "只看紧急"), ("many", "只看箱数多的"))
+         ("edited", "只看手动改过的"), ("urgent", "只看紧急"), ("many", "只看箱数多的"),
+         ("oldrec", "只看入库记录有误"))
 
 
 class _SortItem(QTableWidgetItem):
@@ -112,11 +113,15 @@ def pack_warning(x, it):
     return ""
 
 
-def detail_tags(x, it, transit_boxes=0, moved_in=False, edited=False, marks=(), pack_diff=False, many=False):
+def detail_tags(x, it, transit_boxes=0, moved_in=False, edited=False, marks=(), pack_diff=False, many=False,
+                old_rec=None):
     """订货明细详情栏「为什么」的精华：几个短标签 [(文字, 颜色 token)]，最要紧的在前；整句在鼠标提示"""
     if not x:
         return [(tr("重复编号"), "muted")] if it.get("dup_of") else [(tr("数据库没有"), "err")]
     out = []
+    if old_rec:                       # 2025-01-08 以前的入库记录是错的（2026-11-25 用户：订货明细也要标）
+        from order_check import old_rec_short
+        out.append((old_rec_short(old_rec), "err"))
     if transit_boxes:
         out.append((tr("在途 {0:g} 箱", transit_boxes), "info"))
     if moved_in:
@@ -509,6 +514,7 @@ class AddItemsDialog(QDialog):
 class DetailWindow(ToolWindow):
     months_ready = Signal(object)        # 近两年每月销量读好了（后台线程 → 界面）
     transit_ready = Signal(object)       # 在途读好了（order_record）
+    oldrec_ready = Signal(object)        # 2025-01-08 以前有（错的）入库记录的商品读好了
 
     def __init__(self, page):
         super().__init__(page.win, tr("订货明细"), (1400, 860))
@@ -517,6 +523,8 @@ class DetailWindow(ToolWindow):
         self._m24, self._m24_state, self._m24_keys, self._m24_token = {}, {}, _R.month_keys(24), 0
         self.months_ready.connect(self._months_arrived)
         self.transit_ready.connect(self._transit_arrived)
+        self.oldrec_ready.connect(self._oldrec_arrived)
+        self._oldrec = {}             # (门店, 商品编号) → (最早那天, 几条, 合计件数)
         self.transit, self._tr_token = None, 0
         self.ui = page.ui
         self.detail = []
@@ -869,8 +877,12 @@ class DetailWindow(ToolWindow):
         marks = self._marks(sc, it, sid, n)
         warn = pack_warning(x, it)
         reasons = "\n".join(["· " + l for l in lines] + ["⚠ " + m[2] for m in marks] + ([warn] if warn else []))
+        orc = self._oldrec_of(it, sid)
+        if orc:
+            from order_check import old_rec_tip
+            reasons = "⚠ " + old_rec_tip(orc, float(x.get("inv_raw", x["inv"]) or 0) if x else None) + "\n" + reasons
         dr.show_tags(detail_tags(x, it, self._transit_boxes(it, sid), bool(t_in), edited, marks, bool(warn),
-                                 self._many(sug)), reasons)
+                                 self._many(sug), orc), reasons)
         # 四个数（够卖含在途；订了的是订后够卖）
         if x:
             moved = (t_in["pieces"] if t_in else 0) - sum(t["pieces"] for t in mo.get(k_, []))
@@ -1013,6 +1025,7 @@ class DetailWindow(ToolWindow):
         import reorder_service as _R
         self._m24, self._m24_state, self._m24_keys = {}, {}, _R.month_keys(24)     # 重新配货：每月销量重新读
         self._m24_token += 1
+        self._oldrec = {}
         self.sup_index = {sc["path"]: k for k, sc in enumerate(calc["schede"])}
         for sc in calc["schede"]:
             for it in sc["items"]:
@@ -1064,6 +1077,7 @@ class DetailWindow(ToolWindow):
         self._loading = False
         self._load_months(list(self.page.calc.get("stores") or []))      # 详情栏的近两年每月销量：后台先读好
         self._load_transit()                                               # 在途列：后台读
+        self._load_oldrec()                                                # 入库记录有误：后台查
         self.load_box.hide()
         t = self.table
         t.setUpdatesEnabled(False)
@@ -1128,6 +1142,8 @@ class DetailWindow(ToolWindow):
             tc.setFont(f)
         t.item(i, 0).setData(DI_ROLE, i)
         self._style_transit(i, i)
+        if self._oldrec:
+            self._style_oldrec(i, i)
         self._style_transfer(i, i)
 
     # ---------- 在途（已经订了、还没到货）----------
@@ -1185,6 +1201,84 @@ class DetailWindow(ToolWindow):
             except Exception as e:
                 self.transit_ready.emit((token, None, str(e)))
         threading.Thread(target=work, daemon=True).start()
+
+    # ---------- 入库记录有误（2025-01-08 以前的入库记录是错的，和检查清单一样标出来）----------
+    def _oldrec_of(self, it, sid):
+        return self._oldrec.get((sid, str(it.get("db_code") or it["code"])))
+
+    def _style_oldrec(self, i, r):
+        """条码、名称红字加粗 + 鼠标提示「入库有误 n 件」"""
+        from order_check import old_rec_tip
+        sc, it, sid = self.detail[i]
+        orc = self._oldrec_of(it, sid)
+        if not orc:
+            return
+        tip = old_rec_tip(orc)
+        for c in (_col(4), _col(5)):
+            cell = self.table.item(r, c)
+            if cell is None:
+                continue
+            cell.setForeground(QColor(T("err")))
+            f = cell.font()
+            f.setBold(True)
+            cell.setFont(f)
+            cell.setToolTip(tip)
+
+    def _load_oldrec(self):
+        import threading
+        import reorder_service as R
+        calc = self.page.calc or {}
+        stores = list(calc.get("stores") or [])
+        codes = {sid: [c for c in (calc.get("demand", {}).get(sid) or {}) if str(c).isdigit()] for sid in stores}
+        dbs = self.page.settings.get("db") or None
+        token = self._m24_token
+
+        def work():
+            try:
+                db = R.make_db(dbs)
+            except Exception as e:
+                self.oldrec_ready.emit((token, None, None, str(e)))
+                return
+            for sid in stores:
+                if not codes[sid]:
+                    continue
+                try:
+                    self.oldrec_ready.emit((token, sid, R.old_receipts(db, sid, codes[sid]), None))
+                except Exception as e:
+                    self.oldrec_ready.emit((token, sid, None, str(e)))
+            try:
+                db.engine.dispose()
+            except Exception:
+                pass
+        threading.Thread(target=work, daemon=True).start()
+
+    def _oldrec_arrived(self, payload):
+        token, sid, data, err = payload
+        if token != self._m24_token:
+            return
+        if err:
+            self.page.win.log(tr("⚠ 旧入库记录没查到：{0}", err))
+            return
+        if not data:
+            return
+        for code, v in data.items():
+            self._oldrec[(sid, str(code))] = v
+        if self._loading:
+            return                                    # 还在分批填：填的时候会标
+        t = self.table
+        was = self._filling
+        self._filling = True
+        t.setUpdatesEnabled(False)
+        for r in range(t.rowCount()):
+            it0 = t.item(r, 0)
+            i = it0.data(DI_ROLE) if it0 is not None else None
+            if i is not None and self.detail[i][2] == sid:
+                self._style_oldrec(i, r)
+        t.setUpdatesEnabled(True)
+        self._filling = was
+        if self.cur_di is not None and self.detail[self.cur_di][2] == sid:
+            r = self.pos[self.cur_di]
+            self._select_row(r)
 
     def _transit_arrived(self, payload):
         token, res, err = payload
@@ -1719,6 +1813,8 @@ class DetailWindow(ToolWindow):
                 hide = key not in self.page.edited
             elif not hide and view == "many":
                 hide = not self._many(self._sugg(sc, sid, it["row"]))
+            elif not hide and view == "oldrec":
+                hide = not self._oldrec_of(it, sid)
             elif not hide and view == "urgent":
                 x = calc["demand"].get(sid, {}).get(it.get("db_code") or it["code"])
                 hide = not (x and "🔴" in (x["decision"] or ""))
@@ -1752,25 +1848,17 @@ class DetailWindow(ToolWindow):
         if self._loading:
             self.flash(tr("还在载入，稍等一下"))
             return
-        from openpyxl import Workbook
-        from openpyxl.styles import Font
         path, _ = QFileDialog.getSaveFileName(self, tr("导出 Excel"), os.path.join(
             self.page.folder.text(), f"订货明细_{datetime.now():%Y%m%d_%H%M}.xlsx"), tr("Excel 文件 (*.xlsx)"))
         if not path:
             return
-        wb = Workbook()
-        ws = wb.active
-        ws.title = "订货明细"
         cols = [c for c in self._visual_cols() if not self.table.isColumnHidden(c)]   # 按现在看到的列导出
         heads = [self.table.horizontalHeaderItem(c).text().replace(" ✎", "").replace(" ⏷", "") for c in cols]
-        ws.append(heads)
-        for c in ws[1]:
-            c.font = Font(bold=True)
-        for r in range(self.table.rowCount()):
-            if self.table.isRowHidden(r):
-                continue
-            ws.append([self.table.item(r, c).text() for c in cols])
-        ws.freeze_panes = "A2"
+        rows = [[self.table.item(r, c).text() for c in cols] for r in range(self.table.rowCount())
+                if not self.table.isRowHidden(r)]
+        from erp_widgets import report_book
+        num = {k for k, c in enumerate(cols) if c in self._num_cols}
+        wb = report_book(tr("订货明细"), heads, rows, numeric=num or None)
         try:
             wb.save(path)
             self.flash(tr("已导出"))

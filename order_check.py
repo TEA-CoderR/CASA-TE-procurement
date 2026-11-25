@@ -2880,8 +2880,6 @@ class OrderCheck:
     def export(self):
         if not self.rows:
             return
-        from openpyxl import Workbook
-        from openpyxl.styles import Font
         tag = "_".join(str(R.STORES.get(k, k)) for k in self.meta["stores"])
         name = f"清单检查_{tag}_{datetime.now():%Y%m%d_%H%M}.xlsx"
         path, _ = QFileDialog.getSaveFileName(self.win, tr("导出 Excel"), os.path.join(self.cfg.get("last_dir") or "", name),
@@ -2889,28 +2887,25 @@ class OrderCheck:
         if not path:
             return
         d = self.meta["days"]
-        wb = Workbook()
-        ws = wb.active
-        ws.title = "清单检查"
-        ws.append(["门店", "判断", "商品编号", "条码", "名称", "本店库存", *[f"{x}天销量" for x in d], "库存够卖（天）", "箱规",
-                   "清单箱数", "清单件数", "清单订后够卖（天）", "建议件数", "确定箱数", "变化（箱）", "确定订后够卖（天）",
-                   "调货", "原因", "系统说明"])
-        for c in ws[1]:
-            c.font = Font(bold=True)
+        heads = ["门店", "判断", "商品编号", "条码", "名称", "本店库存", *[f"{x}天销量" for x in d], "库存够卖（天）", "箱规",
+                 "清单箱数", "清单件数", "清单订后够卖（天）", "建议件数", "确定箱数", "变化（箱）", "确定订后够卖（天）",
+                 "调货", "原因", "系统说明"]
+
         def num(v):
             return None if v is None else ("∞" if math.isinf(v) else round(v))
-
+        rows = []
         for x in self.rows:
-            ws.append([R.STORES.get(x.get("store"), ""), self._verdict(x)[1], x["code"], x["ean"], x["name"], x["store_inv"],
-                       *x["sales"], num(_cover(x)),
-                       x["pack"] or None, x["lbox"], x["file_pcs"],
-                       num(_cover(x, x["file_pcs"])) if (x.get("file_pcs") or 0) > 0 else None,
-                       x["suggested"] if x["in_db"] else None, x["fbox"], self._change_text(x),
-                       num(self._arrive_days(x)), self._transfer_tip(x),
-                       R.reason_text(x.get("inv0"), x.get("daily0"), x.get("cycle"), x.get("suggested"), x.get("target"),
-                                     x.get("in_db", True)), x["decision"]])
-            ws.cell(ws.max_row, 4).number_format = "@"
-        ws.freeze_panes = "A2"
+            rows.append([R.STORES.get(x.get("store"), ""), self._verdict(x)[1], x["code"], x["ean"], x["name"], x["store_inv"],
+                         *x["sales"], num(_cover(x)),
+                         x["pack"] or None, x["lbox"], x["file_pcs"],
+                         num(_cover(x, x["file_pcs"])) if (x.get("file_pcs") or 0) > 0 else None,
+                         x["suggested"] if x["in_db"] else None, x["fbox"], self._change_text(x),
+                         num(self._arrive_days(x)), self._transfer_tip(x),
+                         R.reason_text(x.get("inv0"), x.get("daily0"), x.get("cycle"), x.get("suggested"), x.get("target"),
+                                       x.get("in_db", True)), x["decision"]])
+        from erp_widgets import report_book
+        heads[3] = "EAN"
+        wb = report_book(tr("清单检查") + " · " + tag, heads, rows, name=tr("清单检查"))
         try:
             wb.save(path)
             self.win.show_toast(tr("已导出"))

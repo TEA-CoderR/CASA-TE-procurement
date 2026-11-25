@@ -164,7 +164,10 @@ def test_read_and_sync_excel():
     assert by[("1", "Meloni")]["id"] not in st2.orders
     out = os.path.join(d, "exp.xlsx")
     OT.export_excel(OT.rows(st2), out)
-    assert load_workbook(out).active.max_row == 5
+    ws = load_workbook(out).active
+    assert ws.title == "Ordini" and ws["A5"].value == "Data ordine"
+    assert [ws.cell(r, 3).value for r in range(6, ws.max_row + 1) if ws.cell(r, 3).value] and \
+        sum(1 for r in range(6, ws.max_row + 1) if ws.cell(r, 3).value) == 4
 
 
 def test_auto_register_drafts():

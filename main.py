@@ -2729,37 +2729,27 @@ class ScenarioDialog(QDialog):
         path, _ = QFileDialog.getSaveFileName(self, tr("导出对比"), "方案对比.xlsx", tr("Excel 文件 (*.xlsx)"))
         if not path:
             return
-        from openpyxl import Workbook
-        from openpyxl.styles import Font
-        wb = Workbook()
-        ws = wb.active
-        ws.title = "方案对比"
-        t = self.table
-        ws.append([t.horizontalHeaderItem(c).text() for c in range(t.columnCount())])
-        for r in range(t.rowCount()):
-            ws.append([(t.item(r, c).text() if t.item(r, c) else "") for c in range(t.columnCount())])
-        for c in ws[1]:
-            c.font = Font(bold=True)
+        from erp_widgets import table_data, report_book
+        heads, data = table_data(self.table)
+        wb = report_book(tr("方案对比"), heads, data)
         diff = (self.results[0].get("diff") if self.results else None) or []
         if diff:
-            ws3 = wb.create_sheet("差异商品")
             head = ["EAN", "ARTICOLO", tr("箱数")]
             for i, r in enumerate(self.results):
                 head += [f"{scen_letter(i)} {tr(r['name'])}", f"{scen_letter(i)} €"]
-            ws3.append(head)
+            lines = []
             for m in diff:
                 line = [m.get("ean", ""), m.get("articolo", ""), m.get("qty")]
                 for s_, a in zip(m["sups"], m["amounts"]):
                     line += [s_ or tr("买不到"), None if a is None else round(a, 2)]
-                ws3.append(line)
-            for c in ws3[1]:
-                c.font = Font(bold=True)
+                lines.append(line)
+            report_book(tr("差异商品"), head, lines, wb=wb)
         for i, r in enumerate(self.results):
-            ws2 = wb.create_sheet((f"缺失-{scen_letter(i)}"))
-            ws2.append([tr("行"), "EAN", "ARTICOLO", tr("数量"), tr("原因"), tr("有报价的供应商")])
-            for m in r["missing"]:
-                ws2.append([m["row"], m.get("ean", ""), m.get("articolo", ""), m.get("qty"), tr(m["reason"]),
-                            "、".join(short(x) for x in m.get("offers") or [])])
+            report_book(tr("缺失商品 · {0} {1}", scen_letter(i), tr(r["name"])),
+                        [tr("行"), "EAN", "ARTICOLO", tr("数量"), tr("原因"), tr("有报价的供应商")],
+                        [[m["row"], m.get("ean", ""), m.get("articolo", ""), m.get("qty"), tr(m["reason"]),
+                          "、".join(short(x) for x in m.get("offers") or [])] for m in r["missing"]],
+                        wb=wb, name=f"缺失-{scen_letter(i)}")
         try:
             wb.save(path)
         except Exception as e:
@@ -4468,23 +4458,11 @@ class MainWindow(QMainWindow):
         if not path:
             return
         try:
-            from openpyxl import Workbook
-            wb = Workbook()
-            ws = wb.active
-            ws.title = tr("改动明细")
-            from erp_widgets import header_text
-            ws.append([header_text(t, c) for c in range(t.columnCount())])
-            for r in range(t.rowCount()):
-                ws.append([tr(t.item(r, c).text()) if t.item(r, c) else "" for c in range(t.columnCount())])
-            ws2 = wb.create_sheet(tr("各供应商"))
-            st = self.sum_table
-            ws2.append([header_text(st, c) for c in range(st.columnCount())])
-            for r in range(st.rowCount()):
-                ws2.append([tr(st.item(r, c).text()) if st.item(r, c) else "" for c in range(st.columnCount())])
-            for sh in (ws, ws2):
-                for col in sh.columns:
-                    width = max((len(str(c.value)) for c in col if c.value), default=8)
-                    sh.column_dimensions[col[0].column_letter].width = min(width + 2, 60)
+            from erp_widgets import table_data, report_book
+            heads, data = table_data(t)
+            wb = report_book(tr("改动明细"), heads, [[tr(v) for v in r] for r in data])
+            heads, data = table_data(self.sum_table)
+            report_book(tr("各供应商"), heads, [[tr(v) for v in r] for r in data], wb=wb)
             wb.save(path)
             self.log(tr("✔ 已导出改动明细：{0}", path))
             from erp_widgets import open_file                  # 导出完直接打开（2026-11-07 用户）

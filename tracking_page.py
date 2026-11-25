@@ -657,7 +657,7 @@ class TrackingPage:
         for c, tip in ((4, tr("不含税（Imponibile）")), (7, tr("手动填的，或者 = 下单日期 + 这家供应商以往到货的天数（中位数）。红 = 超期")),
                        (9, tr("到了：下单到到货用了几天；还没到：已经等了几天")),
                        (len(COLS) - 1, tr("没到货的单在「RECORD ORDINE」里对上的订单文件：订了几种商品、几箱。双击看是哪些商品；"
-                                          "对错了右键「指定订单文件…」"))):
+                                          "对错了点上面「订单文件」→ 指定订单文件"))):
             hi = t.horizontalHeaderItem(c)
             if hi is not None:
                 hi.setToolTip(tip)
@@ -677,6 +677,7 @@ class TrackingPage:
         t.cellDoubleClicked.connect(self._double)
         t.setContextMenuPolicy(Qt.CustomContextMenu)
         t.customContextMenuRequested.connect(self._row_menu)
+        self._build_actions(v)
         v.addWidget(t, 1)
         foot = QHBoxLayout()
         self.total = QLabel("")
@@ -1328,6 +1329,7 @@ class TrackingPage:
         self.count.setText(tr("{0:,} / {1:,}", n, tot))
         amt = sum(float(self.rows[i]["amount"] or 0) for i in self.ctl.visible if self.rows[i]["status"] not in OT.NOT_ORDERED)
         self.total.setText(tr("{0:,} 张单 · 合计 € {1:,.2f}（不含税）· 含税 € {2:,.2f}", n, amt, amt * (1 + OT.IVA)))
+        self._update_actions()
 
     def render(self):
         if hasattr(self, "ctl"):
@@ -1349,104 +1351,163 @@ class TrackingPage:
         if i >= 0:
             self.f_view.setCurrentIndex(i)
 
+    # ---------- 订单表的操作：按钮摆在表格上面，右键菜单是同一组（2026-11-25 用户：右键没人知道）----------
+    def _build_actions(self, v):
+        """表格上面一排按钮：发送订单 · 查看订单明细 · 订单文件 ▾ | 编辑订单 · 取消订单 · 删除（按选中的单启用）"""
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        self.act = {}
+        b = QPushButton(tr("发送订单"))
+        b.setObjectName("Primary")
+        b.setToolTip(tr("选一张「待登记」的单：打开订单邮件，审核后发送；发出去自动变成已下单"))
+        b.clicked.connect(lambda: self._act("send"))
+        self.act["send"] = b
+        b = QPushButton(tr("查看订单明细"))
+        b.setToolTip(tr("订单文件里订了哪些商品、几箱"))
+        b.clicked.connect(lambda: self._act("lines"))
+        self.act["lines"] = b
+        b = QPushButton(tr("订单文件"))
+        b.setToolTip(tr("打开订单文件；对错了可以指定别的文件，或者设成没有订单文件（不算在途）"))
+        self.file_menu = QMenu(b)
+        self.a_open = self.file_menu.addAction(tr("打开订单文件"), lambda: self._act("open"))
+        self.a_pick = self.file_menu.addAction(tr("指定订单文件"), lambda: self._act("pick"))
+        self.a_auto = self.file_menu.addAction(tr("自动找订单文件"), lambda: self._act("auto"))
+        self.a_nofile = self.file_menu.addAction(tr("没有订单文件（不算在途）"), lambda: self._act("nofile"))
+        b.setMenu(self.file_menu)
+        self.act["file"] = b
+        b = QPushButton(tr("编辑订单"))
+        b.setToolTip(tr("手动改日期、金额、确认 / 到货（特殊情况用；平时发邮件、邮件核对会自动改）"))
+        b.clicked.connect(lambda: self._act("edit"))
+        self.act["edit"] = b
+        b = QPushButton(tr("取消订单"))
+        b.setToolTip(tr("这张单不订了：不再算在途、不算本月花费；可以撤销"))
+        b.clicked.connect(lambda: self._act("cancel"))
+        self.act["cancel"] = b
+        b = QPushButton(tr("删除"))
+        b.setToolTip(tr("从订单跟踪里删掉（登记错了的单）；修改记录里留着"))
+        b.clicked.connect(lambda: self._act("delete"))
+        self.act["delete"] = b
+        for k in ("send", "lines", "file"):
+            row.addWidget(self.act[k])
+        sep = QFrame()
+        sep.setObjectName("TopSep")
+        sep.setFixedSize(1, 22)
+        row.addWidget(sep)
+        for k in ("edit", "cancel", "delete"):
+            row.addWidget(self.act[k])
+        row.addStretch()
+        self.sel_lbl = QLabel("")
+        self.sel_lbl.setObjectName("Faint")
+        row.addWidget(self.sel_lbl)
+        v.addLayout(row)
+        self.t.itemSelectionChanged.connect(self._update_actions)
+        self._update_actions()
+
+    def _update_actions(self):
+        if not hasattr(self, "act"):
+            return
+        sel = self._selected() if self.st is not None else []
+        n = len(sel)
+        one = sel[0] if n == 1 else None
+        drafts = [r for r in sel if r["status"] == "draft"]
+        self.act["send"].setEnabled(len(drafts) == 1 and n == 1)
+        info = (self._rec_info(one) or {}) if one is not None and one["status"] in REC.OPEN_STATES else {}
+        self.act["lines"].setEnabled(bool(info.get("file")))
+        self.act["file"].setEnabled(one is not None)
+        self.a_open.setEnabled(bool(one and one["file"] and os.path.exists(one["file"])))
+        is_open = bool(one and one["status"] in REC.OPEN_STATES)
+        self.a_pick.setEnabled(is_open)
+        self.a_auto.setVisible(bool(one and one.get("record")))
+        self.a_nofile.setVisible(not (one and one.get("record")))
+        self.a_auto.setEnabled(is_open)
+        self.a_nofile.setEnabled(is_open)
+        self.act["edit"].setEnabled(one is not None)
+        self.act["cancel"].setEnabled(any(r["status"] != "cancel" for r in sel))
+        self.act["delete"].setEnabled(n > 0)
+        for k in ("cancel", "delete"):
+            self.act[k].setText((tr("取消订单") if k == "cancel" else tr("删除")) +
+                                (tr("（{0} 张）", n) if n > 1 else ""))
+        self.sel_lbl.setText(tr("已选 {0} 张", n) if n else tr("先在表格里选一张单"))
+
+    def _act(self, key):
+        sel = self._selected() if self.st is not None else []
+        if not sel:
+            return
+        if key == "send":
+            d = [r for r in sel if r["status"] == "draft"]
+            if d:
+                self.send_order(d[0])
+        elif key == "open":
+            from erp_widgets import open_file
+            open_file(self.win, sel[0]["file"])
+        elif key == "lines":
+            self.show_lines(sel[0])
+        elif key == "pick":
+            self.pick_record(sel[0])
+        elif key in ("auto", "nofile"):
+            self._set_record(sel[0], REC.NO_FILE if key == "nofile" else None)
+        elif key == "edit":
+            self.edit_row(self.rows.index(sel[0]))
+        elif key == "cancel":
+            self.cancel_orders(sel)
+        elif key == "delete":
+            self.delete_orders(sel)
+
+    @staticmethod
+    def _list_text(sel, limit=8):
+        lines = [f"· {r['supplier']} · {r['store_name']} · {r['date'] or '—'} · €{float(r['amount'] or 0):,.2f}"
+                 for r in sel[:limit]]
+        if len(sel) > limit:
+            lines.append(tr("… 还有 {0} 张", len(sel) - limit))
+        return "\n".join(lines)
+
+    def cancel_orders(self, sel):
+        sel = [r for r in sel if r["status"] != "cancel"]
+        if not sel:
+            return
+        txt = tr("取消这 {0} 张单？", len(sel)) + "\n\n" + self._list_text(sel) + "\n\n" + \
+            tr("取消后不再算在途、不算本月花费。改了写进共享的订单记录，同事都能看到；Excel 也会同步。")
+        if QMessageBox.question(self.win, tr("取消订单"), txt) != QMessageBox.Yes:
+            return
+        before = [(r["id"], {"state": self.st.orders.get(r["id"], {}).get("state")}) for r in sel]
+        self.st.set_many([(r["id"], {"state": "cancel"}) for r in sel])
+        self.refresh()
+
+        def undo():
+            self.st.set_many(before)
+            self.refresh()
+            self.win.show_toast(tr("已撤销"))
+        self.win.show_toast(tr("✓ 已取消 {0} 张单", len(sel)), 8000, action=(tr("撤销"), undo))
+
+    def delete_orders(self, sel):
+        txt = tr("删除这 {0} 张单？", len(sel)) + "\n\n" + self._list_text(sel) + "\n\n" + \
+            tr("从订单跟踪里删掉（修改记录里留着），同事那边也会少；删了不能撤销。")
+        if QMessageBox.question(self.win, tr("删除"), txt) != QMessageBox.Yes:
+            return
+        self.st.delete([r["id"] for r in sel])
+        self.refresh()
+        self.win.show_toast(tr("✓ 已删除 {0} 张单", len(sel)))
+
     def _row_menu(self, pos):
+        """右键 = 和表格上面那排按钮一样的操作（快捷方式）"""
         sel = self._selected()
         if not sel or self.st is None:
             return
+        self._update_actions()
         m = QMenu(self.t)
-        today = date.today().isoformat()
-        n = len(sel)
-        suffix = tr("（{0} 张）", n) if n > 1 else ""
-        drafts = [r for r in sel if r["status"] == "draft"]
-        a_place = a_file = None
-        if drafts:                                   # 待登记的：发订单邮件（和点状态格一样）
-            a_place = m.addAction(tr("✉ 发送订单…"))
-            a_place.setEnabled(len(drafts) == 1)
-            if len(drafts) > 1:
-                a_place.setToolTip(tr("一次选一张待登记"))
-            f = a_place.font()
-            f.setBold(True)
-            a_place.setFont(f)
-            m.addSeparator()
-        if n == 1 and sel[0]["file"]:
-            a_file = m.addAction(tr("打开订单文件"))
-            a_file.setEnabled(os.path.exists(sel[0]["file"]))
-            m.addSeparator()
-        a_lines = a_pick = a_nofile = a_auto = None
-        if n == 1 and sel[0]["status"] in REC.OPEN_STATES:
-            info = self._rec_info(sel[0]) or {}
-            a_lines = m.addAction(tr("看订了哪些商品"))
-            a_lines.setEnabled(bool(info.get("file")))
-            a_pick = m.addAction(tr("指定订单文件…"))
-            if sel[0].get("record"):
-                a_auto = m.addAction(tr("自动找订单文件"))
-            else:
-                a_nofile = m.addAction(tr("没有订单文件"))
-                a_nofile.setToolTip(tr("这张单不算在途（例如电话订的、没有明细）"))
-            m.addSeparator()
-        # 2026-11-07 用户：下单 / 确认 / 到货改成全自动（发订单邮件 + 邮件核对），手动的不放在主界面，
-        # 特殊情况双击订单在订单窗口里改
-        a_conf = a_arr = a_part = a_stuck = a_ok = None
-        a_edit = m.addAction(tr("编辑…（手动改确认 / 到货）"))
-        a_edit.setEnabled(n == 1)
-        a_cancel = m.addAction(tr("取消订单") + suffix)
-        a_del = m.addAction(tr("删除") + suffix)
-        got = m.exec(self.t.viewport().mapToGlobal(pos))
-        if got is None:
-            return
-        ids = [r["id"] for r in sel]
-        if a_place is not None and got == a_place:
-            self.send_order(drafts[0])
-            return
-        if a_file is not None and got == a_file:
-            from erp_widgets import open_file
-            open_file(self.win, sel[0]["file"])
-            return
-        if a_lines is not None and got == a_lines:
-            self.show_lines(sel[0])
-            return
-        if a_pick is not None and got == a_pick:
-            self.pick_record(sel[0])
-            return
-        if got is not None and got in (a_nofile, a_auto):
-            self._set_record(sel[0], REC.NO_FILE if got == a_nofile else None)
-            return
-        if got == a_edit:
-            self.edit_row(self.rows.index(sel[0]))
-            return
-        if got == a_del:
-            if QMessageBox.question(self.win, tr("删除"), tr("删除这 {0} 张单？（修改记录里留着）", n)) != QMessageBox.Yes:
-                return
-            self.st.delete(ids)
-            self.refresh()
-            return
-        ch = None
-        if got == a_conf:
-            ch = [(r["id"], {"confirmed": today}) for r in sel if not r["confirmed"]]
-        elif got == a_arr:
-            ch = [(r["id"], {"arrived": today, "state": None} if r["status"] in ("partial", "stuck") else {"arrived": today})
-                  for r in sel]
-        elif got in (a_part, a_stuck):
-            what = tr("部分到货") if got == a_part else tr("卡住了")
-            text, ok = QInputDialog.getText(self.win, what, tr("备注（缺什么 / 为什么）"))
-            if not ok:
-                return
-            state = "partial" if got == a_part else "stuck"
-            ch = []
-            for r in sel:
-                f = {"state": state}
-                if text.strip():
-                    f["note"] = (r["note"] + " · " if r["note"] else "") + text.strip()
-                if state == "partial" and not r["arrived"]:
-                    f["arrived"] = today
-                ch.append((r["id"], f))
-        elif got == a_ok:
-            ch = [(r["id"], {"state": None}) for r in sel if self.st.orders.get(r["id"], {}).get("state")]
-        elif got == a_cancel:
-            ch = [(r["id"], {"state": "cancel"}) for r in sel]
-        if ch:
-            self.st.set_many(ch)
-            self.refresh()
+        for k, text in (("send", tr("发送订单")), ("lines", tr("查看订单明细"))):
+            a = m.addAction(text, lambda k=k: self._act(k))
+            a.setEnabled(self.act[k].isEnabled())
+        fm = m.addMenu(tr("订单文件"))
+        fm.setEnabled(self.act["file"].isEnabled())
+        for a in (self.a_open, self.a_pick, self.a_auto, self.a_nofile):
+            if a.isVisible():
+                fm.addAction(a)
+        m.addSeparator()
+        for k in ("edit", "cancel", "delete"):
+            a = m.addAction(self.act[k].text(), lambda k=k: self._act(k))
+            a.setEnabled(self.act[k].isEnabled())
+        m.exec(self.t.viewport().mapToGlobal(pos))
 
     def edit_row(self, i, tab=None):
         if i is None or self.st is None:

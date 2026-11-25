@@ -958,35 +958,50 @@ def prefer_original(path):
     return orig if os.path.isfile(orig) else None
 
 
-def export_excel(rs, path):
-    """把（筛选后的）订单导出成一张普通的表"""
-    from openpyxl import Workbook
-    from openpyxl.styles import Font, PatternFill, Alignment
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "Ordini"
-    heads = ["Data ordine", "Negozio", "Fornitore", "Ordine da", "Importo imponibile", "Stato", "Data confermato",
-             "Arrivo previsto", "Data arrivato", "Giorni", "Note"]
-    ws.append(heads)
-    lab = {"ordered": "Ordinato", "confirmed": "Confermato", "partial": "Arrivato in parte", "arrived": "Arrivato",
-           "stuck": "Bloccato", "cancel": "Annullato", "deter": "DETER"}
-    for r in rs:
-        ws.append([r["date"], r["store_name"], r["supplier"], r["buyer"], r["amount"],
-                   lab.get(r["status"], r["status"]) + (" (in ritardo)" if r["overdue"] else ""),
-                   r["confirmed"], r["expected"], r["arrived"], r["days"], r["note"]])
-    for c in ws[1]:
-        c.font = Font(bold=True, color="FFFFFF")
-        c.fill = PatternFill("solid", fgColor="1F3A5F")
-        c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-    for col, w in zip("ABCDEFGHIJK", (12, 13, 26, 12, 14, 18, 13, 13, 13, 8, 40)):
-        ws.column_dimensions[col].width = w
-    for row in ws.iter_rows(min_row=2):
-        for c in row:
-            if isinstance(c.value, date):
-                c.number_format = "DD/MM/YYYY"
-        row[4].number_format = "#,##0.00 €"
-    ws.freeze_panes = "A2"
-    ws.auto_filter.ref = f"A1:K{ws.max_row}"
+def export_excel(rs, path, subtitle=None):
+    """
+    把（筛选后的）订单导出成统一样式的报表（xlsx_report，2026-11-25 用户：导出都用新格式）：
+    意大利文表头，状态上色（超期红 · 到货绿 · 待登记黄 · 取消灰），最后一行合计
+    """
+    import xlsx_report as XR
+    Col = XR.Col
+    lab = {"draft": "Da registrare", "ordered": "Ordinato", "confirmed": "Confermato", "shipped": "Spedito",
+           "partial": "Arrivato in parte", "arrived": "Arrivato", "stuck": "Bloccato", "cancel": "Annullato",
+           "deter": "DETER"}
+    tone = {"arrived": "GREEN", "partial": "AMBER", "stuck": "RED", "cancel": "GREY", "draft": "AMBER",
+            "confirmed": "BLUE", "shipped": "BLUE"}
+
+    def d(v):
+        if isinstance(v, (date, datetime)):
+            return v if isinstance(v, date) else v.date()
+        try:
+            return date.fromisoformat(str(v)[:10]) if v else None
+        except ValueError:
+            return v
+    cols = [Col("Data ordine", 13, "date"), Col("Negozio", 16), Col("Fornitore", 30, bold=True, group="sup"),
+            Col("Ordine da", 13), Col("Importo imponibile", 16, "price", group="price"), Col("Stato", 20),
+            Col("Confermato", 13, "date"), Col("Arrivo previsto", 14, "date"), Col("Arrivato", 13, "date"),
+            Col("Giorni", 9, "num"), Col("Note", 44)]
+    rows, marks = [], {}
+    total = 0.0
+    for k, r in enumerate(rs):
+        st = r["status"]
+        rows.append([d(r["date"]), r["store_name"], r["supplier"], r["buyer"], r["amount"],
+                     lab.get(st, st) + (" (in ritardo)" if r["overdue"] else ""),
+                     d(r["confirmed"]), d(r["expected"]), d(r["arrived"]), r["days"], r["note"]])
+        t = "RED" if r["overdue"] else tone.get(st)
+        if t:
+            marks[(k, 5)] = t
+        if r["overdue"]:
+            marks[(k, 7)] = "RED"
+        if st not in NOT_ORDERED:
+            total += float(r["amount"] or 0)
+    wb = XR.new_book()
+    sub = subtitle or f"CASA&TE · {date.today():%d/%m/%Y} · {len(rows)} ordini · " \
+                      f"totale € {total:,.2f} (imponibile, senza annullati / da registrare)"
+    XR.add_sheet(wb, "Ordini", "Ordini fornitori", sub, cols, rows, marks=marks,
+                 note="Rosso = in ritardo / bloccato · Verde = arrivato · Giallo = da registrare / in parte · "
+                      "Blu = confermato / spedito · Grigio = annullato", tone="GREY")
     wb.save(path)
     return path
 

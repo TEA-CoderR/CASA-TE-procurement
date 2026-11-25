@@ -2201,6 +2201,29 @@ def _sort_key(text):
 SORT_ROLE = Qt.UserRole + 40          # 格子里可以放一个专门排序用的值（不放就按显示的文字排）
 
 
+def table_data(table):
+    """界面表格 → (列名, 每行的文字)：只要看得见的列（按现在的顺序）、没藏起来的行"""
+    hh = table.horizontalHeader()
+    cols = [hh.logicalIndex(v) for v in range(table.columnCount()) if not hh.isSectionHidden(hh.logicalIndex(v))]
+    heads = [header_text(table, c) for c in cols]
+    rows = []
+    for r in range(table.rowCount()):
+        if table.isRowHidden(r):
+            continue
+        rows.append([(table.item(r, c).text() if table.item(r, c) else "") for c in cols])
+    return heads, rows
+
+
+def report_book(title, heads, rows, numeric=None, wb=None, name=None, note=None):
+    """一张界面表格 → 统一样式的 Excel（xlsx_report.add_plain）；wb 给了就加一页"""
+    from datetime import datetime
+    import xlsx_report as XR
+    wb = wb or XR.new_book()
+    XR.add_plain(wb, name or title, title, f"CASA&TE · {datetime.now():%d/%m/%Y %H:%M} · {len(rows)}",
+                 heads, rows, numeric=numeric, note=note)
+    return wb
+
+
 def header_text(table, c):
     """列名（去掉排序 / 筛选标记，导出 Excel 用）"""
     it = table.horizontalHeaderItem(c)
@@ -3335,26 +3358,11 @@ class TableSortFilter(QObject):
         path, _ = QFileDialog.getSaveFileName(parent, title or tr("导出 Excel"), default_name, tr("Excel 文件 (*.xlsx)"))
         if not path:
             return None
-        from openpyxl import Workbook
-        from openpyxl.styles import Font
-        wb = Workbook()
-        ws = wb.active
-        ws.title = (title or "Sheet")[:31].replace("/", "-")
         hh = self.t.horizontalHeader()
         cols = [hh.logicalIndex(v) for v in range(self.t.columnCount()) if not hh.isSectionHidden(hh.logicalIndex(v))]
-        ws.append([self.titles[c] for c in cols])
-        for cell in ws[1]:
-            cell.font = Font(bold=True)
-        for i in self.visible:
-            vals = []
-            for c in cols:
-                v = self.text(i, c)
-                if c in self.numeric:
-                    k = _sort_key(v)
-                    v = k[1] if (k[0] == 0 and "×" not in str(v)) else v
-                vals.append(v)
-            ws.append(vals)
-        ws.freeze_panes = "A2"
+        rows = [[self.text(i, c) for c in cols] for i in self.visible]
+        num = {k for k, c in enumerate(cols) if c in self.numeric}
+        wb = report_book(title or tr("导出"), [self.titles[c] for c in cols], rows, numeric=num or None)
         try:
             wb.save(path)
         except Exception as e:
@@ -3636,3 +3644,84 @@ def excel_call(fn):
     if "e" in box:
         raise box["e"]
     return box.get("r")
+
+
+class BandHeader(QHeaderView):
+    """
+    表头上面多一条分组色带（和原 Excel 的分组表头一样：「ANAGRAFICA」「PREZZI」…），一组一种淡颜色、写组名；
+    组之间颜色轮流换（2026-11-25 用户：Griglia 表头分组上色）。set_bands({列号: 组名})，空 = 不画色带（表头恢复原来高度）。
+    列可以拖动换位置：按现在的顺序把相邻、同一组的列画成一段。
+    """
+    TONES = ("accent", "ok", "warn", "violet", "cyan", "err", "info")
+
+    def __init__(self, parent=None):
+        super().__init__(Qt.Horizontal, parent)
+        self.setSectionsClickable(True)
+        self.setHighlightSections(False)
+        self.setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.bands, self.tone_of = {}, {}
+        self.band_h = 22
+        self.label_left = 0           # 左边这么宽被盖住（冻结的列）：组名往右挪，写在看得见的地方
+
+    def set_bands(self, bands, band_h=None):
+        self.bands = dict(bands or {})
+        self.tone_of = {}
+        for c in sorted(self.bands):
+            g = self.bands[c]
+            if g and g not in self.tone_of:
+                self.tone_of[g] = self.TONES[len(self.tone_of) % len(self.TONES)]
+        if band_h is not None:
+            self.band_h = band_h
+        self.updateGeometries()
+        self.viewport().update()
+
+    def _on(self):
+        return any(not self.isSectionHidden(c) for c, g in self.bands.items() if g)
+
+    def sizeHint(self):
+        s = super().sizeHint()
+        return QSize(s.width(), s.height() + (self.band_h if self._on() else 0))
+
+    def paintSection(self, p, rect, logical):
+        r = rect.adjusted(0, self.band_h, 0, 0) if self._on() else rect
+        p.save()
+        super().paintSection(p, r, logical)
+        p.restore()
+
+    def paintEvent(self, e):
+        super().paintEvent(e)
+        if not self._on():
+            return
+        from theme import T
+        p = QPainter(self.viewport())
+        f = QFont(self.font())
+        f.setBold(True)
+        f.setPixelSize(max(9, int(self.band_h * 0.5)))
+        p.setFont(f)
+        h = self.band_h
+        runs = []
+        for v in range(self.count()):
+            lg = self.logicalIndex(v)
+            if self.isSectionHidden(lg):
+                continue
+            g = self.bands.get(lg) or None
+            x = self.sectionViewportPosition(lg)
+            w = self.sectionSize(lg)
+            if runs and runs[-1][0] == g and runs[-1][2] == x:
+                runs[-1][2] = x + w
+            else:
+                runs.append([g, x, x + w])
+        fm = QFontMetrics(f)
+        for g, x1, x2 in runs:
+            r = QRectF(x1, 0, x2 - x1, h)
+            if g is None:
+                p.fillRect(r, QColor(T("surface")))
+                continue
+            tok = self.tone_of.get(g, "accent")
+            p.fillRect(r.adjusted(0.5, 0, -0.5, 0), QColor(T(tok + "_soft")))
+            p.fillRect(QRectF(x1 + 0.5, h - 2.5, x2 - x1 - 1, 2.5), QColor(T(tok)))
+            p.setPen(QColor(T(tok)))
+            lx = max(x1, min(self.label_left, x2 - 40), 0)          # 这一段左边被盖住 / 滚出去了：组名写在看得见的开头
+            txt = fm.elidedText(str(g), Qt.ElideRight, max(0, int(x2 - lx - 12)))
+            p.drawText(QRectF(lx + 6, 0, x2 - lx - 12, h - 2), Qt.AlignLeft | Qt.AlignVCenter, txt)
+        p.end()

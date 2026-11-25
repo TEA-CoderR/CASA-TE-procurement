@@ -109,6 +109,8 @@ class FrozenCols(QObject):
         v.setModel(t.model())
         v.setSelectionModel(t.selectionModel())
         v.setItemDelegate(t.itemDelegate())
+        from erp_widgets import BandHeader
+        v.setHorizontalHeader(BandHeader(v))
         v.verticalHeader().hide()
         v.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         v.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
@@ -199,6 +201,7 @@ class FrozenCols(QObject):
         page._freeze_note(len(cols))
         if not cols:
             v.hide()
+            hh.label_left = 0
             return
         self._busy = True
         try:
@@ -223,6 +226,9 @@ class FrozenCols(QObject):
             x0 = t.frameWidth() + (t.verticalHeader().width() if t.verticalHeader().isVisible() else 0)
             w = sum(t.columnWidth(c) for c in cols)
             v.setGeometry(x0, t.frameWidth(), w + 2, hh.height() + t.viewport().height())
+            if getattr(hh, "label_left", 0) != w + 2:
+                hh.label_left = w + 2                      # 色带上的组名写在冻结的列右边（不被盖住）
+                hh.viewport().update()
             v.verticalScrollBar().setValue(t.verticalScrollBar().value())
             v.show()
             v.raise_()
@@ -418,6 +424,8 @@ class GrigliaCatalogPage:
         self.count.setObjectName("Faint")
         self.t = self.ui.make_table([tr(h) for _f, h, _k in COLS], stretch_col=None,
                                     numeric_cols=tuple(i for i, c in enumerate(COLS) if c[2] != "txt"))
+        from erp_widgets import BandHeader                 # 原表看法：表头上面按 Excel 的分组画色带（2026-11-25）
+        self.t.setHorizontalHeader(BandHeader(self.t))
         mid.v.addWidget(self.t, 1)
         foot = QHBoxLayout()
         foot.setSpacing(6)
@@ -553,6 +561,7 @@ class GrigliaCatalogPage:
         t.horizontalHeader().setStyleSheet(
             f"QHeaderView::section {{ font-size: {max(8, int(round(HEAD0 * z)))}px; "
             f"padding: {max(3, int(round(9 * z)))}px {max(3, int(round(8 * z)))}px; }}")
+        self._set_bands()
         if self.thumb2 is not None:
             self.thumb2.size = max(18, int(round(THUMB0 * z)))
         self.frozen.set_size(max(18, int(round(THUMB0 * z))))
@@ -570,6 +579,19 @@ class GrigliaCatalogPage:
         self.zoom_slider.blockSignals(False)
         if render and self.cat is not None:
             self.ctl.render()
+
+    def _set_bands(self):
+        """原表的分组（第 1 行那排「ANAGRAFICA」「PREZZI」…）画成表头上面的色带，冻结的小表格也一样"""
+        if self.cat is None:
+            return
+        base = len(COLS)
+        bands = {base + k: (c.get("group") or "").strip() for k, c in enumerate(self.cat.columns)}
+        bh = max(16, int(round(22 * self._zoom)))
+        self.t.horizontalHeader().set_bands(bands, bh)
+        fz = getattr(self, "frozen", None)
+        if fz is not None:
+            fz.v.horizontalHeader().set_bands(bands, bh)
+            fz.later()
 
     def _rebuild_columns(self):
         """原表的每一列也放进表格（默认藏着，右键表头「显示哪些列」打开）；列的设置记在 settings griglia_db_cols"""
@@ -589,6 +611,7 @@ class GrigliaCatalogPage:
         self.t._numeric = set(getattr(self.t, "_numeric", ())) | {base + k for k in range(len(names))
                                                                     if self._is_num_col(k)}
         self.ctl.titles = [self.t.horizontalHeaderItem(c).text() for c in range(self.t.columnCount())]
+        self._set_bands()
         fids = [f for f, _h, _k in COLS] + [100 + k for k in range(len(names))]
         cfg = self.settings.setdefault("griglia_db_cols", {})
         self.ctl.remember(cfg, "catalog", self._save, fids, default_hidden=[f for f in HIDDEN if f in fids], ver=2)

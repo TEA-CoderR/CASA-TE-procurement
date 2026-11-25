@@ -1181,52 +1181,16 @@ def run_process(ordine_file, eliminare_path, distribuire_path, log, progress=Non
     except Exception as e:
         log(tr("⚠ 缺失商品明细整理失败：{0}", e))
 
-    # 生成缺失报告（Excel）
+    # 生成缺失报告（Excel，统一报表样式）
     if missing_items:
-        from openpyxl import Workbook
-        from datetime import datetime
-
-        wb_report = Workbook()
-        ws_report = wb_report.active
-        ws_report.title = "缺失报告"
-
-        # 标题行
-        ws_report.append(["缺失供应商报价的产品"])
-        ws_report.append(["生成时间: %s" % datetime.now().strftime("%Y-%m-%d %H:%M:%S")])
-        ws_report.append(["总缺失数: %d" % len(missing_items)])
-        ws_report.append([])
-        ws_report.append(["序号", "EAN", "ARTICOLO", "出现次数", "Codice Fornitore", "供应商"])
         sup_by_ean = {m.get("ean"): (m.get("sup_code") or "", m.get("sup_name") or "")
                       for m in summary.get("missing_items") or []}
-
-        # 统计每个 EAN 出现的数量和对应的 ARTICOLO
         ean_info = {}  # {ean: (articolo, count)}
         for ean, articolo in missing_items:
-            if ean in ean_info:
-                old_articolo, old_count = ean_info[ean]
-                ean_info[ean] = (old_articolo, old_count + 1)
-            else:
-                ean_info[ean] = (articolo, 1)
-
-        for idx, (ean, (articolo, count)) in enumerate(ean_info.items(), 1):
-            ws_report.append([idx, ean, articolo, count, *sup_by_ean.get(ean, ("", ""))])
-
-        # 自动调整列宽
-        for col in ws_report.columns:
-            max_length = 0
-            column_letter = col[0].column_letter
-            for cell in col:
-                try:
-                    if cell.value:
-                        max_length = max(max_length, len(str(cell.value)))
-                except:
-                    pass
-            ws_report.column_dimensions[column_letter].width = min(max_length + 2, 50)
-
-        # 保存
+            a0, c0 = ean_info.get(ean, (articolo, 0))
+            ean_info[ean] = (a0, c0 + 1)
         report_path = os.path.join(distribuire_path, "缺失报告.xlsx")
-        wb_report.save(report_path)
-        wb_report.close()
+        missing_report_xlsx(report_path, ean_info, sup_by_ean)
         summary["missing_report"] = report_path
         log(tr("✔ 缺失报告生成（稳定版）"))
 
@@ -1752,9 +1716,30 @@ def _supplier_index(ws, work_path):
     return col_ord, index, find_order_input(ws, header, col_ord, pack_col)
 
 
-def _write_missing_report(distribuire_path, rows, assignment):
-    from openpyxl import Workbook
+def missing_report_xlsx(path, info, sup, store=None):
+    """
+    缺失报告（这次哪家批发商都没报价的商品）：统一报表样式（xlsx_report，2026-11-25 用户：导出都用新格式），带商品照片。
+    info = {条码: (名称, 出现几行)}；sup = {条码: (Codice Fornitore, 供应商)}
+    """
     from datetime import datetime
+    import xlsx_report as XR
+    Col = XR.Col
+    eans = list(info)
+    rows = [[e, info[e][0], info[e][1], *sup.get(e, ("", ""))] for e in eans]
+    wb = XR.new_book()
+    XR.add_sheet(wb, "Articoli senza listino", "Articoli senza listino" + (f" – {store}" if store else ""),
+                 f"CASA&TE · {datetime.now():%d/%m/%Y %H:%M} · {len(rows)} articoli · {sum(c for _a, c in info.values())} righe",
+                 [Col("EAN", 16, "ean"), Col("Articolo", 46, bold=True), Col("Righe", 8, "num"),
+                  Col("Codice Fornitore", 16, group="sup"), Col("Fornitore", 28, group="sup")],
+                 rows, photo_eans=eans,
+                 note="Nessun grossista ha questi articoli nei listini di questa settimana: non sono nei file d'ordine. "
+                      "缺失报告：这周哪家批发商的报价里都没有，没写进任何订单文件",
+                 tone="RED")
+    wb.save(path)
+    return path
+
+
+def _write_missing_report(distribuire_path, rows, assignment):
     info = {}
     for r in rows:
         if assignment.get(r["row"]) is None and r.get("ean"):
@@ -1763,20 +1748,8 @@ def _write_missing_report(distribuire_path, rows, assignment):
     path = os.path.join(distribuire_path, "缺失报告.xlsx")
     if not info:
         return None
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "缺失报告"
-    ws.append(["缺失供应商报价的产品"])
-    ws.append(["生成时间: %s" % datetime.now().strftime("%Y-%m-%d %H:%M:%S")])
-    ws.append(["总缺失数: %d" % sum(c for _, c in info.values())])
-    ws.append([])
-    ws.append(["序号", "EAN", "ARTICOLO", "出现次数", "Codice Fornitore", "供应商"])
     sup = {r["ean"]: (r.get("sup_code") or "", r.get("sup_name") or "") for r in rows if r.get("ean")}
-    for i, (e, (a, c)) in enumerate(info.items(), 1):
-        ws.append([i, e, a, c, *sup.get(e, ("", ""))])
-    wb.save(path)
-    wb.close()
-    return path
+    return missing_report_xlsx(path, info, sup)
 
 
 # =====================

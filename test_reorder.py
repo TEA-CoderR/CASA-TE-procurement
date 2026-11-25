@@ -541,3 +541,14 @@ def test_list_ten_times_system_and_over_a_year_cut_to_free_days():
     z = dict(x, urgent=True)                                         # 门店标了紧急：不砍（照样要审核）
     OC.init_boxes([z])
     assert "cut_much" not in z
+
+
+def test_detail_tags_old_receipts_first():
+    """订货明细：2025-01-08 以前有入库记录的商品，详情栏第一个标签「入库有误 n 件」（2026-11-25）"""
+    import datetime as dt
+    import store_detail_window as SW
+    x = {"decision": "", "tier": "B"}
+    tags = SW.detail_tags(x, {}, transit_boxes=1, old_rec=(dt.date(2024, 5, 1), 3, 53))
+    assert tags[0] == ("入库有误 53 件", "err")
+    assert SW.detail_tags(x, {}, old_rec=(dt.date(2024, 5, 1), 2, 0))[0] == ("入库有误 2 条", "err")
+    assert [k for k, _ in SW.VIEWS][-1] == "oldrec"

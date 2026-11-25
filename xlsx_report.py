@@ -28,7 +28,7 @@ TONES = {"GREEN": ("E7F5EC", "1E7A3C"), "RED": ("FDECEC", "B42318"), "AMBER": ("
 HEAD_TONES = {"id": "F3F4F6", "cat": "EEF2FF", "price": "E7F5EC", "sup": "E8F0FE", "warn": "FFF4E0"}
 IMG = 48                                      # 照片 48 × 48 像素
 FMT = {"price": '€ #,##0.00', "num": '#,##0', "pct": '+0.0%;-0.0%;0.0%', "ean": "@", "txt": "@",
-       "rate": '0.0%', "dec": '+0.00;-0.00;0.00'}       # rate：毛利率这种不带正负号的百分数；dec：两位小数（带正负号）
+       "rate": '0.0%', "dec": '+0.00;-0.00;0.00', "date": "DD/MM/YYYY", "n2": '#,##0.00'}       # rate：毛利率这种不带正负号的百分数；dec：两位小数（带正负号）
 
 
 class Col:
@@ -126,7 +126,7 @@ def add_sheet(wb, name, title, subtitle, cols, rows, marks=None, photo_eans=None
                 v = str(v)
             dc = ws.cell(r, j + 1 + off, v)
             dc.border = box
-            dc.alignment = left if c.left else right if c.kind in ("num", "price", "pct", "rate", "dec") else center
+            dc.alignment = left if c.left else right if c.kind in ("num", "n2", "price", "pct", "rate", "dec") else center
             dc.number_format = FMT.get(c.kind, "General")
             t = marks.get((k, j))
             if t:
@@ -159,3 +159,70 @@ def add_sheet(wb, name, title, subtitle, cols, rows, marks=None, photo_eans=None
     ws.print_title_rows = f"{hr}:{hr}"
     ws.page_margins.left = ws.page_margins.right = 0.4
     return ws
+
+
+# ---------- 界面表格直接导出（2026-11-25 用户：剩下的导出也都用这套样式）----------
+_EAN_HEADS = ("EAN", "条码", "CODICE EAN", "BARCODE")
+
+
+def _num(v):
+    """「1,234.50」「€ 12.3」「45%」→ 数字；不是数字返回 None"""
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, (int, float)):
+        return v
+    s = str(v or "").strip().replace("€", "").replace(" ", "").replace(" ", "")
+    pct = s.endswith("%")
+    s = s.rstrip("%").replace(",", "")
+    if not s or s in ("-", "+", "."):
+        return None
+    try:
+        x = float(s)
+    except ValueError:
+        return None
+    return x if not pct else x          # 百分数照原样（列类型按 pct 处理时 add_sheet 会 ÷100）
+
+
+def _width(head, vals):
+    def w(s):
+        s = str(s if s is not None else "")
+        return sum(2 if ord(ch) > 0x2E80 else 1 for ch in s)
+    return max(8, min(50, max([w(head)] + [w(v) for v in vals[:300]]) + 3))
+
+
+def add_plain(wb, name, title, subtitle, heads, rows, numeric=None, note=None, tone=None):
+    """
+    界面上的一张表（列名 + 每格的文字）→ 统一样式的工作表：数字列自动认成数字（右对齐、千分位），
+    条码列按文字、金额列（列名里有 €）按金额，列宽按内容估。numeric = 认定是数字的列号（不给就按内容猜）
+    """
+    n = len(heads)
+    kinds = []
+    for j in range(n):
+        col = [r[j] if j < len(r) else None for r in rows]
+        h = str(heads[j] or "")
+        filled = [v for v in col if v not in (None, "")]
+        nums = [_num(v) for v in filled]
+        if h.strip().upper() in _EAN_HEADS:
+            kinds.append("ean")
+        elif any(k in h.upper() for k in ("编号", "COD", "单号", "行号", "ID")) or h.strip() in ("行", "Riga"):
+            kinds.append("txt")                    # 编号不加千分位
+        elif filled and (numeric is None and all(x is not None for x in nums) or numeric is not None and j in numeric):
+            pct = all(str(v).strip().endswith("%") for v in filled)
+            ints = all(x is not None and float(x).is_integer() for x in nums)
+            kinds.append("pct" if pct else "price" if "€" in h else "num" if ints else "n2")
+        else:
+            kinds.append("txt")
+    data = []
+    for r in rows:
+        line = []
+        for j in range(n):
+            v = r[j] if j < len(r) else None
+            if kinds[j] in ("num", "n2", "price", "pct"):
+                x = _num(v)
+                v = x if x is not None else (v if v not in ("",) else None)
+            line.append(v)
+        data.append(line)
+    cols = [Col(str(heads[j]), _width(heads[j], [r[j] if j < len(r) else "" for r in rows]), kinds[j],
+                group="price" if kinds[j] == "price" else "id", bold=(j == 0 and kinds[j] == "txt"))
+            for j in range(n)]
+    return add_sheet(wb, name, title, subtitle, cols, data, note=note, tone=tone)
