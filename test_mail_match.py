@@ -318,8 +318,11 @@ def test_ddt_store_from_body_and_unsure_otherwise(tmp_path):
                    "date": datetime(2026, 11, 5, 13, 0)})
     res = MM.analyze([ddt, pre], st, OWN)
     sais = [s for s in res["suggest"] if s["supplier"] == "SAIS"]
-    assert sorted(s["store"] for s in sais) == ["1", "2", "4"] and all(s["unsure"] for s in sais)
-    assert [e["row"] is ddt for e in res["events"] if e.get("need_body")] == [True]
+    # 2026-11-25 一一关联：几家店都对得上 → 不给建议，进「待处理邮件」，先读正文 / 附件
+    assert sais == []
+    pend = [p for p in res["pending"] if p["supplier"].upper().startswith("SAIS")]
+    assert len(pend) == 1 and sorted(st.orders[o]["store"] for o in pend[0]["candidates"]) == ["1", "2", "4"]
+    assert any(e["row"] is ddt for e in res["events"] if e.get("need_text"))
     royal = [s for s in res["suggest"] if "ROYAL" in s["supplier"]]
     assert [(s["store"], s["field"]) for s in royal] == [("BMS", "confirmed")]
     # 正文里写了收货门店 → 只配 FOIANO，不再「不确定」

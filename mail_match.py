@@ -263,11 +263,14 @@ def _parse_date(v):
         return None
 
 
-def analyze(mails, st, own, mailbox_store=None, today=None, ignored=None):
+def analyze(mails, st, own, mailbox_store=None, today=None, ignored=None, ks=None):
     """
     mails = fetch_headers 的结果（每封多 mailbox / folder）；st = 订单跟踪 Store；own = 自己的邮箱地址集合；
     mailbox_store = {邮箱地址小写: 门店代码}（没写门店时用）。
-    返回 {"suggest": [建议], "unmatched": [没对上的订单信], "events": [每封认出来的信]}
+    ks = mail_link.keys(...)（每家店的收货抬头 / 地址）：正文 / 附件读过的信（m["body"] / m["att_text"]）按地址认门店。
+    一封供应商的确认 / 发货信只对一张单（2026-11-25 用户：一定要一一关联）：对不上、或者好几张都对得上的
+    不给建议，放进 pending（「待处理邮件」，人选是哪一张）。
+    返回 {"suggest": [建议], "pending": [待处理], "unmatched": [没对上的订单信], "events": [每封认出来的信]}
     建议 = {"key", "id", "kind", "field", "value", "old", "mail": {...}, "store", "supplier", "order_date", "status"}
     """
     own = {a.lower() for a in own}
@@ -288,6 +291,20 @@ def analyze(mails, st, own, mailbox_store=None, today=None, ignored=None):
     events, suggest, unmatched = [], {}, []
     by_sup, deter = {}, set()
     twins = {d for d, _m in duplicates(st)}      # 和 Excel 手填重复的待登记：邮件算在手填的那张上，待登记另外建议合并
+    import mail_link as ML
+    if ks is None:
+        try:
+            ks = ML.keys(None)
+        except Exception:
+            ks = {}
+    linked = {}                                # 已经关联过的信（单上 mails 记着 Message-ID）→ 单
+    for oid, o in st.orders.items():
+        for e in o.get("mails") or []:
+            if isinstance(e, dict) and e.get("id"):
+                linked.setdefault(str(e["id"]).strip(), [])
+                if oid not in linked[str(e["id"]).strip()]:
+                    linked[str(e["id"]).strip()].append(oid)
+    pending = []
     by_no = {}                                 # 程序发信时记的订单号 → 单（2026-11-21：回信 / DDT 里写了订单号 = 准确对上）
     for oid, o in st.orders.items():
         for k in (o.get("no"), o.get("gno")):
@@ -329,22 +346,36 @@ def analyze(mails, st, own, mailbox_store=None, today=None, ignored=None):
                     stores.append(s_)
         day = m["_date"].date()
         multi = bool(_PDV.search(subj))
+        src = "name" if stores else ""
+        addr_cands = []
+        if not sent and ks and (m.get("body") or m.get("att_text")):
+            # 正文 / 附件里的收货抬头和地址（最准：DDT、确认单上一定写送到哪）
+            code, info = ML.store_of("\n".join([m.get("body") or "", m.get("att_text") or ""]), ks)
+            if code:
+                stores, src, multi = [code], "addr", False
+            else:
+                addr_cands = info
         if not stores and not multi and not sent and m.get("body"):
             stores = stores_in_body(m["body"])          # 正文写了收货门店（SAIS 的 DDT 信）
+            src = "body" if stores else src
         if not stores and not multi:
             dflt = mailbox_store.get((m.get("mailbox") or "").lower())
             if dflt:
-                stores = [dflt]
+                stores, src = [dflt], "mailbox"
         want = subject_day(subj, day, full=(kind == "confirm"))
         oids = []
         parent = thread.get((m.get("in_reply_to") or "").strip())
         by_code = list(dict.fromkeys(oid for c in OT.find_order_nos(" ".join([subj] + atts + [m.get("body") or ""]))
                                      for oid in by_no.get(c, [])))
-        if by_code and not sent:
-            oids = by_code                                 # 写了我们的订单号：就是这几张，不用再猜
+        how = ""
+        mid = (m.get("message_id") or "").strip()
+        if mid and mid in linked and not sent:
+            oids, how = list(linked[mid]), "link"          # 以前已经关联过（人选的 / 应用过的）
+        elif by_code and not sent:
+            oids, how = by_code, "no"                      # 写了我们的订单号：就是这几张，不用再猜
             stores = stores or list(dict.fromkeys(str(st.orders[o].get("store")) for o in oids))
         elif parent and not sent:
-            oids = list(parent)
+            oids, how = list(parent), "thread"
         elif sups:
             if want:
                 lo, hi = want - timedelta(days=2), want + timedelta(days=2)
@@ -391,7 +422,35 @@ def analyze(mails, st, own, mailbox_store=None, today=None, ignored=None):
                   len({str(st.orders[o].get("store")) for o in oids}) > 1)
         ev = {"date": day, "kind": kind, "subject": subj, "from": frm, "mailbox": m.get("mailbox"),
               "message_id": m.get("message_id"), "suppliers": sups, "stores": stores, "orders": oids,
-              "unsure": unsure, "need_body": False, "row": m.get("_orig", m)}
+              "unsure": unsure, "need_body": False, "row": m.get("_orig", m), "how": how, "store_src": src}
+        follow = not sent and kind in ("confirm", "ship")
+        if follow and sups and how not in ("link", "no", "thread") and not m.get("_texts") \
+                and (len(oids) != 1 or src in ("", "mailbox")):
+            ev["need_text"] = True                     # 读正文 + 附件看收货地址（commands.mail_tracking 读完再对一次）
+        if follow and sups and how != "link" and len(oids) != 1:
+            # 一一关联：对不上 / 好几张都对得上 → 不自动改，放进「待处理邮件」
+            cand = list(oids)
+            if not cand:
+                lo = day - timedelta(days=FOLLOW_WINDOW)
+                for k2, ids in by_sup.items():
+                    if any(k2 == sk or (len(sk) >= 4 and len(k2) >= 4 and (sk in k2 or k2 in sk)) for sk in sups):
+                        cand += [oid for oid in ids if lo <= (OT.to_date(st.orders[oid].get("date")) or date.min) <= day]
+                cand = sorted(set(cand), key=lambda o_: OT.to_date(st.orders[o_].get("date")) or date.min, reverse=True)
+            cand = [o_ for o_ in cand if _would_change(st.orders[o_], kind)]
+            key = f"pend|{mid or subj}"
+            if cand and key not in ignored:
+                pending.append({
+                    "key": key, "kind": "pending", "mkind": kind, "candidates": cand[:12], "stores": stores,
+                    "store_src": src, "addr_cands": addr_cands,
+                    "supplier": idx.best_name(sups, " ".join([subj] + atts)) if hasattr(idx, "best_name") else sups[0],
+                    "why": "many" if oids else "none", "store": stores[0] if len(stores) == 1 else "",
+                    "body": (m.get("body") or "")[:3000], "att_text": (m.get("att_text") or "")[:3000],
+                    "mail": {"date": m["_date"], "subject": subj, "from": frm, "mailbox": m.get("mailbox") or "",
+                             "message_id": mid, "attachments": atts},
+                    "_m": {k_: m.get(k_) for k_ in ("_date", "subject", "from", "mailbox", "message_id", "attachments")}})
+            oids = []                                  # 不给建议
+            ev["orders"] = []
+            ev["pending"] = True
         events.append(ev)
         if sent and m.get("message_id"):
             thread[m["message_id"].strip()] = oids
@@ -444,7 +503,39 @@ def analyze(mails, st, own, mailbox_store=None, today=None, ignored=None):
                                      "subject": ev["subject"], "from": ev["from"], "mailbox": ev["mailbox"] or "",
                                      "message_id": ev["message_id"] or "", "attachments": ev["attachments"]}})
     return {"suggest": sorted(suggest.values(), key=lambda x: (x["mail"]["date"], x["supplier"], x["store"])),
+            "pending": sorted(pending, key=lambda x: x["mail"]["date"], reverse=True),
             "missing": missing, "unmatched": unmatched, "events": events}
+
+
+def _would_change(o, kind):
+    """这封确认 / 发货信会让这张单往前走一步吗（已经确认 / 发货 / 到货 / 取消了的不用再关联）"""
+    if not o or o.get("state") == "cancel" or o.get("arrived"):
+        return False
+    s = OT.status(o)
+    if kind == "confirm":
+        return s in ("ordered", "draft") and not o.get("confirmed")
+    if kind == "ship":
+        return not o.get("shipped")
+    return False
+
+
+def link_suggestions(st, pend, oid):
+    """「待处理邮件」里人选了这一张 → 要写的建议（确认 / 发货；没有要改的状态就只把这封信记到单上）"""
+    o = st.orders.get(oid) or {}
+    m = dict(pend["_m"])
+    kind = pend["mkind"]
+    day = m["_date"].date()
+    out = []
+    s = OT.status(o)
+    if kind in ("confirm", "ship") and s in ("ordered", "draft") and not o.get("confirmed"):
+        out.append(_sg(f"{oid}|confirmed", oid, o, kind, "confirmed", day.isoformat(), m, st))
+    if kind == "ship" and not o.get("shipped") and not o.get("arrived"):
+        out.append(_sg(f"{oid}|shipped", oid, o, "ship", "shipped", day.isoformat(), m, st))
+    if not out:
+        out.append(_sg(f"{oid}|link", oid, o, kind, "link", "", m, st))
+    for x in out:
+        x["pend_key"] = pend["key"]
+    return out
 
 
 def _like(a, b):
@@ -581,6 +672,8 @@ def changes_of(sugs, me=None):
             f["date"] = s["value"]
             if me:
                 f.setdefault("buyer", me)
+        elif s["field"] == "link":
+            pass                                     # 只把这封信记到单上（人在「待处理邮件」里选的）
         else:
             f[s["field"]] = s["value"]
             if s.get("status") == "draft":           # 供应商都确认 / 发货了：肯定已经下单

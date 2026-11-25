@@ -1,8 +1,9 @@
 """
 采购订单跟踪「邮件核对」（2026-11-07 用户：邮件摸底看完，开始做第 1 步 = 订单跟踪按邮件更新）。业务在 commands.mail_* / mail_match。
 
-读所有邮箱（收件箱 + 已发送）最近 21 天的信头（只读、读过的有缓存）→ 窗口三页：
+读所有邮箱（收件箱 + 已发送）最近 21 天的信头（只读、读过的有缓存）→ 窗口四页：
   邮件进展：我们发了订单 → 待登记改成已下单；供应商确认 → 已确认；发了 DDT / 发货通知 → 已发货
+  待处理邮件（2026-11-25）：确认 / 发货信只能对一张单，对不上或好几张都可能的 → 人选是哪一张
   重复的待登记：程序生成的待登记和 Excel 里手填的是同一张单 → 合并（订单文件挂到手填那张上，待登记删掉）
   跟踪里没有：已发送里有订单信、订单跟踪里找不到 → 补登记（默认不勾，先看「附近已有的单」）
 勾选 → 「应用所选」先弹确认（改哪几张、改完会怎样、所有同事可见）→ 写进共享的订单跟踪 → 底部「撤销」。
@@ -14,7 +15,8 @@ from collections import Counter
 from PySide6.QtCore import Qt, QObject, Signal, QTimer
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QHeaderView, QTabWidget,
-                               QAbstractItemView, QMessageBox, QWidget)
+                               QAbstractItemView, QMessageBox, QWidget, QListWidget, QListWidgetItem, QPlainTextEdit,
+                               QSplitter, QFrame)
 
 from i18n import tr
 import commands as CMD
@@ -193,7 +195,189 @@ class _Tab:
         self.ctl.render()
 
 
+PEND_COLS = [(1, "邮件日期", 82), (13, "类型", 70), (3, "供应商", 160), (2, "认出的门店", 110), (14, "可能的单", 80),
+             (7, "邮件主题", 320), (8, "发件人", 190)]
+WHY_TEXT = {"many": "好几张单都对得上", "none": "没找到对得上的单"}
+SRC_TEXT = {"addr": "按收货地址", "name": "按主题 / 附件名", "body": "按正文", "mailbox": "按收件邮箱", "": ""}
+
+
+class _PendTab:
+    """
+    「待处理邮件」：供应商的确认 / 发货信对不上、或好几张单都对得上 → 不自动改，人选是哪一张（2026-11-25 一一关联）。
+    左边信，右边「可能是这几张单」+ 信的正文 / 附件文字，选一张点「关联到这张单」。
+    """
+    name = "pending"
+
+    def __init__(self, dlg, rows):
+        from erp_widgets import TableSortFilter
+        import settings as ST
+        self.dlg, self.ui, self.rows = dlg, dlg.ui, rows
+        for r in rows:
+            r["_on"] = False
+        self.w = QSplitter(Qt.Horizontal)
+        self.t = self.ui.make_table([tr(h) for _f, h, _w in PEND_COLS], numeric_cols=(4,))
+        self.t.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        hh = self.t.horizontalHeader()
+        hh.setSectionResizeMode(QHeaderView.Interactive)
+        hh.setStretchLastSection(True)
+        for c, (_f, _h, wd) in enumerate(PEND_COLS):
+            self.t.setColumnWidth(c, wd)
+        self.ctl = TableSortFilter(self.t, lambda: len(self.rows), self._text, self._fill, key=self._key)
+        self.ctl.remember(dlg.settings.setdefault("mail", {}), "track_pending", lambda: ST.save_settings(dlg.settings),
+                          [f for f, _h, _w in PEND_COLS])
+        self.w.addWidget(self.t)
+        side = QFrame()
+        side.setObjectName("Panel")
+        sv = QVBoxLayout(side)
+        sv.setContentsMargins(12, 10, 12, 10)
+        sv.setSpacing(8)
+        h = QLabel(tr("可能是这几张单") + "  ⓘ")
+        h.setObjectName("Section")
+        h.setToolTip(tr("同一家供应商、这封信之前 35 天里还没确认 / 发货的单。看右下角信里写的收货抬头 / 地址，"
+                        "选是哪一张，点「关联到这张单」。一封信只关联一张单"))
+        sv.addWidget(h)
+        self.cands = QListWidget()
+        self.cands.itemSelectionChanged.connect(self._cand_changed)
+        self.cands.itemDoubleClicked.connect(lambda _it: self.link())
+        sv.addWidget(self.cands, 2)
+        self.b_link = QPushButton(tr("关联到这张单"))
+        self.b_link.setObjectName("Primary")
+        self.b_link.setToolTip(tr("把这封信记到选中的单上，按信的类型登记已确认 / 已发货；先确认，可以撤销"))
+        self.b_link.clicked.connect(self.link)
+        sv.addWidget(self.b_link)
+        self.hint = QLabel("")
+        self.hint.setObjectName("Faint")
+        self.hint.setWordWrap(True)
+        sv.addWidget(self.hint)
+        sl = QLabel(tr("信的正文和附件"))
+        sl.setObjectName("Muted")
+        sv.addWidget(sl)
+        self.text = QPlainTextEdit()
+        self.text.setReadOnly(True)
+        sv.addWidget(self.text, 3)
+        self.w.addWidget(side)
+        self.w.setStretchFactor(0, 3)
+        self.w.setStretchFactor(1, 2)
+        self.t.itemSelectionChanged.connect(self._row_changed)
+        self.ctl.render()
+        self._row_changed()
+
+    def _text(self, i, c):
+        s = self.rows[i]
+        f = PEND_COLS[c][0]
+        m = s["mail"]
+        if f == 1:
+            return _d(m.get("date"))
+        if f == 13:
+            return KIND_TEXT().get(s["mkind"], "")
+        if f == 3:
+            return s["supplier"]
+        if f == 2:
+            if not s["stores"]:
+                return tr("（没认出来）")
+            return " / ".join(OT.STORE_NAMES.get(x, x) for x in s["stores"])
+        if f == 14:
+            return str(len(s["candidates"]))
+        if f == 7:
+            return m.get("subject") or ""
+        if f == 8:
+            return m.get("from") or ""
+        return ""
+
+    def _key(self, i, c):
+        f = PEND_COLS[c][0]
+        if f == 1:
+            d = self.rows[i]["mail"].get("date")
+            return d.toordinal() if d else 0
+        if f == 14:
+            return len(self.rows[i]["candidates"])
+        return None
+
+    def _fill(self, i, k):
+        s = self.rows[i]
+        self.ui.table_set_row(self.t, k, [self._text(i, c) for c in range(len(PEND_COLS))])
+        it = self.t.item(k, 3)
+        if it is not None:
+            why = tr(WHY_TEXT.get(s["why"], ""))
+            src = tr(SRC_TEXT.get(s.get("store_src") or "", ""))
+            it.setToolTip(why + (" · " + src if src and s["stores"] else ""))
+            if not s["stores"]:
+                it.setForeground(QColor(self.ui.T("faint")))
+        it = self.t.item(k, 5)
+        if it is not None:
+            att = s["mail"].get("attachments") or []
+            it.setToolTip((s["mail"].get("subject") or "") + (("\n" + tr("附件：") + "\n" + "\n".join(att)) if att else "")
+                          + "\n" + tr("邮箱：{0}", s["mail"].get("mailbox", "")))
+
+    def current(self):
+        ks = sorted({ix.row() for ix in self.t.selectionModel().selectedRows()})
+        i = self.ctl.row_at(ks[0]) if ks else None
+        return self.rows[i] if i is not None else None
+
+    def _row_changed(self):
+        s = self.current()
+        self.cands.clear()
+        self.text.setPlainText("")
+        if s is None:
+            self.hint.setText(tr("先在左边选一封信"))
+            self.b_link.setEnabled(False)
+            return
+        st = self.dlg.st
+        for oid in s["candidates"]:
+            o = st.orders.get(oid) or {}
+            amt = o.get("amount")
+            line = " · ".join(p for p in (OT.store_label(o) if hasattr(OT, "store_label") else str(o.get("store") or ""),
+                                          _d(OT.to_date(o.get("date"))),
+                                          f"€{float(amt):,.2f}" if amt not in (None, "") else "",
+                                          _now_text({"status": OT.status(o)})) if p)
+            it = QListWidgetItem(line)
+            it.setData(Qt.UserRole, oid)
+            it.setToolTip(str(o.get("supplier") or "") + (("\n" + str(o.get("file"))) if o.get("file") else ""))
+            if s["stores"] and str(o.get("store")) in s["stores"]:
+                f = it.font()
+                f.setBold(True)
+                it.setFont(f)
+            self.cands.addItem(it)
+        if self.cands.count():
+            self.cands.setCurrentRow(0)
+        why = tr(WHY_TEXT.get(s["why"], ""))
+        if s.get("addr_cands"):
+            why += " · " + tr("信里的地址可能是：{0}", " / ".join(OT.STORE_NAMES.get(x, x) for x in s["addr_cands"]))
+        self.hint.setText(why)
+        body = (s.get("body") or "").strip()
+        att = (s.get("att_text") or "").strip()
+        self.text.setPlainText("\n\n".join(p for p in (body, att) if p) or tr("（正文和附件还没读到，或者里面没有文字）"))
+        self._cand_changed()
+
+    def _cand_changed(self):
+        self.b_link.setEnabled(self.current() is not None and self.cands.currentItem() is not None)
+
+    def link(self):
+        s = self.current()
+        it = self.cands.currentItem()
+        if s is None or it is None:
+            return
+        self.dlg.link_pending(s, it.data(Qt.UserRole))
+
+    def checked(self):
+        return []
+
+    def selected(self):
+        ks = sorted({ix.row() for ix in self.t.selectionModel().selectedRows()})
+        return [self.rows[i] for i in (self.ctl.row_at(k) for k in ks) if i is not None]
+
+    def set_all(self, on):
+        pass
+
+    def drop(self, keys):
+        self.rows[:] = [s for s in self.rows if s["key"] not in keys]
+        self.ctl.render()
+        self._row_changed()
+
+
 class MailTrackDialog(QDialog):
+    ORDER = ("suggest", "pending", "dups", "missing")
+
     def __init__(self, win, settings, ui, res, page=None):
         super().__init__(win)
         from erp_widgets import fit_to_screen
@@ -226,22 +410,26 @@ class MailTrackDialog(QDialog):
         self.tabs = QTabWidget()
         self.tab = {}
         for name, title, rows, on in (("suggest", tr("邮件进展"), res["suggest"], True),
+                                      ("pending", tr("待处理邮件"), res.get("pending") or [], False),
                                       ("dups", tr("重复的待登记"), res["dups"], True),
                                       ("missing", tr("跟踪里没有"), res["missing"], False)):
-            tb = _Tab(self, name, rows, on)
+            tb = _PendTab(self, rows) if name == "pending" else _Tab(self, name, rows, on)
             self.tab[name] = tb
             w = QWidget()
             lv = QVBoxLayout(w)
             lv.setContentsMargins(0, 8, 0, 0)
-            lv.addWidget(tb.t)
+            lv.addWidget(tb.w if name == "pending" else tb.t)
             self.tabs.addTab(w, "")
             self.tabs.setTabToolTip(self.tabs.count() - 1, {
                 "suggest": tr("邮件说明这些单往前走了一步（下单 / 确认 / 发货），订单跟踪里还没登记"),
+                "pending": tr("供应商的确认 / 发货信，按订单号、收货抬头和地址、主题都没能只对上一张单（对不上，或者好几张都可能）。"
+                              "一封信只关联一张单：选是哪一张，程序不会自己猜"),
                 "dups": tr("程序生成的「待登记」和 Excel 里手填的是同一张单（同一家门店、供应商名字相近、日期前后 3 天）。"
                            "合并 = 订单文件 / 箱数 / 金额挂到手填的那张上，待登记删掉；以后重新配货也不会再生成"),
                 "missing": tr("已发送里有这张订单的信，订单跟踪里找不到。补登记 = 加一张「已下单」的单（金额空着，要的话自己填）。"
                               "默认不勾：先看「附近已有的单」，可能只是日期填得不一样")}[name])
-        self._titles = {"suggest": tr("邮件进展"), "dups": tr("重复的待登记"), "missing": tr("跟踪里没有")}
+        self._titles = {"suggest": tr("邮件进展"), "pending": tr("待处理邮件"), "dups": tr("重复的待登记"),
+                        "missing": tr("跟踪里没有")}
         v.addWidget(self.tabs, 1)
         self.tabs.currentChanged.connect(lambda _i: self._update())
 
@@ -273,19 +461,22 @@ class MailTrackDialog(QDialog):
         v.addLayout(foot)
         self.resize(1240, 560)
         fit_to_screen(self)
-        first = next((i for i, n in enumerate(("suggest", "dups", "missing")) if self.tab[n].rows), 0)
+        first = next((i for i, n in enumerate(self.ORDER) if self.tab[n].rows), 0)
         self.tabs.setCurrentIndex(first)
         self._update()
 
     def _cur(self):
-        return self.tab[("suggest", "dups", "missing")[self.tabs.currentIndex()]]
+        return self.tab[self.ORDER[self.tabs.currentIndex()]]
 
     def _all_checked(self):
-        return [s for n in ("suggest", "dups", "missing") for s in self.tab[n].checked()]
+        return [s for n in self.ORDER for s in self.tab[n].checked()]
 
     def _update(self):
-        for i, n in enumerate(("suggest", "dups", "missing")):
+        for i, n in enumerate(self.ORDER):
             self.tabs.setTabText(i, f"{self._titles[n]}（{len(self.tab[n].rows)}）")
+        pend = self._cur().name == "pending"
+        for b in (self.b_all, self.b_none):
+            b.setVisible(not pend)
         sel = self._all_checked()
         n = len({s.get("id") or s["key"] for s in sel})
         self.b_apply.setText(tr("应用所选（{0} 张单）", n) if n else tr("应用所选"))
@@ -330,6 +521,38 @@ class MailTrackDialog(QDialog):
         for tb in self.tab.values():
             tb.drop(keys)
         self.status.setText(tr("✓ 已更新 {0} 张订单", n))
+        self.b_undo.setVisible(bool(undo))
+        self._update()
+        self._refresh_page()
+
+    def link_pending(self, pend, oid):
+        """「待处理邮件」：人选了这一张 → 先确认 → 写进订单跟踪（来源 邮件）→ 能撤销"""
+        import mail_match as MM
+        o = self.st.orders.get(oid) or {}
+        sugs = MM.link_suggestions(self.st, pend, oid)
+        what = []
+        for x in sugs:
+            if x["field"] == "confirmed":
+                what.append(tr("登记已确认 {0}", _d(OT.to_date(x["value"]))))
+            elif x["field"] == "shipped":
+                what.append(tr("登记已发货 {0}", _d(OT.to_date(x["value"]))))
+        name = " · ".join(p for p in (str(o.get("supplier") or ""), OT.STORE_NAMES.get(str(o.get("store")), str(o.get("store") or "")),
+                                      _d(OT.to_date(o.get("date")))) if p)
+        txt = tr("把这封信关联到：{0}？", name) + "\n\n" + tr("邮件：{0}", pend["mail"].get("subject") or "") + "\n" + \
+            ("\n".join("• " + w for w in what) if what else tr("• 这张单的状态不用改，只把这封信记到单上")) + "\n\n" + \
+            tr("写进共享的订单跟踪，所有同事都能看到；以后这封信只算这张单。改错了可以点「撤销」。")
+        if QMessageBox.question(self, tr("关联到这张单"), txt) != QMessageBox.Yes:
+            return
+        from erp_widgets import BusyDialog
+        r, e = BusyDialog.run(self, tr("邮件核对"), tr("正在写进订单跟踪…"), lambda: CMD.mail_apply(self.st, sugs))
+        if e:
+            QMessageBox.warning(self, tr("邮件核对"), str(e))
+            return
+        n, undo = r
+        self._undo = (n, undo)
+        self.tab["pending"].drop({pend["key"]})
+        self.tab["suggest"].drop({x["key"] for x in sugs})
+        self.status.setText(tr("✓ 已关联：{0}", name))
         self.b_undo.setVisible(bool(undo))
         self._update()
         self._refresh_page()
@@ -400,7 +623,7 @@ def run(win, settings, ui, page=None):
     def work():
         try:
             res = CMD.mail_tracking(sets, days=days, log=log, progress=dlg, cancel=dlg.cancel_event.is_set)
-            n = len(res["suggest"]) + len(res["dups"]) + len(res["missing"])
+            n = len(res["suggest"]) + len(res["dups"]) + len(res["missing"]) + len(res.get("pending") or [])
             dlg.post_finished(True, tr("读了 {0} 封信 · {1} 条要核对", res["mails"], n))
             sig.done.emit((res, None))
         except Exception as e:
@@ -412,7 +635,7 @@ def run(win, settings, ui, page=None):
         if err:
             QMessageBox.warning(win, tr("邮件核对"), str(err))
             return
-        n = len(res["suggest"]) + len(res["dups"]) + len(res["missing"])
+        n = len(res["suggest"]) + len(res["dups"]) + len(res["missing"]) + len(res.get("pending") or [])
 
         def go():
             if not n:

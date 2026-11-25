@@ -630,16 +630,30 @@ def mail_tracking(settings, st=None, days=None, log=print, progress=None, cancel
     own = {a["address"].lower() for a in accs}
     ign = mail_ignored()
     stores = {a["address"].lower(): a.get("store") for a in accs}
+    import mail_send as MS
+    for code, addr in MS.senders(settings).items():          # 门店自己的订单邮箱收到的信 = 这家店（2026-11-25）
+        if code != "BMS" and not stores.get(addr.lower()):
+            stores[addr.lower()] = code
+    import mail_link as ML
+    try:
+        ks = ML.keys(settings)
+    except Exception:
+        ks = {}
     bodies = _bodies_load()
+
+    def put(m, v):
+        if isinstance(v, dict):                       # 正文 + 附件都读过（2026-11-25 起）
+            m["body"], m["att_text"], m["_texts"] = v.get("b") or "", v.get("a") or "", True
+        elif v is not None:
+            m["body"] = v                             # 以前只读过正文
     for m in mails:
-        b = bodies.get(_body_key(m))
-        if b is not None:
-            m["body"] = b
-    res = MM.analyze(mails, st, own, stores, today=today, ignored=ign)
-    # 发货 / 确认信没写门店、却对上了几家店的单 → 读这几封信的正文（只读）看是哪家店，再对一次
+        put(m, bodies.get(_body_key(m)))
+    res = MM.analyze(mails, st, own, stores, today=today, ignored=ign, ks=ks)
+    # 确认 / 发货信是哪家店的单说不清 → 读正文和附件（PDF / Excel / Word，只读）看收货抬头和地址，再对一次
     tried = set()
-    for _round in range(3):          # 读了一封的正文、它对上了自己那家店，同一批的下一封信可能又要读
-        need = [e["row"] for e in res["events"] if e.get("need_body") and _body_key(e["row"]) not in tried]
+    for _round in range(3):
+        need = [e["row"] for e in res["events"] if (e.get("need_text") or e.get("need_body"))
+                and _body_key(e["row"]) not in tried]
         if not need:
             break
         tried.update(_body_key(m) for m in need)
@@ -649,24 +663,26 @@ def mail_tracking(settings, st=None, days=None, log=print, progress=None, cancel
             if not rows:
                 continue
             try:
-                txt = MC.fetch_bodies(acc, mail_password(acc["address"]), rows, factory=factory)
+                txt = MC.fetch_texts(acc, mail_password(acc["address"]), rows, factory=factory)
             except Exception as e:
-                log(f"  ⚠ {acc['address']}：读正文失败（{e}）")
+                log(f"  ⚠ {acc['address']}：读正文 / 附件失败（{e}）")
                 continue
             for m in rows:
                 t = txt.get((m.get("folder"), str(m.get("uid"))))
                 if t is not None:
-                    m["body"] = bodies[_body_key(m)] = t
+                    bodies[_body_key(m)] = t
+                    put(m, t)
                     got += 1
         if not got:
             break
         _bodies_save(bodies)
-        log(tr("  读了 {0} 封发货 / 确认信的正文，看是哪家门店", got))
-        res = MM.analyze(mails, st, own, stores, today=today, ignored=ign)
+        log(tr("  读了 {0} 封确认 / 发货信的正文和附件，按收货抬头和地址认门店", got))
+        res = MM.analyze(mails, st, own, stores, today=today, ignored=ign, ks=ks)
     res["dups"] = MM.dup_suggestions(st, ign)
     res["mails"], res["errors"], res["store"] = len(mails), errors, st
     audit(actor or st.me, via, "mail_tracking", {"mailboxes": [a["address"] for a in accs], "days": days},
           {"mails": len(mails), "suggest": len(res["suggest"]), "missing": len(res["missing"]), "dups": len(res["dups"]),
+           "pending": len(res.get("pending") or []),
            "errors": len(errors)})
     return res
 
@@ -693,8 +709,8 @@ def _bodies_save(d):
     import json
     p = _bodies_path()
     os.makedirs(os.path.dirname(p), exist_ok=True)
-    if len(d) > 3000:                                   # 只留最近的
-        d = dict(list(d.items())[-3000:])
+    if len(d) > 2000:                                   # 只留最近的（附件文字占地方）
+        d = dict(list(d.items())[-2000:])
     with open(p, "w", encoding="utf-8") as f:
         json.dump(d, f, ensure_ascii=False)
 
@@ -954,7 +970,7 @@ def _check_attachments(files):
 def mail_apply(st, sugs, via="desktop"):
     """按选中的建议改订单跟踪：邮件进展（确认 / 发货 / 已下单）、合并重复的待登记、补登记。返回 (改了几张, 撤销用)"""
     import mail_match as MM
-    upd = [s for s in sugs if s["kind"] in ("order", "confirm", "ship")]
+    upd = [s for s in sugs if s["kind"] in ("order", "confirm", "ship")]   # 「待处理邮件」选的单也在这里（field link）
     dup = [s for s in sugs if s["kind"] == "dup"]
     miss = [s for s in sugs if s["kind"] == "missing"]
     n1, u1 = MM.apply(st, upd) if upd else (0, [])

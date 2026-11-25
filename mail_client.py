@@ -680,6 +680,43 @@ def fetch_bodies(acc, password, rows, factory=None, max_bytes=200000, text_limit
     return out
 
 
+def fetch_texts(acc, password, rows, factory=None, max_bytes=200000, text_limit=6000):
+    """
+    几封信的正文 + 附件（PDF / Excel / Word）里的文字（2026-11-25：按收货抬头 / 地址认是哪家门店的单）。
+    只读：EXAMINE + BODY.PEEK。rows = 同一个邮箱的信头（folder_raw / uid / parts）。
+    返回 {(folder, uid): {"b": 正文, "a": 附件文字}}
+    """
+    import mail_link as ML
+    out = {}
+    conn = connect(acc, password, factory=factory)
+    try:
+        by_folder = {}
+        for r in rows:
+            by_folder.setdefault(r.get("folder_raw") or "INBOX", []).append(r)
+        for folder, rs in by_folder.items():
+            typ, _ = conn.select(_quote(folder), readonly=True)
+            if typ != "OK":
+                continue
+            for r in rs:
+                typ, data = conn.uid("FETCH", str(r["uid"]), f"(BODY.PEEK[]<0.{int(max_bytes)}>)")
+                raw = next((bytes(it[1]) for it in data or [] if isinstance(it, tuple) and len(it) == 2
+                            and isinstance(it[1], (bytes, bytearray))), None)
+                body = body_text(raw, text_limit) if raw else ""
+                atts = []
+                for p in ML.wanted(r.get("parts")):
+                    try:
+                        blob = fetch_part(conn, folder, r["uid"], p[0], p[2])
+                    except Exception:
+                        continue
+                    t = ML.attachment_text(p[1], blob)
+                    if t.strip():
+                        atts.append(f"[{p[1]}]\n{t}")
+                out[(r.get("folder"), str(r["uid"]))] = {"b": body, "a": "\n\n".join(atts)[:12000]}
+    finally:
+        close(conn)
+    return out
+
+
 def download(acc, password, items, dest_dir, factory=None):
     """
     items = [{"folder_raw", "uid", "section", "encoding", "name"}]（同一个邮箱）→ 存进 dest_dir，返回 [路径]。只读：EXAMINE + BODY.PEEK
