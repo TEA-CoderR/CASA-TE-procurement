@@ -57,7 +57,15 @@ DEFAULT_PARAMS = {
     "warn_boxes": 6,           # 建议超过几箱标黄提醒看一眼（只提醒，不砍）；0 = 不提醒
     "slowdown": True,          # 最近 4 周明显卖慢了（有货）→ 按最近 4 周算（2026-11-07 用户定，规则 A）
     "stockout_fill": True,     # 断货的那几周不拉低日均（2026-11-25 用户定）
+    # XYZ（2026-11-25 用户定：完整 ABC-XYZ）：近 26 周每周销量的波动系数（标准差 ÷ 平均）
+    "xyz_service": True,       # 按 XYZ 再调服务水平
+    "xyz_x": 0.5,              # 波动系数 ≤ 0.5 = X（卖得稳）
+    "xyz_y": 1.0,              # ≤ 1.0 = Y（有起伏），更大 = Z（时有时无）
+    "svc_x": 0.01,             # X 类服务水平 +1%（卖得稳，多备一点也不会压太多）
+    "svc_y": 0.0,
+    "svc_z": -0.02,            # Z 类 −2%（时有时无：为了不缺货要多备很多，划不来）
 }
+XYZ_MIN_WEEKS = 8              # 上架（第一次卖出）不到 8 周看不出稳不稳，不分 XYZ
 SLOW_RATIO = 0.5               # 最近 4 周的日均不到加权日均的一半，才算「明显卖慢了」
 SLOW_MIN_AGE = 8               # 上架至少 8 周（新品本来就在爬坡）
 SLOW_STOCK_DAYS = 14           # 现在库存够加权日均卖 14 天以上 = 一直有货，卖得少不是断货造成的
@@ -74,11 +82,35 @@ def z_of(p):
     return _ND.inv_cdf(p)
 
 
-def service_for(tier, params):
+def service_for(tier, params, xyz=""):
+    """服务水平：基础 + ABC（A +2.5%、C −5%）+ XYZ（X +1%、Z −2%，参数 svc_x / svc_y / svc_z）"""
     s = float(params.get("service", 0.95))
     if params.get("abc_service", True):
-        s += {"A": 0.025, "B": 0.0, "C": -0.05}.get(tier, 0.0)
+        s += {"A": 0.025, "B": 0.0, "C": -0.05}.get((tier or "")[:1], 0.0)
+    if xyz and params.get("xyz_service", True):
+        s += float(params.get({"X": "svc_x", "Y": "svc_y"}.get(xyz, "svc_z"), 0.0) or 0.0)
     return min(max(s, 0.5), 0.995)
+
+
+def xyz_class(weekly, params=None):
+    """
+    XYZ：近 26 周（上架不满 26 周按上架以来）每周销量的波动系数 CV = 标准差 ÷ 平均。
+    CV ≤ xyz_x → X（卖得稳）；≤ xyz_y → Y；更大 → Z（时有时无）。上架不到 XYZ_MIN_WEEKS 周、没销量 → ""。
+    weekly 用补过断货周的（断货造成的 0 不算「不稳」）
+    """
+    p = params or DEFAULT_PARAMS
+    age = min(26, history_weeks(weekly))
+    if age < XYZ_MIN_WEEKS:
+        return ""
+    xs = [max(0.0, float(x or 0)) for x in (weekly or [])[:age]]
+    m = _mean(xs)
+    if m <= 0:
+        return ""
+    sd = math.sqrt(sum((x - m) ** 2 for x in xs) / (len(xs) - 1))
+    cv = sd / m
+    if cv <= float(p.get("xyz_x", 0.5)):
+        return "X"
+    return "Y" if cv <= float(p.get("xyz_y", 1.0)) else "Z"
 
 
 def review_used(params, cycle=None):
@@ -226,13 +258,31 @@ def seasonal_factor(weekly, horizon_days):
     return min(1.8, max(0.6, f))
 
 
-def target_stock(daily, sigma_w, inv, tier, params, season=1.0, has_recent_sales=True):
-    """返回 dict：mu 期间需求、ss 安全库存、S 目标库存、svc 服务水平"""
+XYZ_TEXT = {"X": "卖得稳", "Y": "有起伏", "Z": "时有时无"}
+
+
+def tier_label(tier, xyz=""):
+    """界面上的等级：A + X → "AX"；没有 XYZ 就只写 A"""
+    return (tier or "") + ((xyz or "") if tier else "")
+
+
+def tier_tip(tier, xyz=""):
+    """等级的鼠标提示（文字没翻译，界面上用 tr() 包）"""
+    if not tier:
+        return ""
+    a = {"A": "A 类：销售额前 80%", "B": "B 类：销售额 80–95%", "C": "C 类：销售额最后 5%"}.get(tier[:1], tier)
+    x = {"X": "X：每周销量很稳（波动系数 ≤ 0.5）", "Y": "Y：每周销量有起伏（波动系数 0.5–1）",
+         "Z": "Z：时有时无（波动系数 > 1）"}.get(xyz or "", "上架不到 8 周，还看不出稳不稳")
+    return a + "\n" + x
+
+
+def target_stock(daily, sigma_w, inv, tier, params, season=1.0, has_recent_sales=True, xyz=""):
+    """返回 dict：mu 期间需求、ss 安全库存、S 目标库存、svc 服务水平（按 ABC × XYZ）"""
     R = review_used(params) * cycle_factor(tier, params)    # 按 ABC：A 多备、C 少备；最多备到下次检查
     L = float(params.get("lead_days", 5))
     P = R + L
     d = daily * season
-    svc = service_for(tier, params)
+    svc = service_for(tier, params, xyz)
     if d <= 0:
         S = float(params.get("min_shelf", 0)) if has_recent_sales else 0.0
         return {"mu": 0.0, "ss": 0.0, "S": S, "svc": svc}
@@ -380,11 +430,12 @@ def analyze(weekly, inv, tier, params, total_inv=0, on_order=0.0):
     P = review_used(params) + float(params.get("lead_days", 5))
     season = seasonal_factor(weekly, P) if params.get("season", True) and daily > 0 else 1.0
     recent = sum(max(0.0, float(x or 0)) for x in weekly[:13]) > 0
-    t = target_stock(daily, sig, inv, tier, params, season, recent)
+    xyz = xyz_class(weekly, params)
+    t = target_stock(daily, sig, inv, tier, params, season, recent, xyz)
     q = order_qty(t["S"], inv, on_order)
     dec, pr = decide(daily * season, inv, q, tier, params, total_inv, age > 0)
     d_eff = daily * season
     return {"daily": d_eff, "daily_base": daily, "slow_from": slow_from, "sigma_w": sig, "season": season, "age_weeks": age,
             "mu": t["mu"], "safety": t["ss"], "target": t["S"], "service": t["svc"], "qty": q,
             "cover_days": (max(0.0, inv) / d_eff) if d_eff > 0 else float("inf"),
-            "decision": dec, "priority": pr, "stockout_weeks": filled}
+            "decision": dec, "priority": pr, "stockout_weeks": filled, "xyz": xyz}

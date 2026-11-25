@@ -209,3 +209,25 @@ def test_stockout_weeks_do_not_pull_daily_down():
     # 偶尔才卖的不补；关掉开关不补
     assert F.fill_stockouts([1, 0, 0, 1, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0], inv=3)[1] == 0
     assert F.fill_stockouts(w, 10, {"stockout_fill": False})[1] == 0
+
+
+def test_xyz_from_weekly_variation_and_service_matrix():
+    """2026-11-25 用户定完整 ABC-XYZ：每周销量稳的 X、有起伏 Y、时有时无 Z；服务水平按 ABC × XYZ"""
+    import forecast as F
+    p = dict(F.DEFAULT_PARAMS)
+    steady = [10, 11, 9, 10, 12, 10, 9, 11, 10, 10] * 3                # 30 周，每周差不多
+    bumpy = [2, 8, 4, 10, 1, 6, 3, 9, 2, 7] * 3                       # 有起伏
+    rare = [0, 0, 6, 0, 0, 0, 0, 5, 0, 0] * 3                         # 时有时无
+    assert F.xyz_class(steady, p) == "X"
+    assert F.xyz_class(bumpy, p) == "Y"
+    assert F.xyz_class(rare, p) == "Z"
+    assert F.xyz_class([3, 2, 4, 0, 0], p) == ""                      # 上架不到 8 周看不出
+    assert F.xyz_class([0] * 30, p) == ""
+    base = F.service_for("A", p)
+    assert F.service_for("A", p, "X") > base > F.service_for("A", p, "Z")
+    assert abs(F.service_for("B", p, "Y") - F.service_for("B", p)) < 1e-9
+    assert F.service_for("A", dict(p, xyz_service=False), "Z") == base
+    # 同样的平均销量：Z 的服务水平低一点 → 目标库存不会更多
+    a = F.analyze(steady + [0] * 30, 20, "B", p)
+    assert a["xyz"] == "X" and a["service"] > F.service_for("B", p)
+    assert F.tier_label("A", "Z") == "AZ" and F.tier_label("", "X") == "" and F.tier_label("C", "") == "C"

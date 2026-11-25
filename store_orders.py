@@ -845,6 +845,7 @@ def demand_by_store(db, schede, stores, days_list, reorder_cycle, use_supplier_c
                        "sales": [R._val(r, f"sales_{i}", 0) or 0 for i in range(1, 5)],
                        "inv_days": inv_days, "decision": R._val(r, "decision_text", "") or "",
                        "tier": R._val(r, "sales_tier", "") or "",
+                       "xyz": R._val(r, "xyz", "") or "",
                        "cycle": R._val(r, "reorder_cycle_used", reorder_cycle),
                        "safety": R._val(r, "safety_stock"), "target": R._val(r, "target_stock"),
                        "season": R._val(r, "season_factor"), "weekly": R._val(r, "weekly_26"),

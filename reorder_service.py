@@ -1122,7 +1122,7 @@ def apply_v2(db, store_id, result_df, algo, weekly=None, revenue=None, on_order=
     on_order = on_order or {}
     cols = {k: [] for k in ("suggested_order_qty", "decision_text", "priority", "sales_tier", "inventory_days",
                             "daily_rate", "safety_stock", "target_stock", "service_level", "season_factor",
-                            "age_weeks", "weekly_26", "long_daily", "zero_weeks", "slow_from")}
+                            "age_weeks", "weekly_26", "long_daily", "zero_weeks", "slow_from", "xyz")}
     used = []
     for i, r in enumerate(records(result_df)):
         c = int(r["CodArticolo"])
@@ -1139,6 +1139,7 @@ def apply_v2(db, store_id, result_df, algo, weekly=None, revenue=None, on_order=
         cols["decision_text"].append(a["decision"])
         cols["priority"].append(a["priority"])
         cols["sales_tier"].append(tier)
+        cols["xyz"].append(a.get("xyz") or "")            # X 卖得稳 / Y 有起伏 / Z 时有时无（"" = 看不出来）
         cols["inventory_days"].append(a["cover_days"])
         cols["daily_rate"].append(a["daily"])
         cols["slow_from"].append(a["slow_from"])          # 规则 A：明显卖慢了，原来的加权日均（没用就是 None）
@@ -1223,6 +1224,7 @@ def to_rows(result_df, file_rows=None, days_list=None):
             "sales": [_val(r, f"sales_{i}", 0) or 0 for i in range(1, 5)],
             "inv_days": _val(r, "inventory_days"),
             "tier": _val(r, "sales_tier", ""),
+            "xyz": _val(r, "xyz", "") or "",
             "decision": _val(r, "decision_text", ""),
             "priority": _val(r, "priority", 0),
             "pack": pack,

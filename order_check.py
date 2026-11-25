@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (QWidget, QLabel, QPushButton, QLineEdit, QComboBo
 from i18n import tr
 from settings import save_settings
 import reorder_service as R
+import forecast as F
 import review_memory as RM
 import volantino_plan as VP
 import transfers as TR
@@ -290,14 +291,14 @@ class _ProductDelegate(QStyledItemDelegate):
         else:
             p.setPen(QColor(T("faint")))
         p.drawText(QRectF(tx, r.top() + 29, tw, 16), Qt.AlignLeft | Qt.AlignVCenter, str(ean))
-        if tier in ("A", "B", "C"):
+        if tier[:1] in ("A", "B", "C"):
             # 等级小标签不用彩色（2026-11-19 用户问要不要标颜色）：表格里红 / 黄 / 绿 / 蓝 / 紫都已经有意思了
             # （不订 / 少订 / 照清单 / 多订·在途 / 调货），等级再上色会撞。A 类 = 深色实心白字（最显眼），B 灰框，C 淡
             ex = tx + QFontMetrics(f2).horizontalAdvance(str(ean)) + (8 if ean else 0)
-            chip = QRectF(ex, r.top() + 30, 18, 14)
+            chip = QRectF(ex, r.top() + 30, 18 if len(tier) < 2 else 26, 14)
             if chip.right() < r.right() - 4:
-                fg_, bg_ = {"A": ("surface", "text"), "B": ("muted", "surface2"), "C": ("faint", "surface2")}[tier]
-                p.setPen(QPen(QColor(T("line")), 1) if tier != "A" else Qt.NoPen)
+                fg_, bg_ = {"A": ("surface", "text"), "B": ("muted", "surface2"), "C": ("faint", "surface2")}[tier[:1]]
+                p.setPen(QPen(QColor(T("line")), 1) if tier[:1] != "A" else Qt.NoPen)
                 p.setBrush(QColor(T(bg_)))
                 p.drawRoundedRect(chip, 4, 4)
                 f3 = QFont(opt.font)
@@ -1225,7 +1226,7 @@ class OrderCheck:
                       f"{x['lbox']:,}", f"{x['file_pcs']:g}",
                       f"{x['suggested']:,}" if x["in_db"] else "", f"{x['final']:,}" if pack > 0 else "",
                       f"{x['fbox']:,}",
-                      x.get("tier") or "",
+                      F.tier_label(x.get("tier") or "", x.get("xyz")),
                       f"{x['cycle']:g}" if isinstance(x.get("cycle"), (int, float)) else "",
                       (f"{daily:.2f}" if daily else "0") if x.get("in_db", True) else "",
                       f"{x['target']:.0f}" if isinstance(x.get("target"), (int, float)) else "",
@@ -1858,7 +1859,8 @@ class OrderCheck:
         except (TypeError, ValueError):
             price = 0
         # 一行资料：等级 · 箱规 · 件价；门店 / 供应商 / 编号 / 条码放鼠标提示
-        short = [p for p in ((x.get("tier") or "") and tr("{0} 类", x["tier"]), f"{pack:g} " + tr("件/箱") if pack else "",
+        short = [p for p in ((x.get("tier") or "") and tr("{0} 类", F.tier_label(x["tier"], x.get("xyz"))),
+                             f"{pack:g} " + tr("件/箱") if pack else "",
                              f"€{price:.2f}" if price else "") if p]
         full = [p for p in (R.STORES.get(sid, ""), x.get("sup_name") or "", code, x.get("ean") or "",
                             f"Cod.Forn. {x['sup_code']}" if x.get("sup_code") else "",
@@ -2289,7 +2291,7 @@ class OrderCheck:
             return None, ""
         x = self.rows[i]
         dot = "warn" if (i not in self._seen and not _edited(x) and self._needs_review(x)) else None
-        return dot, str(x.get("tier") or ""), bool(x.get("old_rec"))
+        return dot, F.tier_label(str(x.get("tier") or ""), x.get("xyz")), bool(x.get("old_rec"))
 
     def _todo_rows(self):
         """现在看得见的行里：要审核、还没看过也没改过的（按表格现在的顺序）"""

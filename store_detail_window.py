@@ -21,6 +21,7 @@ from erp_widgets import ToolWindow, MonthGrid
 import store_orders as S
 from reorder_page import short_decision
 import reorder_service as R
+import forecast as F
 import transfers as TR
 
 ALL = "__all__"
@@ -850,7 +851,8 @@ class DetailWindow(ToolWindow):
         code = it.get("db_code") or it["code"]
         x = calc["demand"].get(sid, {}).get(code)
         # 头：名称 + 一行资料（等级 · 箱规 · 件价）；门店 / 供应商 / 编号 / 条码进鼠标提示
-        short = [p for p in ((x or {}).get("tier") and tr("{0} 类", x["tier"]), f"{it['pack']:g} " + tr("件/箱"),
+        short = [p for p in ((x or {}).get("tier") and tr("{0} 类", F.tier_label(x["tier"], x.get("xyz"))),
+                             f"{it['pack']:g} " + tr("件/箱"),
                              f"€{it['price']:.2f}") if p]
         fc = f"Cod.Forn. {it['sup_code']}" if it.get("sup_code") else ""
         tip = "\n".join(p for p in (S.STORE_SHEETS[sid], sc["name"], S.item_code(it), it.get("ean") or "", fc) if p)
@@ -1109,7 +1111,7 @@ class DetailWindow(ToolWindow):
             f"{x.get('inv_raw', x['inv']):g}" if x else "", *([f"{v:g}" for v in x["sales"]] if x else [""] * 4),
             inv_days or "", f"{it['pack']:g}", f"{it['price']:.3f}".rstrip("0").rstrip("."),
             f"{x['sugg']:,}" if x else "", f"{sug_s:g}" if sug_s else "", "", "",
-            (x["tier"] or "") if x else "",
+            F.tier_label(x["tier"] or "", x.get("xyz")) if x else "",
             f"{x['cycle']:g}" if x and isinstance(x.get("cycle"), (int, float)) else "",
             f"{x['daily']:.2f}" if x and x.get("daily") else "",
             f"{x['target']:.0f}" if x and isinstance(x.get("target"), (int, float)) else ""] +
@@ -1137,6 +1139,7 @@ class DetailWindow(ToolWindow):
         if tier:
             tc = t.item(i, _col(18))
             tc.setForeground(QColor(T("ok") if tier == "A" else T("accent") if tier == "B" else T("muted")))
+            tc.setToolTip(tr(F.tier_tip(tier, x.get("xyz"))))
             f = tc.font()
             f.setBold(True)
             tc.setFont(f)

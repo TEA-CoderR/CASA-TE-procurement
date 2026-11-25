@@ -118,22 +118,29 @@ class AlgoDialog(QDialog):
         lay.setSpacing(6)
         from erp_widgets import tip_label
         self.setToolTip(tr("新算法：目标库存 = 下次到货前要卖的量 + 安全库存（按销量波动和服务水平算），建议量 = 目标库存 − 现有库存。日均 = 近 4 周 50% + 13 周 30% + 26 周 20%，可按去年同期做季节调整。"))
-        g = QGridLayout()
-        g.setHorizontalSpacing(10)
-        g.setVerticalSpacing(8)
-        g.setColumnMinimumWidth(0, 120)
+        # 2026-11-25 加了 XYZ 以后一列排太高（1366×768 放不下）：左「基本」、右「按 ABC / 按 XYZ」、下面「门店周期」
         self.w = {}
         row = [0]
+        G = [None]
+
+        def new_grid():
+            gg = QGridLayout()
+            gg.setHorizontalSpacing(10)
+            gg.setVerticalSpacing(8)
+            gg.setColumnMinimumWidth(0, 120)
+            G[0] = gg
+            row[0] = 0
+            return gg
 
         def section(text, tip=None, top=14):
             if row[0]:
-                g.setRowMinimumHeight(row[0], top)
+                G[0].setRowMinimumHeight(row[0], top)
                 row[0] += 1
             t = QLabel(text + ("  ⓘ" if tip else ""))
             t.setObjectName("Section")
             if tip:
                 t.setToolTip(tip)
-            g.addWidget(t, row[0], 0, 1, 6)
+            G[0].addWidget(t, row[0], 0, 1, 6)
             row[0] += 1
 
         def mk(key, lo, hi, dec=None, scale=1, prefix="", suffix="", step=None, default=None):
@@ -157,9 +164,9 @@ class AlgoDialog(QDialog):
             return sb
 
         def line(label, tip, widgets):
-            g.addWidget(tip_label(label, tip), row[0], 0)
+            G[0].addWidget(tip_label(label, tip), row[0], 0)
             for i, wdg in enumerate(widgets):
-                g.addWidget(wdg, row[0], 1 + i)
+                G[0].addWidget(wdg, row[0], 1 + i)
             row[0] += 1
 
         def head(names):
@@ -168,10 +175,11 @@ class AlgoDialog(QDialog):
                 lb.setObjectName("Faint")
                 lb.setAlignment(Qt.AlignCenter)
                 lb.setFixedWidth(self.W)
-                g.addWidget(lb, row[0], 1 + i)
+                G[0].addWidget(lb, row[0], 1 + i)
             row[0] += 1
 
         # ① 基本
+        g_left = new_grid()
         section(tr("基本"))
         line(tr("订货周期"), tr("多久下一次单。每周订 = 7；这次订的要卖到下次订的货到为止"),
              [mk("review_days", 1, 120, suffix=tr(" 天"))])
@@ -189,10 +197,11 @@ class AlgoDialog(QDialog):
         self.season = QCheckBox(tr("季节调整"))
         self.season.setToolTip(tr("用去年同期做季节调整（数据不够一年或量太小时不调整）"))
         self.season.setChecked(bool(p["season"]))
-        g.addWidget(self.season, row[0], 1, 1, 3)
+        G[0].addWidget(self.season, row[0], 1, 1, 3)
         row[0] += 1
 
         # ② 按 ABC：A B C 三列对齐
+        g_right = new_grid()
         section(tr("按 ABC"))
         head(["A", "B", "C"])
         line(tr("周期系数"), tr("按 ABC 乘订货周期：A 类多备（1.25 = 订够 1.25 个周期），C 类少备（0.75 = 订够 3/4 个周期），少压货。ABC 按本店近 13 周销售额：前 80% A，到 95% B，其余 C"),
@@ -206,9 +215,25 @@ class AlgoDialog(QDialog):
         self.abc = QCheckBox(tr("按 ABC 调整服务水平"))
         self.abc.setToolTip(tr("按 ABC 调整服务水平（A +2.5%，C −5%；ABC 按本店近 13 周销售额帕累托）"))
         self.abc.setChecked(bool(p["abc_service"]))
-        g.addWidget(self.abc, row[0], 1, 1, 3)
+        G[0].addWidget(self.abc, row[0], 1, 1, 3)
         row[0] += 1
 
+        # ②b 按 XYZ（2026-11-25 用户定：完整 ABC-XYZ）：X Y Z 三列对齐
+        section(tr("按 XYZ"), tr("XYZ = 每周销量稳不稳：近 26 周每周销量的波动系数（标准差 ÷ 平均）。X 卖得稳、Y 有起伏、Z 时有时无。"
+                                 "等级写成 AX / BZ 这样：ABC 看卖多少钱，XYZ 看稳不稳。上架不到 8 周的不分 XYZ"))
+        head(["X", "Y", "Z"])
+        line(tr("波动系数"), tr("每周销量的波动系数 ≤ X 列 → X；≤ Y 列 → Y；更大 → Z"),
+             [mk("xyz_x", 0.1, 3.0, dec=2, prefix="≤ ", step=0.1, default=0.5),
+              mk("xyz_y", 0.1, 5.0, dec=2, prefix="≤ ", step=0.1, default=1.0)])
+        line(tr("服务水平"), tr("在 ABC 调过的服务水平上再加减：卖得稳的（X）多备一点也不会压很多货；时有时无的（Z）为了不缺货要多备很多，少备一点"),
+             [mk(k, -10, 5, dec=1, scale=100, prefix="", suffix=" %", step=0.5, default=d)
+              for k, d in (("svc_x", 0.01), ("svc_y", 0.0), ("svc_z", -0.02))])
+        self.xyz = QCheckBox(tr("按 XYZ 调整服务水平"))
+        self.xyz.setChecked(bool(p.get("xyz_service", True)))
+        G[0].addWidget(self.xyz, row[0], 1, 1, 3)
+        row[0] += 1
+
+        g_bottom = new_grid()
         # ③ 门店周期（只用在门店配货）：五家店五列
         section(tr("门店周期"), tr("只用在总仓采购：这家店的订货周期 × 系数（配置文件里供应商自己的周期、检查间隔也一起乘）。销量差、凑不够起订量的店填大于 1，一次订够更久、下单次数少（例如 × 1.5：30 天 → 45 天）；销量好、补货勤的店填小于 1，少压货。1 = 和现在一样"))
         stores = [(k, v) for k, v in R.STORES.items() if k]
@@ -232,8 +257,16 @@ class AlgoDialog(QDialog):
         for b in boxes:
             self._tip_store(b)
         self.w["review_days"][0].valueChanged.connect(lambda _v: [self._tip_store(b) for b in self.store_cycle.values()])
-        g.setColumnStretch(6, 1)
-        lay.addLayout(g)
+        top = QHBoxLayout()
+        top.setSpacing(36)
+        for gg in (g_left, g_right):
+            gg.setRowStretch(gg.rowCount(), 1)
+            top.addLayout(gg)
+        top.addStretch(1)
+        g_bottom.setColumnStretch(6, 1)
+        lay.addLayout(top)
+        lay.addSpacing(16)
+        lay.addLayout(g_bottom)
         lay.addSpacing(10)
         bb = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel | QDialogButtonBox.RestoreDefaults)
         bb.accepted.connect(self.save)
@@ -260,6 +293,7 @@ class AlgoDialog(QDialog):
             v = F.DEFAULT_PARAMS[k] * scale
             sb.setValue(int(round(v)) if isinstance(sb, QSpinBox) else float(v))
         self.abc.setChecked(F.DEFAULT_PARAMS["abc_service"])
+        self.xyz.setChecked(F.DEFAULT_PARAMS["xyz_service"])
         self.season.setChecked(F.DEFAULT_PARAMS["season"])
 
     def save(self):
@@ -268,6 +302,7 @@ class AlgoDialog(QDialog):
             v = sb.value() / scale
             p[k] = int(v) if isinstance(p.get(k), int) and float(v).is_integer() else v
         p["abc_service"] = self.abc.isChecked()
+        p["xyz_service"] = self.xyz.isChecked()
         p["season"] = self.season.isChecked()
         p["store_cycle"] = {str(sid): round(float(sb.value()), 2) for sid, sb in self.store_cycle.items()}
         self.settings["algo"] = p
