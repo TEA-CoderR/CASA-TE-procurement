@@ -5108,4 +5108,9 @@ TRANSLATIONS = {
     '不在 Griglia、门店说等不及直厂、要从批发商订的商品（扫码枪上叫 Non in Griglia，门店要写原因）：检查清单里会写「非 Griglia · 门店要订」和原因': ('Items not in the Griglia that the store wants from a wholesaler because the direct supplier is too slow (on the scanner: Non in Griglia, with a reason): the review list shows "Not in Griglia · store wants it" and the reason', 'Articoli non in Griglia che il negozio vuole dal grossista perché il diretto è troppo lento (sullo scanner: Non in Griglia, con motivo): la verifica mostra "Non in Griglia · richiesto dal negozio" e il motivo'),
     '正在显示 Griglia 统计': ('Showing Griglia statistics', 'Visualizzazione statistiche Griglia'),
     '画表格': ('Drawing tables', 'Disegno tabelle'),
+    '在途 {0:g} 箱 · A 类不扣': ('In transit {0:g} boxes · not deducted (A)', 'In arrivo {0:g} colli · non dedotti (A)'),
+    'A 类商品库存加在途还不够卖 {0} 天，照门店清单订、不扣在途': ('A item: stock plus transit covers less than {0} days, ordered as the store list, transit not deducted', 'Articolo A: giacenza più arrivi copre meno di {0} giorni, ordinato come da lista, arrivi non dedotti'),
+    'A 类不扣在途': ('A: transit not deducted', 'A: arrivi non dedotti'),
+    'A 类商品库存加在途还不够卖 {0} 天：照门店清单订，在途的不从这次扣（2026-11-25 定）': ('A item: stock plus transit covers less than {0} days: ordered as the store list, transit not deducted this time (set 2026-11-25)', 'Articolo A: giacenza più arrivi copre meno di {0} giorni: ordinato come da lista, arrivi non dedotti (deciso il 2026-11-25)'),
+    '{0} 个商品有明显写错的报价（低于 €{1:.2f}，或比别家中间价低 {2:.0%} 以上），这家的价格不拿来比价：{3}': ("{0} items have clearly wrong prices (below €{1:.2f}, or more than {2:.0%} below the others' median); that supplier's price is not used: {3}", '{0} articoli hanno prezzi chiaramente errati (sotto €{1:.2f}, o oltre il {2:.0%} sotto la mediana degli altri); quel prezzo non viene usato: {3}'),
 }
