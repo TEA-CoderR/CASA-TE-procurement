@@ -147,6 +147,12 @@ class Store:
         self._sig = None
         self._reset()
 
+    def adopt(self, other):
+        """把另一个 Store 刚读好的内容换进来（后台线程读、界面线程换；这个对象别处还拿着）"""
+        for k in ("orders", "meta", "hist", "budgets", "budget_meta", "aliases", "xbase", "xstate", "deleted", "_seen", "_sig"):
+            setattr(self, k, getattr(other, k))
+        return self
+
     def _reset(self):
         self.orders, self.meta, self.hist = {}, {}, {}
         self.budgets, self.budget_meta, self.aliases = {}, {}, {}
@@ -241,6 +247,7 @@ class Store:
     def _write(self, evs):
         if not evs:
             return
+        self.writes = getattr(self, "writes", 0) + 1
         os.makedirs(self.dir, exist_ok=True)
         with open(self.file, "a", encoding="utf-8", newline="") as f:
             for e in evs:

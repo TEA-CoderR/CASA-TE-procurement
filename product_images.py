@@ -20,6 +20,7 @@ from PySide6.QtGui import QImage, QPixmap, QPainter, QColor
 from PySide6.QtWidgets import QStyledItemDelegate, QStyle, QStyleOptionViewItem, QApplication, QToolTip
 
 DEFAULT_URL = "https://img.casaete.top/prodotti/{ean}/01.webp"
+MEM_MB = 60               # 内存里缓存的小图最多多少 MB
 MISS_DAYS = 1          # 服务器上没有图（404）：一天以后再问一次（图会陆续传上去）
 MISS_VER = 2           # 2026-10-31：以前把 403（服务器拒绝 / 限流）也记成「没有图」7 天，作废一次重新问
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -80,6 +81,7 @@ class ImageStore(QObject):
     def __init__(self, cache_dir, url=DEFAULT_URL, enabled=True):
         super().__init__()
         self.dir = cache_dir
+        self._used = set()
         self.url = url or DEFAULT_URL
         self.enabled = enabled
         os.makedirs(self.dir, exist_ok=True)
@@ -88,6 +90,7 @@ class ImageStore(QObject):
         self._pending, self._failed = set(), set()
         self._lock = threading.Lock()
         self._mem = {}             # (条码, 尺寸) → QPixmap
+        self._mem_bytes = 0
         self._session = None
 
     def _clear_old_misses(self):
@@ -122,6 +125,10 @@ class ImageStore(QObject):
         """本地缓存的图（原图），没有返回 None"""
         for p in (self._raw(ean), self._png(ean)):
             if os.path.exists(p):
+                if p not in self._used:            # 这次打开程序第一次用：摸一下，自动清理从最久没用的图删起
+                    self._used.add(p)
+                    import housekeeping
+                    housekeeping.touch(p)
                 return p
         return None
 
@@ -167,9 +174,13 @@ class ImageStore(QObject):
                 img = img.scaled(px, px, Qt.KeepAspectRatio, Qt.SmoothTransformation)
             pm = QPixmap.fromImage(img)
             pm.setDevicePixelRatio(dpr)
-            if len(self._mem) > 3000:
+            # 内存里最多留约 MEM_MB 的小图（以前按张数 3000 张，大图 / 高分屏时能到几百 MB，2026-11-25 内存紧）
+            nb = pm.width() * pm.height() * 4
+            if self._mem_bytes + nb > MEM_MB * 1048576:
                 self._mem.clear()
+                self._mem_bytes = 0
             self._mem[key] = pm
+            self._mem_bytes += nb
             return pm
         self.request(e)
         return None

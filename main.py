@@ -63,7 +63,7 @@ def find_missing_items(*a, **k):
     return _f(*a, **k)
 
 
-from settings import load_settings, save_settings, match_rules, SETTINGS_PATH
+from settings import load_settings, save_settings, match_rules, SETTINGS_PATH, app_dir
 from i18n import tr, kind_of, set_language, get_language, LANGS
 from config import (ORDINE_FOLDER, ELIMINARE_FOLDER, DISTRIBUTUIRE_FOLDER,
                     LOG_DIR, LOG_FILE, LOG_FORMAT, LOG_DATE_FORMAT)
@@ -89,6 +89,10 @@ def _setup_file_logger():
     lg = logging.getLogger("procurement")
     lg.setLevel(logging.INFO)
     lg.handlers.clear()
+    import housekeeping
+    housekeeping.rotate_log(os.path.join(LOG_DIR, LOG_FILE))      # 超过 10 MB 换新文件（旧的留一份 .old）
+    for extra in ("hang.log", "crash.log"):
+        housekeeping.rotate_log(os.path.join(LOG_DIR, extra), 5 * 1024 * 1024)
     h = logging.FileHandler(os.path.join(LOG_DIR, LOG_FILE), encoding="utf-8")
     h.setFormatter(logging.Formatter(LOG_FORMAT, datefmt=LOG_DATE_FORMAT))
     lg.addHandler(h)
@@ -2855,7 +2859,7 @@ def _preload_libs():
     在后台先读进来（2026-11-04 提速），用到时不用再等
     """
     import importlib
-    for name in ("openpyxl", "service", "matcher", "pandas"):
+    for name in ("openpyxl", "service", "matcher", "pandas", "mail_client"):
         try:
             importlib.import_module(name)
         except Exception:
@@ -3119,6 +3123,20 @@ class MainWindow(QMainWindow):
         self._finish_startup()
         self.bg_pill.set_manual(None, 0)
 
+    def _housekeeping(self):
+        """自动清理（housekeeping.py）：报价缓存 30 天没用的、商品图片超过 600 MB 的旧图、比价备份只留最近 3 份、临时文件"""
+        import housekeeping
+        import workspace as W
+        root = settings.get("wholesale_root") or ""
+        results = os.path.join(root, W.RESULTS) if root else None
+
+        def work():
+            try:
+                housekeeping.run(app_dir(), results, log=lambda m: logging.getLogger("procurement").info(m))
+            except Exception as e:                 # 清理出错不影响用程序
+                logging.getLogger("procurement").warning("自动清理出错：%s", e)
+        threading.Thread(target=work, daemon=True).start()
+
     def _log_boot_times(self, steps):
         """启动用时写进日志（只写给维护的人看，不翻译）：总共多久、窗口什么时候出来的、每页建了多久、收尾每一步"""
         total = time.perf_counter() - _BOOT_T0
@@ -3172,6 +3190,7 @@ class MainWindow(QMainWindow):
         self.apply_theme(qss=settings.get("theme", "dark") != self._qss_theme)
         mark("apply_theme")
         QTimer.singleShot(5000, lambda: threading.Thread(target=_preload_libs, daemon=True).start())
+        QTimer.singleShot(90 * 1000, self._housekeeping)      # 多余的缓存 / 备份每天清理一次（后台，2026-11-25 C 盘满了）
         __import__("erp_widgets").EXCEL_WORKER.start()      # Excel 后台线程开程序时就起好，以后不再新开
         self.log(tr("{0} {1} 启动 {2:%Y-%m-%d %H:%M:%S}", APP_NAME, APP_VERSION, datetime.now()))
         self._log_boot_times(steps)
@@ -7344,6 +7363,9 @@ def _start_hang_watchdog(app):
 
 
 def main():
+    # 后台线程在做纯 Python 的重活（读 Excel、逐格核对、算配货）时，界面线程等「轮到自己」最多 5 毫秒一次，
+    # 一个界面事件要轮好几次 → 进度窗口也会卡住几秒（2026-11-25 卡顿记录）。轮得勤一点，界面跟手、后台慢一点点。
+    sys.setswitchinterval(0.001)
     if getattr(sys, "frozen", False):
         threading.Thread(target=_cleanup_old_temp, daemon=True).start()
     if sys.platform == "win32":

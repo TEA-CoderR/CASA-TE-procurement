@@ -1,5 +1,6 @@
 from i18n import tr
 import os
+import housekeeping
 import math
 import gc
 import time
@@ -87,6 +88,25 @@ def _price_row_base(row, qty, unit, packs, ean, articolo, base):
     return {"row": row, "qty": qty, "ean": ean, "articolo": articolo, "unit": dict(unit), "packs": dict(packs),
             "ref_pack": base, "base_pack": base, "need": need, "prices": prices, "amt": amt, "colli": colli,
             "unfit": unfit}
+
+
+ODD_MIN_PRICE = 0.05     # 件价低于这个 = 报价表写错了（和 Griglia 统计「价格可疑」同一个标准，griglia.MIN_PRICE）
+ODD_RATIO = 0.3          # 比别家中间价的 30% 还低也算写错（多半是箱价 / 件价搞混）
+
+
+def drop_odd_prices(unit):
+    """{供应商: 件价} → (去掉可疑价格后的, {供应商: 可疑的件价})：低于 €0.05，或比别家中间价低 70% 以上"""
+    odd = {}
+    for s, p in unit.items():
+        if p is None:
+            continue
+        others = sorted(v for k, v in unit.items() if k != s and v is not None and v > 0)
+        med = others[len(others) // 2] if others else None
+        if p < ODD_MIN_PRICE or (med and p < ODD_RATIO * med):
+            odd[s] = p
+    if not odd:
+        return unit, {}
+    return {s: (None if s in odd else p) for s, p in unit.items()}, odd
 
 
 BIG_LINE_EUR = 1000      # 一个商品一家批发商超过这个金额：比价结果「要你看的」里红字列出来（2026-11-22 MARLIA €42,404）
@@ -987,6 +1007,7 @@ def run_process(ordine_file, eliminare_path, distribuire_path, log, progress=Non
     # 读取每行的价格（按供应商列顺序）和箱数
     supplier_headers = [ws_main.cell(1, col).value for col in range(SUPPLIER_MATRIX_START_COL, q)]
     rows_data = []
+    odd_rows = []
     col_pezzi, _ = find_col(ws_main, "PEZZI")
     col_base, _ = (None, None) if col_pezzi else find_col(ws_main, "CASSA_DB")
     if col_pezzi:
@@ -997,6 +1018,9 @@ def run_process(ordine_file, eliminare_path, distribuire_path, log, progress=Non
         unit = {}
         for k, col in enumerate(range(SUPPLIER_MATRIX_START_COL, q)):
             unit[supplier_headers[k]] = parse_price(ws_main.cell(i, col).value)
+        unit, odd = drop_odd_prices(unit)     # 报价写错的价格（€0.02、比别家低七成以上）不拿来比（2026-11-25 用户：一定要挡住）
+        if odd:
+            odd_rows.append((i, odd))
         qty = ws_main.cell(i, col_colli_sel).value if col_colli_sel else 0
         ean = clean_ean(ws_main.cell(i, col_ean_main).value)
         packs_i = {h: pack_maps.get(h, {}).get(ean, 1) for h in supplier_headers}
@@ -1015,6 +1039,16 @@ def run_process(ordine_file, eliminare_path, distribuire_path, log, progress=Non
                 except (TypeError, ValueError):
                     base = None
             rows_data.append(_price_row(i, qty, unit, packs_i, ean, art, base=base))
+    if odd_rows:
+        by_row = dict(odd_rows)
+        for r in rows_data:
+            if r["row"] in by_row:
+                r["odd"] = by_row[r["row"]]
+        log("⚠ " + tr("{0} 个商品有明显写错的报价（低于 €{1:.2f}，或比别家中间价低 {2:.0%} 以上），这家的价格不拿来比价：{3}",
+                       len(odd_rows), ODD_MIN_PRICE, 1 - ODD_RATIO,
+                       "；".join(f"{ws_main.cell(i, col_ean_main).value} " + ", ".join(f"{s_} €{p_:.2f}" for s_, p_ in o.items())
+                                for i, o in odd_rows[:8]) + ("…" if len(odd_rows) > 8 else "")))
+    summary["odd_prices"] = len(odd_rows)
     n_unfit = sum(1 for r in rows_data if r.get("unfit"))
     if n_unfit:
         log(tr("{0} 个商品有批发商的箱规太大（换算后超过要的 {1:g} 倍），这几家不自动选", n_unfit, FIT_MAX))
@@ -1763,6 +1797,14 @@ def _quote_key(path, ver):
 
 
 _QM_MEM = {}
+QM_MEM_MAX = 8            # 内存里最多留几份读好的报价（一周 4 份；以前一直留着，程序开几天会越占越多）
+
+
+def _qm_keep(k, out):
+    _QM_MEM.pop(k, None)
+    _QM_MEM[k] = out
+    while len(_QM_MEM) > QM_MEM_MAX:
+        _QM_MEM.pop(next(iter(_QM_MEM)))
 
 
 def quote_matrix(path, log):
@@ -1783,7 +1825,8 @@ def quote_matrix(path, log):
         try:
             with open(cp, encoding="utf-8") as f:
                 out = json.load(f)
-            _QM_MEM[k] = out
+            _qm_keep(k, out)
+            housekeeping.touch(cp)         # 还在用：自动清理（30 天没用过的删）不会删它
             return out
         except Exception:
             pass
@@ -1817,9 +1860,7 @@ def quote_matrix(path, log):
             except Exception:
                 pass
     if k:
-        _QM_MEM[k] = out
-        if len(_QM_MEM) > 40:
-            _QM_MEM.pop(next(iter(_QM_MEM)))
+        _qm_keep(k, out)
         try:
             os.makedirs(os.path.dirname(cp), exist_ok=True)
             tmp = cp + ".tmp"
@@ -1856,7 +1897,9 @@ def read_price_file(path, log=None):
     if cp and os.path.exists(cp):
         try:
             with open(cp, encoding="utf-8") as f:
-                return json.load(f)
+                out = json.load(f)
+            housekeeping.touch(cp)
+            return out
         except Exception:
             pass
     out = _read_price_file(path, log)

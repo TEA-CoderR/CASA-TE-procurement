@@ -36,8 +36,14 @@ class PriceMailWatcher(QObject):
         self._sig.done.connect(self._done)
 
     def usable(self):
-        import mail_client as MC
-        return any(CMD.mail_password(a["address"]) for a in MC.accounts(self.settings))
+        """有填了密码的邮箱吗。不 import mail_client（imaplib / ssl 第一次加载在办公电脑上要 2–4 秒，2026-11-25 卡顿记录）"""
+        import credentials
+        if getattr(self, "_usable", None) is not None and time.time() - self._usable[0] < 60:
+            return self._usable[1]
+        ok = any(credentials.get("mail." + (a.get("address") or "").strip().lower())
+                 for a in ((self.settings.get("mail") or {}).get("accounts") or []) if (a.get("address") or "").strip())
+        self._usable = (time.time(), ok)
+        return ok
 
     def n_new(self):
         return sum(1 for b in ((self.res or {}).get("found") or []) if b["newer"])

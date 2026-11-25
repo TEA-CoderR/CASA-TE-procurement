@@ -31,6 +31,7 @@ class _Sig(QObject):
     transit = Signal(object)
     files = Signal(object)
     bookings = Signal(object)
+    loaded = Signal(object)
 
 
 def STATUS_LABELS():
@@ -416,6 +417,7 @@ class TrackingPage:
         self.sig.transit.connect(self._transit_done)
         self.sig.files.connect(self._files_done)
         self.sig.bookings.connect(self._bookings_done)
+        self.sig.loaded.connect(self._badge_loaded)
         self.transit = None                          # order_record.compute 的结果（每张没到货的单对上哪个订单文件）
         self._transit_busy = self._transit_again = False
         self.syncing = False
@@ -789,10 +791,7 @@ class TrackingPage:
             self.stack.setCurrentIndex(0)
             return
         self.stack.setCurrentIndex(1)
-        if self.st is None or self.st.folder != self._folder():
-            self.load()
-        elif self.st.changed():
-            self.load()
+        self.check_badge()                # 后台看有没有变、读，读完自己 refresh（以前在界面线程读，打开页面卡 1–5 秒）
         self.timer.start()
         self._shown = True
         self._auto_sync()                 # 每次打开页面：Excel 存过（修改时间变了）就自动同步
@@ -814,8 +813,8 @@ class TrackingPage:
         if not self.page.isVisible():
             self.timer.stop()
             return
-        if self.st is not None and not self.syncing and self.st.changed():
-            self.load()
+        if self.st is not None and not self.syncing:
+            self.check_badge()            # 后台看有没有变、变了后台读（以前每 20 秒在界面线程 stat + 读一遍）
         self._auto_sync()                 # 页面开着时别人存了 Excel：20 秒内自动同步过来
         self._update_src()                # 「n 分钟前」跟着走
 
@@ -1823,10 +1822,7 @@ class TrackingPage:
         for m in msgs:
             self.win.log(tr("订单跟踪：") + m)
         if ch:
-            if self.st is not None:
-                self.st.reload()
-            if self.page.isVisible():
-                self.refresh()
+            self.check_badge()
 
     def _files_done(self, payload):
         ch, msgs = payload
@@ -1835,10 +1831,7 @@ class TrackingPage:
             self.win.log(tr("订单跟踪：") + m)
         if ch:
             self.win.show_toast(tr("✔ 订单文件改过：{0} 张单的箱数 / 金额已更新", len(ch)))
-            if self.st is not None:
-                self.st.reload()
-            if self.page.isVisible():
-                self.refresh()
+            self.check_badge()
 
     def _write_on(self):
         return self.cfg.get("write_excel") is not False
@@ -1960,22 +1953,48 @@ class TrackingPage:
             pass
 
     def check_badge(self):
-        """数一下待登记的单（共享文件夹有变化才重新读）；页面开着就整页刷新"""
+        """
+        数一下待登记的单（共享文件夹有变化才重新读）；页面开着就整页刷新。
+        看有没有变、重新读记录都在后台线程做（2026-11-25 卡顿记录：同步盘上读几个 log 文件在界面线程一次 1–2 秒），
+        读完在界面线程把内容换进现在这个 Store（同一个对象，别处拿着的引用照样能用）
+        """
         f = self._folder()
         if not f:
             self.badge(0)
             return
-        try:
-            if self.st is None or self.st.folder != f:
-                self.st = OT.Store(f, me=self._me())
-                self.st.reload()
-                changed = True
-            else:
-                changed = self.st.changed()
-                if changed:
-                    self.st.reload()
-        except Exception:
+        if getattr(self, "_badge_busy", False):
             return
+        self._badge_busy = True
+        old = self.st if self.st is not None and self.st.folder == f else None
+        w0 = getattr(old, "writes", 0) if old is not None else 0
+        me = self._me()
+
+        def work():
+            try:
+                if old is not None and not old.changed():
+                    self.sig.loaded.emit((f, None, w0))
+                    return
+                st2 = OT.Store(f, me=me)
+                st2.reload()
+                self.sig.loaded.emit((f, st2, w0))
+            except Exception:
+                self.sig.loaded.emit((f, False, w0))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _badge_loaded(self, res):
+        self._badge_busy = False
+        f, st2, w0 = res
+        if st2 is False or f != self._folder():
+            return
+        changed = st2 is not None
+        if changed:
+            if self.st is None or self.st.folder != f:
+                self.st = st2
+            elif getattr(self.st, "writes", 0) != w0:
+                QTimer.singleShot(2000, self.check_badge)   # 读的时候这台电脑又写了：等一下再读，别把刚改的盖回去
+                return
+            else:
+                self.st.adopt(st2)
         if changed and self.page.isVisible():
             self.refresh()
         else:

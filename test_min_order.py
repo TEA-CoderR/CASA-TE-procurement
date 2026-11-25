@@ -412,3 +412,15 @@ def test_meloni_order_file_gets_pieces_and_amount_columns_like_template(tmp_path
                                         "ORDINE", None, "Cod.Gruppo", "FOTO"]
     assert [ws.cell(2, c).value for c in (6, 7, 8, 9)] == [2, "=F2*D2", "=G2*E2", 10]
     assert ws["J2"].value == '=HYPERLINK("x"&B2,"FOTO")' and ws.auto_filter.ref == "A1:J3"
+
+
+def test_odd_prices_not_used_for_comparison():
+    """2026-11-25 用户：MELONI €0.02 这种明显写错的报价一定要挡住"""
+    import service as S
+    clean, odd = S.drop_odd_prices({"MELONI": 0.02, "PETRILLO": 1.20, "MEGA": 1.10, "GRIECO": None})
+    assert odd == {"MELONI": 0.02} and clean["MELONI"] is None and clean["PETRILLO"] == 1.20
+    clean, odd = S.drop_odd_prices({"MELONI": 0.30, "PETRILLO": 1.20, "MEGA": 1.10})   # 比别家中间价低七成以上
+    assert odd == {"MELONI": 0.30}
+    clean, odd = S.drop_odd_prices({"MELONI": 0.90, "PETRILLO": 1.20})
+    assert odd == {} and clean["MELONI"] == 0.90
+    assert S.drop_odd_prices({"MELONI": 0.01})[1] == {"MELONI": 0.01}

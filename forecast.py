@@ -56,10 +56,14 @@ DEFAULT_PARAMS = {
     "check_days": 14,          # 检查间隔：最多几天后会再看一次（2026-11-07 用户定）；0 = 不用，照供应商周期
     "warn_boxes": 6,           # 建议超过几箱标黄提醒看一眼（只提醒，不砍）；0 = 不提醒
     "slowdown": True,          # 最近 4 周明显卖慢了（有货）→ 按最近 4 周算（2026-11-07 用户定，规则 A）
+    "stockout_fill": True,     # 断货的那几周不拉低日均（2026-11-25 用户定）
 }
 SLOW_RATIO = 0.5               # 最近 4 周的日均不到加权日均的一半，才算「明显卖慢了」
 SLOW_MIN_AGE = 8               # 上架至少 8 周（新品本来就在爬坡）
 SLOW_STOCK_DAYS = 14           # 现在库存够加权日均卖 14 天以上 = 一直有货，卖得少不是断货造成的
+STOCKOUT_REGULAR = 0.7         # 断货周：别的周里至少 70% 有卖（一直卖得动的商品）
+STOCKOUT_MIN_RUN = 2           # 连续至少 2 周一件没卖才算
+STOCKOUT_MAX_RUN = 8           # 连续超过 8 周没卖：多半是季节 / 不卖了，不算断货
 
 WEEKS = 60                     # 查多少周（季节调整要一年以上）
 _ND = NormalDist()
@@ -137,6 +141,44 @@ def long_rate(weekly, max_weeks=52):
         zero += 1
     n = min(max_weeks, history_weeks(w))
     return (sum(w[:n]) / (7.0 * n) if n else 0.0), (zero if n else 0)
+
+
+def fill_stockouts(weekly, inv, params=None):
+    """
+    断货的周不拉低日均（2026-11-25 用户定）：近 26 周里一直卖得动的商品（别的周至少 70% 有卖），
+    中间连续 2–8 周一件没卖 —— 多半是货架上没货（断货），不是没人买 → 这几周按有卖的那些周的中位数补上再算日均。
+    最近几周就没卖、现在店里有货的不补（那是真的卖慢了，交给规则 A）；最多补 26 周的三分之一。
+    返回 (补过的周销量, 补了几周)
+    """
+    w = [max(0.0, float(x or 0)) for x in (weekly or [])]
+    if params is not None and not params.get("stockout_fill", True):
+        return w, 0
+    n = min(26, len(w))
+    if n < 13 or history_weeks(w) < 13:
+        return w, 0
+    runs, i = [], 0
+    while i < n:
+        if w[i] == 0:
+            j = i
+            while j < n and w[j] == 0:
+                j += 1
+            if STOCKOUT_MIN_RUN <= j - i <= STOCKOUT_MAX_RUN and j < n and not (i == 0 and float(inv or 0) > 0):
+                runs.append((i, j))            # 中间断了几周（后面又卖了）；最近几周的只在现在没货时算
+            i = j
+        else:
+            i += 1
+    if not runs:
+        return w, 0
+    inside = {k for a, b in runs for k in range(a, b)}
+    rest = [w[k] for k in range(n) if k not in inside]
+    sold = sorted(x for x in rest if x > 0)
+    if not rest or len(sold) < STOCKOUT_REGULAR * len(rest) or len(inside) > n // 3:
+        return w, 0
+    fill = sold[len(sold) // 2]
+    out = list(w)
+    for k in inside:
+        out[k] = fill
+    return out, len(inside)
 
 
 def demand_rate(weekly):
@@ -328,6 +370,7 @@ def slowdown_rate(weekly, daily, age, inv, params):
 
 def analyze(weekly, inv, tier, params, total_inv=0, on_order=0.0):
     """一个商品一家店的完整计算；weekly[0] = 最近 7 天"""
+    weekly, filled = fill_stockouts(weekly, inv, params)
     daily, age = demand_rate(weekly)
     slow_from = None
     slow = slowdown_rate(weekly, daily, age, inv, params)
@@ -344,4 +387,4 @@ def analyze(weekly, inv, tier, params, total_inv=0, on_order=0.0):
     return {"daily": d_eff, "daily_base": daily, "slow_from": slow_from, "sigma_w": sig, "season": season, "age_weeks": age,
             "mu": t["mu"], "safety": t["ss"], "target": t["S"], "service": t["svc"], "qty": q,
             "cover_days": (max(0.0, inv) / d_eff) if d_eff > 0 else float("inf"),
-            "decision": dec, "priority": pr}
+            "decision": dec, "priority": pr, "stockout_weeks": filled}

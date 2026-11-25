@@ -339,3 +339,22 @@ def test_block_with_empty_fornitore_header_still_read():
     class _St:
         xstate = {"failed": {"append|x": "'v'"}}          # 以前（旧规矩）写不进去的：换代后再试一次
     assert XS._failed(_St()) == {"_ver": XS.FAILED_VER}
+
+
+def test_background_load_adopted_into_same_store_and_local_writes_counted():
+    """订单跟踪在后台读记录、读完换进原来那个 Store（2026-11-25 卡顿）：别处拿着的引用照样看到新内容"""
+    d = tempfile.mkdtemp()
+    try:
+        a = OT.Store(d, me="A", host="PC1").reload()
+        b = OT.Store(d, me="B", host="PC2").reload()
+        oid = b.add({"supplier": "SAIS", "store": "1", "date": "2026-11-20"})
+        assert oid not in a.orders and a.changed()
+        w0 = getattr(a, "writes", 0)
+        fresh = OT.Store(d, me="A", host="PC1").reload()     # 后台线程读的
+        ref = a
+        a.adopt(fresh)
+        assert oid in ref.orders and not a.changed()
+        a.set(oid, {"state": "confirmed"})
+        assert a.writes == w0 + 1                             # 读的时候这台电脑又写了 → 界面不换进来
+    finally:
+        shutil.rmtree(d, ignore_errors=True)

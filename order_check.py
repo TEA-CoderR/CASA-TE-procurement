@@ -148,6 +148,8 @@ def key_tags(x, transit_boxes=0, edited=False):
         return out
     if cut:
         out.append((tr("在途 {0:g} 箱 · 少订 {1} 箱", transit_boxes or cut, cut), "info"))
+    elif transit_boxes and x.get("transit_kept_a"):
+        out.append((tr("在途 {0:g} 箱 · A 类不扣", transit_boxes), "info"))
     elif transit_boxes:
         out.append((tr("在途 {0:g} 箱", transit_boxes), "info"))
     prot = x.get("protect")
@@ -1406,6 +1408,8 @@ class OrderCheck:
             line = tr("在途：已经订了 {0:g} 箱（{1:g} 件）还没到货", t_.get("colli") or 0, x["transit_pcs"])
             if x.get("transit_cut"):
                 line += "，" + tr("建议少订 {0} 箱", x["transit_cut"])
+            elif x.get("transit_kept_a"):
+                line += "，" + tr("A 类商品库存加在途还不够卖 {0} 天，照门店清单订、不扣在途", (x.get("review_days") or (90,))[0])
             lines.insert(0, line)
         keep_d, free_d = x.get("review_days") or (0, 0)
         tier_txt = (x.get("tier") or "B")[:1]
@@ -1508,6 +1512,10 @@ class OrderCheck:
                                  tr("已经订了、还没到货的 {0} 箱从这次的箱数里扣掉了（上周的单还没到，这次不重复订）", cut)))
             if not x.get("sbox"):
                 return out                              # 这次不订的原因就是在途，别的提醒不放（详情栏「为什么」里还有）
+        elif x.get("transit_kept_a"):
+            out.insert(len(rv), ("transit", tr("A 类不扣在途"),
+                                 tr("A 类商品库存加在途还不够卖 {0} 天：照门店清单订，在途的不从这次扣（2026-11-25 定）",
+                                    (x.get("review_days") or (90,))[0])))
         cz = x.get("censored")
         if cz:
             out.append(("censored", tr("断货补算"),

@@ -725,70 +725,80 @@ class GrigliaPage:
             return [(1000 + zlib.crc32(l.encode("utf-8")) % 1000000, l, "price",
                      (lambda x, l=l: x["prices"].get(l)),
                      (lambda x, l=l: "accent" if x.get("best_sup") == l else None)) for l in labels]
-        # 都不做了
-        if self.t_gone is not None:
-            self.gone_bar.setParent(None)                 # 按钮先拿出来，旧表格删掉时别跟着删
-        self.t_gone = self._tab(0, "gone", base + [(3, tr("编号"), "txt", lambda x: x.get("code"), None),
-                                                   (4, tr("品牌"), "txt", lambda x: x.get("brand"), None)] + cats +
-                                # Griglia 没写供应商的：用 Griglia 里最便宜的批发商价格推出来的那家，和别的行一样写（用户 11-20）
-                                [(9, tr("Griglia 供应商"), "txt",
-                                  lambda x: x.get("supplier") or x.get("supplier_fill") or x.get("wholesaler"), None),
-                                 (10, tr("Griglia 价"), "price", lambda x: x.get("best") or x.get("price"), None)],
-                                st["gone"], extra=self.gone_bar)
-        self.b_repl.setEnabled(bool(st["gone"]) or bool((self.grid or {}).get("struck")))   # 划线的商品也能找（用户 11-11）
-        self._update_log_btn()
-        # 新品
-        if self.t_new is not None:
-            self.new_bar.setParent(None)
-        self.t_new = self._tab(1, "new", base + cats +
-                               [(11, tr("部门"), "txt", lambda x: x.get("dept"), None),
-                                (12, tr("几家在做"), "num", lambda x: x["n"], None),
-                                (13, tr("最低价"), "price", lambda x: x["best"], None),
-                                (14, tr("最便宜"), "txt", lambda x: x["best_sup"], None)] + sup_cols(),
-                               st["new"], extra=self.new_bar)
-        for cb in (self.min_n, self.scope):
-            try:
-                cb.currentIndexChanged.disconnect()
-            except (RuntimeError, TypeError):
-                pass
-            cb.currentIndexChanged.connect(lambda _: self.t_new.ctl.render())
-        # 默认：有以前的报价记录 → 新上架（几家都行）；第一次（还没有新上架）→ 全部、≥ 2 家在做
-        self.scope.blockSignals(True)
-        self.min_n.blockSignals(True)
-        self.scope.setCurrentIndex(0 if st["history"] else 1)
-        self.min_n.setCurrentIndex(0 if st["history"] else 1)
-        self.scope.blockSignals(False)
-        self.min_n.blockSignals(False)
+        # 四张表一张张建，每张之间画一下进度（2026-11-25 卡顿记录：一次建完界面停 2–3 秒）
+        def s_gone():
+            # 都不做了
+            if self.t_gone is not None:
+                self.gone_bar.setParent(None)                 # 按钮先拿出来，旧表格删掉时别跟着删
+            self.t_gone = self._tab(0, "gone", base + [(3, tr("编号"), "txt", lambda x: x.get("code"), None),
+                                                       (4, tr("品牌"), "txt", lambda x: x.get("brand"), None)] + cats +
+                                    # Griglia 没写供应商的：用 Griglia 里最便宜的批发商价格推出来的那家，和别的行一样写（用户 11-20）
+                                    [(9, tr("Griglia 供应商"), "txt",
+                                      lambda x: x.get("supplier") or x.get("supplier_fill") or x.get("wholesaler"), None),
+                                     (10, tr("Griglia 价"), "price", lambda x: x.get("best") or x.get("price"), None)],
+                                    st["gone"], extra=self.gone_bar)
+            self.b_repl.setEnabled(bool(st["gone"]) or bool((self.grid or {}).get("struck")))   # 划线的商品也能找（用户 11-11）
+            self._update_log_btn()
+        def s_new():
+            # 新品
+            if self.t_new is not None:
+                self.new_bar.setParent(None)
+            self.t_new = self._tab(1, "new", base + cats +
+                                   [(11, tr("部门"), "txt", lambda x: x.get("dept"), None),
+                                    (12, tr("几家在做"), "num", lambda x: x["n"], None),
+                                    (13, tr("最低价"), "price", lambda x: x["best"], None),
+                                    (14, tr("最便宜"), "txt", lambda x: x["best_sup"], None)] + sup_cols(),
+                                   st["new"], extra=self.new_bar)
+            for cb in (self.min_n, self.scope):
+                try:
+                    cb.currentIndexChanged.disconnect()
+                except (RuntimeError, TypeError):
+                    pass
+                cb.currentIndexChanged.connect(lambda _: self.t_new.ctl.render())
+            # 默认：有以前的报价记录 → 新上架（几家都行）；第一次（还没有新上架）→ 全部、≥ 2 家在做
+            self.scope.blockSignals(True)
+            self.min_n.blockSignals(True)
+            self.scope.setCurrentIndex(0 if st["history"] else 1)
+            self.min_n.setCurrentIndex(0 if st["history"] else 1)
+            self.scope.blockSignals(False)
+            self.min_n.blockSignals(False)
 
-        def hide(i):
-            x = st["new"][i]
-            sc = self.scope.currentData()
-            return x["n"] < (self.min_n.currentData() or 1) or (sc == "fresh" and not x["fresh"])
-        self.t_new.hide_fn = hide
-        # 价格
-        def ch_color(x):
-            ch = x["change"]
-            return ("err" if ch > 0 else "ok") if ch is not None and abs(ch) >= 0.05 else None
-        pcols = base + [(3, tr("编号"), "txt", lambda x: x.get("code"), None)] + cats + \
-            [(9, tr("Griglia 供应商"), "txt", lambda x: x.get("supplier"), None),
-             (10, tr("Griglia 价"), "price", lambda x: x["ref"], None),
-             (13, tr("现在最低"), "price", lambda x: x["best"], None),
-             (14, tr("最便宜"), "txt", lambda x: x["best_sup"], lambda x: "warn" if x["moved"] else None),
-             (15, tr("变化 %"), "pct", lambda x: round(x["change"] * 100, 1) if x["change"] is not None else None,
-              ch_color)] + sup_cols()
-        self.t_price = self._tab(2, "price", pcols, st["prices"])
-        self._price_fids = [c[0] for c in pcols]
-        self.t_price.ctl.rendered.connect(lambda *_: self.panel.set_sel(self._best_sel()))
-        heads = [c[0] for c in pcols]
-        self.t_price.t.horizontalHeaderItem(heads.index(15)).setToolTip(
-            tr("现在最低价比 Griglia 记的价（PA MIGLIORE）高（红）或低（绿）多少"))
-        self.t_price.t.horizontalHeaderItem(heads.index(14)).setToolTip(tr("黄色 = 现在最便宜的不是 Griglia 登记的供应商"))
-        # 价格可疑
-        self.t_odd = self._tab(3, "odd", base + [(16, tr("供应商"), "txt", lambda x: x["supplier"], None),
-                                                 (17, tr("报价价"), "price", lambda x: x["price"], None),
-                                                 (18, tr("别家中间价"), "price", lambda x: x["others"], None)], st["odd"])
-        for t in (self.t_gone, self.t_new, self.t_price, self.t_odd):
-            t.ctl.render()
+            def hide(i):
+                x = st["new"][i]
+                sc = self.scope.currentData()
+                return x["n"] < (self.min_n.currentData() or 1) or (sc == "fresh" and not x["fresh"])
+            self.t_new.hide_fn = hide
+        def s_price():
+            # 价格
+            def ch_color(x):
+                ch = x["change"]
+                return ("err" if ch > 0 else "ok") if ch is not None and abs(ch) >= 0.05 else None
+            pcols = base + [(3, tr("编号"), "txt", lambda x: x.get("code"), None)] + cats + \
+                [(9, tr("Griglia 供应商"), "txt", lambda x: x.get("supplier"), None),
+                 (10, tr("Griglia 价"), "price", lambda x: x["ref"], None),
+                 (13, tr("现在最低"), "price", lambda x: x["best"], None),
+                 (14, tr("最便宜"), "txt", lambda x: x["best_sup"], lambda x: "warn" if x["moved"] else None),
+                 (15, tr("变化 %"), "pct", lambda x: round(x["change"] * 100, 1) if x["change"] is not None else None,
+                  ch_color)] + sup_cols()
+            self.t_price = self._tab(2, "price", pcols, st["prices"])
+            self._price_fids = [c[0] for c in pcols]
+            self.t_price.ctl.rendered.connect(lambda *_: self.panel.set_sel(self._best_sel()))
+            heads = [c[0] for c in pcols]
+            self.t_price.t.horizontalHeaderItem(heads.index(15)).setToolTip(
+                tr("现在最低价比 Griglia 记的价（PA MIGLIORE）高（红）或低（绿）多少"))
+            self.t_price.t.horizontalHeaderItem(heads.index(14)).setToolTip(tr("黄色 = 现在最便宜的不是 Griglia 登记的供应商"))
+        def s_odd():
+            # 价格可疑
+            self.t_odd = self._tab(3, "odd", base + [(16, tr("供应商"), "txt", lambda x: x["supplier"], None),
+                                                     (17, tr("报价价"), "price", lambda x: x["price"], None),
+                                                     (18, tr("别家中间价"), "price", lambda x: x["others"], None)], st["odd"])
+        def s_draw():
+            for t in (self.t_gone, self.t_new, self.t_price, self.t_odd):
+                t.ctl.render()
+        from erp_widgets import StepsDialog
+        StepsDialog.run(self.win, tr("正在显示 Griglia 统计"),
+                        [(tr("停售"), s_gone), (tr("新品"), s_new), (tr("价格"), s_price), (tr("价格可疑"), s_odd),
+                         (tr("画表格"), s_draw)])
 
     def restyle(self):
         """换深色 / 浅色：表格里的彩色字重画一遍"""

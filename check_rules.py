@@ -477,6 +477,18 @@ def review_days_for(rr, tier):
     return keep, max(keep, free)
 
 
+def a_transit_short(x, transit_pcs, rr):
+    """A 类、（库存 + 在途）够卖的天数还不到 A 类「照清单」天数（默认 90 天）→ True：这一行不扣在途"""
+    if (x.get("tier") or "").strip().upper()[:1] != "A":
+        return False
+    d = x.get("daily0") if x.get("daily0") is not None else x.get("daily")
+    d = max(float(d or 0), float(x.get("slow_from") or 0))
+    if d <= 0:
+        return False
+    keep_d, _free = review_days_for(rr, "A")
+    return (max(0.0, float(x.get("inv0") or 0)) + max(0.0, float(transit_pcs or 0))) / d < keep_d
+
+
 def _cover_now(x):
     """现在的库存够卖几天（负库存当 0；没销量但有库存 = 无限；都没有 = 0）"""
     d = x.get("daily0") if x.get("daily0") is not None else x.get("daily")
@@ -660,8 +672,12 @@ def init_boxes(rows, units=None, algo=None, rules=None):
             x["sbox"] = sb
         # 在途（已经订了还没到货，order_record；2026-11-03 用户：从建议量里扣）：整箱扣，零头不扣
         x.pop("transit_cut", None)
+        x.pop("transit_kept_a", None)
         tp = float(x.get("transit_pcs") or 0)
-        if tp > 0 and x["sbox"] and not VP.transit_done(x.get("list_reason")):    # VOLANTINO 备货已经扣过在途的不再扣
+        if tp > 0 and x["sbox"] and a_transit_short(x, tp, rr):
+            # 2026-11-25 用户：A 类商品库存 + 在途还不够 A 类「照清单」天数 → 照门店清单订、不扣在途（在途到了也不够卖）
+            x["transit_kept_a"] = True
+        elif tp > 0 and x["sbox"] and not VP.transit_done(x.get("list_reason")):    # VOLANTINO 备货已经扣过在途的不再扣
             cut = min(x["sbox"], int(tp / pk + 1e-9))
             if cut > 0:
                 x["sbox"] -= cut

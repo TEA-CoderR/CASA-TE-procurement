@@ -195,6 +195,13 @@ def test_transit_subtracted_from_suggestions():
     row2 = dict(row, transit_pcs=5.0)
     OC.init_boxes([row2])
     assert row2["sbox"] == 4 and "transit_cut" not in row2
+    # 2026-11-25 用户：A 类库存 + 在途还不够卖 90 天 → 照清单订、不扣在途；够了照扣
+    rowa = dict(row, tier="A", transit_pcs=13.0)
+    OC.init_boxes([rowa])
+    assert rowa["transit_kept_a"] and rowa["sbox"] == 4 and "transit_cut" not in rowa
+    rowb = dict(row, tier="A", transit_pcs=13.0, inv0=90)
+    OC.init_boxes([rowb])
+    assert "transit_kept_a" not in rowb
 
 
 def test_deduct_switch_default_on():

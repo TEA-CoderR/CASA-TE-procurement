@@ -207,6 +207,30 @@ class _CardDelegate(QStyledItemDelegate):
     def sizeHint(self, opt, ix):
         return QSize(opt.rect.width(), self.H)
 
+    def _fonts(self, font):
+        """五种字体只建一次（以前每张卡片每次画都新建，卡顿记录里看板重画要 2 秒多）"""
+        key = font.key()
+        if getattr(self, "_fk", None) != key:
+            base = QFont(font)
+            f1 = QFont(base)
+            f1.setPixelSize(13)
+            f1.setWeight(QFont.DemiBold)
+            f2 = QFont(base)
+            f2.setPixelSize(12)
+            f3 = QFont(base)
+            f3.setPixelSize(11)
+            self._f = (f1, _num_font(base, 12, QFont.Medium), f2, f3, _num_font(base, 11, QFont.Medium))
+            self._fk = key
+        return self._f
+
+    def _hint(self, r):
+        """卡片最下面一行，按这一行的数据记住（数据换了 set_rows 会清掉）"""
+        c = self.board._hints
+        k = r.get("id")
+        if k not in c:
+            c[k] = card_hint(r)
+        return c[k]
+
     def paint(self, p, opt, ix):
         r = self.board.row(ix.data(Qt.UserRole))
         if r is None:
@@ -227,15 +251,7 @@ class _CardDelegate(QStyledItemDelegate):
         p.setBrush(QColor(_T("hover") if (sel or hov) else (_T("surface2") if _dark() else _T("surface"))))
         p.drawRoundedRect(rect, 11, 11)
         inner = rect.adjusted(12, 10, -12, -10)
-        base = QFont(opt.font)
-        f1 = QFont(base)
-        f1.setPixelSize(13)
-        f1.setWeight(QFont.DemiBold)
-        fn = _num_font(base, 12, QFont.Medium)
-        f2 = QFont(base)
-        f2.setPixelSize(12)
-        f3 = QFont(base)
-        f3.setPixelSize(11)
+        f1, fn, f2, f3, fd = self._fonts(opt.font)
         amt = _money0(r.get("amount")) if r.get("amount") is not None else "—"
         p.setFont(fn)
         aw = QFontMetrics(fn).horizontalAdvance(amt)
@@ -247,13 +263,13 @@ class _CardDelegate(QStyledItemDelegate):
         p.drawText(QRectF(inner.left(), inner.top(), inner.width() - aw - 8, 18), Qt.AlignLeft | Qt.AlignVCenter, sup)
         y2 = inner.top() + 22
         p.setPen(QColor(_T("muted")))
-        p.setFont(_num_font(base, 11, QFont.Medium))
+        p.setFont(fd)
         dt = _dm(r.get("date"))
         dw = QFontMetrics(p.font()).horizontalAdvance(dt)
         p.drawText(QRectF(inner.right() - dw, y2, dw, 16), Qt.AlignRight | Qt.AlignVCenter, dt)
         p.setFont(f2)
         p.drawText(QRectF(inner.left(), y2, inner.width() - dw - 8, 16), Qt.AlignLeft | Qt.AlignVCenter, r.get("store_name") or "")
-        text, tone = card_hint(r)
+        text, tone = self._hint(r)
         p.setFont(f3)
         p.setPen(QColor(_T(tone) if tone != "muted" else _T("muted")))
         p.drawText(QRectF(inner.left(), y2 + 20, inner.width(), 16), Qt.AlignLeft | Qt.AlignVCenter,
@@ -314,6 +330,7 @@ class OrderBoard(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.rows, self.by_id, self.sel_id = [], {}, None
+        self._hints = {}
         h = QHBoxLayout(self)
         h.setContentsMargins(0, 0, 0, 0)
         h.setSpacing(12)
@@ -333,6 +350,7 @@ class OrderBoard(QWidget):
     def set_rows(self, rows):
         self.rows = list(rows)
         self.by_id = {r["id"]: r for r in self.rows}
+        self._hints = {}
         groups = {k: [] for k, _n, _t in LANES}
         for r in self.rows:
             k = lane_of(r)

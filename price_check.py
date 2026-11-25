@@ -171,10 +171,18 @@ def best_quotes(files):
     （检查门店订货清单时还没比价，按最便宜那家估：比价默认就挑它）
     """
     best = {}
+    by_ean = {}
     for label, items in files.items():
         for ean, q in items.items():
             p = q.get("price")
-            if not p or p <= 0:
+            if p and p > 0:
+                by_ean.setdefault(ean, {})[label] = float(p)
+    import service as S
+    odd = {ean: S.drop_odd_prices(u)[1] for ean, u in by_ean.items()}     # 写错的报价（€0.02…）不算最便宜（2026-11-25）
+    for label, items in files.items():
+        for ean, q in items.items():
+            p = q.get("price")
+            if not p or p <= 0 or label in odd.get(ean, ()):
                 continue
             packs = best[ean]["packs"] if ean in best else []
             packs.append(float(q.get("pack") or 1))

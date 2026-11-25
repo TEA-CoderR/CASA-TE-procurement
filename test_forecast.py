@@ -193,3 +193,19 @@ def test_check_cover_ignores_slowdown():
     import check_rules as CR
     x = {"daily0": 0.3, "slow_from": 1.2, "inv0": 36}
     assert abs(CR._cover_now(x) - 30) < 1e-9
+
+
+def test_stockout_weeks_do_not_pull_daily_down():
+    """2026-11-25 用户：断货的那几周不拉低日均"""
+    import forecast as F
+    w = [7, 7, 7, 0, 0, 0, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7]
+    filled, n = F.fill_stockouts(w, inv=10)
+    assert n == 3 and filled[3:6] == [7, 7, 7]
+    assert F.analyze(w, 10, "B", F.DEFAULT_PARAMS)["daily"] > F.demand_rate(w)[0]
+    # 最近几周没卖、店里还有货：真卖慢了，不补
+    assert F.fill_stockouts([0, 0, 0] + [7] * 23, inv=10)[1] == 0
+    # 现在店里没货：最近几周也算断货
+    assert F.fill_stockouts([0, 0, 0] + [7] * 23, inv=0)[1] == 3
+    # 偶尔才卖的不补；关掉开关不补
+    assert F.fill_stockouts([1, 0, 0, 1, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0], inv=3)[1] == 0
+    assert F.fill_stockouts(w, 10, {"stockout_fill": False})[1] == 0

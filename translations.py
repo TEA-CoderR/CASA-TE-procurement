@@ -5106,4 +5106,6 @@ TRANSLATIONS = {
     '非 Griglia · 门店要订': ('Not in Griglia · store wants it', 'Non in Griglia · richiesto dal negozio'),
     '这个商品不在 Griglia，平常应该向直厂订；门店在扫码枪上（Non in Griglia）说等不及、要从批发商订，原因：{0}': ('This item is not in the Griglia and is normally ordered from the direct supplier; on the scanner (Non in Griglia) the store said it cannot wait and wants it from a wholesaler, reason: {0}', 'Questo articolo non è in Griglia e di solito si ordina dal fornitore diretto; sullo scanner (Non in Griglia) il negozio ha detto che non può aspettare e lo vuole dal grossista, motivo: {0}'),
     '不在 Griglia、门店说等不及直厂、要从批发商订的商品（扫码枪上叫 Non in Griglia，门店要写原因）：检查清单里会写「非 Griglia · 门店要订」和原因': ('Items not in the Griglia that the store wants from a wholesaler because the direct supplier is too slow (on the scanner: Non in Griglia, with a reason): the review list shows "Not in Griglia · store wants it" and the reason', 'Articoli non in Griglia che il negozio vuole dal grossista perché il diretto è troppo lento (sullo scanner: Non in Griglia, con motivo): la verifica mostra "Non in Griglia · richiesto dal negozio" e il motivo'),
+    '正在显示 Griglia 统计': ('Showing Griglia statistics', 'Visualizzazione statistiche Griglia'),
+    '画表格': ('Drawing tables', 'Disegno tabelle'),
 }
