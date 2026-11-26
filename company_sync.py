@@ -23,8 +23,8 @@ SKIP_TOP = {"last_folder", "sync_root", "theme", "ui_dark_v2", "ui_light_v3", "d
             "accent", "density", "theme_follow",   # 外观：每个人自己的（2026-11-16）
             "agent"}  # 采购助手的服务商 / 模型每台电脑自己选（密钥本来就只在本机，2026-11-13）
 # 某一块里面不同步的
-SKIP_IN = {"store_orders": {"folder", "day", "skip", "moq_override", "stores", "last_dir", "detail_view"},
-           "store_pdv": {"detail_view"},
+SKIP_IN = {"store_orders": {"folder", "day", "skip", "moq_override", "stores", "last_dir", "detail_view", "detail_list_v1"},
+           "store_pdv": {"detail_view", "detail_list_v1"},
            "reorder": {"store", "last_dir", "last_file"},
            "distribution": {"folder", "last_dir", "last_file"},
            "import_page": {"folder", "last_dir", "last_file"},

@@ -47,15 +47,18 @@ ALL = "__all__"
 #   条码 等级 周期 本店库存 日均 库存够卖 需求 每箱件数 | 建议 判断 订货箱数 调货 | 到货后够卖 件价 金额 原因
 # 2026-10-21 加了 36 Codice Fornitore（供应商自己的货号，SCHEDA 里有这一列才有），默认放在条码后面
 # 2026-11-03 加了 37 在途箱数（已经订了、还没到货的箱数，order_record；用户同一天定：从建议量里扣，store_orders.apply_transit），放在库存够卖后面
-_ORDER = [4, 36, 18, 19, 6, 20, 11, 37, 23, 12, 15, 2, 16, 33, 32, 13, 17, 35,
-          1, 0, 5, 3, 34, 14, 21, 7, 8, 9, 10, 22, 24, 25, 26, 27, 28, 29, 30, 31]
+# 2026-11-26（用户：订单表效果一般，还是改列表，把订单文件里平时看的列放前面）加了 38 NO. · 39 Qtà Ordine ·
+#   40 ULT. ARRIVO · 41 QTA ULT. ARR. · 42 ULT. VENDITA；前面一段照订单文件那一页的顺序、表头照文件写，后面是程序的
+_ORDER = [1, 38, 3, 36, 4, 5, 12, 16, 39, 13, 17, 6, 40, 41, 42, 22, 7, 8, 9, 10, 18,
+          15, 2, 33, 37, 32, 11, 20, 19, 35, 0, 34, 14, 21, 23, 24, 25, 26, 27, 28, 29, 30, 31]
 TRANSIT_K = 37
-_LAYOUT_VER = 5           # 改了默认顺序就加 1：用户以前拖过的顺序作废一次，换成新的默认顺序
+NO_K, QTA_K, ARR_K, ARRQ_K, SALE_K = 38, 39, 40, 41, 42
+_LAYOUT_VER = 6           # 改了默认顺序就加 1：用户以前拖过的顺序作废一次，换成新的默认顺序
 _EXTRA = list(range(22, 32))
 TRANSFER_COL_K, CHANGE_COL_K, REASON_COL_K = 33, 34, 35
 # 默认只显示审核要看的：门店 供应商 名称 判断 | 原建议 订货箱数 调货 | 金额 本店库存 库存够卖 订后够卖
 # （原因放在「判断」的鼠标提示里；其他列在「更多 → 显示哪些列」里打开）
-_DEFAULT_HIDDEN = [1, 0, 5, 3, 34, 14, 21, 7, 8, 9, 10, 22, 24, 25, 26, 27, 28, 29, 30, 31]
+_DEFAULT_HIDDEN = [0, 34, 14, 21, 23, 20, 19, 35, 24, 25, 26, 27, 28, 29, 30, 31]
 VERDICT_TOKEN = {"transfer": "ok", "more": "accent", "less": "warn", "none": "faint", "same": "text", "nodb": "err"}
 
 
@@ -555,7 +558,10 @@ class DetailWindow(ToolWindow):
         tb.setSpacing(8)
         # 2026-11-26 用户：同事更喜欢在订单文件里改 → 默认「订单表」（和 SCHEDA 一样的样子），原来的列表先留着
         from page_kit import Seg
-        self._view = self.page.cfg.get("detail_view", "sheet")
+        if not self.page.cfg.get("detail_list_v1"):      # 2026-11-26 用户：订单表效果一般，默认回到列表（一次）
+            self.page.cfg["detail_view"] = "list"
+            self.page.cfg["detail_list_v1"] = True
+        self._view = self.page.cfg.get("detail_view", "list")
         self.view_seg = Seg([("sheet", tr("订单表")), ("list", tr("列表"))], self._view,
                             tip=tr("订单表 = 和订单文件一样的样子（一家供应商、一家店一页）；列表 = 全部商品一行一行"))
         self.view_seg.changed.connect(self.set_view)
@@ -642,14 +648,18 @@ class DetailWindow(ToolWindow):
         mid = QHBoxLayout()
         mid.setContentsMargins(0, 0, 0, 0)
         mid.setSpacing(0)
-        self.table = self.ui.make_table(_perm([tr("供应商"), tr("门店"), tr("判断"), tr("商品编号"), tr("条码"), tr("名称"),
-                                               tr("本店库存"), "30", "60", "90", "180", tr("库存够卖（天）"), tr("每箱件数"),
-                                               tr("件价"), tr("建议件数"), tr("建议（箱）"), tr("订货箱数"), tr("金额"),
-                                               tr("等级"), tr("周期"), tr("日均"), tr("目标库存"),
-                                               tr("月均"), tr("需求（件）")] + [f"GIA.{i}" for i in range(6)] +
+        d0 = (self.page.calc or {}).get("days") or [30, 60, 90, 180]
+        # 和订单文件一样的列用文件里的表头（同事看惯了），中文意思放在鼠标提示里
+        self.table = self.ui.make_table(_perm([tr("供应商"), tr("门店"), tr("判断"), "Cod.Art.", "Codice EAN",
+                                               "Descrizione Prodotto", "GIA"] + [f"ROT.{n}d" for n in d0[:4]] +
+                                              [tr("库存够卖（天）"), "PZ*COLLI", "PREZZO NETTO", tr("建议件数"), tr("建议（箱）"),
+                                               "Colli", "IMPORTO", "Livello", tr("周期"), tr("日均"), tr("目标库存"),
+                                               "MEDIA MENS.", tr("需求（件）")] + [f"GIA.{i}" for i in range(6)] +
                                               ["GIA-period", "period_sales", tr("到货后够卖（天）"),
-                                               tr("调货"), tr("变化（箱）"), tr("原因"), "Codice Fornitore", tr("在途箱数")]),
-                                        numeric_cols=[_col(k) for k in list(range(6, 18)) + [19, 20, 21, 32, 34, 37] + _EXTRA])
+                                               tr("调货"), tr("变化（箱）"), tr("原因"), "Codice Fornitore", tr("在途箱数"),
+                                               "NO.", "Qtà Ordine", "ULT. ARRIVO", "QTA ULT. ARR.", "ULT. VENDITA"]),
+                                        numeric_cols=[_col(k) for k in list(range(6, 18)) + [19, 20, 21, 32, 34, 37, 38, 39, 41]
+                                                      + _EXTRA])
         self.table.setEditTriggers(QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed |
                                    QAbstractItemView.AnyKeyPressed)
         self.table.setFocusPolicy(Qt.StrongFocus)
@@ -661,11 +671,18 @@ class DetailWindow(ToolWindow):
         import product_images as PI          # 条码那一格左边放商品小图（只下载看得见的行）
         self.table.setItemDelegateForColumn(_col(4), PI.ThumbDelegate(self.table, _col(4), None, self.page.settings))
         for c, wd in enumerate(_perm((130, 92, 84, 80, PI.thumb_size(self.page.settings) + 120, 270, 70, 50, 50, 50, 50, 70, 66, 62, 70, 66, 76, 80, 46, 46, 60, 70,
-                                      56, 56, 54, 54, 54, 54, 54, 54, 80, 86, 96, 190, 110, 380, 110, 60))):
+                                      56, 56, 54, 54, 54, 54, 54, 54, 80, 86, 96, 190, 110, 380, 110, 60,
+                                      50, 76, 92, 92, 92))):
             hdr = self.table.horizontalHeaderItem(c)
             need = hh.fontMetrics().horizontalAdvance(hdr.text() if hdr else "") + 26
             self.table.setColumnWidth(c, max(wd, need))
-        self.table.horizontalHeaderItem(EDIT_COL).setText(tr("订货箱数") + " ✎")
+        self.table.horizontalHeaderItem(EDIT_COL).setText("Colli ✎")
+        for k, tip in ((38, tr("订单文件里的编号")), (3, tr("商品编号")), (4, tr("条码")), (5, tr("名称")),
+                       (12, tr("每箱件数")), (39, tr("订几件 = 订货箱数 × 每箱件数")), (13, tr("件价")),
+                       (17, tr("金额")), (6, tr("本店库存")), (40, tr("最后一次到货的日期")),
+                       (41, tr("最后一次到货的件数")), (42, tr("最后一次卖出的日期")), (18, tr("销量等级")),
+                       (7, tr("近 30 天销量")), (8, tr("近 60 天销量")), (9, tr("近 90 天销量")), (10, tr("近 180 天销量"))):
+            self.table.horizontalHeaderItem(_col(k)).setToolTip(tip)
         self.table.horizontalHeaderItem(EDIT_COL).setToolTip(tr("点 − / ＋ 改 1 箱，双击直接输入，0 = 不订"))
         self.table.horizontalHeaderItem(_col(18)).setToolTip(tr("销量等级：A 卖得快，B 一般，C 卖得慢"))
         self.table.horizontalHeaderItem(_col(15)).setToolTip(tr("系统按销量和库存算出来的箱数（调货、手动改之前），和「订货箱数」对比"))
@@ -709,7 +726,7 @@ class DetailWindow(ToolWindow):
         hh.setToolTip(tr("点表头排序；右键表头按这一列筛选；拖动表头可以换列的位置"))
         from erp_widgets import ColumnChooser
         self.cols = ColumnChooser(self.table, self.page.cfg, "detail_cols", _ORDER, lambda: save_settings(self.page.settings),
-                                  _DEFAULT_HIDDEN, ver=4)
+                                  _DEFAULT_HIDDEN, ver=5)
         hh.setSectionsClickable(True)
         hh.setSortIndicatorShown(True)
         hh.setSortIndicator(0, Qt.AscendingOrder)
@@ -753,7 +770,7 @@ class DetailWindow(ToolWindow):
 
     def set_view(self, key, save=True):
         """订单表 / 列表（记住上次用的）"""
-        self._view = key if key in ("sheet", "list") else "sheet"
+        self._view = key if key in ("sheet", "list") else "list"
         sheet = self._view == "sheet"
         self.views.setCurrentIndex(0 if sheet else 1)
         for w in self._list_tools:
@@ -1046,7 +1063,7 @@ class DetailWindow(ToolWindow):
         d = calc["days"]
         self._warn_n = self._warn_boxes()
         for i in range(4):
-            self.table.horizontalHeaderItem(_col(7 + i)).setText(tr("{0}天", d[i]))
+            self.table.horizontalHeaderItem(_col(7 + i)).setText(f"ROT.{d[i]}d")
             self.table.horizontalHeaderItem(_col(7 + i)).setToolTip(tr("最近 {0} 天销量", d[i]))
         self.f_sup.blockSignals(True)
         self.f_sup.clear()
@@ -1153,10 +1170,10 @@ class DetailWindow(ToolWindow):
             f"{x['target']:.0f}" if x and isinstance(x.get("target"), (int, float)) else ""] +
             self._extra_texts(x, sug_c, d) + ["", self._transfer_text(sc, it, sid), "",
                                               "；".join(self._reason_lines(sc, it, sid)), it.get("sup_code") or "",
-                                              self._transit_text(it, sid)])
+                                              self._transit_text(it, sid)] + self._file_texts(it, x))
         keys = _perm(self._sort_keys(i, x, sug_c) + self._extra_keys(x, sug_c, d) +
                      [0.0, self._transfer_key(sc, it, sid), 0.0, vals[REASON_COL].lower(),
-                      str(it.get("sup_code") or ""), self._transit_boxes(it, sid)])
+                      str(it.get("sup_code") or ""), self._transit_boxes(it, sid)] + self._file_keys(it, x))
         num_cols, nf = self._num_cols, self._num_font
         ro = Qt.ItemIsSelectable | Qt.ItemIsEnabled
         for c in range(len(vals)):
@@ -1607,6 +1624,24 @@ class DetailWindow(ToolWindow):
         v = S.extra_fields(x, sug_c, days)
         return None if v is None else [v[5], v[8]] + v[10:16] + [v[16], v[17]]
 
+    def _file_texts(self, it, x):
+        """订单文件里有、列表以前没有的几列：NO. · Qtà Ordine（_show_qty 填）· ULT. ARRIVO · QTA ULT. ARR. · ULT. VENDITA"""
+        q = (x or {}).get("last_in_qty")
+        return [str(it.get("no", "")), "", (x or {}).get("last_in") or "", f"{q:g}" if isinstance(q, (int, float)) and q else "",
+                (x or {}).get("last_sale") or ""]
+
+    def _file_keys(self, it, x):
+        def day(v):
+            try:
+                dd, mm, yy = str(v).split("/")
+                return (int(yy), int(mm), int(dd))
+            except (ValueError, AttributeError):
+                return (0, 0, 0)
+        no = it.get("no")
+        q = (x or {}).get("last_in_qty")
+        return [(float(no) if isinstance(no, (int, float)) else float(it["row"])), 0.0, day((x or {}).get("last_in")),
+                float(q) if isinstance(q, (int, float)) else None, day((x or {}).get("last_sale"))]
+
     def _extra_texts(self, x, sug_c, days):
         v = self._extra_vals(x, sug_c, days)
         return [f"{n:g}" for n in v] if v else [""] * len(_EXTRA)
@@ -1674,6 +1709,10 @@ class DetailWindow(ToolWindow):
         edited = (sc["path"], sid, it["row"]) in self.page.edited
         c.setForeground(QColor(T("warn") if edited else T("accent") if n > 0 else T("faint")))
         c.setBackground(QColor(T("warn_soft")) if edited else QColor(0, 0, 0, 0))
+        qc = self.table.item(r, _col(QTA_K))
+        if qc is not None:
+            qc.setText(f"{n * it['pack']:g}" if n else "")
+            qc.setData(KEY_ROLE, float(n * it["pack"]))
         amt = self.table.item(r, AMOUNT_COL)
         amt.setText(f"{n * it['pack'] * it['price']:,.2f}" if n else "")
         amt.setData(KEY_ROLE, n * it["pack"] * it["price"])
