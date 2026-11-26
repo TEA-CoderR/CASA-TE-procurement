@@ -553,6 +553,15 @@ class DetailWindow(ToolWindow):
         tb = QHBoxLayout(bar)
         tb.setContentsMargins(16, 8, 16, 8)
         tb.setSpacing(8)
+        # 2026-11-26 用户：同事更喜欢在订单文件里改 → 默认「订单表」（和 SCHEDA 一样的样子），原来的列表先留着
+        from page_kit import Seg
+        self._view = self.page.cfg.get("detail_view", "sheet")
+        self.view_seg = Seg([("sheet", tr("订单表")), ("list", tr("列表"))], self._view,
+                            tip=tr("订单表 = 和订单文件一样的样子（一家供应商、一家店一页）；列表 = 全部商品一行一行"))
+        self.view_seg.changed.connect(self.set_view)
+        tb.addWidget(self.view_seg)
+        tb.addSpacing(6)
+        self._list_tools = []
         self.store_group = QButtonGroup(self)
         self.store_group.setExclusive(True)
         b = QPushButton(tr("全部门店"))
@@ -569,6 +578,7 @@ class DetailWindow(ToolWindow):
             b.setProperty("sid", sid)
             self.store_group.addButton(b)
             tb.addWidget(b)
+        self._list_tools += list(self.store_group.buttons())
         self.store_group.buttonClicked.connect(lambda _b: self._filter())
         for c in self.store_group.buttons():
             c.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)   # 文字长（英文）时不被挤掉
@@ -596,6 +606,7 @@ class DetailWindow(ToolWindow):
         self.f_view.setToolTip(tr("只看要订的：要订、系统建议过、改过或有调货的商品"))
         self.f_view.currentIndexChanged.connect(self._filter)
         tb.addWidget(self.f_view)
+        self._list_tools += [self.f_sup, self.f_text, self.f_view]
         tb.addStretch()
         b_add = QPushButton(tr("加商品凑单"))
         b_add.setToolTip(tr("同一个供应商、同一家店：把没被选进来但卖得快的商品加进订单，凑够起订箱数或金额"))
@@ -605,6 +616,7 @@ class DetailWindow(ToolWindow):
         self.btn_reset.setToolTip(tr("把当前筛选出来的行恢复成系统建议的箱数"))
         self.btn_reset.clicked.connect(self.reset_shown)
         tb.addWidget(self.btn_reset)
+        self._list_tools.append(self.btn_reset)
         more = QPushButton(tr("更多") + " ▾")
         more.setToolTip(tr("显示哪些列、导出 Excel"))
         more.clicked.connect(lambda: self._more_menu(more))
@@ -717,7 +729,13 @@ class DetailWindow(ToolWindow):
         mid.addWidget(self._build_drawer())
         mw = QWidget()
         mw.setLayout(mid)
-        v.addWidget(mw, 1)
+        from PySide6.QtWidgets import QStackedWidget
+        from order_sheet import OrderSheet
+        self.sheet = OrderSheet(self)
+        self.views = QStackedWidget()
+        self.views.addWidget(self.sheet)
+        self.views.addWidget(mw)
+        v.addWidget(self.views, 1)
 
         # ---- 状态栏 ----
         sb = QFrame()
@@ -731,6 +749,21 @@ class DetailWindow(ToolWindow):
         sh.addWidget(self.status_l, 1)
         sh.addWidget(self.status_r)
         v.addWidget(sb)
+        self.set_view(self._view, save=False)
+
+    def set_view(self, key, save=True):
+        """订单表 / 列表（记住上次用的）"""
+        self._view = key if key in ("sheet", "list") else "sheet"
+        sheet = self._view == "sheet"
+        self.views.setCurrentIndex(0 if sheet else 1)
+        for w in self._list_tools:
+            w.setVisible(not sheet)
+        self.status_l.setVisible(not sheet)          # 「显示 n / 总数 行」是列表的
+        if sheet and self.page.calc and not self.sheet.sc:
+            self.sheet.reload()
+        if save:
+            self.page.cfg["detail_view"] = self._view
+            save_settings(self.page.settings)
 
     # ---------- 列顺序 / 宽度（记住） ----------
     def _restore_columns(self):
@@ -1022,6 +1055,7 @@ class DetailWindow(ToolWindow):
             self.f_sup.addItem(f"{sc['name']}（{sc['day']}）", sc["path"])
         self.f_sup.blockSignals(False)
         self.setWindowTitle(tr("订货明细 — {0} 家供应商 · {1} 家门店", len(calc["schede"]), len(stores)))
+        self._di_index = None
 
         self.detail = []
         import reorder_service as _R
@@ -1077,6 +1111,8 @@ class DetailWindow(ToolWindow):
 
     def _finish_load(self):
         self._loading = False
+        if self._view == "sheet":
+            self.sheet.reload()               # 订单表要 detail（商品详情）建好；数量本来就是 page.colli
         self._load_months(list(self.page.calc.get("stores") or []))      # 详情栏的近两年每月销量：后台先读好
         self._load_transit()                                               # 在途列：后台读
         self._load_oldrec()                                                # 入库记录有误：后台查
@@ -1746,6 +1782,8 @@ class DetailWindow(ToolWindow):
 
     def refresh_rows(self):
         """主窗口那边改了数（比如恢复建议值）→ 刷新显示"""
+        if self._view == "sheet" and self.sheet.sc:
+            self.sheet.render()
         if not self.detail or self._loading:
             return                                # 还在填表：填到的时候会用最新的箱数
         for i in range(len(self.detail)):
@@ -1780,6 +1818,10 @@ class DetailWindow(ToolWindow):
         self.flash(tr("已恢复 {0} 行", n))
 
     def set_filter(self, path=ALL, sid=ALL):
+        if self._view == "sheet" and path not in (None, ALL):
+            if not self.sheet.sc:
+                self.sheet.reload()
+            self.sheet.select(path, sid)
         if self._loading:
             self._pending_filter = (path, sid)     # 填完表再筛选
             return
