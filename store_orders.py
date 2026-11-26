@@ -860,6 +860,7 @@ def demand_by_store(db, schede, stores, days_list, reorder_cycle, use_supplier_c
                        "season": R._val(r, "season_factor"), "weekly": R._val(r, "weekly_26"),
                        "service": R._val(r, "service_level"),
                        "slow_from": R._val(r, "slow_from"),      # 规则 A：最近卖慢了，原来的加权日均
+                       "long_daily": R._val(r, "long_daily"),    # 近一年平均日销（没货的慢卖商品补 1 箱用）
                        "db_pack": R._val(r, "qtasmallbox"),          # 数据库箱规（和 SCHEDA 每箱件数对照用）
                        "gia_all": [R._val(r, f"Negozio{i}_Giacenza", 0) or 0 for i in range(6)]}   # GIA.0（BMS）~ GIA.5
         # 订单文件里的「最后到货日期 / 数量、最后销售日期」（2026-11-16 用户）：查不了不影响建议量
@@ -987,13 +988,37 @@ def export_transfers(transfers, path, date_tag=""):
     return path
 
 
+SLOW_BOX_DAYS = 365      # 没货的慢卖商品：一箱够卖不超过这么多天就至少订 1 箱（2026-11-26 用户）
+
+
+def slow_restock(d, pack):
+    """没货（库存 ≤ 0、没有在途）、近一年卖过、建议 0 箱，但一箱按一年平均销量够卖 ≤ SLOW_BOX_DAYS 天 → 补 1 箱。
+    返回一箱够卖几天；不用补 → None"""
+    if not d or float(d.get("inv_raw", d.get("inv")) or 0) > 0 or float(d.get("transit") or 0) > 0:
+        return None
+    rate = float(d.get("long_daily") or 0)
+    if rate <= 0:
+        s = d.get("sales") or []
+        s180 = float(s[3] or 0) if len(s) > 3 else 0.0
+        rate = s180 / 180.0
+    if rate <= 0:                                 # 近一年没卖过（或没有销售记录）：不补
+        return None
+    rate = max(rate, float(d.get("daily") or 0))
+    if rate <= 0 or not pack or pack <= 0:
+        return None
+    days = pack / rate
+    return days if days <= SLOW_BOX_DAYS else None
+
+
 def colli_for(d, pack, algo=None):
     """
     建议件数 → SCHEDA 箱数。新算法：凑不成整箱时少订后够安全库存就少订（forecast.to_packs）；原程序算法：件数（已按原程序取整）÷ 每箱件数，向上取整。
     不管在途：在途在 base_colli 里按箱扣（订货箱数 = 建议箱数 − 在途箱数，2026-11-03 用户：三列放一起一眼看懂）
     """
-    if not d or d["sugg"] <= 0:
+    if not d:
         return 0
+    if d["sugg"] <= 0:
+        return 1 if slow_restock(d, pack) is not None else 0
     if algo and algo.get("engine") == "v2":
         import forecast as F
         return F.to_packs(d["sugg"], pack, d.get("inv", 0), d.get("daily", 0), algo,
@@ -1488,11 +1513,18 @@ def plan_supplier(scheda, demand, fill=None, stores=None, colli=None, mode="auto
 
 
 URGENT_DAYS = 7          # 紧急缺货：库存（含在途）够卖不到这么多天
+URGENT_SELL_DAYS = 14    # 而且按日均接下来这么多天至少能卖 1 件（≈ 每月 2 件以上）；卖得很慢的没货不算紧急（2026-11-26 用户）
+
+
+def sells_enough(daily):
+    """卖得动：按日均 URGENT_SELL_DAYS 天里至少卖 1 件"""
+    return float(daily or 0) * URGENT_SELL_DAYS >= 1 - 1e-9
 
 
 def urgent_days(d):
-    """紧急缺货的商品 → 库存（含在途）够卖几天；不紧急 / 没数据 → None。全程序「紧急缺货」都用这一个算法"""
-    if not d:
+    """紧急缺货的商品 → 库存（含在途）够卖几天；不紧急 / 没数据 → None。全程序「紧急缺货」都用这一个算法：
+    库存（负数当 0）+ 在途够卖不到 URGENT_DAYS 天，而且卖得动（sells_enough）"""
+    if not d or not sells_enough(d.get("daily")):
         return None
     cd = cover_days(d, float(d.get("transit") or 0))
     return cd if cd is not None and cd < URGENT_DAYS else None
@@ -1514,9 +1546,10 @@ def urgent_share(scheda, lines, dem_rows, days=URGENT_DAYS, with_total=False):
             continue
         tot += 1
         d = (dem_rows or {}).get(row)
-        cd = cover_days(d, float(d.get("transit") or 0)) if d else None
-        if cd is not None and cd < days:
-            n += 1
+        if d and sells_enough(d.get("daily")):
+            cd = cover_days(d, float(d.get("transit") or 0))
+            if cd is not None and cd < days:
+                n += 1
     share = n / tot if tot else 0.0
     return (share, n, tot) if with_total else (share, n)
 

@@ -131,6 +131,8 @@ def detail_tags(x, it, transit_boxes=0, moved_in=False, edited=False, marks=(), 
         out.append((old_rec_short(old_rec), "warn"))
     if transit_boxes:
         out.append((tr("在途 {0:g} 箱", transit_boxes), "info"))
+    if (x.get("sugg") or 0) <= 0 and S.slow_restock(x, it.get("pack")) is not None:
+        out.append((tr("没货 · 补 1 箱"), "info"))
     if moved_in:
         out.append((tr("调货"), "ok"))
     if x.get("slow_from"):
@@ -1667,6 +1669,10 @@ class DetailWindow(ToolWindow):
         sl = R.slow_line(x)
         if sl:
             lines.insert(0, sl)
+        sb = S.slow_restock(x, it.get("pack")) if (x.get("sugg") or 0) <= 0 else None
+        if sb is not None:
+            lines.insert(0, tr("没货、近一年卖过，一箱 {0:g} 件按平时的速度够卖约 {1} 天（不到一年）：补 1 箱",
+                               it.get("pack") or 0, S.days_text(sb)))
         tb = S.transit_boxes(x, it.get("pack"))
         if tb:
             lines.append(tr("在途 {0:g} 箱还没到货：订货箱数 = 建议 {1:g} − 在途 {0:g} = {2:g} 箱", tb,

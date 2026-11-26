@@ -579,3 +579,18 @@ def test_check_list_urgent_counts_transit_and_red_tag_first():
     assert CR.urgent_days(x2) is None
     x3 = {"in_db": True, "daily0": 1.0, "inv0": -5, "transit_pcs": 0}   # 负库存当 0
     assert CR.urgent_days(x3) == 0
+
+
+def test_slow_sellers_not_urgent_and_out_of_stock_gets_one_box_if_it_sells_within_a_year():
+    import store_orders as S
+    import check_rules as CR
+    # TOV MIRIAM：今年卖 3 件、没货、一箱 6 件 → 不紧急，一箱够卖两年 → 不补
+    tov = {"sugg": 0, "daily": 0.008, "inv": 0, "inv_raw": -1, "long_daily": 3 / 364, "sales": [0, 0, 0, 1]}
+    assert S.urgent_days(tov) is None and S.colli_for(tov, 6) == 0
+    assert CR.urgent_days({"daily0": 0.008, "inv0": -1}) is None
+    # 一年卖 24 件、没货、一箱 6 件（够卖约 90 天）→ 补 1 箱；有在途 / 有库存不补
+    d = {"sugg": 0, "daily": 0.03, "inv": 0, "inv_raw": 0, "long_daily": 24 / 364, "sales": [0, 0, 0, 12]}
+    assert S.colli_for(d, 6) == 1
+    assert S.colli_for(dict(d, transit=2), 6) == 0 and S.colli_for(dict(d, inv=1, inv_raw=1), 6) == 0
+    # 卖得动的没货照样紧急
+    assert S.urgent_days({"sugg": 3, "daily": 1.0, "inv": 2}) == 2.0

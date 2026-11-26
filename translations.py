@@ -5316,4 +5316,6 @@ TRANSLATIONS = {
     '紧急缺货：库存（含在途）只够卖 {0} 天': ('Urgent shortage: stock (incl. in transit) lasts only {0} days', 'Rottura urgente: scorta (incl. in arrivo) solo per {0} gg'),
     '这家店不参与调货': ('This store does not take part in transfers', 'Questo punto vendita non partecipa ai trasferimenti'),
     '别的门店都没有多余的': ('No other store has surplus', 'Nessun altro punto vendita ha eccedenze'),
+    '没货 · 补 1 箱': ('Out of stock · 1 box', 'Esaurito · 1 collo'),
+    '没货、近一年卖过，一箱 {0:g} 件按平时的速度够卖约 {1} 天（不到一年）：补 1 箱': ('Out of stock, sold in the last year; one box of {0:g} pcs lasts about {1} days at the usual pace (under a year): order 1 box', 'Esaurito, venduto nell\'ultimo anno; un collo da {0:g} pz dura circa {1} giorni al ritmo abituale (meno di un anno): ordinare 1 collo'),
 }

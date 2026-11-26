@@ -506,12 +506,12 @@ URGENT_DAYS = 7            # 和总仓采购一样（store_orders.URGENT_DAYS）
 
 def urgent_days(x):
     """紧急缺货：库存（负数当 0）+ 在途，按日均够卖不到 URGENT_DAYS 天 → 返回天数，不是返回 None。
-    没销量的不算（卖不动谈不上缺货）。2026-11-26 用户：检查清单紧急缺货也标红"""
+    没销量 / 卖得很慢的不算（store_orders.sells_enough）。2026-11-26 用户：检查清单紧急缺货也标红"""
     if not x.get("in_db", True):
         return None
     d = x.get("daily0") if x.get("daily0") is not None else x.get("daily")
     d = max(float(d or 0), float(x.get("slow_from") or 0))
-    if d <= 0:
+    if d * 14 < 1 - 1e-9:                     # 卖得很慢（14 天卖不到 1 件）没货也不算紧急，和 store_orders 一样
         return None
     have = max(0.0, float(x.get("inv0") or 0)) + max(0.0, float(x.get("transit_pcs") or 0))
     cd = have / d
