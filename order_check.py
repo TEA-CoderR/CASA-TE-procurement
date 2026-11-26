@@ -87,7 +87,7 @@ from check_rules import (  # noqa: F401  业务规则搬到 check_rules.py（202
     _pk, PROB_KINDS_TIPS, _prob_title, _issue, _situation, _edited, _issue_text, _problem, PROB_TABS, _tab_of,
     _report_rows, report_name, _advice, write_problem_report, _can_transfer, _set_box, is_new_item, store_reason,
     REVIEW_DEFAULTS, review_rules, review_days_for, _cover_now, PHANTOM_MIN_DAYS, PHANTOM_UNITS, censored_info, phantom_info,
-    init_boxes)
+    init_boxes, urgent_days, URGENT_DAYS)
 
 AFTER_COL = _col(20)          # 确定订后够卖（跟着确定件数变）
 LIST_AFTER_COL = _col(21)     # 清单订后够卖（按门店清单原来的数量订）
@@ -133,6 +133,9 @@ def key_tags(x, transit_boxes=0, edited=False):
     完整的几句话放鼠标提示（_reason_lines）。
     """
     out = []
+    ud = urgent_days(x)
+    if ud is not None:
+        out.append((tr("紧急缺货 · 够卖 {0} 天", _days(ud)), "err"))     # 红色只表示紧急缺货（2026-11-26 用户）
     if x.get("old_rec"):
         out.append((old_rec_short(x["old_rec"]), "warn"))    # 2025-01-08 以前的入库记录是错的（2026-11-22 用户）
     if not x.get("in_db", True):
@@ -188,7 +191,7 @@ VERDICT_TOKEN = {"transfer": "violet", "more": "accent", "less": "warn", "none":
 # 「看哪些」下拉框
 VIEWS = (("all", "全部商品"), ("review", "只看要审核的"), ("changed", "只看有变化的"), ("transfer", "只看调货"), ("more", "只看多订"),
          ("less", "只看少订"), ("none", "只看不订"), ("phantom", "只看库存可能不准"),
-         ("promo", "只看促销"), ("oldrec", "只看入库记录有误"))
+         ("promo", "只看促销"), ("oldrec", "只看入库记录有误"), ("urgent", "只看紧急缺货"))
 
 
 def promo_text(p):
@@ -1455,6 +1458,9 @@ class OrderCheck:
     def _marks(self, x):
         """判断后面的提醒：新加 / 清单改过（要审核）；慢销（订了要卖很久）；库存可能不准（虚库存）"""
         rv = []
+        ud = urgent_days(x)
+        if ud is not None:
+            rv.append(("stockout", tr("紧急缺货"), tr("紧急缺货：库存（含在途）只够卖 {0} 天", _days(ud))))
         cm = x.get("cut_much")
         if cm:
             rv.append(("much", tr("清单 {0} → 砍到 {1} 箱", cm[0], cm[1]),
@@ -1867,7 +1873,8 @@ class OrderCheck:
                             f"Cod.Forn. {x['sup_code']}" if x.get("sup_code") else "",
                             tr("{0} 报价", x["quote_sup"]) if x.get("quote_sup") else "") if p]
         tip = "\n".join(full) + (("\n🏷 " + self._promo_tip(x)) if x.get("promo") else "")
-        dr.show_head(x.get("name") or code, " · ".join(short), tip, x.get("ean"), self.settings, "cyan" if x.get("promo") else False)
+        dr.show_head(x.get("name") or code, " · ".join(short), tip, x.get("ean"), self.settings,
+                     "err" if urgent_days(x) is not None else ("cyan" if x.get("promo") else False))
         # 结论
         kind, vt = self._verdict(x)
         tok = VERDICT_TOKEN.get(kind, "text")
@@ -2469,6 +2476,7 @@ class OrderCheck:
         n["phantom"] = sum(1 for x in mine if x.get("phantom") and not _problem(x))
         n["promo"] = sum(1 for x in mine if x.get("promo"))
         n["oldrec"] = sum(1 for x in mine if x.get("old_rec"))
+        n["urgent"] = sum(1 for x in mine if urgent_days(x) is not None)
         n["review"] = sum(1 for x in mine if self._needs_review(x))
         for k in range(self.view.count()):
             key = self.view.itemData(k)
@@ -2536,6 +2544,7 @@ class OrderCheck:
             (view in ("transfer", "more", "less", "none") and kind != view) or \
             (view == "phantom" and not x.get("phantom")) or (view == "promo" and not x.get("promo")) or \
             (view == "oldrec" and not x.get("old_rec")) or \
+            (view == "urgent" and urgent_days(x) is None) or \
             (view == "review" and not self._needs_review(x))
         return hide or \
                (bool(text) and text not in self._search_text(x))
@@ -2591,6 +2600,16 @@ class OrderCheck:
                 it.setFont(f)
             t.item(k, _col(3)).setToolTip(f"{x['name']}\nEAN {x['ean'] or '—'}\n🏷 {ptip}")
             t.item(k, _col(2)).setToolTip("🏷 " + ptip)
+        ud = urgent_days(x)
+        if ud is not None:                       # 紧急缺货：商品名 / 条码红字加粗（盖过促销的青色）
+            utip = tr("紧急缺货：库存（含在途）只够卖 {0} 天", _days(ud))
+            for pc in (_col(2), _col(3)):
+                it = t.item(k, pc)
+                it.setForeground(QColor(T("err")))
+                f = it.font()
+                f.setBold(True)
+                it.setFont(f)
+                it.setToolTip(utip + ("\n" + it.toolTip() if it.toolTip() else ""))
         pk = t.item(k, _col(10))
         if x.get("quote_sup"):
             qp = x.get("quote_pack") or x["pack"]
@@ -2716,7 +2735,7 @@ class OrderCheck:
         marks = self._marks(x)
         vc = self.table.item(k, _col(0))         # 「判断」列（以前写成第 0 列 = 门店列，门店名被判断盖掉）
         vc.setText(" · ".join([vt] + [m[1] for m in marks]))
-        much = any(m[0] == "much" for m in marks)           # 订太多：红色，一眼看到
+        much = any(m[0] in ("much", "stockout") for m in marks)         # 订太多：红色，一眼看到
         vc.setForeground(QColor(T("err") if much else T("warn") if (marks and kind in ("same", "more"))
                                 else T(VERDICT_TOKEN.get(kind, "text"))))
         f = vc.font()

@@ -501,6 +501,23 @@ def _cover_now(x):
     return inv / d
 
 
+URGENT_DAYS = 7            # 和总仓采购一样（store_orders.URGENT_DAYS）：库存含在途够卖不到 7 天 = 紧急缺货
+
+
+def urgent_days(x):
+    """紧急缺货：库存（负数当 0）+ 在途，按日均够卖不到 URGENT_DAYS 天 → 返回天数，不是返回 None。
+    没销量的不算（卖不动谈不上缺货）。2026-11-26 用户：检查清单紧急缺货也标红"""
+    if not x.get("in_db", True):
+        return None
+    d = x.get("daily0") if x.get("daily0") is not None else x.get("daily")
+    d = max(float(d or 0), float(x.get("slow_from") or 0))
+    if d <= 0:
+        return None
+    have = max(0.0, float(x.get("inv0") or 0)) + max(0.0, float(x.get("transit_pcs") or 0))
+    cd = have / d
+    return cd if cd < URGENT_DAYS else None
+
+
 PHANTOM_MIN_DAYS = 7          # 至少这么多天没卖才算（周末、关门几天很正常）
 PHANTOM_UNITS = 3.0          # 按平时的速度，这段时间本该卖出 3 件以上（真有货却一件不卖的概率 ≈ e^-3 ≈ 5%）
 

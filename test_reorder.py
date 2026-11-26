@@ -564,3 +564,18 @@ def test_urgent_counts_stock_in_transit_and_share_uses_same_rule():
     sc = {"items": [{"row": 1}, {"row": 2}]}
     share, n = S.urgent_share(sc, {1: 1, 2: 1}, {1: {"inv": 1, "daily": 1}, 2: {"inv": 1, "daily": 1, "transit": 20}})
     assert (share, n) == (0.5, 1)
+
+
+def test_check_list_urgent_counts_transit_and_red_tag_first():
+    import check_rules as CR
+    import order_check as OC
+    x = {"in_db": True, "daily0": 2.0, "inv0": 4, "transit_pcs": 0}
+    assert CR.urgent_days(x) == 2.0
+    tags = OC.key_tags(x)
+    assert tags[0][1] == "err" and "紧急缺货" in tags[0][0]
+    x["transit_pcs"] = 12                     # 含在途够卖 8 天：不算紧急
+    assert CR.urgent_days(x) is None
+    x2 = {"in_db": True, "daily0": 0, "inv0": -3}   # 没销量：不算
+    assert CR.urgent_days(x2) is None
+    x3 = {"in_db": True, "daily0": 1.0, "inv0": -5, "transit_pcs": 0}   # 负库存当 0
+    assert CR.urgent_days(x3) == 0
