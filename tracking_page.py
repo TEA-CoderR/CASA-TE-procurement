@@ -37,18 +37,19 @@ class _Sig(QObject):
 def STATUS_LABELS():
     return {"ordered": tr("已下单"), "confirmed": tr("已确认"), "shipped": tr("已发货"), "partial": tr("部分到货"),
             "arrived": tr("已到货"),
-            "stuck": tr("卡住了"), "cancel": tr("已取消"), "deter": "DETER", "draft": tr("待登记")}
+            "stuck": tr("卡住了"), "cancel": tr("已取消"), "deter": "DETER", "draft": tr("待登记"),
+            "void": tr("没发出 · 已作废")}
 
 
 STATUS_TOKEN = {"ordered": "text", "confirmed": "accent", "shipped": "accent", "partial": "warn", "arrived": "ok", "stuck": "err",
-                "cancel": "faint", "deter": "faint", "draft": "warn"}
+                "cancel": "faint", "deter": "faint", "draft": "warn", "void": "faint"}
 
 
 def VIEWS():
     return [("all", tr("全部")), ("draft", tr("待登记")), ("open", tr("未完成")), ("pending", tr("待确认")), ("overdue", tr("已超期")),
             ("shipped", tr("已发货")), ("stuck", tr("卡住了")), ("partial", tr("部分到货")), ("arrived", tr("已到货")),
             ("deter", "DETER"),
-            ("cancel", tr("已取消"))]
+            ("cancel", tr("已取消")), ("void", tr("已作废的待登记"))]
 
 
 def _in_view(r, v):
@@ -495,6 +496,7 @@ class TrackingPage:
         m.addAction(tr("+ 新订单…"), self.new_order)
         m.addAction(tr("马上同步 Excel"), lambda: self.sync_excel(manual=True))
         m.addSeparator()
+        m.addAction(tr("历史未结订单核对…"), self.check_old)
         m.addAction(tr("名字相近的供应商…"), self.suggest_merge)
         m.addAction(tr("导出成 PIANO 表（和原表一样）…"), self.export_piano)
         m.addAction(tr("导出 Excel（显示的订单）"), self.export)
@@ -800,7 +802,7 @@ class TrackingPage:
 
     def _warm_mail(self):
         """有待登记时，空闲时在后台先把邮件信头缓存读进内存（双击「✉ 待登记」发订单时窗口马上出来）"""
-        if self.st is None or not any(o.get("draft") for o in self.st.orders.values()):
+        if self.st is None or not any(OT.is_draft(o) for o in self.st.orders.values()):
             return
         import threading
         from erp_widgets import when_idle
@@ -853,6 +855,42 @@ class TrackingPage:
         self._update_src()
         self.update_view()
         self._start_transit()
+        if self.page.isVisible():
+            QTimer.singleShot(0, self._tidy_drafts)
+
+    def _tidy_drafts(self):
+        """
+        旧的待登记作废（OT.stale_drafts：被后来的配货取代 / 超过 n 天没发出；只动程序生成、没人动过的）。
+        这台电脑第一次：先列出来给人确认（DraftTidyDialog）；确认过以后自动作废，右下角提示带「撤销」
+        """
+        if self.st is None or getattr(self, "_tidy_busy", False) or getattr(self, "_tidy_skip", False):
+            return
+        days = self.cfg.get("draft_days")
+        items = OT.stale_drafts(self.st, keep_days=OT.DRAFT_KEEP_DAYS if days is None else days)
+        if not items:
+            return
+        self._tidy_busy = True
+        try:
+            if not self.cfg.get("draft_tidy_ok"):
+                from draft_tidy_dialog import DraftTidyDialog
+                if DraftTidyDialog(self.win, self.st, items).exec() != QDialog.Accepted:
+                    self._tidy_skip = True            # 这次打开程序不再问
+                    return
+                self.cfg["draft_tidy_ok"] = True
+                self._save()
+            n = OT.void_drafts(self.st, items)
+            ids = [x["id"] for x in items]
+        finally:
+            self._tidy_busy = False
+        self.refresh()
+
+        def undo():
+            OT.restore_drafts(self.st, ids)
+            self.refresh()
+            self.win.show_toast(tr("已撤销，{0} 张回到待登记", len(ids)))
+        from draft_tidy_dialog import summary_text
+        self.win.show_toast(tr("✓ {0} 张旧的待登记已作废（{1}）· 在「看哪些 → 已作废的待登记」", n, summary_text(items)),
+                            10000, action=(tr("撤销"), undo))
 
     def _srows(self):
         return [r for r in self.rows if not self.store_sel or r["store"] == self.store_sel]
@@ -1247,7 +1285,7 @@ class TrackingPage:
         vals = [self._text(i, c) for c in range(len(COLS))]
         self.ui.table_set_row(self.t, k, vals)
         fids = [f for f, _h, _w in COLS]
-        cancel = r["status"] == "cancel"
+        cancel = r["status"] in ("cancel", "void")
         if cancel or r["status"] == "deter":
             for c in range(len(COLS)):
                 it = self.t.item(k, c)
@@ -1277,6 +1315,10 @@ class TrackingPage:
                                   ", ".join(sent.get("to") or [])))
             if tips:
                 st_it.setToolTip("\n".join(tips))
+        if r["status"] == "void" and st_it is not None:
+            from draft_tidy_dialog import void_tip
+            st_it.setToolTip(void_tip(self.st.orders.get(r["id"]) or {}) + "\n" +
+                             tr("选中后点「恢复成待登记」可以拿回来；用邮件发出这张单也会自动恢复"))
         if r["overdue"]:
             for fid in (7, 9):
                 it = self.t.item(k, fids.index(fid))
@@ -1387,13 +1429,17 @@ class TrackingPage:
         b.setToolTip(tr("从订单跟踪里删掉（登记错了的单）；修改记录里留着"))
         b.clicked.connect(lambda: self._act("delete"))
         self.act["delete"] = b
+        b = QPushButton(tr("恢复成待登记"))
+        b.setToolTip(tr("已作废的待登记其实还要发：拿回来，回到「待登记」（以后不会再被自动作废）"))
+        b.clicked.connect(lambda: self._act("restore"))
+        self.act["restore"] = b
         for k in ("send", "lines", "file"):
             row.addWidget(self.act[k])
         sep = QFrame()
         sep.setObjectName("TopSep")
         sep.setFixedSize(1, 22)
         row.addWidget(sep)
-        for k in ("edit", "cancel", "delete"):
+        for k in ("edit", "cancel", "delete", "restore"):
             row.addWidget(self.act[k])
         row.addStretch()
         self.sel_lbl = QLabel("")
@@ -1422,7 +1468,10 @@ class TrackingPage:
         self.a_auto.setEnabled(is_open)
         self.a_nofile.setEnabled(is_open)
         self.act["edit"].setEnabled(one is not None)
-        self.act["cancel"].setEnabled(any(r["status"] != "cancel" for r in sel))
+        self.act["cancel"].setEnabled(any(r["status"] not in ("cancel", "void") for r in sel))
+        voids = [r for r in sel if r["status"] == "void"]
+        self.act["restore"].setVisible(bool(voids))
+        self.act["restore"].setEnabled(bool(voids))
         self.act["delete"].setEnabled(n > 0)
         for k in ("cancel", "delete"):
             self.act[k].setText((tr("取消订单") if k == "cancel" else tr("删除")) +
@@ -1452,6 +1501,8 @@ class TrackingPage:
             self.cancel_orders(sel)
         elif key == "delete":
             self.delete_orders(sel)
+        elif key == "restore":
+            self.restore_drafts([r for r in sel if r["status"] == "void"])
 
     @staticmethod
     def _list_text(sel, limit=8):
@@ -1461,8 +1512,30 @@ class TrackingPage:
             lines.append(tr("… 还有 {0} 张", len(sel) - limit))
         return "\n".join(lines)
 
+    def check_old(self):
+        """以前下的、还开着的单：按数据库入库记录核对（old_orders_dialog）"""
+        from old_orders_dialog import open_dialog
+        open_dialog(self)
+
+    def restore_drafts(self, sel):
+        if not sel:
+            return
+        txt = tr("把这 {0} 张已作废的单恢复成「待登记」？", len(sel)) + "\n\n" + self._list_text(sel) + "\n\n" + \
+            tr("恢复以后会出现在看板「待登记」，以后不会再被自动作废。改了写进共享的订单记录，同事都能看到。")
+        if QMessageBox.question(self.win, tr("恢复成待登记"), txt) != QMessageBox.Yes:
+            return
+        before = [(r["id"], {"state": "cancel", "void": (self.st.orders.get(r["id"]) or {}).get("void")}) for r in sel]
+        n = OT.restore_drafts(self.st, [r["id"] for r in sel])
+        self.refresh()
+
+        def undo():
+            self.st.set_many(before, src=OT.VOID_SRC)
+            self.refresh()
+            self.win.show_toast(tr("已撤销"))
+        self.win.show_toast(tr("✓ {0} 张已恢复成待登记", n), 8000, action=(tr("撤销"), undo))
+
     def cancel_orders(self, sel):
-        sel = [r for r in sel if r["status"] != "cancel"]
+        sel = [r for r in sel if r["status"] not in ("cancel", "void")]
         if not sel:
             return
         txt = tr("取消这 {0} 张单？", len(sel)) + "\n\n" + self._list_text(sel) + "\n\n" + \
@@ -1504,7 +1577,9 @@ class TrackingPage:
             if a.isVisible():
                 fm.addAction(a)
         m.addSeparator()
-        for k in ("edit", "cancel", "delete"):
+        for k in ("edit", "cancel", "delete", "restore"):
+            if k == "restore" and not self.act[k].isVisible():
+                continue
             a = m.addAction(self.act[k].text(), lambda k=k: self._act(k))
             a.setEnabled(self.act[k].isEnabled())
         m.exec(self.t.viewport().mapToGlobal(pos))
@@ -1769,6 +1844,16 @@ class TrackingPage:
         cb_ded.setToolTip(tr("打开（默认）：总仓采购、门店采购、检查门店清单算建议量时，扣掉已经订了还没到货的数量；关掉：在途箱数只显示，不扣"))
         cb_ded.setChecked(REC.deduct_on(self.settings))
         g.addWidget(cb_ded, 5, 1)
+        from PySide6.QtWidgets import QSpinBox
+        sp_days = QSpinBox()
+        sp_days.setRange(0, 60)
+        sp_days.setSuffix(tr(" 天"))
+        sp_days.setSpecialValueText(tr("不作废"))
+        sp_days.setFixedWidth(110)
+        sp_days.setValue(int(OT.DRAFT_KEEP_DAYS if self.cfg.get("draft_days") is None else self.cfg.get("draft_days")))
+        g.addWidget(tip_label(tr("待登记保留"), tr("程序生成的待登记超过这么多天还没发出 → 自动作废（只动没人改过、没发过邮件的；"
+                                                "能在「已作废的待登记」里恢复）。后来又生成了同一家的订单，旧的不等天数直接作废。0 = 不按天数作废")), 7, 0)
+        g.addWidget(sp_days, 7, 1)
         row = QHBoxLayout()
         row.addStretch()
         cancel, ok = QPushButton(tr("取消")), QPushButton(tr("保存"))
@@ -1777,7 +1862,7 @@ class TrackingPage:
         ok.clicked.connect(dlg.accept)
         row.addWidget(cancel)
         row.addWidget(ok)
-        g.addLayout(row, 7, 0, 1, 3)
+        g.addLayout(row, 8, 0, 1, 3)
         if dlg.exec() != QDialog.Accepted:
             return
         rec = e_rec.text().strip()
@@ -1792,6 +1877,7 @@ class TrackingPage:
         self.cfg["auto_register"] = cb_auto.isChecked()
         self.cfg["deduct_transit"] = cb_ded.isChecked()
         self.cfg["write_excel"] = cb_wx.isChecked()
+        self.cfg["draft_days"] = sp_days.value()
         self._save()
         self.st = None
         self._on_show()
@@ -2059,7 +2145,7 @@ class TrackingPage:
         if changed and self.page.isVisible():
             self.refresh()
         else:
-            self.badge(sum(1 for o in self.st.orders.values() if o.get("draft") and o.get("state") != "cancel"))
+            self.badge(sum(1 for o in self.st.orders.values() if OT.is_draft(o)))
         if hasattr(self, "btn_sync"):
             self._auto_sync()                 # 页面没开着也同步（每分钟）：Excel 改了读进来、程序改了写进去
 

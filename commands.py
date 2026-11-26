@@ -455,7 +455,8 @@ def tracking_store(settings, me=None):
 
 def list_drafts(st):
     """待登记（程序生成、还没确认已下单）的订单"""
-    return [dict(o, id=oid) for oid, o in st.orders.items() if o.get("draft")]
+    import order_tracking as OT
+    return [dict(o, id=oid) for oid, o in st.orders.items() if OT.is_draft(o)]
 
 
 def confirm_orders(st, ids, via="desktop", today=None):

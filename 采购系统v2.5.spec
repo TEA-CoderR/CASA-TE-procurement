@@ -7,7 +7,7 @@ a = Analysis(
     pathex=[],
     binaries=[],
     datas=[('fonts/Inter-*.ttf', 'fonts'), ('fonts/JetBrainsMono-*.ttf', 'fonts'), ('fonts/*OFL*.txt', 'fonts')],   # Noto Sans SC 不打包（Windows 用雅黑）
-    hiddenimports=[
+    hiddenimports=['draft_tidy_dialog', 'old_orders', 'old_orders_dialog', 
         'openpyxl', 'openpyxl.workbook', 'openpyxl.worksheet',
         'win32com', 'win32com.client',
         'PySide6.QtSvg',

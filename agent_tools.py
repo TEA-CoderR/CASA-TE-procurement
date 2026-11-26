@@ -21,7 +21,7 @@ DAY = {"type": "string", "enum": ["周一", "周二", "周三", "周四", "周�
        "description": "采购配单文件夹里的哪一天；不填 = 今天（周末不填时按全部）"}
 STORE_IDS = {"FOIANO": 1, "MARLIA": 2, "S.FILIPPO": 3, "SFILIPPO": 3, "S.MARCO": 4, "SMARCO": 4,
              "S.CONCORDIO": 5, "SCONCORDIO": 5}
-STATUS_ZH = {"draft": "待登记", "ordered": "已下单", "confirmed": "已确认", "shipped": "已发货", "partial": "部分到货",
+STATUS_ZH = {"draft": "待登记", "void": "待登记已作废", "ordered": "已下单", "confirmed": "已确认", "shipped": "已发货", "partial": "部分到货",
              "arrived": "已到货", "stuck": "卡住了", "cancel": "已取消", "deter": "DETERSIVO"}
 
 

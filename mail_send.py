@@ -262,7 +262,7 @@ def group_of(st, oid):
             ids.append(oid)
     elif f:
         ids = [k for k, x in st.orders.items()
-               if x.get("draft") and str(x.get("file") or "").strip() == f and st.canon(OT.sup_key(x.get("supplier"))) == sk]
+               if OT.is_draft(x) and str(x.get("file") or "").strip() == f and st.canon(OT.sup_key(x.get("supplier"))) == sk]
         if oid not in ids:
             ids.append(oid)
     order = {c: i for i, c in enumerate(["1", "2", "3", "4", "5", "BMS"])}

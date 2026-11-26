@@ -100,9 +100,10 @@ def cmd_drafts(a, settings):
 
 
 def cmd_confirm(a, settings):
+    import order_tracking as OT
     st = CMD.tracking_store(settings)
-    found = [dict(st.orders[i], id=i) for i in a.ids if i in st.orders and st.orders[i].get("draft")]
-    missing = [i for i in a.ids if i not in st.orders or not st.orders[i].get("draft")]
+    found = [dict(st.orders[i], id=i) for i in a.ids if i in st.orders and OT.is_draft(st.orders[i])]
+    missing = [i for i in a.ids if i not in st.orders or not OT.is_draft(st.orders[i])]
     if missing:
         print(tr("这些单号不存在或不是待登记，跳过：{0}", "、".join(missing)))
     if not found:

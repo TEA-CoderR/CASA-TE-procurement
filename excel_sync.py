@@ -120,7 +120,7 @@ def pending(st, me=None, now=None, everyone=False):
                 ops.append(("unmark", oid, un))
         elif gone or (base is None and o.get("origin") != "excel" and not o.get("xid")):
             s = OT.status(o)
-            if s in ("draft", "cancel") or not o.get("date") or not o.get("store") or not o.get("supplier"):
+            if s in ("draft", "cancel", "void") or not o.get("date") or not o.get("store") or not o.get("supplier"):
                 continue
             who, t = _owner(st, oid, ["origin", "draft", "date"])
             v = excel_view(o)

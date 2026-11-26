@@ -310,11 +310,16 @@ def analyze(mails, st, own, mailbox_store=None, today=None, ignored=None, ks=Non
         for k in (o.get("no"), o.get("gno")):
             if k:
                 by_no.setdefault(str(k).upper(), []).append(oid)
+    by_void = {}
     for oid, o in st.orders.items():
         if oid in twins:
             continue
         if o.get("kind") == "deter":                  # DETERSIVO 批发商的单不跟踪确认 / 到货
             deter.add(st.canon(OT.sup_key(o.get("supplier"))))
+        if o.get("void") and OT.is_draft(dict(o, state=None)):
+            # 作废的待登记（2026-11-26）：只给「我们发出的订单信」对 —— 说明其实用邮件软件发出去了，应用后回到正常的单
+            by_void.setdefault(st.canon(OT.sup_key(o.get("supplier"))), []).append(oid)
+            continue
         if o.get("state") == "cancel" or o.get("kind") == "deter":
             continue
         by_sup.setdefault(st.canon(OT.sup_key(o.get("supplier"))), []).append(oid)
@@ -390,6 +395,11 @@ def analyze(mails, st, own, mailbox_store=None, today=None, ignored=None, ks=Non
                         cand += ids
                 cand = [oid for oid in cand if lo <= (OT.to_date(st.orders[oid].get("date")) or date.min) <= hi
                         and (not stores or str(st.orders[oid].get("store")) in stores)]
+                if sent and not cand:
+                    for k2, ids in by_void.items():
+                        if k2 == sk or (len(sk) >= 4 and len(k2) >= 4 and (sk in k2 or k2 in sk)):
+                            cand += [oid for oid in ids if lo <= (OT.to_date(st.orders[oid].get("date")) or date.min) <= hi
+                                     and (not stores or str(st.orders[oid].get("store")) in stores)]
                 if not sent and any(not st.orders[oid].get("draft") for oid in cand):
                     # 供应商的确认 / 发货信只可能是发出去了的单：有已下单的就不算待登记（Royal 8044 = BMS 那张，不是三张待登记）
                     cand = [oid for oid in cand if not st.orders[oid].get("draft")]

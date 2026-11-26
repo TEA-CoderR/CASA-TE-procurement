@@ -12,6 +12,7 @@ import threading
 from datetime import datetime, date, timedelta
 
 from i18n import tr
+import order_tracking as OT
 
 STORES = {1: "FOIANO", 2: "MARLIA", 3: "S.FILIPPO", 4: "S.MARCO", 5: "S.CONCORDIO"}
 SUP_TONES = ("accent", "cyan", "violet", "ok", "warn", "err")
@@ -92,7 +93,6 @@ def batch_orders(orders, source="wholesale", today=None, days=10):
     最近一次比价生成的订单（程序的单号 = draft_id(来源, 生成那天, 门店, 供应商)，确认后单号不变）：
     返回 (生成那天, [(单号, 单)])；没有返回 (None, [])
     """
-    import order_tracking as OT
     d0 = today or date.today()
     days_list = [(d0 - timedelta(days=i)).isoformat() for i in range(days)]
     by_day = {}
@@ -112,12 +112,12 @@ def batch_orders(orders, source="wholesale", today=None, days=10):
 
 def send_state(o):
     """(文字, 颜色)：待发送 / 已发送 / 已确认 / 已发货 / 已到货"""
-    import order_tracking as OT
     s = OT.status(o)
     return {"draft": (tr("待发送"), "accent"), "ordered": (tr("已发送") if o.get("sent") else tr("已下单"), "ok"),
             "confirmed": (tr("已确认"), "cyan"), "shipped": (tr("已发货"), "violet"),
             "arrived": (tr("已到货"), "ok"), "partial": (tr("部分到货"), "warn"),
-            "stuck": (tr("卡住了"), "err")}.get(s, (s, "muted"))
+            "stuck": (tr("卡住了"), "err"), "void": (tr("已作废"), "muted"),
+            "cancel": (tr("已取消"), "muted")}.get(s, (s, "muted"))
 
 
 # ===================================================================== 界面零件
@@ -929,7 +929,7 @@ def _render_groups_inner(win):
             win._sd_all.set_count(None)
         return
     total = sum(float(o.get("amount") or 0) for _i, o in rows)
-    todo = [i for i, o in rows if o.get("draft")]
+    todo = [i for i, o in rows if OT.is_draft(o)]
     sent = len(rows) - len(todo)
     day = getattr(win, "_sd_day", None)
     win._sd_line.setStyleSheet(f"color:{T('head')};")
@@ -945,12 +945,11 @@ def _render_groups_inner(win):
         k = str(o.get("store")) if by_store else str(o.get("supplier"))
         groups.setdefault(k, []).append((oid, o))
     tot_of = {k: sum(float(o.get("amount") or 0) for _i, o in v) for k, v in groups.items()}
-    import order_tracking as OT
     sups = sorted({str(o.get("supplier")) for _i, o in rows})
     tone_of = {s: SUP_TONES[i % len(SUP_TONES)] for i, s in enumerate(sups)}
     if win._sd_sel not in {i for i, _o in rows}:
         first = max(groups, key=lambda x: tot_of[x]) if not by_store else min(groups)
-        win._sd_sel = next((i for i, o in groups[first] if o.get("draft")), (todo or [rows[0][0]])[0])
+        win._sd_sel = next((i for i, o in groups[first] if OT.is_draft(o)), (todo or [rows[0][0]])[0])
     for k in sorted(groups, key=lambda x: (str(x) if by_store else -tot_of[x])):
         items = groups[k]
         card = QFrame()
@@ -1089,8 +1088,8 @@ def _fill_mail(win, d):
         n.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         h.addWidget(n, 1)
         win._sd_att.addWidget(f)
-    win._sd_btn.setEnabled(bool(o.get("draft")))
-    win._sd_btn.setText(tr("发送此订单") if o.get("draft") else send_state(o)[0])
+    win._sd_btn.setEnabled(bool(OT.is_draft(o)))
+    win._sd_btn.setText(tr("发送此订单") if OT.is_draft(o) else send_state(o)[0])
 
 
 def _send_one(win):
@@ -1113,7 +1112,7 @@ def send_all(win):
     S = win._S
     import commands as CMD
     from erp_widgets import BusyDialog
-    todo = [oid for oid, o in (getattr(win, "_sd_rows", None) or []) if o.get("draft")]
+    todo = [oid for oid, o in (getattr(win, "_sd_rows", None) or []) if OT.is_draft(o)]
     if not todo:
         return
 
@@ -1130,7 +1129,6 @@ def send_all(win):
     if err:
         QMessageBox.warning(win, tr("全部发送"), str(err))
         return
-    import order_tracking as OT
     go, skip = [], []
     for d in drafts:
         stores = "、".join(OT.STORE_NAMES.get(str(s), str(s)) for s in d.get("stores") or [])

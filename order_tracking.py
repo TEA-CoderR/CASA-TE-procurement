@@ -80,8 +80,10 @@ EXCEL_FIELDS = ("date", "store", "supplier", "buyer", "amount", "confirmed", "ar
 # 状态（显示顺序）
 # draft = 待登记：程序生成了订单文件、还没人确认真的发给供应商（2026-11-02 用户：以后都由程序自动登记，不手填）
 # shipped = 已发货：供应商发了 DDT / 发货通知（2026-11-07 从邮件认出来，shipped 字段 = 发货日期）
-STATUS = ["draft", "ordered", "confirmed", "shipped", "partial", "arrived", "stuck", "cancel", "deter"]
-NOT_ORDERED = {"cancel", "draft"}      # 不算进花费、预算、供应商统计
+# void = 待登记已作废（2026-11-26）：程序生成了、一直没发出去，后来有了更新的配货 / 超过 7 天 → 不再算待登记。
+#        存法：state = "cancel" + void = {why, at, by}（所以所有「取消的不算」的地方自动不算它），status() 分开显示
+STATUS = ["draft", "ordered", "confirmed", "shipped", "partial", "arrived", "stuck", "cancel", "void", "deter"]
+NOT_ORDERED = {"cancel", "draft", "void"}      # 不算进花费、预算、供应商统计
 OPEN = {"ordered", "confirmed", "shipped", "partial", "stuck"}
 
 
@@ -217,7 +219,18 @@ class Store:
         if op == "set" and oid:
             o = self.orders.setdefault(oid, {})
             m = self.meta.setdefault(oid, {})
-            for k, v in (e.get("f") or {}).items():
+            f = e.get("f") or {}
+            if who[2] == VOID_SRC and f.get("void") and not _voidable(o, m):
+                # 作废的时候这台电脑还不知道：别的电脑已经发出 / 有人动过这张单 → 不作废（两台电脑同步慢）
+                self.hist.setdefault(oid, []).append(e)
+                return
+            if o.get("void") and who[2] not in ("auto", "file", VOID_SRC) and "void" not in f:
+                # 已作废的单有人动了（发出订单邮件、确认、改了什么）→ 回到正常的单，不再算作废
+                f = dict(f)
+                f["void"] = None
+                if "state" not in f:
+                    f["state"] = None
+            for k, v in f.items():
                 o[k] = v
                 m[k] = who
             self.deleted.pop(oid, None)
@@ -322,7 +335,7 @@ class Store:
 # ===================================================================== 状态、预计到货
 def status(o):
     if o.get("state") == "cancel":
-        return "cancel"
+        return "void" if o.get("void") else "cancel"
     if o.get("draft"):
         return "draft"
     if o.get("kind") == "deter":
@@ -967,7 +980,7 @@ def export_excel(rs, path, subtitle=None):
     Col = XR.Col
     lab = {"draft": "Da registrare", "ordered": "Ordinato", "confirmed": "Confermato", "shipped": "Spedito",
            "partial": "Arrivato in parte", "arrived": "Arrivato", "stuck": "Bloccato", "cancel": "Annullato",
-           "deter": "DETER"}
+           "void": "Non inviato · annullato", "deter": "DETER"}
     tone = {"arrived": "GREEN", "partial": "AMBER", "stuck": "RED", "cancel": "GREY", "draft": "AMBER",
             "confirmed": "BLUE", "shipped": "BLUE"}
 
@@ -1025,6 +1038,109 @@ def draft_id(source, day, store, supplier):
     return "a" + hashlib.sha1(f"{source}|{day}|{store}|{sup_key(supplier)}".encode("utf-8")).hexdigest()[:12]
 
 
+# ===================================================================== 旧的待登记作废（2026-11-26 用户：「一定要谨慎再谨慎」）
+# 总仓采购 / 门店采购 / DETERSIVO 每算一次就生成一批待登记；以前没发出去的旧单一直留着（METALTEX BMS 5 张、303 张里 202 张是重复的）。
+# 规则：
+#   ① 被取代：同一个来源、同一个范围（总仓 / 门店采购 = 同一家供应商；DETERSIVO = 同一家门店）后来又生成过一次
+#      （按那张单第一次生成的日期比，确认下单会改下单日期，不能用它）→ 更早那次生成、还没发出的待登记作废：新的配货才是现在的计划；
+#   ② 过期：生成超过 DRAFT_KEEP_DAYS 天还没发出 → 作废（库存、销量早就变了，要发也该重新算）。
+# 只作废「没人动过」的：每个字段都是程序自动写的（auto / file）、没发过邮件（sent）、没关联过邮件（mails）、没订单号（no）。
+# 人改过的、发过的一律不动。作废 = state cancel + void，不删：「看哪些 → 已作废的待登记」看得到，能恢复；
+# 有人对它发订单邮件 / 确认 / 改字段 → 自动回到正常的单（Store._apply）。
+DRAFT_KEEP_DAYS = 7
+VOID_SRC = "void"
+GEN_SOURCES = ("store_orders", "store_pdv", "wholesale")
+
+
+def is_draft(o):
+    """还在等发送的待登记（作废的、取消的不算）"""
+    return bool(o.get("draft")) and o.get("state") != "cancel"
+
+
+def _voidable(o, meta):
+    if not o.get("draft") or o.get("sent") or o.get("mails") or o.get("no"):
+        return False
+    if o.get("state") == "cancel" and not o.get("void"):
+        return False
+    return all((w[2] if isinstance(w, (list, tuple)) and len(w) > 2 else "app") in ("auto", "file", VOID_SRC)
+               for k, w in (meta or {}).items())
+
+
+def gen_day(st, oid):
+    """程序第一次生成这张单的日期（确认下单会把下单日期改成发出那天，所以看第一条记录）"""
+    for e in st.hist.get(oid) or []:
+        d = (e.get("f") or {}).get("date")
+        if d:
+            return to_date(d)
+    return to_date((st.orders.get(oid) or {}).get("date"))
+
+
+def _scope(st, o):
+    src = o.get("origin")
+    if src not in GEN_SOURCES:
+        return None
+    if src == "wholesale":
+        return (src, str(o.get("store") or ""))
+    return (src, st.canon(sup_key(o.get("supplier"))))
+
+
+def stale_drafts(st, today=None, keep_days=None, scope=None):
+    """
+    哪些待登记该作废 → [{"id", "why": "superseded" / "expired", "by": 取代它的那次生成日期（ISO）或 None, "day": 生成日期}]
+    scope(o) 为真才看（register_drafts 只看这次生成的范围）；keep_days = None / 0 → 不按天数过期
+    """
+    today = today or date.today()
+    keep = DRAFT_KEEP_DAYS if keep_days is None else int(keep_days or 0)
+    latest = {}
+    for oid, o in st.orders.items():          # 每个范围最近一次生成（发出去的、确认的也算：那次配货是真的）
+        if o.get("state") == "cancel" or o.get("kind") == "deter":
+            continue
+        k = _scope(st, o)
+        d = gen_day(st, oid)
+        if k and d and (k not in latest or d > latest[k]):
+            latest[k] = d
+    out = []
+    for oid, o in st.orders.items():
+        if not is_draft(o) or (scope is not None and not scope(o)):
+            continue
+        if not _voidable(o, st.meta.get(oid)):
+            continue
+        k, d = _scope(st, o), gen_day(st, oid)
+        if not k or not d:
+            continue
+        if latest.get(k) and latest[k] > d:
+            out.append({"id": oid, "why": "superseded", "by": latest[k].isoformat(), "day": d.isoformat()})
+        elif keep > 0 and (today - d).days > keep:
+            out.append({"id": oid, "why": "expired", "by": None, "day": d.isoformat()})
+    return out
+
+
+def void_drafts(st, items, today=None):
+    """把 stale_drafts 的结果作废（state cancel + void）；返回作废了几张"""
+    at = (today or date.today()).isoformat()
+    ch = [(x["id"], {"state": "cancel", "void": {"why": x["why"], "at": at, "by": x.get("by")}})
+          for x in items if x["id"] in st.orders and is_draft(st.orders[x["id"]])]
+    st.set_many(ch, src=VOID_SRC)
+    return len(ch)
+
+
+def restore_drafts(st, ids):
+    """撤销作废：回到待登记（人点的，之后不会再被自动作废）"""
+    ch = [(oid, {"state": None, "void": None}) for oid in ids if (st.orders.get(oid) or {}).get("void")]
+    st.set_many(ch)
+    return len(ch)
+
+
+def void_text(o):
+    """作废原因（界面用，文字没翻译）"""
+    v = o.get("void") or {}
+    if v.get("why") == "superseded":
+        return f"后来 {v.get('by') or ''} 又生成了这家的订单，这张没发出，已作废"
+    if v.get("why") == "expired":
+        return f"生成超过 {DRAFT_KEEP_DAYS} 天一直没发出，已作废"
+    return ""
+
+
 def register_drafts(st, source, items, in_scope=None, today=None):
     """
     门店配货 / 批发商比价生成订单文件后调用：每家供应商 × 每个去向（门店 / BMS）一张「待登记」的单（draft）。
@@ -1060,6 +1176,8 @@ def register_drafts(st, source, items, in_scope=None, today=None):
         meta = st.meta.get(oid, {})
         # 程序自动写的（auto）和从订单文件读回来的（file，order_record.sync_files）重新生成时照样更新
         ch = {k: v for k, v in f.items() if cur.get(k) != v and (not meta.get(k) or meta[k][2] in ("auto", "file"))}
+        if cur.get("void") and cur.get("draft"):          # 作废了又重新生成（同一天又配了一次）→ 回到待登记
+            ch.update({"state": None, "void": None})
         if ch:
             changes.append((oid, ch))
             res["updated"] += 1
@@ -1070,7 +1188,12 @@ def register_drafts(st, source, items, in_scope=None, today=None):
     if gone:
         st.delete(gone, src="auto")
     res["removed"] = len(gone)
-    res["drafts"] = sum(1 for o in st.orders.values() if o.get("draft") and o.get("state") != "cancel")
+    # 这次生成的范围里，以前几天生成、还没发出的待登记 → 作废（被这次取代）；只按「被取代」，不按天数
+    old = [x for x in stale_drafts(st, today=today, keep_days=0,
+                                   scope=lambda o: o.get("origin") == source and (in_scope is None or in_scope(o)))
+           if x["why"] == "superseded"]
+    res["voided"] = void_drafts(st, old, today=today) if old else 0
+    res["drafts"] = sum(1 for o in st.orders.values() if is_draft(o))
     return res
 
 
@@ -1101,6 +1224,9 @@ def register_store_orders(settings, written, log=None, source="store_orders"):
         from i18n import tr
         log(tr("[订单跟踪] {0}：待登记 新的 {1} 张，更新 {2} 张，删掉 {3} 张", tr(SOURCES.get(source, source)),
                res["new"], res["updated"], res["removed"]))
+        if res.get("voided"):
+            log(tr("[订单跟踪] 以前生成、还没发出的 {0} 张待登记已作废（这次重新配货取代了；「看哪些 → 已作废的待登记」能恢复）",
+                   res["voided"]))
     return res
 
 
@@ -1119,6 +1245,9 @@ def register_wholesale(settings, store_name, items, log=None):
     if log:
         from i18n import tr
         log(tr("[订单跟踪] {0}：待登记 新的 {1} 张，更新 {2} 张，删掉 {3} 张", store_name, res["new"], res["updated"], res["removed"]))
+        if res.get("voided"):
+            log(tr("[订单跟踪] 以前生成、还没发出的 {0} 张待登记已作废（这次重新配货取代了；「看哪些 → 已作废的待登记」能恢复）",
+                   res["voided"]))
     return res
 
 
@@ -1128,7 +1257,7 @@ def confirm_drafts(st, ids, today=None):
     ch = []
     for oid in ids:
         o = st.orders.get(oid)
-        if not o or not o.get("draft"):
+        if not o or not o.get("draft") or (o.get("state") == "cancel" and not o.get("void")):
             continue
         f = {"draft": None, "date": day}
         if not o.get("buyer"):
