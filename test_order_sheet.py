@@ -91,7 +91,7 @@ def test_type_paste_clear_and_undo_change_page_colli():
     # 汇总页：每家店 库存 + Colli，MARLIA 的 Colli 能改
     sh.tabs.setCurrentIndex(sh.tabs.count() - 1)
     assert sh.tab == "sum"
-    marlia = next(c for c in range(t.columnCount()) if "MARLIA" in t.horizontalHeaderItem(c).text() and "Colli" in t.horizontalHeaderItem(c).text())
+    marlia = next(c for c in range(t.columnCount()) if "MARLIA" in str(sh.band.bands.get(c)) and "Colli" in t.horizontalHeaderItem(c).text())
     t.item(0, marlia).setText("2")
     app.processEvents()
     assert page.colli["p.xlsx"][2] == {6: 2}

@@ -22,6 +22,7 @@ from theme import T, NUM_FONT
 SUMMARY = "sum"
 ROW_ROLE = Qt.UserRole + 41          # SCHEDA 行号
 SID_ROLE = Qt.UserRole + 42          # 这一格是哪家店的 Colli
+EAN_ROLE = Qt.UserRole + 43          # 商品名那一格：条码（左边画小图）
 
 ROUTE = {"direct": "DIRETTO", "filled": "DIRETTO", "bms": "BMS", "pulled": "BMS"}
 
@@ -105,6 +106,63 @@ class _Table(QTableWidget):
         super().keyPressEvent(ev)
 
 
+class _SupRow(QWidget):
+    """左边供应商一行：名称 · 状态 / 细进度条 / 一行小字（设计稿）"""
+
+    def __init__(self):
+        super().__init__()
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        v = QVBoxLayout(self)
+        v.setContentsMargins(12, 7, 12, 7)
+        v.setSpacing(4)
+        top = QHBoxLayout()
+        top.setSpacing(6)
+        self.name = QLabel("")
+        f = self.name.font()
+        f.setBold(True)
+        self.name.setFont(f)
+        self.tag = QLabel("")
+        top.addWidget(self.name, 1)
+        top.addWidget(self.tag)
+        v.addLayout(top)
+        self.bar = QFrame()
+        self.bar.setFixedHeight(4)
+        self.fill = QFrame(self.bar)
+        self.fill.setFixedHeight(4)
+        v.addWidget(self.bar)
+        self.sub = QLabel("")
+        self.sub.setObjectName("Faint")
+        v.addWidget(self.sub)
+        self._frac = 0.0
+
+    def show_state(self, name, tag, tok, frac, sub):
+        self.name.setText(name)
+        self.tag.setText(tag)
+        self.tag.setStyleSheet(f"color:{T(tok)}; font-size:10px; font-weight:700;")
+        self.sub.setText(sub)
+        self.bar.setStyleSheet(f"background:{T('track')}; border-radius:2px;")
+        self.fill.setStyleSheet(f"background:{T(tok)}; border-radius:2px;")
+        self._frac = max(0.0, min(1.0, frac))
+        self._place()
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self._place()
+
+    def _place(self):
+        self.fill.setFixedWidth(int(self.bar.width() * self._frac))
+
+
+def _thumb_delegate(view, settings):
+    """商品名左边画小图（条码放在格子的 EAN_ROLE 里）"""
+    import product_images as PI
+
+    class _Thumb(PI.ThumbDelegate):
+        def _ean(self, idx):
+            return idx.data(EAN_ROLE)
+    return _Thumb(view, None, 26, settings)
+
+
 class OrderSheet(QWidget):
     def __init__(self, win):
         super().__init__()
@@ -145,9 +203,17 @@ class OrderSheet(QWidget):
         rv.setSpacing(8)
         head = QFrame()
         head.setObjectName("Panel")
-        hh = QHBoxLayout(head)
-        hh.setContentsMargins(14, 8, 14, 8)
+        hv = QVBoxLayout(head)
+        hv.setContentsMargins(14, 8, 14, 8)
+        hv.setSpacing(6)
+        hh = QHBoxLayout()
         hh.setSpacing(16)
+        hv.addLayout(hh)
+        # 门店页：和订单文件那一页顶上一样写开票 / 送货地址
+        self.h_store = QLabel("")
+        self.h_store.setTextFormat(Qt.RichText)
+        self.h_store.setWordWrap(False)
+        hv.addWidget(self.h_store)
         nb = QVBoxLayout()
         nb.setSpacing(1)
         self.h_name = QLabel("")
@@ -178,12 +244,16 @@ class OrderSheet(QWidget):
         rv.addWidget(head)
 
         self.table = _Table(self)
+        from erp_widgets import BandHeader
+        self.band = BandHeader(self.table)
+        self.table.setHorizontalHeader(self.band)
+        self._thumb = _thumb_delegate(self.table, self.page.settings)
         self.table.setEditTriggers(QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed |
                                    QAbstractItemView.AnyKeyPressed)
         self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.table.setSelectionBehavior(QAbstractItemView.SelectItems)
         self.table.verticalHeader().hide()
-        self.table.verticalHeader().setDefaultSectionSize(36)
+        self.table.verticalHeader().setDefaultSectionSize(40)
         hdr = self.table.horizontalHeader()
         hdr.setSectionResizeMode(QHeaderView.Interactive)
         hdr.setStretchLastSection(True)
@@ -270,28 +340,54 @@ class OrderSheet(QWidget):
             self._pick_sup(self.sups.currentRow())
         self._filter_sups()
 
-    def _paint_sup(self, item, sc):
+    def sup_state(self, sc):
+        """左边一行：(金额, 标签, 颜色键, 进度 0–1, 小字)"""
         plan = self._plan(sc)
-        lines = self.page.colli.get(sc["path"], {})
-        amt = sum(S._totals(ln, {i["row"]: i for i in sc["items"]})[1] for ln in lines.values())
-        routes = [route_of(plan, s)[0] for s in self._stores(sc)]
-        nd = routes.count("DIRETTO")
-        nb = bool(plan and plan.get("bms"))
+        items = {i["row"]: i for i in sc["items"]}
+        per = {sid: S._totals(self.page.colli.get(sc["path"], {}).get(sid, {}), items) for sid in self._stores(sc)}
+        amt = sum(a for _c, a in per.values())
+        m = S.sc_moq(sc)
+        need_a, need_c = float(m.get("amount") or 0), float(m.get("colli") or 0)
+
+        def ratio(c, a):
+            if need_a:
+                return a / need_a
+            if need_c and need_c != float("inf"):
+                return c / need_c
+            return 1.0 if c else 0.0
+        b = (plan or {}).get("bms")
+        nd = sum(1 for sid in per if route_of(plan, sid)[0] == "DIRETTO")
+        best = max([ratio(*v) for v in per.values()] + ([ratio(b.get("colli") or 0, b.get("amount") or 0)] if b else []) + [0])
         if not amt:
-            tag = tr("不用订")
-        elif nd or (nb and S.bms_ordered(plan["bms"])):
-            tag = tr("直送 {0} 店", nd) + (" · BMS" if nb and S.bms_ordered(plan["bms"]) else "")
-        else:
-            tag = tr("这次不订")
-        item.setText(f"{sc['name']}\n€{amt:,.0f} · {tag}")
+            return 0.0, "", "faint", 0.0, tr("不用订")
+        parts = [tr("直送 {0} 店", nd)] if nd else []
+        if b and S.bms_ordered(b):
+            parts.append("BMS")
+        if b and not S.bms_ordered(b):
+            gap = max(0.0, need_a - float(b.get("amount") or 0)) if need_a else 0
+            sub = " · ".join(parts + [tr("BMS 还差 €{0:,.0f}", gap) if gap else tr("BMS 还不够")])
+            return amt, tr("差一点"), "warn", min(1.0, best), f"€{amt:,.0f} · {sub}"
+        if not parts:
+            return amt, tr("这次不订"), "faint", min(1.0, best), f"€{amt:,.0f}"
+        return amt, tr("够起订量"), "ok", 1.0, f"€{amt:,.0f} · " + " · ".join(parts)
+
+    def _paint_sup(self, item, sc):
+        amt, tag, tok, frac, sub = self.sup_state(sc)
+        w = self.sups.itemWidget(item)
+        if w is None:
+            w = _SupRow()
+            self.sups.setItemWidget(item, w)
+        w.show_state(sc["name"], tag, tok, frac, sub)
+        item.setData(Qt.UserRole + 1, sc["name"].lower())      # 搜索用
+        from PySide6.QtCore import QSize
+        item.setSizeHint(QSize(180, 66))
         item.setToolTip(f"{sc['name']}（{sc.get('day', '')}）")
-        item.setForeground(QColor(T("text") if amt else T("faint")))
 
     def _filter_sups(self):
         q = self.sup_find.text().strip().lower()
         for i in range(self.sups.count()):
             it = self.sups.item(i)
-            it.setHidden(bool(q) and q not in it.text().lower())
+            it.setHidden(bool(q) and q not in str(it.data(Qt.UserRole + 1) or "").lower())
 
     def _pick_sup(self, r):
         if r < 0:
@@ -354,25 +450,57 @@ class OrderSheet(QWidget):
             tot_c += c
             tot_a += a
             label, tok = route_of(plan, sid)
-            self.dest_box.addWidget(self._dest(S.STORE_SHEETS.get(sid, str(sid)), label, tok, a, sid == self.tab))
+            st = ((plan or {}).get("stores") or {}).get(sid) or {}
+            sub = {"direct": tr("直送 · 够起订量"), "filled": tr("凑单后直送"), "bms": tr("凑进 BMS"),
+                   "pulled": tr("凑进 BMS"), "wait": tr("这次不订"), "dropped": tr("这次不订")}.get(st.get("status"), "")
+            self.dest_box.addWidget(self._dest(S.STORE_SHEETS.get(sid, str(sid)), label, tok, a, sid == self.tab, sub))
         b = (plan or {}).get("bms")
         if b:
             ok = S.bms_ordered(b)
-            self.dest_box.addWidget(self._dest("BMS", tr("凑单") if ok else tr("还不够"), "warn", b.get("amount") or 0, False))
+            need = float(m.get("amount") or 0)
+            gap = max(0.0, need - float(b.get("amount") or 0)) if need else 0
+            n = len(b.get("stores") or [])
+            sub = tr("{0} 店凑", n) + (" · " + (tr("够起订量") if ok else tr("还差 €{0:,.2f}", gap) if gap else tr("还不够")))
+            self.dest_box.addWidget(self._dest("BMS", tr("凑单"), "warn", b.get("amount") or 0, False, sub,
+                                               val_tok=None if ok else "warn"))
         self.h_tot.setText(f"{tot_c:g} · €{tot_a:,.2f}")
+        # 门店页：开票 / 送货地址 / 这家店这次怎么订
+        if self.tab != SUMMARY:
+            import mail_send as MS
+            pf = MS.profile(self.page.settings, self.tab)
+            bill = MS.profile(self.page.settings, "BMS").get("name") or "BMS PARTNERS SRL"
+            label, tok = route_of(plan, self.tab)
+            c, a = S._totals(self.page.colli.get(sc["path"], {}).get(self.tab, {}), items)
+            mute = T("faint")
+            self.h_store.setText(
+                f"<span style='color:{mute}'>Fatturazione</span> <b>{bill}</b> &nbsp;&nbsp; "
+                f"<span style='color:{mute}'>Luogo di destinazione</span> <b>{pf.get('name', '')}</b> · {pf.get('address', '')}"
+                f" &nbsp;&nbsp; <span style='background:{T(tok + '_soft') if tok != 'faint' else T('track')};color:{T(tok)};"
+                f"font-weight:700;font-size:10px'>&nbsp;{label}&nbsp;</span> "
+                f"<span style='color:{mute}'>{S.STORE_SHEETS.get(self.tab, self.tab)}：{c:g} {tr('箱')} · €{a:,.2f}</span>")
+            self.h_store.show()
+        else:
+            self.h_store.hide()
 
-    def _dest(self, name, route, tok, amt, on):
+    def _dest(self, name, route, tok, amt, on, sub="", val_tok=None):
         w = QWidget()
         v = QVBoxLayout(w)
         v.setContentsMargins(0, 0, 0, 0)
         v.setSpacing(1)
-        top = QLabel(f"<b>{name}</b> <span style='color:{T(tok)};font-size:10px;font-weight:700'>{route}</span>")
+        chip = T(tok + "_soft") if tok in ("ok", "warn") else T("track")
+        top = QLabel(f"<b>{name}</b> <span style='background:{chip};color:{T(tok)};font-size:9px;font-weight:700'>"
+                     f"&nbsp;{route}&nbsp;</span>")
         val = QLabel(f"€{amt:,.2f}" if amt else "—")
-        val.setFont(QFont(NUM_FONT, 10, QFont.Bold if on else QFont.Normal))
-        if on:
-            val.setStyleSheet(f"color:{T('accent')}")
+        val.setFont(QFont(NUM_FONT, 11, QFont.Bold))
+        val.setStyleSheet(f"color:{T('accent') if on else T(val_tok) if val_tok else T('text') if amt else T('faint')}")
+        low = QLabel(sub)
+        low.setObjectName("Faint")
+        f = low.font()
+        f.setPointSizeF(max(7.0, f.pointSizeF() - 1))
+        low.setFont(f)
         v.addWidget(top)
         v.addWidget(val)
+        v.addWidget(low)
         return w
 
     # ================================================================= 表格
@@ -411,6 +539,22 @@ class OrderSheet(QWidget):
             it.setForeground(QColor(T(color)))
         return it
 
+    def _set_bands(self, bands):
+        """分组色带：一种颜色一种意思（DIRETTO 绿、BMS 橙），不按顺序轮流换色"""
+        self.band.set_bands(bands)
+        for g in set(bands.values()):
+            g_ = str(g)
+            self.band.tone_of[g] = ("ok" if g_.endswith("DIRETTO") else "warn" if g_.endswith("BMS")
+                                    else "accent" if g_ == "DETTAGLIO ORDINE" else "violet" if g_ == tr("程序建议")
+                                    else "cyan" if g_ == tr("门店数据（订单文件里也有）") else "info")
+        self.band.viewport().update()
+
+    def _desc(self, it):
+        d = self._txt(it["desc"])
+        d.setData(EAN_ROLE, it["ean"])
+        d.setToolTip(f"{it['desc']}\nEAN {it['ean']}")
+        return d
+
     def _colli_item(self, sc, sid, it):
         n = self._cur(sc, sid, it["row"])
         sug = self.win._orig(sc, sid, it["row"])
@@ -439,10 +583,10 @@ class OrderSheet(QWidget):
         t.setHorizontalHeaderLabels(cols)
         t.horizontalHeaderItem(6).setText("Colli ✎")
         t.setRowCount(len(sc["items"]))
-        t.setItemDelegateForColumn(6, self._enter)
         for c in range(len(cols)):
-            if c != 6:
-                t.setItemDelegateForColumn(c, None)
+            t.setItemDelegateForColumn(c, self._enter if c == 6 else self._thumb if c == 4 else None)
+        self._set_bands({c: ("DETTAGLIO ORDINE" if c < 10 else tr("门店数据（订单文件里也有）") if c < 16 else tr("程序建议"))
+                             for c in range(len(cols))})
         tot_c = tot_a = 0.0
         for r, it in enumerate(sc["items"]):
             x = self._x(sid, it)
@@ -454,7 +598,7 @@ class OrderSheet(QWidget):
             mon = S.monthly_and_need(x, days)[0] if x else None
             inv = x.get("inv_raw", x.get("inv")) if x else None
             row = [self._num(r + 1, color="faint"), self._txt(S.item_code(it), "muted"), self._txt(it.get("sup_code") or "", "muted"),
-                   self._txt(it["ean"], "muted"), self._txt(it["desc"]), self._num(f"{it['pack']:g}"),
+                   self._txt(it["ean"], "muted"), self._desc(it), self._num(f"{it['pack']:g}"),
                    self._colli_item(sc, sid, it), self._num(f"{n * it['pack']:g}" if n else ""),
                    self._num(f"{it['price']:.2f}"), self._num(f"{n * it['pack'] * it['price']:,.2f}" if n else "", bold=True),
                    self._num("" if inv is None else f"{inv:g}", bold=inv is not None and inv <= 0,
@@ -477,18 +621,22 @@ class OrderSheet(QWidget):
         sc, t = self.sc, self.table
         stores = self._stores(sc)
         cols = ["NO.", "Cod.Art.", "Descrizione", "PZ*COLLI", "Prezzo"]
+        plan = self._plan(sc)
+        bands = {c: "DETTAGLIO ORDINE" for c in range(5)}
         for sid in stores:
-            name = S.STORE_SHEETS.get(sid, str(sid))
-            cols += [f"{name}\n{tr('库存')}", f"{name}\nColli ✎"]
-        cols += [tr("合计") + "\nColli", "Importo"]
+            bands[len(cols)] = bands[len(cols) + 1] = f"{S.STORE_SHEETS.get(sid, str(sid))} · {route_of(plan, sid)[0]}"
+            cols += [tr("库存"), "Colli ✎"]
+        bands[len(cols)] = bands[len(cols) + 1] = tr("合计")
+        cols += ["Colli", "Importo"]
         t.setColumnCount(len(cols))
         t.setHorizontalHeaderLabels(cols)
         t.setRowCount(len(sc["items"]))
         for c in range(len(cols)):
-            t.setItemDelegateForColumn(c, self._enter if (c >= 5 and (c - 5) % 2 == 1 and c < 5 + 2 * len(stores)) else None)
+            t.setItemDelegateForColumn(c, self._enter if (c >= 5 and (c - 5) % 2 == 1 and c < 5 + 2 * len(stores))
+                                       else self._thumb if c == 2 else None)
+        self._set_bands(bands)
         for r, it in enumerate(sc["items"]):
-            d = self._txt(it["desc"])
-            d.setToolTip(f"EAN {it['ean']}")
+            d = self._desc(it)
             row = [self._num(r + 1, color="faint"), self._txt(S.item_code(it), "muted"),
                    d, self._num(f"{it['pack']:g}"), self._num(f"{it['price']:.2f}")]
             tc = 0
@@ -514,8 +662,8 @@ class OrderSheet(QWidget):
         for c in range(t.columnCount()):
             w = t.columnWidth(c) + 8
             if c == desc_col:
-                w = min(max(w, 200), 300)
-            t.setColumnWidth(c, min(w, 300))
+                w = min(max(w + 36, 200), 270)        # 左边小图
+            t.setColumnWidth(c, min(w, 330))
 
     # ================================================================= 改数量
     def _changed(self, item):
