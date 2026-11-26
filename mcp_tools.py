@@ -3,19 +3,26 @@
 给 MCP 服务（mcp_server.py）用的工具：让 Claude 直接看程序里的数据（2026-11-26 用户：「给程序做一个 MCP 协议，
 这样你就能直接使用程序并且看到程序数据」）。不依赖界面。
 
-第 1 期**只读**：
+第 1 期只读，第 2 期（2026-11-26 用户：「可以添加改的权限，我不想动手」）加了**会改订单跟踪的操作**，都是两步：
+先 *_prepare 列出要改哪几张、改完会怎样 → 返回一个确认号（ticket）→ 用户在对话里说可以，再 apply_change(ticket)；
+改完能 undo_change(ticket) 撤销。改的人记成「<本机用户> · Claude」（单独一个日志文件，不和程序抢同一个文件）。
+不给的：确认收货 / 部分收货（一定要门店的人点、要选卸货人）、发邮件、生成订单、改 Griglia / 门店清单。
+
+只读的：
 - 采购助手里不改数据的工具（agent_tools 里 write=False 的：总览、供应商、算建议箱数、订单列表、邮件核对、订单邮件草稿…）；
 - 订单跟踪：统计、一张单的全部字段和修改记录、旧的待登记 / 历史未结订单预览；
 - 数据库：只读 SQL（只许 SELECT / SHOW / DESCRIBE / EXPLAIN，一条语句，最多 MAX_ROWS 行；数据库账号本来就是只读的）；
 - 日志：procurement / stall / hang / crash / audit 最后几行（能按文字筛）；
 - 设置：去掉密码 / 令牌 / 密钥；
 - 文件：只在程序文件夹、同步文件夹、订单跟踪 / DETERSIVO 工作文件夹里列目录、看 Excel 前几行。
-会改数据的（确认收货、发邮件、作废、改订单…）一律不在这里：照旧在程序里点，程序里会先弹确认。
 每次调用写一条审计（logs/audit.jsonl，via = "mcp"）。
 """
+import copy
 import json
 import os
 import re
+import secrets
+import time
 from datetime import date, datetime
 
 MAX_ROWS = 500
@@ -251,6 +258,220 @@ def order_get(ctx, args):
             "第一次生成": str(OT.gen_day(st, oid) or ""), "修改记录": hist}
 
 
+# ----------------------------------------------------------------------------- 会改订单跟踪的（两步：准备 → 用户同意 → 执行）
+TICKET_MIN = 30                                 # 确认号多久有效（分钟）
+ACTIONS = {"placed": "确认已下单（待登记 → 已下单，下单日期 = 今天）", "confirmed": "标记供应商已确认（今天）",
+           "stuck": "标记卡住了", "normal": "恢复正常（去掉卡住 / 部分到货标记）", "cancel": "取消订单",
+           "note": "只加一句备注"}
+NO_ARRIVAL = "确认收货 / 部分收货一定要门店的人在程序里点、选卸货人，Claude 不能代点。"
+
+
+def _store(ctx):
+    """订单跟踪（改的人 = 本机用户 · Claude，写自己的日志文件）"""
+    import commands as C
+    cfg = ctx["settings"].get("tracking") or {}
+    import order_tracking as OT
+    base = (cfg.get("me") or ctx["settings"].get("user_name") or OT.default_me()).strip()
+    return C.tracking_store(ctx["settings"], me=f"{base} · Claude")
+
+
+def _brief(st, ids, limit=60):
+    import order_tracking as OT
+    rows = {r["id"]: r for r in OT.rows(st)}
+    out = []
+    for i in ids[:limit]:
+        r = rows.get(i)
+        out.append({"单号": i, "下单日期": r["date"], "门店": r["store_name"], "供应商": r["supplier"],
+                    "金额": r["amount"], "现在": r["status"]} if r else {"单号": i, "现在": "找不到"})
+    return out
+
+
+def _ticket(ctx, kind, args, preview):
+    tk = secrets.token_hex(4)
+    ctx.setdefault("tickets", {})[tk] = {"kind": kind, "args": args, "exp": time.time() + TICKET_MIN * 60}
+    preview = dict(preview)
+    preview["确认号"] = tk
+    preview["下一步"] = (f"把上面的内容给用户看，用户在对话里明确说可以，再调用 apply_change(ticket=\"{tk}\")。"
+                      f"{TICKET_MIN} 分钟内有效。改的是共享的采购订单跟踪，同事都看得到；PIANO Excel 程序下次同步时写进去。")
+    return preview
+
+
+def drafts_void_prepare(ctx, args):
+    import order_tracking as OT
+    st = _store(ctx)
+    cfg = ctx["settings"].get("tracking") or {}
+    items = OT.stale_drafts(st, keep_days=cfg.get("draft_days"))
+    if not items:
+        return {"要作废的": 0, "说明": "现在没有该作废的旧待登记"}
+    ids = [x["id"] for x in items]
+    why = {x["id"]: ("后来 %s 又生成了这家的订单" % x.get("by") if x["why"] == "superseded"
+                     else f"生成超过 {OT.DRAFT_KEEP_DAYS} 天没发出") for x in items}
+    rows = _brief(st, ids, limit=400)
+    for r in rows:
+        r["为什么作废"] = why.get(r["单号"])
+    return _ticket(ctx, "void", {"ids": ids}, {
+        "操作": "作废旧的待登记", "张数": len(ids),
+        "被新的配货取代": sum(1 for x in items if x["why"] == "superseded"),
+        "超过天数没发出": sum(1 for x in items if x["why"] == "expired"),
+        "只作废": "程序自动生成、没人改过、没发过邮件、没关联过邮件的待登记；作废不是删除，能恢复",
+        "订单": rows})
+
+
+def drafts_restore_prepare(ctx, args):
+    st = _store(ctx)
+    ids = [i for i in (args.get("ids") or []) if (st.orders.get(i) or {}).get("void")]
+    if not ids:
+        return {"能恢复的": 0, "说明": "这些单都不是已作废的待登记"}
+    return _ticket(ctx, "restore", {"ids": ids}, {"操作": "把已作废的待登记恢复成待登记", "张数": len(ids),
+                                                   "订单": _brief(st, ids)})
+
+
+def orders_update_prepare(ctx, args):
+    act = args.get("action")
+    if act in ("arrived", "partial"):
+        raise RuntimeError(NO_ARRIVAL)
+    if act not in ACTIONS:
+        raise RuntimeError(f"不认识的操作：{act}（能用：{', '.join(ACTIONS)}）")
+    note = (args.get("note") or "").strip()
+    if act == "note" and not note:
+        raise RuntimeError("「只加一句备注」要写 note")
+    st = _store(ctx)
+    ids = [i for i in (args.get("ids") or []) if i in st.orders]
+    miss = [i for i in (args.get("ids") or []) if i not in st.orders]
+    if not ids:
+        raise RuntimeError("这些单号都找不到")
+    out = {"操作": ACTIONS[act], "张数": len(ids), "订单": _brief(st, ids)}
+    if note:
+        out["备注"] = note
+    if miss:
+        out["找不到的单号"] = miss
+    return _ticket(ctx, "update", {"ids": ids, "action": act, "note": note}, out)
+
+
+def mail_apply_prepare(ctx, args):
+    import agent_tools as AT
+    sugs = AT._mail_sugs(ctx, args)
+    kinds = {"order": "邮件说已下单", "confirm": "供应商已确认", "ship": "已发货", "dup": "合并重复的待登记",
+             "missing": "补登记跟踪里没有的单"}
+    rows = [{"编号": i, "类型": kinds.get(s["kind"], s["kind"]), "门店": s.get("store"), "供应商": s.get("supplier"),
+             "订单日期": s.get("order_date"), "邮件": ((s.get("mail") or {}).get("subject") or "")[:120]}
+            for i, s in zip(args.get("indexes") or [], sugs)]
+    return _ticket(ctx, "mail", {"indexes": [int(i) for i in args.get("indexes") or []]},
+                   {"操作": "按邮件更新订单跟踪", "条数": len(rows), "建议": rows})
+
+
+def _diff_undo(before, st, ids):
+    """改之前的字段 → 撤销时要写回的 [(单号, {字段: 旧值})]"""
+    out = []
+    for oid in ids:
+        a, b = before.get(oid) or {}, st.orders.get(oid) or {}
+        f = {k: a.get(k) for k in set(a) | set(b) if a.get(k) != b.get(k)}
+        if f:
+            out.append((oid, f))
+    return out
+
+
+def apply_change(ctx, args):
+    import order_tracking as OT
+    import commands as C
+    tk = str(args.get("ticket") or "").strip()
+    t = (ctx.get("tickets") or {}).get(tk)
+    if not t:
+        raise RuntimeError("没有这个确认号（可能已经用过了）：先调用对应的 *_prepare")
+    if time.time() > t["exp"]:
+        ctx["tickets"].pop(tk, None)
+        raise RuntimeError("确认号过期了，重新 prepare 一次")
+    a = t["args"]
+    st = _store(ctx)
+    ids = list(a.get("ids") or [])
+    before = {i: copy.deepcopy(st.orders.get(i) or {}) for i in ids}
+    if t["kind"] == "void":
+        items = [x for x in OT.stale_drafts(st, keep_days=(ctx["settings"].get("tracking") or {}).get("draft_days"))
+                 if x["id"] in set(ids)]
+        n = OT.void_drafts(st, items)
+        res = f"作废了 {n} 张旧的待登记（「看哪些 → 已作废的待登记」里能看到、能恢复）"
+    elif t["kind"] == "restore":
+        n = OT.restore_drafts(st, ids)
+        res = f"恢复了 {n} 张待登记"
+    elif t["kind"] == "update":
+        act, note = a["action"], a.get("note") or ""
+        if act == "placed":
+            n = OT.confirm_drafts(st, ids)
+        else:
+            today = date.today().isoformat()
+            ch = []
+            for oid in ids:
+                o = st.orders.get(oid) or {}
+                f = {}
+                if act == "confirmed" and not o.get("confirmed"):
+                    f = {"confirmed": today}
+                elif act == "stuck":
+                    f = {"state": "stuck"}
+                elif act == "normal" and o.get("state") in ("stuck", "partial"):
+                    f = {"state": None}
+                elif act == "cancel":
+                    f = {"state": "cancel"}
+                if note:
+                    f["note"] = (str(o.get("note") or "") + " · " if o.get("note") else "") + note
+                if f:
+                    ch.append((oid, f))
+            st.set_many(ch)
+            n = len(ch)
+        res = f"改了 {n} 张订单（{ACTIONS[act]}）"
+    elif t["kind"] == "mail":
+        import agent_tools as AT
+        sugs = AT._mail_sugs(ctx, a)
+        n, undo = C.mail_apply(st, sugs, via="mcp")
+        ctx.setdefault("undo", {})[tk] = ("mail", undo)
+        ctx["tickets"].pop(tk, None)
+        return {"结果": f"按邮件改了 {n} 张订单", "撤销": f"undo_change(ticket=\"{tk}\")"}
+    else:
+        raise RuntimeError(t["kind"])
+    st.reload()
+    ctx.setdefault("undo", {})[tk] = ("fields", _diff_undo(before, st, ids))
+    ctx["tickets"].pop(tk, None)
+    C.audit(st.me, "mcp", "apply_" + t["kind"], a, {"result": res})
+    return {"结果": res, "撤销": f"undo_change(ticket=\"{tk}\")"}
+
+
+def undo_change(ctx, args):
+    import commands as C
+    tk = str(args.get("ticket") or "").strip()
+    u = (ctx.get("undo") or {}).get(tk)
+    if not u:
+        raise RuntimeError("这个确认号没有能撤销的修改（只有这次连接里做的能撤销；以前的请在程序里改回去）")
+    st = _store(ctx)
+    kind, data = u
+    if kind == "mail":
+        C.mail_undo(st, data, via="mcp")
+        n = len(data)
+    else:
+        st.set_many(data)
+        n = len(data)
+    ctx["undo"].pop(tk, None)
+    C.audit(st.me, "mcp", "undo", {"ticket": tk}, {"orders": n})
+    return {"结果": f"撤销了，{n} 张单改回去了"}
+
+
+def write_tools():
+    ids = {"type": "array", "items": {"type": "string"}, "description": "单号（orders_list / order_get 里的）"}
+    first = "第一步，只是准备，不会改任何东西：返回要改哪几张和一个确认号；给用户看、用户同意后再 apply_change。"
+    return [
+        Tool("drafts_void_prepare", "作废旧的待登记（被新的配货取代 / 生成超过几天没发出）。" + first, _obj(), drafts_void_prepare),
+        Tool("drafts_restore_prepare", "把已作废的待登记恢复成待登记。" + first, _obj({"ids": ids}, ["ids"]), drafts_restore_prepare),
+        Tool("orders_update_prepare", "改订单状态：placed = 待登记确认为已下单；confirmed = 供应商已确认；stuck = 卡住了；"
+             "normal = 恢复正常；cancel = 取消订单；note = 只加备注（note 字段也可以跟着别的操作一起写）。" + NO_ARRIVAL + first,
+             _obj({"ids": ids, "action": {"type": "string", "enum": list(ACTIONS)}, "note": {"type": "string"}}, ["ids", "action"]),
+             orders_update_prepare),
+        Tool("mail_apply_prepare", "按 mail_check 的建议改订单跟踪（供应商确认了 / 发货了 / 合并重复的待登记 / 补登记）。"
+             "indexes = mail_check 返回的编号（同一次连接里先调 mail_check）。" + first,
+             _obj({"indexes": {"type": "array", "items": {"type": "integer"}}}, ["indexes"]), mail_apply_prepare),
+        Tool("apply_change", "第二步：执行 *_prepare 准备好的修改。**只有用户在对话里明确同意了才能调用**。",
+             _obj({"ticket": {"type": "string"}}, ["ticket"]), apply_change),
+        Tool("undo_change", "撤销这次连接里 apply_change 做过的修改。", _obj({"ticket": {"type": "string"}}, ["ticket"]), undo_change),
+    ]
+
+
 # ----------------------------------------------------------------------------- 汇总
 def build_tools():
     tools = [
@@ -282,7 +503,7 @@ def build_tools():
                 tools.append(Tool(t.name, t.description + "（采购助手的同一个工具，只读）", t.schema, t.run))
     except Exception:
         pass
-    return tools
+    return tools + write_tools()
 
 
 def call(tools, ctx, name, args):

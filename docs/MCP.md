@@ -23,7 +23,16 @@ mcpb 就是一个 zip：manifest.json（server.mcp_config 直接写 python.exe �
 - `files_list` / `excel_peek`：只在程序文件夹、同步文件夹、订单跟踪 / DETERSIVO / 总仓 / 门店采购文件夹里看；settings.json 这类有密码的文件不给看
 - 采购助手里不改数据的工具：overview、store_list_suppliers、store_compute、store_result、store_supplier_lines、store_set_boxes（只改这次计算的内存）、mail_check（邮箱只读）、order_mail_preview
 
-会改订单 / 共享数据 / 发邮件的工具**不给**：照旧在程序里点（程序会先弹确认、能撤销）。每次调用写一条审计（logs/audit.jsonl，via = mcp）。
+## 第 2 期：能改订单跟踪（2026-11-26 用户：「可以添加改的权限，我不想动手」）
+都是两步：`*_prepare` 只列出要改哪几张、改完会怎样，返回一个确认号 → Claude 给用户看，**用户在对话里说可以** → `apply_change(确认号)` 才改；
+做完能 `undo_change(确认号)` 撤销（只限这次连接里做的）。确认号 30 分钟有效、只能用一次；执行时按当时的数据再核一遍（例如作废只作废那时还该作废的）。
+- `drafts_void_prepare`：作废旧的待登记（规则和程序里一样，`OT.stale_drafts`）
+- `drafts_restore_prepare`：作废的恢复成待登记
+- `orders_update_prepare`：已下单 / 供应商已确认 / 卡住了 / 恢复正常 / 取消 / 只加备注
+- `mail_apply_prepare`：按 mail_check 的建议改（先在同一次连接里 mail_check）
+
+改的人记成「本机用户 · Claude」，写在订单跟踪文件夹里单独一个日志文件（log_<电脑>_<用户 · Claude>.jsonl），不和程序抢同一个文件；程序会自动读到，PIANO Excel 程序下次同步时写进去。每次都记审计（via = mcp）。
+**不给**：确认收货 / 部分收货（一定要门店的人点、选卸货人）、发邮件、生成订单、改 Griglia / 门店清单。每次调用写一条审计（logs/audit.jsonl，via = mcp）。
 
 ## 代码
 - `mcp_server.py`：JSON-RPC 2.0 一行一条（MCP stdio），initialize / tools/list / tools/call / ping；stdout 只写协议，别的 print 都改到 stderr。

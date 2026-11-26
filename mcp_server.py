@@ -57,7 +57,8 @@ class Server:
                        "capabilities": {"tools": {"listChanged": False}},
                        "serverInfo": {"name": SERVER_NAME, "version": _version()},
                        "instructions": "CASA&TE 采购系统（意大利五家门店 + BMS 仓库）的数据：采购订单跟踪、销售数据库（只读）、日志、设置、"
-                                       "同步文件夹里的 Excel。全部只读；改数据要在程序里点（程序会先弹确认）。"}
+                                       "同步文件夹里的 Excel。查数据都是只读的。改订单跟踪的操作都是两步：*_prepare 给出要改的内容和确认号，"
+                                       "**一定先给用户看、用户在对话里明确同意后**才 apply_change；能 undo_change 撤销。确认收货 / 发邮件不能做。"}
             elif method == "ping":
                 res = {}
             elif method == "tools/list":
