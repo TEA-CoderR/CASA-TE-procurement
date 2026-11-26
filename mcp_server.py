@@ -140,10 +140,14 @@ def install(paths=None, python=None):
     import shutil
     from datetime import datetime
     done = []
-    for p in paths or config_paths():
+    paths = paths or config_paths()
+    for i, p in enumerate(paths):
         d = os.path.dirname(p)
         if not os.path.isdir(d):
-            continue
+            if i:                                # 商店版的文件夹不在就是没装商店版
+                continue
+            os.makedirs(d, exist_ok=True)        # %APPDATA%\Claude：商店版有时也读这里，没有就建
+
         cfg = {}
         if os.path.exists(p):
             with open(p, encoding="utf-8") as f:
