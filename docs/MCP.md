@@ -3,6 +3,11 @@
 让 Claude（桌面版 / 连到这台电脑的云端会话）直接查程序里的数据，不用截图、不用传文件。
 
 ## 安装（每台电脑一次）
+**推荐（2026-11-26 在 XH 电脑上试过能用）**：Claude 设置 → Desktop app → Extensions，把 `CASATE采购系统.mcpb` 拖进去点安装。
+mcpb 就是一个 zip：manifest.json（server.mcp_config 直接写 python.exe 和 mcp_server.py 的绝对路径）+ 占位的 server/launch.py；别的电脑路径不一样要改 manifest 重新打包。
+改 claude_desktop_config.json 的老办法不稳：Claude 开着时写进去，退出时会被它自己的保存盖掉（要先退出 Claude 再双击 MCP_install.bat）。
+
+老办法：
 1. 双击程序文件夹里的 `MCP_install.bat`（= `python mcp_server.py --install`）：把这个服务写进 Claude 桌面版的设置
    `%APPDATA%\Claude\claude_desktop_config.json`（商店版在 `%LOCALAPPDATA%\Packages\Claude_*\LocalCache\Roaming\Claude`），
    别的 MCP 服务留着，改之前备份一份 `.bak_时间`。
