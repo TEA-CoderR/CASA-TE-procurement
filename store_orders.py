@@ -484,8 +484,8 @@ def _find_header(ws):
     return {}, None
 
 
-def _read_items(info, ws, cols, hdr, offset=0, sheet=None):
-    """一页的商品 → info["items"]（行号 + offset；sheet：门店采购几页 GRIGLIA 时记是哪一页）"""
+def _read_items(info, ws, cols, hdr, offset=0, sheet=None, no_col=None):
+    """一页的商品 → info["items"]（行号 + offset；sheet：门店采购几页 GRIGLIA 时记是哪一页；no_col：NO. 那一列）"""
     for r_idx, row in enumerate(ws.iter_rows(min_row=hdr + 1, values_only=True), hdr + 1):
         def g(k):
             c = cols.get(k)
@@ -502,6 +502,9 @@ def _read_items(info, ws, cols, hdr, offset=0, sheet=None):
               "pack": pack if pack > 0 else 1, "price": _num(g("price")) or 0.0, "sup_code": sc_}
         if sheet is not None:
             it["sheet"] = sheet
+        if no_col and no_col - 1 < len(row) and row[no_col - 1] not in (None, ""):
+            v = row[no_col - 1]
+            it["no"] = int(v) if isinstance(v, float) and v == int(v) else v
         info["items"].append(it)
 
 
@@ -551,6 +554,10 @@ def parse_scheda(path, overrides=None):
         filled = [c for c, v in enumerate(hrow, 1) if v not in (None, "") and str(v).strip()]
         gia = next((c for c, v in enumerate(hrow, 1) if _norm(v) == "GIA"), None)
         info["extra_col"] = gia or ((max(filled) + 1) if filled else len(hrow) + 1)
+        # 订单文件里原来那几列的表头（订货明细「订单表」照着写，和文件一样）
+        info["heads"] = {c: " ".join(str(v).split()) for c, v in enumerate(hrow, 1)
+                         if c < info["extra_col"] and v not in (None, "") and str(v).strip()}
+        no_col = next((c for c, v in info["heads"].items() if _norm(v).rstrip(".") in ("NO", "N", "NR", "NUM")), None)
         pages = [(0, ws, cols, hdr)]
         if info.get("pdv"):
             info["pdv"]["cols"] = {ws.title: cols}
@@ -569,7 +576,8 @@ def parse_scheda(path, overrides=None):
                 info["pdv"]["extra_col"][t] = g2 or ((max(f2) + 1) if f2 else len(hr2) + 1)
                 pages.append((k, wb[t], c2, h2))
         for k, ws_, cols_, hdr_ in pages:
-            _read_items(info, ws_, cols_, hdr_, k * PDV_ROW_BLOCK, ws_.title if info.get("pdv") else None)
+            _read_items(info, ws_, cols_, hdr_, k * PDV_ROW_BLOCK, ws_.title if info.get("pdv") else None,
+                        no_col if k == 0 else None)
         # 各门店页一般行完全一样；万一不一样，按商品编号 / EAN 对应到各自的行
         info["rowmap"] = {}
         first = next(iter(info["sheets"].values()))

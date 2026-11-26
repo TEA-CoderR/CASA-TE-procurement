@@ -40,11 +40,44 @@ def route_of(plan, sid):
     return ("—", "faint") if not st.get("colli") else (tr("这次不订"), "faint")
 
 
-def store_cols(days):
-    """门店页的列（和订单文件同样的顺序）"""
-    return ["NO.", "Cod.Art.", "Cod.Forn.", "Codice EAN", "Descrizione", "PZ*COLLI", "Colli", "Qtà", "Prezzo",
-            "Importo", "GIA", "ULT. ARRIVO", "QTA ULT. ARR.", "ULT. VENDITA", "MEDIA MENS.", f"ROT.{days[0]}",
-            tr("建议"), tr("判断")]
+FILE_COLS = [("NO.", "no"), ("Immagine", "img"), ("Cod.Art.", "code"), ("Codice Fornitore", "sup_code"),
+             ("Codice EAN", "ean"), ("Descrizione Prodotto", "desc"), ("PZ*COLLI", "pack"), ("Colli", "colli"),
+             ("Qtà Ordine", "qta"), ("PREZZO NETTO", "price"), ("IMPORTO", "imp")]
+
+
+def _extra_heads(days):
+    """订单文件里附加的那几列（GIA · ULT. ARRIVO … period_sales）：[(表头, 在 extra_fields 里第几个)]"""
+    h = S.extra_headers(days)
+    _e, heads = S.file_extra({0: {0: list(range(len(h)))}}, h)
+    return list(zip(heads, _e[0][0]))
+
+
+def store_cols(days, sc=None):
+    """
+    门店页的列 = 订单文件那一页的列（表头照 SCHEDA 里写的）+ 附加的门店数据列 + 程序建议 · 判断。
+    返回 [(表头, 种类)]：种类 = no / img / code / sup_code / ean / desc / pack / colli / qta / price / imp /
+    ("x", 第几个附加值) / sugg / verdict / "" （文件里有、程序不填的列）
+    """
+    heads = (sc or {}).get("heads") or {}
+    cols = (sc or {}).get("cols") or {}
+    out = []
+    if heads:
+        by_col = {v: k for k, v in cols.items()}
+        for c in sorted(heads):
+            h = heads[c]
+            n = S._norm(h)
+            role = by_col.get(c) or ("no" if n.rstrip(".") in ("NO", "N", "NR", "NUM") else
+                                     "img" if n.startswith(("IMMAG", "FOTO", "IMAG")) else
+                                     "qta" if n.startswith(("QTA", "QTÀ", "QT.")) else
+                                     "imp" if n.startswith("IMPORT") else "")
+            out.append((h, role))
+        if not any(r == "colli" for _h, r in out):
+            out = []
+    if not out:
+        out = list(FILE_COLS)
+    out += [(h, ("x", i)) for h, i in _extra_heads(days)]
+    out += [(tr("建议"), "sugg"), (tr("判断"), "verdict")]
+    return out
 
 
 def parse_boxes(text):
@@ -197,6 +230,7 @@ class OrderSheet(QWidget):
         self.sups.currentRowChanged.connect(self._pick_sup)
         lv.addWidget(self.sups, 1)
         h.addWidget(left)
+        left.hide()                            # 用户 11-26：左边供应商栏用不上，换成顶上的下拉（列表留着管选中）
 
         # ---- 右 ----
         right = QWidget()
@@ -206,32 +240,69 @@ class OrderSheet(QWidget):
         head = QFrame()
         head.setObjectName("Panel")
         hv = QVBoxLayout(head)
-        hv.setContentsMargins(14, 8, 14, 8)
-        hv.setSpacing(6)
+        hv.setContentsMargins(14, 8, 14, 10)
+        hv.setSpacing(8)
         hh = QHBoxLayout()
-        hh.setSpacing(16)
+        hh.setSpacing(10)
         hv.addLayout(hh)
-        # 门店页：和订单文件那一页顶上一样写开票 / 送货地址
-        self.h_store = QLabel("")
-        self.h_store.setTextFormat(Qt.RichText)
-        self.h_store.setWordWrap(False)
-        hv.addWidget(self.h_store)
-        nb = QVBoxLayout()
-        nb.setSpacing(1)
-        self.h_name = QLabel("")
-        f = self.h_name.font()
-        f.setPointSizeF(f.pointSizeF() + 3)
+        # 供应商：下拉选（左边那一栏用户 11-26 说用不上、占地方，去掉了）
+        from PySide6.QtWidgets import QComboBox, QGridLayout
+        self.sup_box = QComboBox()
+        self.sup_box.setMinimumWidth(220)
+        self.sup_box.setMaxVisibleItems(20)
+        f = self.sup_box.font()
         f.setBold(True)
-        self.h_name.setFont(f)
+        self.sup_box.setFont(f)
+        self.sup_box.currentIndexChanged.connect(self._box_picked)
+        hh.addWidget(self.sup_box)
+        self.h_state = QLabel("")
+        hh.addWidget(self.h_state)
         self.h_moq = QLabel("")
         self.h_moq.setObjectName("Faint")
-        nb.addWidget(self.h_name)
-        nb.addWidget(self.h_moq)
-        hh.addLayout(nb)
+        hh.addWidget(self.h_moq)
+        hh.addStretch()
+        self.h_name = QLabel("")               # 留着（老代码 / 测试会读）
+        self.h_name.hide()
+        self.h_btns = QHBoxLayout()
+        self.h_btns.setSpacing(8)
+        hh.addLayout(self.h_btns)
+        # 门店页：照订单文件顶上那几格（Fatturazione / Luogo di destinazione / Data Ordine / Tot.colli …）
+        self.h_grid = QWidget()
+        g = QGridLayout(self.h_grid)
+        g.setContentsMargins(0, 0, 0, 0)
+        g.setHorizontalSpacing(14)
+        g.setVerticalSpacing(4)
+        self.g_val = {}
+        cells = [("Fatturazione", "bill", 0, 0), ("Data Ordine", "date", 0, 2), ("Tot.colli", "colli", 0, 4),
+                 ("Luogo di destinazione", "dest", 1, 0), (tr("去向"), "route", 1, 2), ("Tot.imponibile", "amount", 1, 4)]
+        for lab, key, r, c in cells:
+            l = QLabel(lab)
+            l.setObjectName("Faint")
+            v = QLabel("")
+            v.setTextFormat(Qt.RichText)
+            if key in ("colli", "amount"):
+                v.setFont(QFont(NUM_FONT, 11, QFont.Bold))
+            else:
+                fv = v.font()
+                fv.setBold(True)
+                v.setFont(fv)
+            g.addWidget(l, r, c)
+            g.addWidget(v, r, c + 1)
+            self.g_val[key] = v
+        g.setColumnStretch(1, 3)
+        g.setColumnStretch(3, 2)
+        hv.addWidget(self.h_grid)
+        self.h_store = QLabel("")              # 以前一行写开票 / 送货地址，现在是上面的格子
+        self.h_store.hide()
+        # 汇总页：每个去向一块
+        self.h_sum = QWidget()
+        sh_ = QHBoxLayout(self.h_sum)
+        sh_.setContentsMargins(0, 0, 0, 0)
+        sh_.setSpacing(18)
         self.dest_box = QHBoxLayout()
         self.dest_box.setSpacing(18)
-        hh.addLayout(self.dest_box)
-        hh.addStretch()
+        sh_.addLayout(self.dest_box)
+        sh_.addStretch()
         tb = QVBoxLayout()
         tb.setSpacing(1)
         lt = QLabel(tr("Tot.colli · Tot.imponibile"))
@@ -242,7 +313,8 @@ class OrderSheet(QWidget):
         self.h_tot.setAlignment(Qt.AlignRight)
         tb.addWidget(lt)
         tb.addWidget(self.h_tot)
-        hh.addLayout(tb)
+        sh_.addLayout(tb)
+        hv.addWidget(self.h_sum)
         rv.addWidget(head)
 
         self.table = _Table(self)
@@ -287,9 +359,8 @@ class OrderSheet(QWidget):
         self.b_xl_read.setToolTip(tr("把 Excel 里改过的箱数读回程序：在 Excel 中修改的那份，和配货生成的订单文件（每家店的、BMS 的）。\n"
                                      "先列出来哪几格从多少改成多少，确认了才改，可以撤销。数字 = 有几个文件存过还没读回"))
         self.b_xl_read.clicked.connect(self.excel_read)
-        ih.addSpacing(8)
-        ih.addWidget(self.b_xl_edit)
-        ih.addWidget(self.b_xl_read)
+        self.h_btns.addWidget(self.b_xl_edit)
+        self.h_btns.addWidget(self.b_xl_read)
         rv.addWidget(info)
         self._xl_timer = QTimer(self)
         self._xl_timer.setInterval(3000)
@@ -303,6 +374,7 @@ class OrderSheet(QWidget):
         self.tabs.setDocumentMode(True)
         self.tabs.setExpanding(False)
         self.tabs.currentChanged.connect(self._pick_tab)
+        self._style_tabs()
         bottom.addWidget(self.tabs)
         bottom.addStretch()
         self.note = QLabel("")
@@ -354,6 +426,12 @@ class OrderSheet(QWidget):
             self.sups.addItem(it)
             self._paint_sup(it, sc)
         self.sups.blockSignals(False)
+        self.sup_box.blockSignals(True)
+        self.sup_box.clear()
+        for i in range(self.sups.count()):
+            it = self.sups.item(i)
+            self.sup_box.addItem(it.data(Qt.UserRole + 2) or "", it.data(Qt.UserRole))
+        self.sup_box.blockSignals(False)
         rows = [i for i in range(self.sups.count()) if self.sups.item(i).data(Qt.UserRole) == keep]
         self.sups.setCurrentRow(rows[0] if rows else (0 if self.sups.count() else -1))
         if self.sups.currentRow() >= 0:
@@ -399,6 +477,11 @@ class OrderSheet(QWidget):
             self.sups.setItemWidget(item, w)
         w.show_state(sc["name"], tag, tok, frac, sub)
         item.setData(Qt.UserRole + 1, sc["name"].lower())      # 搜索用
+        label = sc["name"] + (f"  ·  €{amt:,.0f}" if amt else "")
+        item.setData(Qt.UserRole + 2, label)
+        k = self.sup_box.findData(sc["path"]) if hasattr(self, "sup_box") else -1
+        if k >= 0:
+            self.sup_box.setItemText(k, label)
         from PySide6.QtCore import QSize
         item.setSizeHint(QSize(180, 66))
         item.setToolTip(f"{sc['name']}（{sc.get('day', '')}）")
@@ -409,9 +492,17 @@ class OrderSheet(QWidget):
             it = self.sups.item(i)
             it.setHidden(bool(q) and q not in str(it.data(Qt.UserRole + 1) or "").lower())
 
+    def _box_picked(self, k):
+        if 0 <= k < self.sups.count() and self.sups.currentRow() != k:
+            self.sups.setCurrentRow(k)
+
     def _pick_sup(self, r):
         if r < 0:
             return
+        if self.sup_box.currentIndex() != r:
+            self.sup_box.blockSignals(True)
+            self.sup_box.setCurrentIndex(r)
+            self.sup_box.blockSignals(False)
         path = self.sups.item(r).data(Qt.UserRole)
         sc = next((x for x in self.calc.get("schede") or [] if x["path"] == path), None)
         if sc is None:
@@ -485,23 +576,33 @@ class OrderSheet(QWidget):
             self.dest_box.addWidget(self._dest("BMS", tr("凑单"), "warn", b.get("amount") or 0, False, sub,
                                                val_tok=None if ok else "warn"))
         self.h_tot.setText(f"{tot_c:g} · €{tot_a:,.2f}")
-        # 门店页：开票 / 送货地址 / 这家店这次怎么订
-        if self.tab != SUMMARY:
+        amt, tag, tok, _frac, _sub = self.sup_state(sc)
+        chip = T(tok + "_soft") if tok in ("ok", "warn") else T("track")
+        self.h_state.setText(f"<span style='background:{chip};color:{T(tok)};font-weight:700'>&nbsp;{tag}&nbsp;</span>"
+                             if tag else "")
+        store = self.tab != SUMMARY
+        self.h_grid.setVisible(store)
+        self.h_sum.setVisible(not store)
+        if store:
             import mail_send as MS
+            from datetime import date
             pf = MS.profile(self.page.settings, self.tab)
             bill = MS.profile(self.page.settings, "BMS").get("name") or "BMS PARTNERS SRL"
-            label, tok = route_of(plan, self.tab)
-            c, a = S._totals(self.page.colli.get(sc["path"], {}).get(self.tab, {}), items)
-            mute = T("faint")
-            self.h_store.setText(
-                f"<span style='color:{mute}'>Fatturazione</span> <b>{bill}</b> &nbsp;&nbsp; "
-                f"<span style='color:{mute}'>Luogo di destinazione</span> <b>{pf.get('name', '')}</b> · {pf.get('address', '')}"
-                f" &nbsp;&nbsp; <span style='background:{T(tok + '_soft') if tok != 'faint' else T('track')};color:{T(tok)};"
-                f"font-weight:700;font-size:10px'>&nbsp;{label}&nbsp;</span> "
-                f"<span style='color:{mute}'>{S.STORE_SHEETS.get(self.tab, self.tab)}：{c:g} {tr('箱')} · €{a:,.2f}</span>")
-            self.h_store.show()
-        else:
-            self.h_store.hide()
+            label, rtok = route_of(plan, self.tab)
+            st = ((plan or {}).get("stores") or {}).get(self.tab) or {}
+            why = {"direct": tr("直送 · 够起订量"), "filled": tr("凑单后直送"), "bms": tr("凑进 BMS"),
+                   "pulled": tr("凑进 BMS"), "wait": tr("这次不订"), "dropped": tr("这次不订")}.get(st.get("status"), "")
+            c, a_ = S._totals(self.page.colli.get(sc["path"], {}).get(self.tab, {}), items)
+            mute = T("muted")
+            rchip = T(rtok + "_soft") if rtok in ("ok", "warn") else T("track")
+            v = self.g_val
+            v["bill"].setText(bill)
+            v["dest"].setText(f"{pf.get('name', '')} <span style='color:{mute};font-weight:400'>· {pf.get('address', '')}</span>")
+            v["date"].setText(date.today().strftime("%d/%m/%Y"))
+            v["route"].setText(f"<span style='background:{rchip};color:{T(rtok)};font-size:10px'>&nbsp;{label}&nbsp;</span>"
+                               f" <span style='color:{mute};font-weight:400'>{why}</span>")
+            v["colli"].setText(f"{c:g}")
+            v["amount"].setText(f"<span style='color:{T('ok') if a_ else T('faint')}'>€{a_:,.2f}</span>")
 
     def _dest(self, name, route, tok, amt, on, sub="", val_tok=None):
         w = QWidget()
@@ -599,15 +700,17 @@ class OrderSheet(QWidget):
     def _render_store(self, sid):
         sc, t = self.sc, self.table
         days = self.calc.get("days") or [30, 60, 90, 180]
-        cols = store_cols(days)
-        t.setColumnCount(len(cols))
-        t.setHorizontalHeaderLabels(cols)
-        t.horizontalHeaderItem(6).setText("Colli ✎")
+        spec = store_cols(days, sc)
+        roles = [r for _h, r in spec]
+        t.setColumnCount(len(spec))
+        t.setHorizontalHeaderLabels([h + (" ✎" if r == "colli" else "") for h, r in spec])
         t.setRowCount(len(sc["items"]))
-        for c in range(len(cols)):
-            t.setItemDelegateForColumn(c, self._enter if c == 6 else self._thumb if c == 4 else None)
-        self._set_bands({c: ("DETTAGLIO ORDINE" if c < 10 else tr("门店数据（订单文件里也有）") if c < 16 else tr("程序建议"))
-                             for c in range(len(cols))})
+        self._colli_col = roles.index("colli")
+        for c, r in enumerate(roles):
+            t.setItemDelegateForColumn(c, self._enter if r == "colli" else self._thumb if r == "img" else None)
+        self._set_bands({c: ("DETTAGLIO ORDINE" if not isinstance(r, tuple) and r not in ("sugg", "verdict")
+                             else tr("门店数据（订单文件里也有）") if isinstance(r, tuple) else tr("程序建议"))
+                         for c, r in enumerate(roles)})
         tot_c = tot_a = 0.0
         for r, it in enumerate(sc["items"]):
             x = self._x(sid, it)
@@ -616,32 +719,61 @@ class OrderSheet(QWidget):
             tot_a += n * it["pack"] * it["price"]
             sug = self.win._orig(sc, sid, it["row"])
             kind, vt = self.win._verdict(sc, it, sid, n)
-            mon = S.monthly_and_need(x, days)[0] if x else None
-            inv = x.get("inv_raw", x.get("inv")) if x else None
-            row = [self._num(r + 1, color="faint"), self._txt(S.item_code(it), "muted"), self._txt(it.get("sup_code") or "", "muted"),
-                   self._txt(it["ean"], "muted"), self._desc(it), self._num(f"{it['pack']:g}"),
-                   self._colli_item(sc, sid, it), self._num(f"{n * it['pack']:g}" if n else ""),
-                   self._num(f"{it['price']:.2f}"), self._num(f"{n * it['pack'] * it['price']:,.2f}" if n else "", bold=True),
-                   self._num("" if inv is None else f"{inv:g}", bold=inv is not None and inv <= 0,
-                             color="err" if inv is not None and inv <= 0 else None),
-                   self._txt((x or {}).get("last_in") or "", "muted"),
-                   self._num(f"{x['last_in_qty']:g}" if x and x.get("last_in_qty") else ""),
-                   self._txt((x or {}).get("last_sale") or "", "muted"),
-                   self._num("" if mon is None else f"{mon:g}"),
-                   self._num(f"{float(x['sales'][0]):g}" if x and x.get("sales") else ""),
-                   self._num(f"{sug:g}" if sug else ("0" if x else ""), color="ok" if sug else "faint"),
-                   self._txt(vt if x else (tr("同上（重复编号）") if it.get("dup_of") else tr("数据库没有")),
-                             "warn" if (x and kind in ("more", "less")) else "faint" if not x else None)]
-            for c, item in enumerate(row):
+            ex = S.extra_fields(x, sug, days) if x else None
+            for c, role in enumerate(roles):
+                item = self._store_cell(role, r, it, x, ex, n, sug, kind, vt, sc, sid)
                 item.setData(ROW_ROLE, it["row"])
                 t.setItem(r, c, item)
-        self._fit(4, 6)
+        self._fit(roles.index("desc") if "desc" in roles else None, self._colli_col,
+                  roles.index("img") if "img" in roles else None)
         self.note.setText(tr("{0}：{1:g} 箱 · €{2:,.2f}", S.STORE_SHEETS.get(sid, sid), tot_c, tot_a))
+
+    def _store_cell(self, role, r, it, x, ex, n, sug, kind, vt, sc, sid):
+        if role == "no":
+            return self._num(it.get("no", r + 1), color="faint")
+        if role == "img":
+            c = self._txt("")
+            c.setData(EAN_ROLE, it["ean"])
+            return c
+        if role == "code":
+            return self._txt(S.item_code(it), "muted")
+        if role == "sup_code":
+            return self._txt(it.get("sup_code") or "", "muted")
+        if role == "ean":
+            return self._txt(it["ean"], "muted")
+        if role == "desc":
+            d = self._txt(it["desc"])
+            d.setToolTip(f"{it['desc']}\nEAN {it['ean']}")
+            return d
+        if role == "pack":
+            return self._num(f"{it['pack']:g}")
+        if role == "colli":
+            return self._colli_item(sc, sid, it)
+        if role == "qta":
+            return self._num(f"{n * it['pack']:g}" if n else "")
+        if role == "price":
+            return self._num(f"{it['price']:.2f} €")
+        if role == "imp":
+            return self._num(f"{n * it['pack'] * it['price']:,.2f} €" if n else "", bold=True)
+        if isinstance(role, tuple):
+            v = ex[role[1]] if ex and role[1] < len(ex) else None
+            if v is None or v == "":
+                return self._txt("")
+            if isinstance(v, (int, float)):
+                neg = role[1] == 0 and v <= 0
+                return self._num(f"{round(v, 1):g}", bold=neg, color="err" if neg else None)
+            return self._txt(str(v), "muted")
+        if role == "sugg":
+            return self._num(f"{sug:g}" if sug else ("0" if x else ""), color="ok" if sug else "faint")
+        if role == "verdict":
+            return self._txt(vt if x else (tr("同上（重复编号）") if it.get("dup_of") else tr("数据库没有")),
+                             "warn" if (x and kind in ("more", "less")) else "faint" if not x else None)
+        return self._txt("")
 
     def _render_summary(self):
         sc, t = self.sc, self.table
         stores = self._stores(sc)
-        cols = ["NO.", "Cod.Art.", "Descrizione", "PZ*COLLI", "Prezzo"]
+        cols = ["NO.", "Cod.Art.", "Descrizione Prodotto", "PZ*COLLI", "PREZZO NETTO"]
         plan = self._plan(sc)
         bands = {c: "DETTAGLIO ORDINE" for c in range(5)}
         for sid in stores:
@@ -658,7 +790,7 @@ class OrderSheet(QWidget):
         self._set_bands(bands)
         for r, it in enumerate(sc["items"]):
             d = self._desc(it)
-            row = [self._num(r + 1, color="faint"), self._txt(S.item_code(it), "muted"),
+            row = [self._num(it.get("no", r + 1), color="faint"), self._txt(S.item_code(it), "muted"),
                    d, self._num(f"{it['pack']:g}"), self._num(f"{it['price']:.2f}")]
             tc = 0
             for sid in stores:
@@ -676,14 +808,16 @@ class OrderSheet(QWidget):
         self._fit(2, None)
         self.note.setText("")
 
-    def _fit(self, desc_col, colli_col):
-        """列宽按表头和内容量（格子左右各留 10 像素），名称最宽 300；用户拖过的照用户的（这一次打开里）"""
+    def _fit(self, desc_col, colli_col, img_col=None):
+        """列宽按表头和内容量（格子左右各留 10 像素），名称最宽 300；图片列一个小图宽"""
         t = self.table
         t.resizeColumnsToContents()
         for c in range(t.columnCount()):
             w = t.columnWidth(c) + 8
             if c == desc_col:
-                w = min(max(w + 36, 200), 270)        # 左边小图
+                w = min(max(w + (36 if img_col is None else 0), 200), 270)
+            if c == img_col:
+                w = 72
             t.setColumnWidth(c, min(w, 330))
 
     # ================================================================= 改数量
@@ -970,7 +1104,17 @@ class OrderSheet(QWidget):
                        (tr(" · {0} 格写的不是箱数，没改", bad) if bad else ""))
         return n
 
+    def _style_tabs(self):
+        """工作表标签照 Excel / 设计稿：灰底一格一格，选中的白底、上面一条主题色"""
+        self.tabs.setStyleSheet(
+            f"QTabBar::tab{{background:{T('track')};color:{T('muted')};border:1px solid {T('line')};"
+            f"border-top:2px solid {T('line')};padding:5px 16px;margin-right:-1px;min-width:60px}}"
+            f"QTabBar::tab:selected{{background:{T('surface')};color:{T('accent')};font-weight:700;"
+            f"border-top:2px solid {T('accent')}}}"
+            f"QTabBar::tab:hover:!selected{{background:{T('hover')}}}")
+
     def restyle(self):
+        self._style_tabs()
         if self.sc:
             self.render()
 

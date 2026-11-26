@@ -75,17 +75,17 @@ def test_type_paste_clear_and_undo_change_page_colli():
     app, sh, page = _sheet()
     assert sh.tab == 1 and [sh.tabs.tabText(i) for i in range(sh.tabs.count())][-1]
     t = sh.table
-    t.item(1, 6).setText("3")                    # 门店页 Colli 列
+    t.item(1, sh._colli_col).setText("3")        # 门店页 Colli 列
     app.processEvents()
     assert page.colli["p.xlsx"][1][7] == 3
-    t.setCurrentCell(2, 6)
+    t.setCurrentCell(2, sh._colli_col)
     QGuiApplication.clipboard().setText("5\n1\n")
     sh.paste()
     assert page.colli["p.xlsx"][1] == {6: 2, 7: 3, 8: 5, 9: 1}
     sh.undo()
     assert page.colli["p.xlsx"][1] == {6: 2, 7: 3}
     t.setRangeSelected(__import__("PySide6.QtWidgets", fromlist=["QTableWidgetSelectionRange"])
-                       .QTableWidgetSelectionRange(0, 6, 1, 6), True)
+                       .QTableWidgetSelectionRange(0, sh._colli_col, 1, sh._colli_col), True)
     sh.clear_selected()
     assert page.colli["p.xlsx"][1] == {}
     # 汇总页：每家店 库存 + Colli，MARLIA 的 Colli 能改
