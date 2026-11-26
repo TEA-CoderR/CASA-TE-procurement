@@ -216,10 +216,13 @@ def test_one_file_per_supplier(tmp_path, monkeypatch):
     assert len(S.written_files(w)) == 2 and [x[2] for x in w] == ["FOIANO", S.BMS]
     assert os.path.basename(w[0][0]) == "Ordine_ACME_FOIANO_1810.xlsx"
     assert os.path.basename(w[1][0]) == "Ordine_ACME_BMS_1810.xlsx"
-    (l1, m1), (l2, m2) = got
-    assert l1 == {1: {7: 2}} and l2 == {3: {8: 1}}
-    assert m1["FOIANO"] == S.GRIGLIA_MARK["direct"] and m1["S.FILIPPO"] == ""
+    (l1, m1), (l2, m2), (l3, m3) = got
+    assert l1 == {1: {7: 2}} and l2 == {3: {8: 1}} and m1 is None          # 门店文件：只留这家店那一页，不要汇总页
     assert m2["S.FILIPPO"] == S.GRIGLIA_MARK["bms"] and m2["FOIANO"] == "" and m2["S.MARCO"] == ""
+    # 2026-11-26：再一个汇总文件（全部门店，DIRETTO / BMS 都标），不登记、不发
+    assert l3 == {1: {7: 2}, 3: {8: 1}} and m3["FOIANO"] == S.GRIGLIA_MARK["direct"]
+    assert m3["S.FILIPPO"] == S.GRIGLIA_MARK["bms"]
+    assert os.path.exists(os.path.join(str(tmp_path), "周一", "Riepilogo_ACME_1810.xlsx"))
     assert w[1][7] == ("3",) and len(w[0]) == 7          # BMS 那行多一项：哪几家店凑的（订单跟踪写 BMS (FI)）
 
 

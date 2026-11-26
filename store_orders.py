@@ -2073,7 +2073,7 @@ def plan_marks(plan):
     return marks
 
 
-def write_plans(results, out_root, date_tag=None, on_file=None, calc=None):
+def write_plans(results, out_root, date_tag=None, on_file=None, calc=None, image_url=None):
     """
     results: [(星期, scheda, plan)]。每个去向一个文件（2026-11-21 起）：直送的每家店一个、BMS 一个（里面是凑单的几家店），
     汇总页门店名上面写明去向（DIRETTO / BMS）。
@@ -2102,6 +2102,7 @@ def write_plans(results, out_root, date_tag=None, on_file=None, calc=None):
                 p = os.path.join(folder, f"Ordine_{safe}_{STORE_SHEETS[sid]}_{date_tag}.xlsx")
                 on_file(n, len(todo), os.path.basename(p))
                 write_pdv_file(sc, sid, st["lines"], p, extra=(extra or {}).get(sid), headers=heads)
+                _slim(p, None, image_url)
                 written.append((p, sc["name"], STORE_SHEETS[sid], st["colli"], st["amount"], st["status"], sc["path"]))
             continue
         extra = extra_data(sc, calc.get("demand"), calc.get("base"), calc.get("days")) if calc else None
@@ -2110,11 +2111,17 @@ def write_plans(results, out_root, date_tag=None, on_file=None, calc=None):
         # 2026-11-21 用户：直送门店 = 门店收货、从门店邮箱发；几家店凑的 BMS = BMS 收货、从 BMS 邮箱发
         # → 每个去向一个文件（直送门店只有这家店的箱数，BMS 文件只有凑单的那几家店），一封邮件发一个文件
         marks = plan_marks(plan)
+        store_names = set(sc["sheets"].values())
+        # 2026-11-26 用户：直送门店的文件只有这家店那一页（不要别家店、不要汇总页）；BMS 一个文件（凑单的几家店，
+        # 发给供应商、BMS 收货后内部分货）；再一个「汇总」文件（全部门店，汇总页写 DIRETTO / BMS，只给自己看，不发）。
+        # 图片一律换成 IMAGE 公式（不放进文件），文件不会越来越大
         for sid, st in direct:
             p = os.path.join(folder, f"Ordine_{safe}_{STORE_SHEETS[sid]}_{date_tag}.xlsx")
             on_file(n, len(todo), os.path.basename(p))
-            write_order_file(sc, {sid: st["lines"]}, p, extra, heads,
-                             marks={k: (v if k == STORE_SHEETS[sid] else "") for k, v in marks.items()})
+            write_order_file(sc, {sid: st["lines"]}, p, extra, heads)
+            own = sc["sheets"][sid]
+            _slim(p, lambda t, own=own: (t in store_names and t != own) or _is_summary_sheet(t) or _is_data_sheet(t),
+                  image_url)
             written.append((p, sc["name"], STORE_SHEETS[sid], st["colli"], st["amount"], st["status"], sc["path"]))
         if b:                                 # 第 8 项：这张 BMS 单是哪几家店凑的（订单跟踪写「BMS (FO, MA)」）
             per = {sid: ln for sid, ln in (b.get("per_store") or {}).items()}
@@ -2122,9 +2129,44 @@ def write_plans(results, out_root, date_tag=None, on_file=None, calc=None):
             p = os.path.join(folder, f"Ordine_{safe}_BMS_{date_tag}.xlsx")
             on_file(n, len(todo), os.path.basename(p))
             write_order_file(sc, per, p, extra, heads, marks={k: (v if k in names else "") for k, v in marks.items()})
+            _slim(p, _is_data_sheet, image_url)
             members = tuple(str(sid) for sid in sorted(per, key=str) if per.get(sid))
             written.append((p, sc["name"], BMS, b["colli"], b["amount"], b["status"], sc["path"], members))
+        p = os.path.join(folder, f"{SUMMARY_PREFIX}{safe}_{date_tag}.xlsx")
+        if len(direct) + (1 if b else 0) < 2:
+            if os.path.exists(p):              # 重新配货后只剩一个去向：以前的汇总文件删掉，免得对不上
+                try:
+                    os.remove(p)
+                except OSError:
+                    pass
+        else:
+            allp = {sid: st["lines"] for sid, st in direct}
+            for sid, ln in ((b or {}).get("per_store") or {}).items():
+                allp[sid] = ln
+            write_order_file(sc, allp, p, extra, heads, marks=marks)
+            _slim(p, _is_data_sheet, image_url)
     return written
+
+
+SUMMARY_PREFIX = "Riepilogo_"          # 汇总文件（全部门店，只给自己看）：不登记、不发
+
+
+def _is_summary_sheet(name):
+    return "GRIGLIA" in str(name or "").upper()
+
+
+def _is_data_sheet(name):
+    """「Dati Filiale 1 / 2」：门店资料，发给供应商的订单文件里不要"""
+    return str(name or "").strip().upper().startswith("DATI FILIAL")
+
+
+def _slim(path, drop, url):
+    try:
+        import order_slim
+        order_slim.slim(path, drop=drop, url=url)
+    except Exception as e:                    # 瘦身不了照样用原样的文件（只是大一点），不能让订单生成失败
+        import logging
+        logging.getLogger(__name__).warning("订单文件瘦身失败 %s：%s", os.path.basename(path), e)
 
 
 STATUS_TEXT = {"direct": "直接送店", "filled": "凑单后送店", "bms": "并入 BMS", "none": "不用订",

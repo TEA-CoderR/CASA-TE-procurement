@@ -152,7 +152,7 @@ def list_files(root, today=None, days=SCAN_DAYS):
             continue
         dns[:] = [d for d in dns if not d.startswith(("_", "."))]
         for fn in fns:
-            if fn.startswith(("~$", ".")) or not fn.lower().endswith((".xlsx", ".xlsm")):
+            if fn.startswith(("~$", ".", "Riepilogo_")) or not fn.lower().endswith((".xlsx", ".xlsm")):
                 continue
             p = os.path.join(dp, fn)
             try:
