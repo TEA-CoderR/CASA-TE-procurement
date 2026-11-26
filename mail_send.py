@@ -49,8 +49,13 @@ DEFAULT_PROFILES = {
     "3": {"name": "CASA & TE S.FILIPPO SRL", "address": "Via di Tiglio 1893, 55100 Lucca (LU)", "phone": "0583-570716"},
     "4": {"name": "CASA & TE S.MARCO SRL", "address": "Via del Brennero 844, 55100 Lucca (LU)", "phone": "0583-323749"},
     "5": {"name": "CASA & TE S.CONCORDIO SRL", "address": "Via Savonarola 50, 55100 Lucca (LU)", "phone": "339 2254525"},
-    "BMS": {"name": "BMS PARTNERS SRL", "address": "Via di Tiglio 1893, 55100 Lucca (LU)", "phone": ""},
+    # BMS 仓库和三号店同一个地址、同一个卸货电话，只靠名字区分（2026-11-26 用户；以前的订单信也这样写）
+    "BMS": {"name": "BMS PARTNERS SRL", "address": "Via di Tiglio 1893, 55100 Lucca (LU)", "phone": "0583-570716"},
 }
+# 每家店平时用的发件邮箱（2026-11-26 查了「已发送」：同事手动发的每一封都是这样用的）。
+# 「订单发件邮箱」窗口没填的门店，只要这个地址在邮箱设置里，就用它
+DEFAULT_SENDERS = {"1": "info@casa-te.com", "2": "infolucca@casa-te.com", "3": "info.s.filippo@casa-te.com",
+                   "4": "info.s.marco@casa-te.com", "5": "info.s.concordio@casa-te.com", "BMS": "info@bmspsrl.com"}
 # DETERSIVO 的单（批发商比价生成的，origin wholesale）：2026-11-22 用户定——批发商送货都准时，不要确认信、不要预约；
 # 一家批发商一封信，五家门店的单一起，统一用 BMS 的邮箱发，正文写每家店的地址、卸货电话、箱数、金额
 DETER_ORIGIN = "wholesale"
@@ -69,8 +74,17 @@ def order_cfg(settings):
 
 
 def senders(settings):
-    """{门店代码: 发件邮箱}：「订单发件邮箱」窗口里填的六个"""
-    return {k: str(v).strip() for k, v in (order_cfg(settings).get("senders") or {}).items() if str(v or "").strip()}
+    """
+    {门店代码: 发件邮箱}：「订单发件邮箱」窗口里填的优先；没填的门店用 DEFAULT_SENDERS
+    （只在这个地址已经在邮箱设置里时，写法照邮箱设置里的）
+    """
+    out = {k: str(v).strip() for k, v in (order_cfg(settings).get("senders") or {}).items() if str(v or "").strip()}
+    have = {str(a.get("address") or "").strip().lower(): str(a.get("address") or "").strip()
+            for a in (((settings or {}).get("mail") or {}).get("accounts") or []) if isinstance(a, dict)}
+    for k, a in DEFAULT_SENDERS.items():
+        if k not in out and a.lower() in have:
+            out[k] = have[a.lower()]
+    return out
 
 
 def profile(settings, code):
@@ -212,34 +226,42 @@ def compose(supplier, orders, settings, day=None, name=None):
         except (TypeError, ValueError):
             return ""
         return f"{c:g}" if c else ""
-    tail = ("Vi chiediamo cortesemente di:\n"
-            "- confermare la ricezione dell'ordine indicando la data di consegna prevista, rispondendo a questa "
-            "e-mail senza modificarne l'oggetto;\n"
-            "- riportare il numero d'ordine sul documento di trasporto (DDT).\n\n"
+    hi = f"Ciao {name}," if name else "Buongiorno,"
+    tail = ("Vi chiediamo di segnalarci eventuali mancanze, prodotti fuori produzione, variazioni di prezzo, "
+            "modifiche di EAN o packaging, proponendo eventuali alternative.\n\n"
+            "Una volta verificato l'ordine, abbiamo bisogno della conferma in formato XLSX, con la data di consegna "
+            "prevista, entro due giorni dalla ricezione di questa e-mail, rispondendo senza modificarne l'oggetto. "
+            "Vi preghiamo di riportare il numero d'ordine sul documento di trasporto (DDT).\n\n"
             f"Le consegne si ricevono solo su prenotazione: il vettore deve prenotare lo scarico su {url} "
             "indicando il numero d'ordine. Le consegne senza prenotazione verranno respinte.\n\n"
-            "Cordiali saluti\nUfficio Acquisti\nCASA & TE")
+            "Ringraziandovi per la collaborazione, restiamo in attesa di un vostro riscontro.\n\n"
+            "Cordiali saluti\nUfficio Acquisti – CASA & TE")
+
+    def dest(code, p):
+        if code == "BMS":
+            return f"per il magazzino {p['name']}"
+        return f"per il punto vendita di {STORE_LABEL.get(code, code)} ({p['name']})"
+
+    def where(p, c):
+        return (f"{p['name']}\n{p['address']}\n" + (f"Contatto scarico: {p['phone']}\n" if p.get("phone") else "")
+                + (f"Colli ordinati: {c}\n" if c else ""))
     if len(rows) == 1:
         oid, o, no = rows[0]
         code = str(o.get("store") or "")
         p = profile(settings, code)
-        subject = f"Ordine {no} · CASA&TE {STORE_LABEL.get(code, code)} · {sup}"
-        c = colli(o)
-        body = (f"Buongiorno,\n\nin allegato il nostro ordine n. {no} del {d0:%d/%m/%Y}.\n\n"
-                f"Consegna presso:\n{p['name']}\n{p['address']}\n"
-                + (f"\nColli ordinati: {c}\n" if c else "") + "\n" + tail)
+        subject = f"{subject_for(sup, [code], day)} · n. {no}"
+        body = (f"{hi}\n\nin allegato il nuovo ordine n. {no} di {sup} {dest(code, p)}.\n\n"
+                f"Consegna presso:\n{where(p, colli(o))}\n" + tail)
         return subject, body
     main = next((r for r in rows if str(r[1].get("store")) == "BMS"), rows[0])
-    subject = f"Ordine {main[2]} · CASA&TE {len(rows)} PDV · {sup}"
+    subject = f"{subject_for(sup, [str(o.get('store') or '') for _i, o, _n in rows], day)} · n. {main[2]}"
     parts = []
     for _oid, o, no in rows:
         code = str(o.get("store") or "")
         p = profile(settings, code)
-        c = colli(o)
-        parts.append(f"- {STORE_LABEL.get(code, code)} – ordine n. {no}" + (f" – colli {c}" if c else "") +
-                     f"\n  {p['name']}, {p['address']}")
-    body = (f"Buongiorno,\n\nin allegato il nostro ordine del {d0:%d/%m/%Y}. "
-            "Ogni punto vendita ha il suo numero d'ordine e la sua consegna:\n\n" + "\n".join(parts) + "\n\n" + tail)
+        parts.append(f"{STORE_LABEL.get(code, code)} – ordine n. {no}\n{where(p, colli(o))}")
+    body = (f"{hi}\n\nin allegato il nuovo ordine di {sup} per {len(rows)} punti vendita. "
+            "Ogni punto vendita ha il suo numero d'ordine e la sua consegna:\n\n" + "\n".join(parts) + "\n" + tail)
     return subject, body
 
 

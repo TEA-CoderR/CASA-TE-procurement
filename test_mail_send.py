@@ -136,7 +136,7 @@ def test_draft_uses_cached_sent_mail_without_network(tmp_path, monkeypatch):
     assert d["ids"] == ["L2"] and d["from"] == "infolucca@casa-te.com"
     assert d["to"] == ["ordini@lampa.it"] and d["cc"] == ["matteohe@casa-te.com"]
     no = d["nos"]["L2"]
-    assert no.startswith("MA-0711-") and d["subject"] == f"Ordine {no} · CASA&TE Capannori · Lampa"
+    assert no.startswith("MA-0711-") and d["subject"] == f"Ordine Lampa Capannori 0711 · n. {no}"
     assert d["body_src"] == "template" and d["files"] == []
 
 
@@ -249,8 +249,8 @@ def test_draft_body_is_fixed_template_never_last_mail(tmp_path, monkeypatch):
     cfg = {"mail": {"accounts": ACCS}, "order_mail": {"booking_url": "https://prenota.casaete.top"}}
     d = CMD.order_mail_draft(cfg, st, "L2", fetch_body=True, today=date(2026, 11, 7))
     no = d["nos"]["L2"]
-    assert calls == [] and not d["need_last"] and d["body_src"] == "template"
-    assert f"ordine n. {no} del 07/11/2026" in d["body"] and "CASA & TE GROUP SRL" in d["body"]
+    assert not d["need_last"] and d["body_src"] == "template"     # 上一封只读来取称呼的名字，正文不照搬
+    assert f"ordine n. {no} di LAMPA" in d["body"] and "CASA & TE GROUP SRL" in d["body"]
     assert "Viale Europa 434" in d["body"] and "Colli ordinati: 6" in d["body"] and "prenota.casaete.top" in d["body"]
     assert "vecchio" not in d["body"]
 
@@ -269,11 +269,14 @@ def test_fixed_sender_per_store_and_bms_for_multi_store_file(tmp_path):
     d = CMD.order_mail_draft(cfg, st, "F1", fetch_body=False)
     assert d["from"] == "ordini@bmspsrl.it" and d["from_locked"] and set(d["ids"]) == {"F1", "B1"}
     nb = d["nos"]["B1"]
-    assert d["subject"].startswith(f"Ordine {nb} · CASA&TE 2 PDV") and d["nos"]["F1"] in d["body"]
+    assert d["subject"].startswith("Ordine ACME 2PDV ") and d["subject"].endswith(f"· n. {nb}") and d["nos"]["F1"] in d["body"]
     assert "BMS PARTNERS SRL" in d["body"] and "CASA & TE SRL" in d["body"]
     import pytest
-    with pytest.raises(RuntimeError, match="Capannori"):           # MARLIA 的发件邮箱没设：不能发
-        CMD.order_mail_draft(cfg, st, "M1", fetch_body=False)
+    # MARLIA 窗口里没设：用平时的 infolucca@（在邮箱设置里）
+    assert CMD.order_mail_draft(cfg, st, "M1", fetch_body=False)["from"] == "infolucca@casa-te.com"
+    cfg2 = {"mail": {"accounts": [a for a in accs if a["address"] != "infolucca@casa-te.com"]}, "order_mail": cfg["order_mail"]}
+    with pytest.raises(RuntimeError, match="Capannori"):           # 平时那个邮箱也不在设置里：不能发
+        CMD.order_mail_draft(cfg2, st, "M1", fetch_body=False)
     assert MS.sender_problem(["1"], cfg, MC_accounts(cfg)) is None
 
 
@@ -393,3 +396,37 @@ def test_no_second_copy_in_sent_when_server_already_saved_it():
         mid, saved = MS.send(acc, "pw", msg, smtp_factory=_SMTP, imap_factory=lambda h, p: imap, wait=(0, 0))
         assert saved and len(imap.appended) == n_append
         assert any("<abc@BMSPSRL.COM>" in " ".join(map(str, a)) for a in imap.searched)
+
+
+def test_fixed_template_greets_only_same_recipient_and_default_senders(tmp_path, monkeypatch):
+    """2026-11-26：固定段落 + 预约那句；称呼只取上次发给同一个收件地址那封信的名字；平时的发件邮箱自动用上"""
+    import json
+    import commands as CMD
+    import mail_send as MS
+    import settings as SET
+    monkeypatch.setattr(SET, "app_dir", lambda: str(tmp_path))
+    accs = [{"address": "info.s.filippo@casa-te.com"}, {"address": "INFO@BMSPSRL.COM"}]
+    cfg = {"mail": {"accounts": accs}}
+    assert MS.senders(cfg) == {"3": "info.s.filippo@casa-te.com", "BMS": "INFO@BMSPSRL.COM"}
+    (tmp_path / "cache" / "mail").mkdir(parents=True)
+    rows = {"7": {"from": "info.s.filippo@casa-te.com", "mailbox": "info.s.filippo@casa-te.com", "folder": "已发送",
+                  "uid": 7, "subject": "Ordine SAIS S.Filippo 2010", "attachments": [], "date": "2026-10-20 10:00:00",
+                  "to": "marco@sais.it", "cc": ""}}
+    (tmp_path / "cache" / "mail" / "f.json").write_text(json.dumps({"Sent": {"validity": 1, "rows": rows}}), encoding="utf-8")
+    monkeypatch.setattr(CMD, "_cached_body", lambda m: "Ciao Marco,\nin allegato")
+    st = _st(tmp_path / "tr")
+    st.set("S3", {"date": "2026-11-26", "store": "3", "supplier": "SAIS", "draft": True, "colli": 12})
+    st.set("SB", {"date": "2026-11-26", "store": "BMS", "supplier": "SAIS", "draft": True})
+    d = CMD.order_mail_draft(cfg, st, "S3", fetch_body=False, today=date(2026, 11, 26))
+    b = d["body"]
+    assert d["from"] == "info.s.filippo@casa-te.com" and b.startswith("Ciao Marco,")
+    assert "per il punto vendita di S.Filippo (CASA & TE S.FILIPPO SRL)" in b
+    assert "Contatto scarico: 0583-570716" in b and "Colli ordinati: 12" in b
+    assert "formato XLSX" in b and "senza prenotazione verranno respinte" in b and "prodotti fuori produzione" in b
+    # 收件人换了人（通讯录里存的是别的地址）→ 不写名字
+    MS.save_contact(st, "SAIS", ["anna@sais.it"])
+    d = CMD.order_mail_draft(cfg, st, "S3", fetch_body=False, today=date(2026, 11, 26))
+    assert d["body"].startswith("Buongiorno,")
+    d = CMD.order_mail_draft(cfg, st, "SB", fetch_body=False, today=date(2026, 11, 26))
+    assert d["from"] == "INFO@BMSPSRL.COM" and "per il magazzino BMS PARTNERS SRL" in d["body"]
+    assert "Contatto scarico: 0583-570716" in d["body"]

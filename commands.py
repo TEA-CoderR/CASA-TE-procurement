@@ -855,9 +855,12 @@ def order_mail_draft(settings, st, oid, fetch_body=True, factory=None, today=Non
     supplier = str(o.get("supplier") or "")
     to, to_src = MS.recipients(st, supplier, hist)
     name = None
-    if deter:
-        # 称呼：以前发给这家的订单信开头的名字（「Buonasera Alessandro,」）；读过的正文直接用，fetch_body 时没读过的现在读
-        prev = MS.last_sent(hist, st, supplier)
+    # 称呼：以前发给这家的订单信开头的名字（「Ciao Alessandro,」）；只认上次发给同一个收件地址的那封
+    # （一家供应商好几个人时不会叫错人），读过的正文直接用，fetch_body 时没读过的现在读
+    prev = MS.last_sent(hist, st, supplier, strict=True)
+    if prev and not ({a.lower() for a in prev.get("to") or []} & {a.lower() for a in to}):
+        prev = None
+    if prev:
         text = _cached_body(prev)
         if text is None and prev and fetch_body:
             try:
