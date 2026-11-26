@@ -13,7 +13,9 @@ from PySide6.QtCore import Qt, QTimer, QEvent
 from PySide6.QtGui import QColor, QFont, QKeySequence, QGuiApplication
 from PySide6.QtWidgets import (QWidget, QHBoxLayout, QVBoxLayout, QFrame, QLabel, QListWidget, QListWidgetItem,
                                QTableWidget, QTableWidgetItem, QTabBar, QHeaderView, QAbstractItemView,
-                               QStyledItemDelegate, QPushButton, QLineEdit, QMessageBox)
+                               QStyledItemDelegate, QPushButton, QLineEdit, QMessageBox, QDialog)
+
+import os
 
 import store_orders as S
 from i18n import tr
@@ -274,7 +276,25 @@ class OrderSheet(QWidget):
         self.b_card.clicked.connect(self._open_card)
         ih.addWidget(self.info, 1)
         ih.addWidget(self.b_card)
+        # 在 Excel 里改、改完读回（用户 11-26：同事习惯在订单文件里改；生成订单文件照旧用配货按钮）
+        from erp_widgets import CountButton
+        self.b_xl_edit = QPushButton(tr("在 Excel 中修改"))
+        self.b_xl_edit.setToolTip(tr("把这家供应商现在的箱数写成一份和订单文件一样的 Excel（每家门店一页 + 汇总），"
+                                     "在 Excel 里改黄格、存好关掉，再点「读回 Excel 的改动」。\n"
+                                     "这份只是改箱数用的，不发给供应商；订单文件照旧用「配货」生成"))
+        self.b_xl_edit.clicked.connect(self.excel_edit)
+        self.b_xl_read = CountButton(tr("读回 Excel 的改动"), 0, tone="warn")
+        self.b_xl_read.setToolTip(tr("把 Excel 里改过的箱数读回程序：在 Excel 中修改的那份，和配货生成的订单文件（每家店的、BMS 的）。\n"
+                                     "先列出来哪几格从多少改成多少，确认了才改，可以撤销。数字 = 有几个文件存过还没读回"))
+        self.b_xl_read.clicked.connect(self.excel_read)
+        ih.addSpacing(8)
+        ih.addWidget(self.b_xl_edit)
+        ih.addWidget(self.b_xl_read)
         rv.addWidget(info)
+        self._xl_timer = QTimer(self)
+        self._xl_timer.setInterval(3000)
+        self._xl_timer.timeout.connect(self._xl_poll)
+        self._xl_timer.start()
 
         bottom = QHBoxLayout()
         bottom.setContentsMargins(0, 0, 0, 6)
@@ -434,6 +454,7 @@ class OrderSheet(QWidget):
     # ================================================================= 顶上一条
     def _paint_head(self):
         sc = self.sc
+        self._xl_buttons()
         plan = self._plan(sc)
         self.h_name.setText(sc["name"])
         m = S.sc_moq(sc)
@@ -699,6 +720,7 @@ class OrderSheet(QWidget):
         self.render()
         if keep:
             self.table.setCurrentCell(*keep)
+        return len(undo)
 
     def _sync_list(self, changes):
         """列表看法里同一格跟着变（只刷这几行）"""
@@ -835,6 +857,199 @@ class OrderSheet(QWidget):
                 self.win.open_card(i)
                 return
 
+    # ================================================================= Excel 里改 → 读回
+    def _xl_root(self):
+        try:
+            return self.page._out_root()
+        except Exception:
+            return None
+
+    @staticmethod
+    def _xl_log():
+        from settings import app_dir
+        return os.path.join(app_dir(), "cache", "excel_read")
+
+    def _xl_sources(self, sc=None):
+        sc = sc or self.sc
+        if not sc or sc.get("pdv"):
+            return []
+        try:
+            return S.excel_sources(sc, self._xl_root(), getattr(self.page, "result", None), log_dir=self._xl_log())
+        except Exception:
+            return []
+
+    def _xl_buttons(self):
+        pdv = bool(self.sc and self.sc.get("pdv"))
+        for b in (self.b_xl_edit, self.b_xl_read):
+            b.setEnabled(bool(self.sc) and not pdv)
+        if pdv:
+            self.b_xl_edit.setToolTip(tr("门店采购的供应商还不能在 Excel 里改"))
+        self._xl_poll()
+
+    def _xl_poll(self):
+        """只看文件修改时间：有几个文件在 Excel 里存过、还没读回"""
+        if not self.isVisible() or not self.sc or self.sc.get("pdv"):
+            return
+        src = self._xl_sources()
+        n = len(S.excel_pending(src, getattr(self.page, "result", None), self._xl_log())) if src else 0
+        if (n or None) != self.b_xl_read.count():
+            self.b_xl_read.set_count(n or None)
+
+    def excel_edit(self):
+        sc, page = self.sc, self.page
+        if not sc or sc.get("pdv"):
+            return
+        root = self._xl_root()
+        if not root:
+            QMessageBox.warning(self, tr("在 Excel 中修改"), tr("还没有选配货文件夹"))
+            return
+        from erp_widgets import BusyDialog, open_file
+        path = S.edit_copy_path(root, sc)
+        if os.path.exists(os.path.join(os.path.dirname(path), "~$" + os.path.basename(path))):
+            open_file(self, path)                # 已经在 Excel 里开着：拿到前面
+            return
+        if S.edit_changed(path):
+            b = QMessageBox.question(
+                self, tr("在 Excel 中修改"),
+                tr("{0} 这份 Excel 改过、还没读回程序。\n先读回再打开吗？（选「否」= 用程序现在的箱数重新写一份，Excel 里的改动不要了）",
+                   sc["name"]), QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel, QMessageBox.Yes)
+            if b == QMessageBox.Cancel:
+                return
+            if b == QMessageBox.Yes:
+                if self.excel_read() is None:
+                    return
+        plan = self._plan(sc)
+        url = (page.settings or {}).get("image_url") or None
+        lines = page.colli.get(sc["path"], {})
+        _r, err = BusyDialog.run(self, tr("在 Excel 中修改"), tr("正在写 {0} 的 Excel", sc["name"]),
+                                 lambda: S.write_edit_copy(sc, lines, path, self.calc, plan, url))
+        if err:
+            QMessageBox.warning(self, tr("在 Excel 中修改"), tr("写不出 Excel：{0}", err))
+            return
+        self.b_xl_read.set_count(None)
+        self.win.flash(tr("已打开 {0}：在 Excel 里改黄格，存好关掉，再点「读回 Excel 的改动」", os.path.basename(path)))
+        open_file(self, path)
+
+    def excel_read(self):
+        """返回读回了几格；取消 / 出错 → None"""
+        sc = self.sc
+        if not sc or sc.get("pdv"):
+            return None
+        from erp_widgets import BusyDialog
+        src = self._xl_sources()
+        if not src:
+            QMessageBox.information(self, tr("读回 Excel 的改动"),
+                                    tr("{0} 还没有可以读回的 Excel：先点「在 Excel 中修改」，或者先配货生成订单文件", sc["name"]))
+            return None
+        locked = [os.path.basename(p) for p, *_ in src if os.path.exists(
+            os.path.join(os.path.dirname(p), "~$" + os.path.basename(p)))]
+        if locked:
+            QMessageBox.warning(self, tr("读回 Excel 的改动"),
+                                tr("这些文件还在 Excel 里开着，先存好关掉再读回：\n{0}", "\n".join(locked)))
+            return None
+        cur = self.page.colli.get(sc["path"], {})
+        rows, err = BusyDialog.run(self, tr("读回 Excel 的改动"), tr("正在读 {0} 个文件", len(src)),
+                                   lambda: S.excel_changes(sc, cur, src))
+        if err:
+            QMessageBox.warning(self, tr("读回 Excel 的改动"), tr("读不了 Excel：{0}", err))
+            return None
+        if not rows:
+            S.mark_read(sc, src, self._xl_log())
+            self.b_xl_read.set_count(None)
+            self.win.flash(tr("Excel 里的箱数和程序一样，没有要读回的"))
+            return 0
+        dlg = ReadBackDialog(self, sc, rows)
+        if not dlg.exec():
+            return None
+        ok = [(c["sid"], c["row"], c["new"]) for c in rows if not c["bad"]]
+        n = self._apply(ok) if ok else 0
+        S.mark_read(sc, src, self._xl_log())
+        self.b_xl_read.set_count(None)
+        bad = sum(1 for c in rows if c["bad"])
+        self.win.flash(tr("已读回 {0} 格（{1}）· 可以撤销", n, sc["name"]) +
+                       (tr(" · {0} 格写的不是箱数，没改", bad) if bad else ""))
+        return n
+
     def restyle(self):
         if self.sc:
             self.render()
+
+
+class ReadBackDialog(QDialog):
+    """读回之前列出来：哪家店哪个商品，程序现在几箱 → Excel 里几箱"""
+    COLS = ("门店", "商品", "程序现在", "Excel 里", "文件", "备注")
+
+    def __init__(self, parent, sc, rows):
+        super().__init__(parent)
+        from erp_widgets import TableSortFilter, fit_to_screen
+        self.setWindowTitle(tr("读回 Excel 的改动"))
+        self.rows = rows
+        items = {it["row"]: it for it in sc["items"]}
+        self.data = []
+        for c in rows:
+            it = items.get(c["row"]) or {}
+            note = ""
+            if c["bad"]:
+                note = tr("格子写的不是箱数，不改")
+            elif c["both"]:
+                note = tr("Excel 存好以后程序里也改过这一格：用 Excel 的")
+            self.data.append([S.STORE_SHEETS.get(c["sid"], str(c["sid"])), it.get("desc") or it.get("code") or "",
+                              c["now"], "?" if c["new"] is None else c["new"],
+                              (tr("工作副本") if c["kind"] == "edit" else tr("订单文件")) + " · " + os.path.basename(c["file"]),
+                              note, c])
+        v = QVBoxLayout(self)
+        good = sum(1 for c in rows if not c["bad"])
+        t1 = QLabel(tr("{0} 的 Excel 里改了 {1} 格 ⓘ", sc["name"], len(rows)))
+        f = t1.font()
+        f.setBold(True)
+        t1.setFont(f)
+        t1.setToolTip(tr("只列出 Excel 里改过、而且和程序现在不一样的格子。确认后改进程序（配货方案跟着重算），可以撤销。\n"
+                         "订单文件是配货生成的：之后再点配货会用程序的箱数重新生成，Excel 里没读回的改动会没有"))
+        v.addWidget(t1)
+        self.t = QTableWidget(0, len(self.COLS))
+        self.t.setHorizontalHeaderLabels([tr(h) for h in self.COLS])
+        self.t.verticalHeader().hide()
+        self.t.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.t.setSelectionBehavior(QAbstractItemView.SelectRows)
+        hh = self.t.horizontalHeader()
+        hh.setSectionResizeMode(QHeaderView.Interactive)
+        hh.setStretchLastSection(True)
+        for c, w in enumerate((92, 300, 72, 72, 220, 200)):
+            self.t.setColumnWidth(c, w)
+        self.ctl = TableSortFilter(self.t, lambda: len(self.data), lambda i, c: str(self.data[i][c]), self._fill,
+                                   key=lambda i, c: self.data[i][c] if c in (2, 3) and isinstance(self.data[i][c], int)
+                                   else str(self.data[i][c]), numeric=(2, 3))
+        self.ctl.render()
+        v.addWidget(self.t, 1)
+        foot = QHBoxLayout()
+        foot.addStretch()
+        b_no = QPushButton(tr("取消"))
+        b_no.clicked.connect(self.reject)
+        from erp_widgets import CountButton
+        b_ok = CountButton(tr("读回程序"), good)
+        b_ok.setObjectName("Primary")
+        b_ok.setEnabled(good > 0)
+        b_ok.clicked.connect(self.accept)
+        foot.addWidget(b_no)
+        foot.addWidget(b_ok)
+        v.addLayout(foot)
+        self.resize(1000, min(640, 160 + 34 * len(rows)))
+        fit_to_screen(self)
+
+    def _fill(self, i, k):
+        d = self.data[i]
+        c = d[6]
+        for col in range(6):
+            it = QTableWidgetItem(str(d[col]))
+            if col in (2, 3):
+                it.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            if c["bad"]:
+                it.setForeground(QColor(T("faint")))
+            elif col == 3:
+                it.setForeground(QColor(T("info" if c["new"] > c["now"] else "warn")))
+                f = it.font()
+                f.setBold(True)
+                it.setFont(f)
+            elif col == 5 and c["both"]:
+                it.setForeground(QColor(T("warn")))
+            self.t.setItem(k, col, it)

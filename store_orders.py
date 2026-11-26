@@ -14,6 +14,7 @@
 """
 import os
 import re
+import json
 import math
 import zipfile
 from datetime import datetime
@@ -2148,6 +2149,272 @@ def write_plans(results, out_root, date_tag=None, on_file=None, calc=None, image
     return written
 
 
+# =====================================================================
+# 在 Excel 里改箱数、再读回程序（2026-11-26 用户：一直想要；生成订单文件照旧用配货按钮）
+# =====================================================================
+EDIT_FOLDER = "_Modifiche Excel"       # 配货文件夹（采购配单/生成订单/日期/）下面，一家供应商一个工作副本
+EDIT_PREFIX = "Modifica_"
+
+
+def edit_copy_path(out_root, sc, date_tag=None):
+    safe = re.sub(r'[\\/:*?"<>|]', "_", sc["name"])
+    return os.path.join(out_root, EDIT_FOLDER, f"{EDIT_PREFIX}{safe}_{date_tag or datetime.now().strftime('%d%m')}.xlsx")
+
+
+def _edit_meta_path(path):
+    return os.path.splitext(path)[0] + ".json"
+
+
+def edit_meta(path):
+    """工作副本旁边的记录：{scheda, written（写出时的修改时间）, base（写出时程序的箱数）}；没有 → None"""
+    try:
+        with open(_edit_meta_path(path), encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
+def save_edit_meta(path, sc, lines):
+    meta = {"scheda": sc["path"], "written": os.path.getmtime(path),
+            "base": {str(sid): {str(r): n for r, n in (ln or {}).items() if n} for sid, ln in (lines or {}).items()}}
+    with open(_edit_meta_path(path), "w", encoding="utf-8", newline="") as f:
+        json.dump(meta, f, ensure_ascii=False)
+    return meta
+
+
+def write_edit_copy(sc, lines, path, calc=None, plan=None, image_url=None):
+    """
+    这家供应商现在的箱数写成一份和订单文件一样的 Excel（全部门店页 + 汇总页写 DIRETTO / BMS，图片换 IMAGE 公式），
+    给同事在 Excel 里改；旁边记下写出时程序的箱数（读回时分得清是谁改的）
+    """
+    if sc.get("pdv"):
+        raise ValueError("门店采购的供应商还不能在 Excel 里改")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    extra = extra_data(sc, calc.get("demand"), calc.get("base"), calc.get("days")) if calc else None
+    heads = extra_headers(calc.get("days")) if calc else None
+    extra, heads = file_extra(extra, heads)
+    write_order_file(sc, lines or {}, path, extra, heads, marks=plan_marks(plan) if plan else None)
+    _slim(path, _is_data_sheet, image_url)
+    return save_edit_meta(path, sc, lines)
+
+
+def edit_changed(path):
+    """工作副本在 Excel 里存过（修改时间和写出时不一样）、现在没开着（没有 ~$ 锁文件）"""
+    meta = edit_meta(path)
+    if not meta or not os.path.exists(path):
+        return False
+    return abs(os.path.getmtime(path) - float(meta.get("written") or 0)) > 1 and not _locked(path)
+
+
+def read_colli(sc, path, sids=None):
+    """
+    订单文件 / 工作副本里各门店页 Colli 列的箱数 → {门店号: {SCHEDA 行号: 箱数}}（空 = 0）。
+    sids：只读这几家店（BMS 文件里没凑单的门店页是清空的，不能当 0 读回来）；文件里没有那一页的门店不出现。
+    写错的格子（文字、负数、小数）→ 那一格记 None
+    """
+    from openpyxl import load_workbook
+    wb = load_workbook(path, read_only=True, data_only=True)
+    try:
+        titles = {ws.title.strip().upper(): ws.title for ws in wb.worksheets}
+        col = sc["cols"]["colli"]
+        out = {}
+        for sid, sheet in sc["sheets"].items():
+            if sids is not None and sid not in sids:
+                continue
+            t = titles.get(str(sheet).strip().upper())
+            if not t:
+                continue
+            rm = sc.get("rowmap", {}).get(sid, {})
+            want = {}
+            for it in sc["items"]:
+                tr_ = rm.get(it["row"], it["row"])
+                if tr_ is not None:
+                    want[tr_] = it["row"]
+            if not want:
+                continue
+            got = {}
+            for r, row in enumerate(wb[t].iter_rows(min_row=min(want), max_row=max(want), min_col=col, max_col=col,
+                                                    values_only=True), min(want)):
+                if r in want:
+                    got[want[r]] = _box_value(row[0] if row else None)
+            out[sid] = got
+        return out
+    finally:
+        wb.close()
+
+
+def _box_value(v):
+    if v is None or (isinstance(v, str) and not v.strip()):
+        return 0
+    try:
+        f = float(str(v).strip().replace(",", ".")) if isinstance(v, str) else float(v)
+    except (TypeError, ValueError):
+        return None
+    return int(f) if f >= 0 and f == int(f) else None
+
+
+def _int_keys(d):
+    return {(int(k) if str(k).isdigit() else k): {int(r): n for r, n in (v or {}).items()} for k, v in (d or {}).items()}
+
+
+def excel_sources(sc, out_root=None, result=None, date_tag=None, log_dir=None):
+    """
+    这家供应商可以读回的 Excel：[(路径, 门店号集合 或 None = 全部, 种类, 程序写进去的箱数 {门店号: {行号: 箱数}})]
+      edit  = 「在 Excel 中修改」写出来的工作副本（写进去的 = 旁边 .json 记的）
+      order = 最近一次配货生成的订单文件（直送门店的文件 = 这家店；BMS 文件 = 凑单的几家店；写进去的 = 配货方案，含凑单加的）
+    只有和「程序写进去的」不一样的格子才算 Excel 里改过的
+    """
+    out = []
+    if out_root:
+        p = edit_copy_path(out_root, sc, date_tag)
+        meta = edit_meta(p) if os.path.exists(p) else None
+        if meta and meta.get("scheda") == sc["path"]:
+            out.append((p, None, "edit", _int_keys(meta.get("base"))))
+    plan = next((pl for _d, s_, pl in (result or {}).get("results") or [] if s_["path"] == sc["path"]), None)
+    for w in (result or {}).get("written") or []:
+        if written_source(w, result) != sc["path"] or not os.path.exists(w[0]) or plan is None:
+            continue
+        dest = w[2]
+        if dest == BMS:
+            ids = {int(x) if str(x).isdigit() else x for x in (w[7] if len(w) > 7 else ())}
+            base = {sid: dict(ln) for sid, ln in ((plan.get("bms") or {}).get("per_store") or {}).items() if sid in ids}
+        else:
+            ids = {sid for sid, n in STORE_SHEETS.items() if n == dest}
+            base = {sid: dict((plan["stores"].get(sid) or {}).get("lines") or {}) for sid in ids}
+        if ids:
+            rb = read_base(w[0], log_dir)
+            if rb is not None:                   # 读回过：以后只看读回之后又改的
+                base = {sid: rb.get(sid, {}) for sid in ids}
+            out.append((w[0], ids, "order", base))
+    return out
+
+
+def excel_changes(sc, current, sources):
+    """
+    读回：Excel 里改过的格子（和程序写进去的不一样）、而且和程序现在的箱数也不一样 → [{sid, row, now, new, file, kind,
+    bad, both}]。同一格好几个文件都改了：用最后存的那个。bad = 格子里写的不是 0 或正整数（不改，列出来）；
+    both = 写出文件以后程序里也改过这一格（以 Excel 为准，但提醒）。current：{门店号: {行号: 箱数}}（page.colli[这家]）
+    """
+    best = {}
+    for path, sids, kind, base in sources:
+        vals = read_colli(sc, path, sids)
+        mt = os.path.getmtime(path)
+        for sid, rows in vals.items():
+            b = (base or {}).get(sid) or {}
+            for row, n in rows.items():
+                if n is not None and n == b.get(row, 0):
+                    continue                     # Excel 里没动这一格
+                k = (sid, row)
+                if k not in best or mt >= best[k][1]:
+                    best[k] = (n, mt, path, kind, b.get(row, 0))
+    out = []
+    for (sid, row), (n, _mt, path, kind, was) in best.items():
+        now = (current.get(sid) or {}).get(row, 0)
+        if n is None:
+            out.append({"sid": sid, "row": row, "now": now, "new": None, "file": path, "kind": kind, "bad": True,
+                        "both": False})
+        elif n != now:
+            out.append({"sid": sid, "row": row, "now": now, "new": n, "file": path, "kind": kind, "bad": False,
+                        "both": now != was})
+    order = {it["row"]: i for i, it in enumerate(sc["items"])}
+    out.sort(key=lambda c: (str(c["sid"]), order.get(c["row"], 0)))
+    return out
+
+
+def file_mtimes(written):
+    """生成订单文件时每个文件的修改时间（之后变了 = 在 Excel 里存过）"""
+    out = {}
+    for w in written or []:
+        try:
+            out[w[0]] = os.path.getmtime(w[0])
+        except OSError:
+            pass
+    return out
+
+
+def _locked(path):
+    return os.path.exists(os.path.join(os.path.dirname(path), "~$" + os.path.basename(path)))
+
+
+def excel_pending(sources, result=None, log_dir=None):
+    """
+    哪些文件在 Excel 里存过、还没读回（只看修改时间，不打开文件，可以经常看）：
+    工作副本 = 和写出 / 上次读回时不一样；订单文件 = 和生成时 / 上次读回时不一样；还开着（~$）的不算
+    """
+    out = []
+    mt0 = (result or {}).get("mtimes") or {}
+    for path, _sids, kind, _base in sources:
+        if kind == "edit":
+            if edit_changed(path):
+                out.append(path)
+            continue
+        try:
+            mt = os.path.getmtime(path)
+        except OSError:
+            continue
+        seen = _logged_mtime(path, log_dir)
+        if seen is None:
+            seen = mt0.get(path)
+        if seen is not None and abs(mt - seen) > 1 and not _locked(path):
+            out.append(path)
+    return out
+
+
+def _logged_mtime(path, log_dir):
+    if not log_dir:
+        return None
+    try:
+        with open(_read_log(path, log_dir), encoding="utf-8") as f:
+            return json.load(f).get("mtime")
+    except (OSError, ValueError):
+        return None
+
+
+def _read_log(path, log_dir):
+    import hashlib
+    return os.path.join(log_dir, hashlib.sha1(os.path.normcase(os.path.abspath(path)).encode("utf-8")).hexdigest()[:16] + ".json")
+
+
+def read_base(path, log_dir):
+    """上次读回时这个文件里的箱数（读回过的格子以后不再算 Excel 的新改动）；没读回过 → None"""
+    if not log_dir:
+        return None
+    try:
+        with open(_read_log(path, log_dir), encoding="utf-8") as f:
+            return _int_keys(json.load(f).get("vals"))
+    except (OSError, ValueError):
+        return None
+
+
+def mark_read(sc, sources, log_dir=None):
+    """
+    读回以后记下每个文件现在的箱数：之后程序里再改这些格子，读回时不会被 Excel 里的旧数改回去；
+    工作副本记成「已读回」（之后再存才亮「有改动」）
+    """
+    for path, sids, kind, _base in sources:
+        try:
+            vals = read_colli(sc, path, sids)
+        except Exception:
+            continue
+        if log_dir:
+            try:
+                os.makedirs(log_dir, exist_ok=True)
+                with open(_read_log(path, log_dir), "w", encoding="utf-8", newline="") as f:
+                    json.dump({"path": path, "mtime": os.path.getmtime(path), "vals": {str(k): {str(r): n for r, n in v.items() if n}
+                                                      for k, v in vals.items()}}, f, ensure_ascii=False)
+            except OSError:
+                pass
+        if kind == "edit":
+            meta = edit_meta(path) or {}
+            meta["written"] = os.path.getmtime(path)
+            meta["base"] = {str(k): {str(r): n for r, n in v.items() if n} for k, v in vals.items()}
+            try:
+                with open(_edit_meta_path(path), "w", encoding="utf-8", newline="") as f:
+                    json.dump(meta, f, ensure_ascii=False)
+            except OSError:
+                pass
+
+
 SUMMARY_PREFIX = "Riepilogo_"          # 汇总文件（全部门店，只给自己看）：不登记、不发
 
 
@@ -2456,7 +2723,7 @@ def allocate(calc, colli, fill, out_root, log=print, date_tag=None, edited=None,
     progress(2, "done", "", "", 100.0)
     log(f"完成：生成 {len(written_files(written))} 个订单文件 → {out_root}")
     return {"results": results, "written": written, "summary": summary, "out_root": out_root,
-            "transfers_file": tfile}
+            "transfers_file": tfile, "mtimes": file_mtimes(written)}
 
 
 def reallocate_one(calc, colli, fill, result, index, mode, edited=None, log=print, picks=None):
@@ -2484,7 +2751,9 @@ def reallocate_one(calc, colli, fill, result, index, mode, edited=None, log=prin
     written = sorted(keep + new, key=lambda w: order.get(written_source(w, result), 0))
     export_summary(results, result["summary"], calc["demand"], calc["base"], edited, calc.get("days"))
     log(f"手动调整 {sc['name']}：{mode}，生成 {len(written_files(new))} 个文件")
-    return dict(result, results=results, written=written)
+    mt = dict(result.get("mtimes") or {})
+    mt.update(file_mtimes(new))
+    return dict(result, results=results, written=written, mtimes=mt)
 
 
 def run(db, schede_paths, stores, days_list, reorder_cycle, fill, out_root, log=print, date_tag=None):
