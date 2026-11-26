@@ -1487,7 +1487,22 @@ def plan_supplier(scheda, demand, fill=None, stores=None, colli=None, mode="auto
     return res
 
 
-def urgent_share(scheda, lines, dem_rows, days=7, with_total=False):
+URGENT_DAYS = 7          # 紧急缺货：库存（含在途）够卖不到这么多天
+
+
+def urgent_days(d):
+    """紧急缺货的商品 → 库存（含在途）够卖几天；不紧急 / 没数据 → None。全程序「紧急缺货」都用这一个算法"""
+    if not d:
+        return None
+    cd = cover_days(d, float(d.get("transit") or 0))
+    return cd if cd is not None and cd < URGENT_DAYS else None
+
+
+def is_urgent(d):
+    return urgent_days(d) is not None
+
+
+def urgent_share(scheda, lines, dem_rows, days=URGENT_DAYS, with_total=False):
     """
     一张单里「紧急缺货」商品占多少：库存够卖不到 days 天（默认一周）的商品个数 ÷ 这张单的商品个数。
     返回 (占比 0~1, 紧急商品数)；with_total=True 时多返回商品总数。给起订量检查 / 配货结果标颜色用
@@ -1499,7 +1514,7 @@ def urgent_share(scheda, lines, dem_rows, days=7, with_total=False):
             continue
         tot += 1
         d = (dem_rows or {}).get(row)
-        cd = cover_days(d) if d else None
+        cd = cover_days(d, float(d.get("transit") or 0)) if d else None
         if cd is not None and cd < days:
             n += 1
     share = n / tot if tot else 0.0

@@ -151,6 +151,7 @@ class ItemDrawer(QScrollArea):
         self.title.setWordWrap(True)
         self.sub = QLabel("")
         self.sub.setWordWrap(True)
+        self.sub.setTextInteractionFlags(Qt.TextSelectableByMouse)     # 条码 / 编号能选中复制
         hv.addWidget(self.title)
         hv.addWidget(self.sub)
         self.more = None
@@ -264,7 +265,7 @@ class ItemDrawer(QScrollArea):
         import product_images as PI
         self._paint_static()
         self.title.setText(name or "")
-        self.title.setStyleSheet("font-size:15px; font-weight:600; background:transparent;" + (f" color:{T('err')};" if red else ""))
+        self.title.setStyleSheet("font-size:15px; font-weight:600; background:transparent;" + (f" color:{T(red if isinstance(red, str) else 'err')};" if red else ""))
         self.sub.setText(short or "")
         self.title.setToolTip(tip)
         self.sub.setToolTip(tip)

@@ -511,8 +511,9 @@ def test_detail_drawer_tags():
     import store_detail_window as SW
     x = dict(inv=1, daily=1, decision="🔴 快断货", slow_from=0.9)
     tags = [t for t, _ in SW.detail_tags(x, {}, transit_boxes=2, moved_in=True, edited=True,
-                                         marks=[("slow", "慢销", "…")], pack_diff=True, many=True)]
-    assert tags[:3] == ["在途 2 箱", "调货", "快断货"] and tags[-1] == "手动改过" and "慢销" in tags
+                                         marks=[("slow", "慢销", "…")], pack_diff=True, many=True, urgent=1.0)]
+    # 2026-11-26：紧急缺货（红）排第一，和起订量检查的红格同一个算法
+    assert tags[:3] == ["紧急缺货 · 够卖 1 天", "在途 2 箱", "调货"] and tags[-1] == "手动改过" and "慢销" in tags
     assert SW.detail_tags(None, {"dup_of": 3}) == [("重复编号", "muted")]
     assert SW.detail_tags(None, {}) == [("数据库没有", "err")]
 
@@ -522,7 +523,7 @@ def test_old_receipts_flag_shown_first_in_tags():
     import order_check as OC
     from datetime import date
     x = dict(in_db=True, lbox=1, sbox=1, sys_box=1, protect=None, old_rec=(date(2025, 1, 3), 2, 53.0))
-    assert OC.key_tags(x)[0] == ("入库有误 53 件", "err")
+    assert OC.key_tags(x)[0] == ("入库有误 53 件", "warn")       # 2026-11-26：红色只给紧急缺货
     assert "合计 53 件" in OC.old_rec_tip(x["old_rec"], 4.0) and "现在库存 4 件" in OC.old_rec_tip(x["old_rec"], 4.0)
     assert OC.old_rec_short((date(2025, 1, 3), 1)) == "入库有误 1 条"
 
@@ -549,6 +550,17 @@ def test_detail_tags_old_receipts_first():
     import store_detail_window as SW
     x = {"decision": "", "tier": "B"}
     tags = SW.detail_tags(x, {}, transit_boxes=1, old_rec=(dt.date(2024, 5, 1), 3, 53))
-    assert tags[0] == ("入库有误 53 件", "err")
-    assert SW.detail_tags(x, {}, old_rec=(dt.date(2024, 5, 1), 2, 0))[0] == ("入库有误 2 条", "err")
+    assert tags[0] == ("入库有误 53 件", "warn")
+    assert SW.detail_tags(x, {}, old_rec=(dt.date(2024, 5, 1), 2, 0))[0] == ("入库有误 2 条", "warn")
     assert [k for k, _ in SW.VIEWS][-1] == "oldrec"
+
+
+def test_urgent_counts_stock_in_transit_and_share_uses_same_rule():
+    """紧急缺货 = 库存（含在途）够卖不到 7 天；起订量检查的红格（urgent_share）和订货明细的红字同一个算法"""
+    import store_orders as S
+    assert S.urgent_days({"inv": 2, "daily": 1}) == 2
+    assert not S.is_urgent({"inv": 2, "daily": 1, "transit": 10})        # 在途到了就够卖 12 天
+    assert not S.is_urgent({"inv": 0, "daily": 0}) and not S.is_urgent(None)
+    sc = {"items": [{"row": 1}, {"row": 2}]}
+    share, n = S.urgent_share(sc, {1: 1, 2: 1}, {1: {"inv": 1, "daily": 1}, 2: {"inv": 1, "daily": 1, "transit": 20}})
+    assert (share, n) == (0.5, 1)

@@ -134,7 +134,7 @@ def key_tags(x, transit_boxes=0, edited=False):
     """
     out = []
     if x.get("old_rec"):
-        out.append((old_rec_short(x["old_rec"]), "err"))     # 2025-01-08 以前的入库记录是错的（2026-11-22 用户）
+        out.append((old_rec_short(x["old_rec"]), "warn"))    # 2025-01-08 以前的入库记录是错的（2026-11-22 用户）
     if not x.get("in_db", True):
         return [(tr("数据库没有"), "err")]
     cut = x.get("transit_cut") or 0
@@ -143,7 +143,7 @@ def key_tags(x, transit_boxes=0, edited=False):
         # 只说这一个原因；以前还挂着「库存少 · 照清单」「缺货保护」，和「不订」自相矛盾
         out.append((tr("在途 {0:g} 箱 · 已经够了", transit_boxes or cut), "info"))
         if x.get("promo"):
-            out.append((tr("促销中"), "err"))
+            out.append((tr("促销中"), "cyan"))
         if edited:
             out.append((tr("手动改过"), "accent"))
         return out
@@ -178,7 +178,7 @@ def key_tags(x, transit_boxes=0, edited=False):
     elif x.get("sys_box") is not None and x["sys_box"] > x.get("lbox", 0):
         out.append((tr("系统要 {0:,} 箱 · 不多订", x["sys_box"]), "muted"))
     if x.get("promo"):
-        out.append((tr("促销中"), "err"))
+        out.append((tr("促销中"), "cyan"))
     if edited:
         out.append((tr("手动改过"), "accent"))
     return out
@@ -282,12 +282,13 @@ class _ProductDelegate(QStyledItemDelegate):
         f2.setPixelSize(11)
         p.setFont(f2)
         if bad and ean:
-            # 2026-11-22 用户：有 2025-01-08 以前（错的）入库记录的商品，条码标颜色（红底红字，一眼看出要核对）
+            # 2026-11-22 用户：有 2025-01-08 以前（错的）入库记录的商品，条码标颜色；
+            # 2026-11-26 用户：红色只表示紧急缺货 → 改成橙底橙字
             bw = QFontMetrics(f2).horizontalAdvance(str(ean)) + 8
             p.setPen(Qt.NoPen)
-            p.setBrush(QColor(T("err_soft")))
+            p.setBrush(QColor(T("warn_soft")))
             p.drawRoundedRect(QRectF(tx - 4, r.top() + 30, bw, 15), 4, 4)
-            p.setPen(QColor(T("err")))
+            p.setPen(QColor(T("warn")))
         else:
             p.setPen(QColor(T("faint")))
         p.drawText(QRectF(tx, r.top() + 29, tw, 16), Qt.AlignLeft | Qt.AlignVCenter, str(ean))
@@ -1764,7 +1765,7 @@ class OrderCheck:
             self._summary()
 
     def _promos_arrived(self, payload):
-        """本店在促销的商品：x["promo"]，商品 / 条码格标红、「只看促销」"""
+        """本店在促销的商品：x["promo"]，商品 / 条码格标青色、「只看促销」"""
         token, sid, data = payload
         if token != getattr(self, "_m24_token", None):
             return
@@ -1866,7 +1867,7 @@ class OrderCheck:
                             f"Cod.Forn. {x['sup_code']}" if x.get("sup_code") else "",
                             tr("{0} 报价", x["quote_sup"]) if x.get("quote_sup") else "") if p]
         tip = "\n".join(full) + (("\n🏷 " + self._promo_tip(x)) if x.get("promo") else "")
-        dr.show_head(x.get("name") or code, " · ".join(short), tip, x.get("ean"), self.settings, bool(x.get("promo")))
+        dr.show_head(x.get("name") or code, " · ".join(short), tip, x.get("ean"), self.settings, "cyan" if x.get("promo") else False)
         # 结论
         kind, vt = self._verdict(x)
         tok = VERDICT_TOKEN.get(kind, "text")
@@ -2580,11 +2581,11 @@ class OrderCheck:
             it.setFont(f)
             it.setToolTip(tr("已经订了、还没到货 {0:g} 箱（{1:g} 件）：", tri["colli"], tri["pcs"]) + "\n" + REC.transit_text(tri)
                           + "\n" + tr("双击看订单、标到货"))
-        if x.get("promo"):                       # 门店在促销：商品名 / 条码标红
+        if x.get("promo"):                       # 门店在促销：商品名 / 条码标青色（2026-11-26 用户：红色只表示紧急缺货）
             ptip = self._promo_tip(x)
             for pc in (_col(2), _col(3)):
                 it = t.item(k, pc)
-                it.setForeground(QColor(T("err")))
+                it.setForeground(QColor(T("cyan")))
                 f = it.font()
                 f.setBold(True)
                 it.setFont(f)

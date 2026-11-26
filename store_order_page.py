@@ -611,9 +611,16 @@ class StoreOrderPage:
         订货明细里改了调货：key = (SCHEDA, 调入门店, 行)，value = {"from", "pieces"} 或 0（不调）。
         第一次改的时候把系统建议的调货都冻结下来：以后只按人工定的调，改一行别的行不跟着变。手动改的箱数保留
         """
+        self.set_transfers({key: value})
+
+    def set_transfers(self, changes, restore=False):
+        """
+        一次改好几行的调货（紧急缺货调货）：changes = {key: value}；restore=True 时 value 是 None = 删掉这一行的人工设定
+        （撤销用）。返回改之前的 {key: 原来的值 或 None}
+        """
         import transfers as TR
-        if not self.calc:
-            return
+        if not self.calc or not changes:
+            return {}
         c = self.calc
         if not c.get("transfer_frozen"):
             key_of = lambda m: (m["path"], m["to"], m["row"])
@@ -621,10 +628,18 @@ class StoreOrderPage:
             c["transfer_auto_plan"] = {key_of(m): {"from": m["from"], "pieces": int(m["pieces"]), "auto": True}
                                        for m in c.get("transfers") or []}
             c["transfer_frozen"] = True
-        c["transfer_overrides"][key] = value if isinstance(value, dict) else int(value or 0)
+        ov = c["transfer_overrides"]
+        before = {k: ov.get(k) for k in changes}
+        for key, value in changes.items():
+            if restore and value is None:
+                ov.pop(key, None)
+            else:
+                ov[key] = value if isinstance(value, dict) else int(value or 0)
         self.apply_transfers()
-        self._refresh_matrix(only_path=key[0])
+        for path in {k[0] for k in changes}:
+            self._refresh_matrix(only_path=path)
         self._update_state()
+        return before
 
     def reset_transfers(self, keys):
         """「恢复建议值」：这几行的调货恢复成系统建议的；人工改的全恢复了就解冻（以后又按设置自动建议）"""

@@ -83,7 +83,7 @@ KEY_ROLE = Qt.UserRole + 2      # 排序用的值
 _TIER_RANK = {"A": 0, "B": 1, "C": 2}
 # 「看哪些」下拉框
 VIEWS = (("order", "只看要订的"), ("all", "全部商品"), ("changed", "只看有变化的"), ("transfer", "只看调货"),
-         ("edited", "只看手动改过的"), ("urgent", "只看紧急"), ("many", "只看箱数多的"),
+         ("edited", "只看手动改过的"), ("urgent", "只看紧急缺货"), ("many", "只看箱数多的"),
          ("oldrec", "只看入库记录有误"))
 
 
@@ -118,20 +118,21 @@ def pack_warning(x, it):
 
 
 def detail_tags(x, it, transit_boxes=0, moved_in=False, edited=False, marks=(), pack_diff=False, many=False,
-                old_rec=None):
+                old_rec=None, urgent=None):
     """订货明细详情栏「为什么」的精华：几个短标签 [(文字, 颜色 token)]，最要紧的在前；整句在鼠标提示"""
     if not x:
         return [(tr("重复编号"), "muted")] if it.get("dup_of") else [(tr("数据库没有"), "err")]
     out = []
+    # 2026-11-26 用户：红色只表示紧急缺货（库存含在途够卖不到 7 天），入库有误改成橙色
+    if urgent is not None:
+        out.append((tr("紧急缺货 · 够卖 {0} 天", S.days_text(urgent)), "err"))
     if old_rec:                       # 2025-01-08 以前的入库记录是错的（2026-11-25 用户：订货明细也要标）
         from order_check import old_rec_short
-        out.append((old_rec_short(old_rec), "err"))
+        out.append((old_rec_short(old_rec), "warn"))
     if transit_boxes:
         out.append((tr("在途 {0:g} 箱", transit_boxes), "info"))
     if moved_in:
         out.append((tr("调货"), "ok"))
-    if "🔴" in (x.get("decision") or ""):
-        out.append((tr("快断货"), "err"))
     if x.get("slow_from"):
         out.append((tr("最近卖慢了"), "warn"))
     for m in marks or ():
@@ -143,6 +144,72 @@ def detail_tags(x, it, transit_boxes=0, moved_in=False, edited=False, marks=(), 
     if edited:
         out.append((tr("手动改过"), "accent"))
     return out
+
+
+class _UrgentDialog(QDialog):
+    """紧急缺货调货：先列出来（商品 · 够卖几天 · 要几件 · 从哪家调几件），确认了才改"""
+    COLS = ("商品", "够卖（天）", "要（件）", "从哪家调", "调几件", "备注")
+
+    def __init__(self, parent, rows, settings):
+        super().__init__(parent)
+        from erp_widgets import TableSortFilter, fit_to_screen, CountButton
+        self.setWindowTitle(tr("紧急缺货调货"))
+        self.rows = rows
+        ok = sum(1 for r in rows if r["frm"] is not None)
+        v = QVBoxLayout(self)
+        t1 = QLabel(tr("{0} 个紧急缺货商品，{1} 个可以从别的门店调 ⓘ", len(rows), ok))
+        f = t1.font()
+        f.setBold(True)
+        t1.setFont(f)
+        t1.setToolTip(tr("每个商品从「留够自己一个订货周期后多出来最多」的门店调，调的件数不超过这家店要的。"
+                         "确认后写进调货（调货单里会有），这家店这次订货相应少订；可以撤销，也可以再双击「调货」格单独改"))
+        v.addWidget(t1)
+        from PySide6.QtWidgets import QTableWidget
+        self.t = QTableWidget(0, len(self.COLS))
+        self.t.setHorizontalHeaderLabels([tr(h) for h in self.COLS])
+        self.t.verticalHeader().hide()
+        self.t.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.t.setSelectionBehavior(QAbstractItemView.SelectRows)
+        hh = self.t.horizontalHeader()
+        hh.setSectionResizeMode(QHeaderView.Interactive)
+        hh.setStretchLastSection(True)
+        for c, w in enumerate((300, 80, 70, 110, 70, 160)):
+            self.t.setColumnWidth(c, w)
+        self.data = []
+        for r in rows:
+            self.data.append([r["it"]["desc"], S.days_text(r["days"]), f"{r['need']:g}",
+                              S.STORE_SHEETS.get(r["frm"], "") if r["frm"] is not None else "",
+                              f"{r['pieces']:g}" if r["frm"] is not None else "", r["note"], r])
+        self.ctl = TableSortFilter(self.t, lambda: len(self.data), lambda i, c: str(self.data[i][c]), self._fill,
+                                   numeric=(1, 2, 4))
+        self.ctl.render()
+        v.addWidget(self.t, 1)
+        foot = QHBoxLayout()
+        foot.addStretch()
+        b_no = QPushButton(tr("取消") if ok else tr("关闭"))
+        b_no.clicked.connect(self.reject)
+        foot.addWidget(b_no)
+        if ok:
+            b_ok = CountButton(tr("安排调货"), ok)
+            b_ok.setObjectName("Primary")
+            b_ok.clicked.connect(self.accept)
+            foot.addWidget(b_ok)
+        v.addLayout(foot)
+        self.resize(860, min(600, 170 + 34 * len(rows)))
+        fit_to_screen(self)
+
+    def _fill(self, i, k):
+        d = self.data[i]
+        r = d[6]
+        for c in range(6):
+            it = QTableWidgetItem(str(d[c]))
+            if c in (1, 2, 4):
+                it.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            if c == 1:
+                it.setForeground(QColor(T("err")))
+            if r["frm"] is None:
+                it.setForeground(QColor(T("faint")))
+            self.t.setItem(k, c, it)
 
 
 class AddItemsDialog(QDialog):
@@ -609,7 +676,7 @@ class DetailWindow(ToolWindow):
         self.f_view = QComboBox()
         for key, text in VIEWS:
             self.f_view.addItem(tr(text), key)
-        self.f_view.setToolTip(tr("只看要订的：要订、系统建议过、改过或有调货的商品"))
+        self.f_view.setToolTip(tr("只看要订的：订货箱数大于 0 的商品。只看紧急缺货：库存（含在途）够卖不到 7 天的商品，订不起来时可以安排调货"))
         self.f_view.currentIndexChanged.connect(self._filter)
         tb.addWidget(self.f_view)
         self._list_tools += [self.f_sup, self.f_text, self.f_view]
@@ -765,6 +832,20 @@ class DetailWindow(ToolWindow):
         self.status_r.setObjectName("StatusText")
         sh.addWidget(self.status_l, 1)
         sh.addWidget(self.status_r)
+        # 紧急缺货调货（2026-11-26 用户：起订量检查红格 = 这张单订不起来、里面有紧急缺货的商品 → 点进来只给这些商品调货）
+        from erp_widgets import CountButton
+        self.b_urgent = CountButton(tr("紧急缺货调货"), 0, tone="err")
+        self.b_urgent.setToolTip(tr("给现在这家门店（和供应商）的紧急缺货商品安排调货：每个商品从多出来最多的门店调，"
+                                    "先列出来确认，可以撤销。紧急缺货 = 库存（含在途）够卖不到 7 天"))
+        self.b_urgent.clicked.connect(self.urgent_transfer)
+        self.b_urgent.hide()
+        self.b_urgent_undo = QPushButton(tr("撤销调货"))
+        self.b_urgent_undo.setObjectName("Link")
+        self.b_urgent_undo.clicked.connect(self.undo_urgent_transfer)
+        self.b_urgent_undo.hide()
+        self._urgent_undo = None
+        sh.addWidget(self.b_urgent_undo)
+        sh.addWidget(self.b_urgent)
         v.addWidget(sb)
         self.set_view(self._view, save=False)
 
@@ -906,7 +987,11 @@ class DetailWindow(ToolWindow):
                              f"€{it['price']:.2f}") if p]
         fc = f"Cod.Forn. {it['sup_code']}" if it.get("sup_code") else ""
         tip = "\n".join(p for p in (S.STORE_SHEETS[sid], sc["name"], S.item_code(it), it.get("ean") or "", fc) if p)
-        dr.show_head(it["desc"], " · ".join(short), tip, it.get("ean"), self.page.settings)
+        # 2026-11-26 用户：图片下面要看得到条码、编号这些
+        codes = " · ".join(p for p in (f"Cod.Art. {S.item_code(it)}",
+                                       f"Forn. {it['sup_code']}" if it.get("sup_code") else "") if p)
+        dr.show_head(it["desc"], "\n".join(p for p in (" · ".join(short), f"EAN {it['ean']}" if it.get("ean") else "", codes) if p),
+                     tip, it.get("ean"), self.page.settings)
         # 结论：判断 + 金额；建议 → 订货（大字）
         n = self._cur(sc, sid, it["row"])
         sug = self._sugg(sc, sid, it["row"])
@@ -933,8 +1018,12 @@ class DetailWindow(ToolWindow):
         if orc:
             from order_check import old_rec_tip
             reasons = "⚠ " + old_rec_tip(orc, float(x.get("inv_raw", x["inv"]) or 0) if x else None) + "\n" + reasons
+        ud = S.urgent_days(x)
+        if ud is not None:
+            reasons = "⚠ " + tr("紧急缺货：库存（含在途）只够卖 {0} 天，不到 {1} 天。这张单订不起来的话，可以从别的门店调货",
+                                 S.days_text(ud), S.URGENT_DAYS) + "\n" + reasons
         dr.show_tags(detail_tags(x, it, self._transit_boxes(it, sid), bool(t_in), edited, marks, bool(warn),
-                                 self._many(sug), orc), reasons)
+                                 self._many(sug), orc, ud), reasons)
         # 四个数（够卖含在途；订了的是订后够卖）
         if x:
             moved = (t_in["pieces"] if t_in else 0) - sum(t["pieces"] for t in mo.get(k_, []))
@@ -1197,6 +1286,7 @@ class DetailWindow(ToolWindow):
             f.setBold(True)
             tc.setFont(f)
         t.item(i, 0).setData(DI_ROLE, i)
+        self._style_urgent(i, i)
         self._style_transit(i, i)
         if self._oldrec:
             self._style_oldrec(i, i)
@@ -1263,22 +1353,49 @@ class DetailWindow(ToolWindow):
         return self._oldrec.get((sid, str(it.get("db_code") or it["code"])))
 
     def _style_oldrec(self, i, r):
-        """条码、名称红字加粗 + 鼠标提示「入库有误 n 件」"""
+        """入库有误：判断后面写「入库有误 n 件」（橙色，_flags）；名称格鼠标提示。
+        2026-11-26 用户：红色只表示紧急缺货，入库有误不再把名称标红"""
         from order_check import old_rec_tip
         sc, it, sid = self.detail[i]
         orc = self._oldrec_of(it, sid)
         if not orc:
             return
-        tip = old_rec_tip(orc)
+        cell = self.table.item(r, _col(5))
+        if cell is not None:
+            cell.setToolTip(f"{it['desc']}\n⚠ {old_rec_tip(orc)}")
+
+    def _style_urgent(self, i, r):
+        """紧急缺货（库存含在途够卖不到 7 天）：条码、名称红字加粗——全程序红色名称只表示这个"""
+        sc, it, sid = self.detail[i]
+        x = (self.page.calc or {}).get("demand", {}).get(sid, {}).get(it.get("db_code") or it["code"])
+        ud = S.urgent_days(x)
         for c in (_col(4), _col(5)):
             cell = self.table.item(r, c)
             if cell is None:
                 continue
-            cell.setForeground(QColor(T("err")))
             f = cell.font()
-            f.setBold(True)
+            f.setBold(ud is not None)
             cell.setFont(f)
-            cell.setToolTip(tip)
+            if ud is not None:
+                cell.setForeground(QColor(T("err")))
+            else:
+                cell.setData(Qt.ForegroundRole, None)
+        if ud is not None:
+            cell = self.table.item(r, _col(5))
+            if cell is not None:
+                cell.setToolTip(f"{it['desc']}\n" + tr("紧急缺货：库存（含在途）只够卖 {0} 天", S.days_text(ud)))
+
+    def _flags(self, it, sid, x):
+        """判断后面最要紧的两种提醒：紧急缺货（红）、入库有误（橙）→ [(键, 短文字, 鼠标提示)]"""
+        out = []
+        ud = S.urgent_days(x)
+        if ud is not None:
+            out.append(("urgent", tr("紧急缺货"), tr("库存（含在途）只够卖 {0} 天，不到 {1} 天", S.days_text(ud), S.URGENT_DAYS)))
+        orc = self._oldrec_of(it, sid)
+        if orc:
+            from order_check import old_rec_short, old_rec_tip
+            out.append(("oldrec", old_rec_short(orc), old_rec_tip(orc)))
+        return out
 
     def _load_oldrec(self):
         import threading
@@ -1328,8 +1445,9 @@ class DetailWindow(ToolWindow):
         for r in range(t.rowCount()):
             it0 = t.item(r, 0)
             i = it0.data(DI_ROLE) if it0 is not None else None
-            if i is not None and self.detail[i][2] == sid:
+            if i is not None and self.detail[i][2] == sid and self._oldrec_of(self.detail[i][1], sid):
                 self._style_oldrec(i, r)
+                self._show_qty(i)                       # 判断后面加「入库有误 n 件」
         t.setUpdatesEnabled(True)
         self._filling = was
         if self.cur_di is not None and self.detail[self.cur_di][2] == sid:
@@ -1732,13 +1850,13 @@ class DetailWindow(ToolWindow):
         x_ = self.page.calc["demand"].get(sid, {}).get(it.get("db_code") or it["code"])
         orig = self._orig(sc, sid, it["row"])
         kind, vt = self._verdict(sc, it, sid, n)
-        marks = self._marks(sc, it, sid, n)
+        marks = self._flags(it, sid, x_) + self._marks(sc, it, sid, n)
         dc = self.table.item(r, DEC_COL)
         dc.setText(" · ".join([vt] + [m[1] for m in marks]))
         base = dc.data(Qt.UserRole + 3) or ""
         dc.setToolTip("\n".join([base] + ["⚠ " + m[2] for m in marks]) if marks else base)
         dc.setData(KEY_ROLE, (R.VERDICT_RANK.get(kind, 9), -abs(n - orig)) + self._k0(i))
-        urgent = bool(x_ and "🔴" in (x_["decision"] or "")) and n > 0 and kind in ("same", "more")
+        urgent = S.is_urgent(x_)
         dc.setForeground(QColor(T("err") if urgent else T("warn") if (marks and kind in ("same", "more"))
                                 else T(VERDICT_TOKEN.get(kind, "text"))))
         f = dc.font()
@@ -1868,7 +1986,132 @@ class DetailWindow(ToolWindow):
         for b in self.store_group.buttons():
             if b.property("sid") == sid:
                 b.setChecked(True)
+        n = self._wait_urgent(path, sid)
+        if n:
+            # 这张单这次不订（起订量检查里的红格）：直接只看紧急缺货的商品，好给它们安排调货
+            k = self.f_view.findData("urgent")
+            self.f_view.blockSignals(True)
+            self.f_view.setCurrentIndex(k)
+            self.f_view.blockSignals(False)
+            self.flash(tr("这张单这次不订：只看 {0} 个紧急缺货商品，点「紧急缺货调货」从别的门店调", n))
         self._filter()
+
+    def _wait_urgent(self, path, sid):
+        """这家供应商这家店这次不订（起订量不够）时，里面有几个紧急缺货商品；订了 / 没选具体的 → 0"""
+        if path in (None, ALL) or sid in (None, ALL) or not self.page.calc:
+            return 0
+        sc = next((x for x in self.page.calc.get("schede") or [] if x["path"] == path), None)
+        if sc is None:
+            return 0
+        try:
+            plan = self.page._preview(sc)
+        except Exception:
+            return 0
+        st = ((plan or {}).get("stores") or {}).get(sid) or {}
+        if st.get("status") not in ("wait", "dropped"):
+            return 0
+        dem = self.page.calc.get("demand", {}).get(sid, {})
+        return sum(1 for it in sc["items"] if S.is_urgent(dem.get(it.get("db_code") or it["code"])))
+
+    def _urgent_plan(self):
+        """
+        现在这家门店（供应商筛选也算）的紧急缺货商品，每个从多出来最多的门店调多少：
+        [{key, it, sc, need, days, frm, pieces, note}]；frm = None 表示调不了（note 写原因）
+        """
+        import transfers as TR
+        btn = self.store_group.checkedButton()
+        sid = btn.property("sid") if btn else ALL
+        path = self.f_sup.currentData()
+        calc = self.page.calc or {}
+        if sid in (None, ALL) or not calc:
+            return []
+        cfg = self.page.transfer_cfg()
+        far = set(self.page.transfer_far())
+        moved_in = self._moves()[0]
+        out = []
+        for sc, it, s_ in self.detail:
+            if s_ != sid or (path not in (None, ALL) and sc["path"] != path):
+                continue
+            code = it.get("db_code") or it["code"]
+            x = calc["demand"].get(sid, {}).get(code)
+            ud = S.urgent_days(x)
+            if ud is None:
+                continue
+            key = (sc["path"], sid, it["row"])
+            if key in moved_in:
+                continue                                  # 已经在调了
+            need = float(x.get("need", x.get("sugg", 0)) or 0)
+            row = {"key": key, "it": it, "sc": sc, "need": need, "days": ud, "frm": None, "pieces": 0, "note": ""}
+            if not self._orig(sc, sid, it["row"]):
+                row["note"] = tr("系统没建议订货")
+            elif need <= 0:
+                row["note"] = tr("不缺")
+            elif sid in far:
+                row["note"] = tr("这家店不参与调货")
+            else:
+                best = None
+                for d_ in calc.get("stores") or []:
+                    if d_ == sid or d_ in far:
+                        continue
+                    xd = calc["demand"].get(d_, {}).get(code)
+                    sur = TR.surplus(xd, cfg.get("keep_cycles"))
+                    if sur > 0 and (best is None or sur > best[1]):
+                        best = (d_, sur)
+                if best is None:
+                    row["note"] = tr("别的门店都没有多余的")
+                else:
+                    row["frm"], row["pieces"] = best[0], int(min(math.ceil(need), best[1]))
+            out.append(row)
+        return out
+
+    def urgent_transfer(self):
+        if not self.page.transfer_cfg().get("enabled"):
+            self.flash(tr("门店间调货没启用（配货设置 ③）"))
+            return
+        rows = self._urgent_plan()
+        if not rows:
+            self.flash(tr("这家店没有要调货的紧急缺货商品"))
+            return
+        ok = [r for r in rows if r["frm"] is not None]
+        if not _UrgentDialog(self, rows, self.page.settings).exec() or not ok:
+            return
+        changes = {r["key"]: {"from": r["frm"], "pieces": r["pieces"]} for r in ok}
+        from PySide6.QtWidgets import QApplication
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            before = self.page.set_transfers(changes)
+            self.refresh_transfers(rows={(k[0], k[2]) for k in changes})
+        finally:
+            QApplication.restoreOverrideCursor()
+        moved = self._moves()[0]
+        done = sum(1 for k in changes if k in moved)
+        self._urgent_undo = before
+        self.b_urgent_undo.show()
+        self.flash(tr("已安排 {0} 个紧急缺货商品调货", done) +
+                   (tr("，{0} 个库存不够调不了", len(changes) - done) if done < len(changes) else ""))
+
+    def undo_urgent_transfer(self):
+        before, self._urgent_undo = self._urgent_undo, None
+        self.b_urgent_undo.hide()
+        if not before:
+            return
+        self.page.set_transfers(before, restore=True)
+        self.refresh_transfers(rows={(k[0], k[2]) for k in before})
+        self.flash(tr("已撤销紧急缺货调货"))
+
+    def _paint_urgent_btn(self):
+        btn = self.store_group.checkedButton()
+        sid = btn.property("sid") if btn else ALL
+        n = 0
+        if sid not in (None, ALL) and self.page.calc and self.page.transfer_cfg().get("enabled"):
+            path = self.f_sup.currentData()
+            moved_in = self._moves()[0]
+            dem = self.page.calc.get("demand", {}).get(sid, {})
+            n = sum(1 for sc, it, s_ in self.detail if s_ == sid and (path in (None, ALL) or sc["path"] == path)
+                    and (sc["path"], sid, it["row"]) not in moved_in
+                    and self._orig(sc, sid, it["row"]) and S.is_urgent(dem.get(it.get("db_code") or it["code"])))
+        self.b_urgent.set_count(n or None)
+        self.b_urgent.setVisible(bool(n))
 
     def _filter(self, *_):
         if not self.detail or self._loading:
@@ -1886,9 +2129,8 @@ class DetailWindow(ToolWindow):
         for i, (sc, it, sid) in enumerate(self.detail):
             key = (sc["path"], sid, it["row"])
             hide = (sup not in (None, ALL) and sc["path"] != sup) or (store not in (None, ALL) and sid != store)
-            if not hide and view == "order":   # 要订的、改过的、系统建议过的（全部靠调货的也在）
-                hide = self._cur(sc, sid, it["row"]) <= 0 and key not in self.page.edited and \
-                    self._orig(sc, sid, it["row"]) <= 0 and not self._transfer_key(sc, it, sid)
+            if not hide and view == "order":   # 2026-11-26 用户：只看要订的 = 订货箱数 > 0（以前 0 箱的也混进来）
+                hide = self._cur(sc, sid, it["row"]) <= 0
             elif not hide and view == "changed":   # 判断是多订 / 少订 / 建议调货的
                 hide = self._verdict(sc, it, sid)[0] not in ("transfer", "more", "less")
             elif not hide and view == "transfer":
@@ -1899,9 +2141,8 @@ class DetailWindow(ToolWindow):
                 hide = not self._many(self._sugg(sc, sid, it["row"]))
             elif not hide and view == "oldrec":
                 hide = not self._oldrec_of(it, sid)
-            elif not hide and view == "urgent":
-                x = calc["demand"].get(sid, {}).get(it.get("db_code") or it["code"])
-                hide = not (x and "🔴" in (x["decision"] or ""))
+            elif not hide and view == "urgent":    # 紧急缺货：库存（含在途）够卖不到 7 天（和起订量检查的红格一样算）
+                hide = not S.is_urgent(calc["demand"].get(sid, {}).get(it.get("db_code") or it["code"]))
             if not hide and text:
                 hide = text not in f"{S.item_code(it)} {it['ean']} {it['desc']}".lower()
             r = self.pos[i]
@@ -1914,6 +2155,7 @@ class DetailWindow(ToolWindow):
         self.table.setUpdatesEnabled(True)
         self._shown = shown
         self._update_status()
+        self._paint_urgent_btn()
 
     def _update_status(self):
         colli = amt = 0.0
