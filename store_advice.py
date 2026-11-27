@@ -18,6 +18,9 @@ A 17.5 天、B 14 天、C 10.5 天，不管今天星期几、离截止还有几�
   ② 在途按件数扣（订单跟踪里的箱是批发商的箱，不能直接当门店的箱减）；
   ③ 断货补算：库存只剩一点、最近 ≥ 2 周一件没卖、过去一年在卖 → 按一年平均日销（货架空了不等于不好卖）；
   ④ 封顶：订完扣掉最后一箱还够卖 H + 安全库存上限 + 7 天以上 → 那一箱不要（销量数据出错 / 一次大单时不会建议一大堆）；
+  ⑥ 一个月的货可以接受（2026-11-27 用户：扫一圈基本都是「不订」）：建议是 0、但库存（含在途）够卖不到 MONTH_DAYS 天
+     → 补 1 箱，只要这一箱到了以后总共够卖不超过 BOX_MAX_DAYS 天（一箱太大的慢卖商品还是 0、门店要写原因）；
+     和办公室审核一致（检查清单库存够卖不到 45–90 天就照门店清单订），门店不用为这些商品写原因；
   ⑤ 数据太旧（> 3 天没同步）建议照算，扫码枪上写数据日期，日志 ⚠。
 """
 import math
@@ -29,6 +32,8 @@ LEAD_MIN, LEAD_MAX = 1, 7
 LEAD_SAMPLES = 4         # 至少这么多张有收货日期的单才用实际的到货天数
 STALE_DAYS = 3
 CAP_EXTRA = 7            # ④ 封顶：H + 安全库存上限 + 这么多天
+MONTH_DAYS = 30          # ⑥ 库存够卖不到这么多天 → 至少 1 箱
+BOX_MAX_DAYS = 60        # ⑥ 但这一箱到了以后总共够卖超过这么多天就不补（一箱太大）
 
 
 def next_deadline(now, rule):
@@ -105,7 +110,7 @@ def advise(x, algo, ctx, transit_pcs=0.0):
     """
     一个商品（reorder_service.to_rows 的一行，compute_suggestions 用 algo_for 的参数算的；x["pack"] 已经按
     price_check.apply_quotes 换好）→ (建议箱数 或 None, 标记集合)。
-    标记：censored 断货补算 · capped ④ 封顶砍过 · no_pack 没有箱规（不给建议）
+    标记：censored 断货补算 · capped ④ 封顶砍过 · month ⑥ 不到一个月补 1 箱 · no_pack 没有箱规（不给建议）
     """
     import forecast as F
     flags = set()
@@ -124,9 +129,15 @@ def advise(x, algo, ctx, transit_pcs=0.0):
         d = max(d, cr * season)
         need = max(need, d * H - inv)
     qty = need - tr
-    if qty <= 0:
+    boxes = 0
+    if qty > 0:
+        boxes = F.to_packs(qty, pack, inv, d, algo, tier=x.get("tier") or "C", cycle=REVIEW, on_order=tr)
+    if boxes <= 0:
+        # ⑥ 一个月的货可以接受：够卖不到 MONTH_DAYS 天、补一箱后不超过 BOX_MAX_DAYS 天 → 1 箱
+        if d > 0 and (inv + tr) / d < MONTH_DAYS and (inv + tr + pack) / d <= BOX_MAX_DAYS:
+            flags.add("month")
+            return 1, flags
         return 0, flags
-    boxes = F.to_packs(qty, pack, inv, d, algo, tier=x.get("tier") or "C", cycle=REVIEW, on_order=tr)
     # ④ 封顶：扣掉最后一箱还够卖很久 → 那一箱不要（卖得快的不会碰到，只拦数据出错 / 一箱很大的情况下多出来的箱）
     if d > 0:
         limit = H + float(algo.get("max_safety_days", 7)) + CAP_EXTRA

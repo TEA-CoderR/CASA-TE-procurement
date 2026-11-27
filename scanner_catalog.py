@@ -434,7 +434,7 @@ def store_data(settings, rows, quotes, log=print, stores=STORE_IDS, with_ctx=Fal
                 promos = R.query_promos(db, sid, code_list)
             except Exception:
                 promos = {}
-            out, n_cap, n_cens, big = [], 0, 0, []
+            out, n_cap, n_cens, n_month, big = [], 0, 0, 0, []
             for code in code_list:
                 ean = by_code[code]
                 pr = prod.get(code) or {}
@@ -449,14 +449,15 @@ def store_data(settings, rows, quotes, log=print, stores=STORE_IDS, with_ctx=Fal
                     boxes, flags = SA.advise(x, algo, ctx, tpcs)
                     n_cap += "capped" in flags
                     n_cens += "censored" in flags
+                    n_month += "month" in flags
                     price = (best.get(ean) or {}).get("price") or x.get("price") or 0
                     if boxes and pack and price and boxes * pack * float(price) >= BIG_ADVICE_EUR:
                         big.append(f"{x.get('name') or ean} {boxes} × {pack:g} = €{boxes * pack * float(price):,.0f}")
                 out.append(store_row(ean, m, tb, (cheapest(quotes, ean) or pr.get("PrezzoForn")) if SEND_COST else None,
                                      pr.get("PrezzoVedi1"), promos.get(code), boxes, pack))
             name = R.STORES.get(sid, sid)
-            if n_cens or n_cap:
-                log(f"扫码枪建议 {name}：断货补算 {n_cens} 个 · 封顶砍过 {n_cap} 个")
+            if n_cens or n_cap or n_month:
+                log(f"扫码枪建议 {name}：断货补算 {n_cens} 个 · 封顶砍过 {n_cap} 个 · 不到一个月补 1 箱 {n_month} 个")
             for b in big:
                 log(f"⚠ 扫码枪建议 {name}：金额很大，看一下 · {b}")
             return out

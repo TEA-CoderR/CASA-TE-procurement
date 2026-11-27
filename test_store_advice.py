@@ -101,3 +101,15 @@ def test_lead_days_from_tracked_deliveries():
     rows.append({"origin": "app", "date": date(2026, 11, 1), "arrived": date(2026, 11, 20)})
     assert SA.lead_from_tracking(rows) == (3, 4)
     assert SA.lead_from_tracking(rows[:2]) == (SA.DEFAULT_LEAD, 2)
+
+
+def test_under_a_month_gets_one_box_unless_the_box_is_too_big():
+    """2026-11-27 用户：一个月的库存可以接受。够卖不到 30 天、一箱到了以后不超过 60 天 → 1 箱"""
+    c = _ctx()
+    a = SA.algo_for(dict(F.DEFAULT_PARAMS), c)
+    x = _row(0.5, 10, 6, "B", a)              # 够卖 20 天，一箱后 32 天
+    b, flags = SA.advise(x, a, c)
+    assert b == 1 and "month" in flags
+    assert SA.advise(_row(0.5, 10, 24, "B", a), a, c)[0] == 0      # 一箱 24 件 → 68 天，太多
+    assert SA.advise(_row(0.5, 16, 6, "B", a), a, c)[0] == 0       # 已经够卖 32 天
+    assert SA.advise(_row(0.5, 4, 6, "B", a), a, c, transit_pcs=12)[0] == 0   # 含在途 32 天
