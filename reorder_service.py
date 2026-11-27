@@ -238,6 +238,36 @@ def test_connection(db):
     return True
 
 
+def db_error_text(e):
+    """数据库报错只留原因（2026-11-27 用户截图：发布目录报错把几千个 %s 的 SQL 整个弹出来，看不到原因）"""
+    import re
+    t = str(e)
+    t = re.sub(r"Execution failed on sql '.*?':\s*", "", t, flags=re.S)
+    t = re.sub(r"\[SQL:.*?\]", "", t, flags=re.S)
+    t = re.sub(r"\[parameters:.*?\]", "", t, flags=re.S)
+    t = re.sub(r"\(Background on this error at:[^)]*\)", "", t)
+    t = re.sub(r"(%s,\s*){3,}%s", "…", t)
+    t = re.sub(r"\s+", " ", t).strip()
+    return t[:400] or type(e).__name__
+
+
+_RETRY_CODES = (2002, 2003, 2006, 2013, 2055)     # 连不上 / 连接断了（VPN 一下断开、服务器忙）
+
+
+def read_sql_retry(q, db, params, tries=2, wait=3):
+    """pd.read_sql；连接断了等几秒再试一次（只读查询，重试没有副作用）"""
+    import time
+    import pandas as pd
+    for n in range(tries):
+        try:
+            return pd.read_sql(q, db.engine, params=params)
+        except Exception as e:
+            txt = str(e)
+            if n + 1 >= tries or not any(f"({c}," in txt for c in _RETRY_CODES):
+                raise
+            time.sleep(wait)
+
+
 def codes_from_eans(db, eans):
     """
     条码 → 商品编号：先查 prodotti.CodBarre，再查 codbarre 表（一个商品多个条码）。
@@ -252,10 +282,10 @@ def codes_from_eans(db, eans):
         for k, q in enumerate((f"SELECT CodArticolo, CodBarre FROM prodotti WHERE CodBarre IN ({ph})",
                                f"SELECT CodArticolo, CodBarre FROM codbarre WHERE CodBarre IN ({ph})")):
             try:
-                df = pd.read_sql(q, db.engine, params=tuple(chunk))
+                df = read_sql_retry(q, db, tuple(chunk))
             except Exception as e:
                 if k == 0:
-                    raise RuntimeError(f"用条码查商品编号失败（数据库）：{e}") from e
+                    raise RuntimeError(f"用条码查商品编号失败（数据库）：{db_error_text(e)}") from e
                 continue              # codbarre（多条码表）没有也不要紧
             for x in records(df):
                 e = _clean_code(x["CodBarre"])

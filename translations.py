@@ -5409,4 +5409,6 @@ TRANSLATIONS = {
     '门店自己向直厂订': ('The store orders it from the direct supplier', 'Il negozio lo ordina dal fornitore diretto'),
     '写原因；以后再扫这个条码，门店看得到这个回复': ('Give a reason; scanning this barcode later shows this answer', 'Scrivi il motivo; riscansionando il codice il negozio vede la risposta'),
     '门店在扫码枪上补一句或补照片，申请回到待回复': ('The store adds a line or a photo on the scanner, then the request is open again', 'Il negozio aggiunge una riga o una foto dallo scanner, poi la richiesta torna aperta'),
+    '多半是数据库连接断了一下，过一会再点一次「发布目录」': ("Probably the database connection dropped for a moment; click «Publish catalog» again in a while", "Probabilmente la connessione al database si è interrotta un attimo; riprova «Pubblica catalogo» tra poco"),
+    '没发布：{0}': ('Not published: {0}', 'Non pubblicato: {0}'),
 }

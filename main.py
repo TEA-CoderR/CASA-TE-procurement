@@ -3226,7 +3226,8 @@ class MainWindow(QMainWindow):
                 SC.publish_if_changed(settings, dict(meta, advice=ctx) if ctx else meta, rows, me, log=log, stores=stores)
                 self._scanner_pub_day = now.date()
             except Exception as e:
-                log(tr("⚠ 扫码枪目录自动发布没成功：{0}", e))
+                import reorder_service as R
+                log(tr("⚠ 扫码枪目录自动发布没成功：{0}", R.db_error_text(e)))
             finally:
                 self._scanner_pub_busy = False
         threading.Thread(target=work, name="scanner-auto", daemon=True).start()

@@ -76,3 +76,58 @@ def test_catalog_follows_answers_new_barcode_and_added_to_griglia():
     assert by["8001090999999"][2] == 2 and by["8001090999999"][4] == "8001090213465"     # SOSTITUITO → SVELTO
     assert by["8001090213465"][2] == 1 and by["8001090213465"][4] == ""                  # Griglia 商品本身不动
     assert by["123456789"][2] == 1 and by["123456789"][7] == 6                           # 程序里加进 Griglia 的
+
+
+def test_db_error_shows_reason_not_the_sql_and_retries_lost_connection():
+    import reorder_service as R
+    ph = ", ".join(["%s"] * 2000)
+    e = Exception(f"Execution failed on sql 'SELECT CodArticolo, CodBarre FROM prodotti WHERE CodBarre IN ({ph})': "
+                  "(2013, 'Lost connection to MySQL server during query')")
+    assert R.db_error_text(e) == "(2013, 'Lost connection to MySQL server during query')"
+    calls = []
+
+    class Db:
+        engine = None
+    import pandas as pd
+    real = pd.read_sql
+
+    def flaky(q, eng, params=None):
+        calls.append(1)
+        if len(calls) == 1:
+            raise e
+        return pd.DataFrame({"CodArticolo": [7], "CodBarre": ["800"]})
+    pd.read_sql = flaky
+    try:
+        assert R.read_sql_retry("q", Db(), (), wait=0).iloc[0]["CodArticolo"] == 7
+        assert len(calls) == 2
+        calls.clear()
+        pd.read_sql = lambda *a, **k: (_ for _ in ()).throw(Exception("(1054, 'Unknown column')"))
+        try:
+            R.read_sql_retry("q", Db(), (), wait=0)
+            raise AssertionError("should raise")
+        except Exception as x:
+            assert "1054" in str(x)
+    finally:
+        pd.read_sql = real
+
+
+def test_two_publishes_do_not_query_the_database_twice(tmp_path, monkeypatch):
+    import threading
+    import time
+    n = []
+
+    def slow(settings, rows, quotes, log, with_ctx=False):
+        n.append(1)
+        time.sleep(0.3)
+        return {1: [["8001", 1]]}, {"horizon": 12}
+    monkeypatch.setattr(SC, "store_data", slow)
+    path = str(tmp_path / "s.json")
+    out = []
+    ts = [threading.Thread(target=lambda: out.append(SC.cached_store_data({}, [], {}, log=lambda *_: None, force=True,
+                                                                         path=path, with_ctx=True))) for _ in range(2)]
+    for t in ts:
+        t.start()
+        time.sleep(0.05)
+    for t in ts:
+        t.join()
+    assert len(n) == 1 and out[0] == out[1]

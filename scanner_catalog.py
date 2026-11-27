@@ -545,6 +545,9 @@ def _store_cache_path():
         return None
 
 
+_STORE_LOCK = __import__("threading").Lock()
+
+
 def cached_store_data(settings, rows, quotes, log=print, force=False, path=None, now=None, with_ctx=False):
     """门店数据 STORE_MAX_AGE 内算过、而且还是同一天算的就用上次的（Griglia 页每次刷新都发布，不用每次都查几分钟数据库；
     过了一天建议要按新的日历重算）。with_ctx：(数据, 建议的日历)"""
@@ -562,6 +565,27 @@ def cached_store_data(settings, rows, quotes, log=print, force=False, path=None,
                 return (data, c.get("ctx")) if with_ctx else data
         except (OSError, ValueError):
             pass
+    waited = not _STORE_LOCK.acquire(blocking=False)
+    if waited:                        # 自动发布和手动「发布目录」不同时查数据库（两份一起查几千条，数据库会断）
+        _STORE_LOCK.acquire()
+    try:
+        if waited and path and os.path.exists(path):
+            try:                      # 等的时候另一边刚算完：直接用它的
+                with open(path, encoding="utf-8") as f:
+                    c = json.load(f)
+                if c.get("data") and (c.get("day") or day) == day:
+                    data = {int(k): v for k, v in c["data"].items()}
+                    log("扫码枪门店数据：用刚算好的那份")
+                    return (data, c.get("ctx")) if with_ctx else data
+            except (OSError, ValueError):
+                pass
+        return _compute_store_cache(settings, rows, quotes, log, path, now, day, with_ctx)
+    finally:
+        _STORE_LOCK.release()
+
+
+def _compute_store_cache(settings, rows, quotes, log, path, now, day, with_ctx):
+    import time
     t0 = time.time()
     res = store_data(settings, rows, quotes, log, with_ctx=True)
     data, ctx = res if isinstance(res, tuple) else (res, None)

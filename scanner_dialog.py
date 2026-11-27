@@ -523,7 +523,10 @@ class ScannerDialog(QDialog):
         for m in logs:
             self.win.log(m)
         if err:
-            QMessageBox.warning(self, tr("发布目录"), str(err))
+            import reorder_service as R
+            txt = R.db_error_text(err)
+            hint = ("\n\n" + tr("多半是数据库连接断了一下，过一会再点一次「发布目录」")) if ("数据库" in txt or "MySQL" in txt) else ""
+            QMessageBox.warning(self, tr("发布目录"), tr("没发布：{0}", txt) + hint)
             return
         self.win.show_toast(tr("✓ 扫码枪目录已发布：{0} 个商品，{1} 家门店的数据", res[1], res[2]))
         self.load()
