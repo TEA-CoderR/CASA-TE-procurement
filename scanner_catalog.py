@@ -148,8 +148,11 @@ def fingerprint(meta, rows):
     return h.hexdigest()
 
 
-def publish(settings, meta, rows, by, session=None, progress=None, stores=None):
-    """分几次上传，最后一次服务器合成新目录。stores = {门店号: 门店数据行}（每家店只发给它自己的扫码枪）。返回 {"id", "items"}"""
+def publish(settings, meta, rows, by, session=None, progress=None, stores=None, vol=True):
+    """分几次上传，最后一次服务器合成新目录。stores = {门店号: 门店数据行}（每家店只发给它自己的扫码枪）。返回 {"id", "items"}
+    vol：带上正在发布的 VOLANTINO（with_volantino；publish_if_changed 自己先带过了传 False）"""
+    if vol:
+        meta, stores = with_volantino(settings, meta, stores)
     upload = uuid.uuid4().hex
     parts = [(None, rows[i:i + PART]) for i in range(0, len(rows), PART)] or [(None, [])]
     for sid, srows in sorted((stores or {}).items()):
@@ -182,6 +185,7 @@ def publish_if_changed(settings, meta, rows, by, session=None, log=print, state_
     if not BA.ready(settings):
         return None
     path = state_path or _state_path()
+    meta, stores = with_volantino(settings, meta, stores)
     fp = fingerprint(meta, rows + [[str(k)] + r for k, v in sorted((stores or {}).items()) for r in v])
     last = {}
     if path and os.path.exists(path):
@@ -192,7 +196,7 @@ def publish_if_changed(settings, meta, rows, by, session=None, log=print, state_
             last = {}
     if last.get("fp") == fp and last.get("url") == BA.base_url(settings):
         return None
-    res = publish(settings, meta, rows, by, session=session, stores=stores)
+    res = publish(settings, meta, rows, by, session=session, stores=stores, vol=False)
     if path:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w", encoding="utf-8", newline="") as f:
@@ -306,9 +310,10 @@ def stock_suspect(stock, s30, s90, last_days):
     return last_days >= max(7, math.ceil(3 / daily))
 
 
-def store_row(ean, m, transit_boxes, cost, price, promo, sys_box=None, pack=None):
+def store_row(ean, m, transit_boxes, cost, price, promo, sys_box=None, pack=None, hist=None):
     """一个商品在一家店的数据行（扫码枪 StoreInfo 的顺序）：
-    [条码, 库存, 30 天销量, 在途箱数, 建议箱数, 进价, 卖价, 打折价, 打折到, 每箱件数, 几天没卖, 库存可能不准 0/1]
+    [条码, 库存, 30 天销量, 在途箱数, 建议箱数, 进价, 卖价, 打折价, 打折到, 每箱件数, 几天没卖, 库存可能不准 0/1,
+     到货记录, 每月销量]（store_history；后面 add_others 加第 14 项别的门店库存，publish 加第 15 项 VOLANTINO）
     m = 门店数字 {stock, s30, s90, last_days, pack}；sys_box = 给门店的建议箱数（store_advice，已经扣过在途；
     只有 Griglia 商品 + 替代商品有）；pack = 审核时用的每箱件数（数据库箱规和批发商差太多时是批发商的），
     在途箱数也按它折（在途件数 ÷ pack）"""
@@ -319,7 +324,8 @@ def store_row(ean, m, transit_boxes, cost, price, promo, sys_box=None, pack=None
     return [ean, _r2(m.get("stock")), _r2(m.get("s30")), _r2(transit_boxes or 0), sugg,
             _r2(cost), _r2(price), _r2((promo or {}).get("price")), _promo_end(promo), pk,
             None if last is None else int(last),
-            1 if stock_suspect(m.get("stock"), m.get("s30"), m.get("s90"), last) else 0]
+            1 if stock_suspect(m.get("stock"), m.get("s30"), m.get("s90"), last) else 0,
+            (hist or {}).get("arr") or None, (hist or {}).get("months")]
 
 
 def _promo_end(promo):
@@ -391,6 +397,105 @@ def light_numbers(db, sid, codes, today=None):
         for r in df.to_dict("records"):
             out[str(int(r["CodArticolo"]))]["last_days"] = _days(r["d"], today)
     return out
+
+
+HIST_SINCE = "2025-01-08"   # 这天以前的入库记录是错的（reorder_service.OLD_RECEIPTS_BEFORE）
+HIST_ARRIVALS = 12          # 每个商品最多发最近几次到货
+HIST_MONTHS = 12            # 每月销量发几个月（含本月）
+OTHER_NAMES = {0: "BMS", 1: "FOIANO", 2: "MARLIA", 3: "S.FILIPPO", 4: "S.MARCO", 5: "S.CONCORDIO"}
+
+
+def _ymd(d):
+    try:
+        import pandas as pd
+        d = pd.Timestamp(d).date()
+        return d.year * 10000 + d.month * 100 + d.day
+    except Exception:
+        return None
+
+
+def store_history(db, sid, codes, today=None, sup_names=None):
+    """
+    扫码枪「In negozio」页面要的：一家店每个商品
+      arr    = 最近 HIST_ARRIVALS 次到货 [[yyyymmdd, 件数, 0 供应商 / 1 调货, 从哪来（供应商名 / 门店名 / BMS）]]（新的在前；
+               最近那次多第 5 项 = 那天起卖了几件）
+               caricolistalist 这家店 Quantita > 0 的 CA（供应商送货）/ CI（调入，Fornitore = 调出的门店号，0 = 仓库 BMS），
+               一年内、而且 HIST_SINCE 以后（更早的记录是错的）；同一天同一来源几行合在一起
+      months = 最近 HIST_MONTHS 个月每个月卖了几件（从旧到新，最后一个是本月，还没过完）
+    → {编号: {"arr": [...], "months": [...]}}（没到过货也没卖过的不在里面）。只读。
+    """
+    import reorder_service as R
+    from datetime import date, timedelta
+    today = today or date.today()
+    sid = int(sid)
+    names = sup_names or {}
+    since = max(date.fromisoformat(HIST_SINCE), today - timedelta(days=365))
+    keys = R.month_keys(HIST_MONTHS, today)
+    m_since = date(keys[0][0], keys[0][1], 1)
+    pos = {k: i for i, k in enumerate(keys)}
+    out, sold_since = {}, {}
+    for chunk, ph in _chunks([int(c) for c in codes], 1000):
+        df = R.read_sql_retry(
+            f"SELECT CodArticolo AS c, DATE(Cdata) AS d, Tipo AS t, Fornitore AS f, SUM(Quantita) AS q FROM caricolistalist "
+            f"WHERE Negozio = %s AND CodArticolo IN ({ph}) AND Cdata >= %s AND Quantita > 0 AND Tipo IN ('CA', 'CI') "
+            f"GROUP BY CodArticolo, DATE(Cdata), Tipo, Fornitore", db, (sid, *chunk, since))
+        for r in df.to_dict("records"):
+            try:
+                c, f = str(int(r["c"])), int(r["f"] or 0)
+            except (TypeError, ValueError):
+                continue
+            day = _ymd(r["d"])
+            if day is None:
+                continue
+            tr_ = str(r["t"]).strip().upper() == "CI"
+            src = OTHER_NAMES.get(f, str(f)) if tr_ else (names.get(f) or str(f))
+            out.setdefault(c, {"arr": [], "months": None})["arr"].append([day, _r2(r["q"]), 1 if tr_ else 0, src])
+        df = R.read_sql_retry(
+            f"SELECT CodArticolo AS c, YEAR(Data) AS y, MONTH(Data) AS m, SUM(Qta) AS q FROM vendite_list_{sid} "
+            f"WHERE CodArticolo IN ({ph}) AND Data >= %s GROUP BY CodArticolo, YEAR(Data), MONTH(Data)",
+            db, (*chunk, m_since))
+        # 最后一次到货那天起卖了几件（扫码枪「核对库存」：到了多少、卖了多少、系统说还有多少）
+        df_s = R.read_sql_retry(
+            f"SELECT v.CodArticolo AS c, SUM(v.Qta) AS q FROM vendite_list_{sid} v JOIN ("
+            f"SELECT CodArticolo, MAX(DATE(Cdata)) AS d FROM caricolistalist WHERE Negozio = %s AND Cdata >= %s "
+            f"AND Quantita > 0 AND Tipo IN ('CA', 'CI') AND CodArticolo IN ({ph}) GROUP BY CodArticolo) a "
+            f"ON a.CodArticolo = v.CodArticolo WHERE v.Data >= a.d GROUP BY v.CodArticolo", db, (sid, since, *chunk))
+        for r in df_s.to_dict("records"):
+            try:
+                sold_since[str(int(r["c"]))] = _r2(r["q"]) or 0
+            except (TypeError, ValueError):
+                pass
+        for r in df.to_dict("records"):
+            try:
+                c, k = str(int(r["c"])), (int(r["y"]), int(r["m"]))
+            except (TypeError, ValueError):
+                continue
+            if k not in pos:
+                continue
+            x = out.setdefault(c, {"arr": [], "months": None})
+            if x["months"] is None:
+                x["months"] = [0] * len(keys)
+            q = float(r["q"] or 0)
+            x["months"][pos[k]] = int(q) if q == int(q) else round(q, 1)
+    for c, x in out.items():
+        x["arr"].sort(key=lambda a: -a[0])
+        del x["arr"][HIST_ARRIVALS:]
+        if x["arr"]:                       # 第一次（最近的）到货后面加第 5 项：那天起卖了几件
+            x["arr"][0].append(sold_since.get(c, 0))
+    return out
+
+
+def add_others(stores):
+    """每家店每个商品后面加上别的门店现在几件（第 15 项 [[门店名, 件数]]，别家都没货就 None）。改 stores 里的行"""
+    stock = {sid: {r[0]: r[1] for r in rows} for sid, rows in stores.items()}
+    for sid, rows in stores.items():
+        for r in rows:
+            while len(r) < 14:
+                r.append(None)
+            oth = [[OTHER_NAMES.get(int(o), str(o)), stock[o].get(r[0])] for o in sorted(stores) if o != sid]
+            oth = [o for o in oth if o[1] is not None]
+            r[14:15] = [oth if any((o[1] or 0) > 0 for o in oth) else None]
+    return stores
 
 
 def advice_context(settings, db, log=print, rule=None, now=None):
@@ -472,8 +577,18 @@ def store_data(settings, rows, quotes, log=print, stores=STORE_IDS, with_ctx=Fal
             log(f"⚠ 扫码枪门店数据：卖价 / 进价没读到（{e}）")
         today = date.today()
 
+        try:
+            sup_names = R.supplier_names(db)
+        except Exception:
+            sup_names = {}
+
         def one(sid):
             nums = light_numbers(db, sid, code_list, today)
+            try:
+                hist = store_history(db, sid, code_list, today, sup_names)
+            except Exception as e:
+                hist = {}
+                log(f"⚠ 扫码枪门店数据：{R.STORES.get(sid, sid)} 到货记录 / 每月销量没读到（{e}）")
             calc = {}
             if grid_codes:
                 # 建议箱数算不出来（数据库慢 / 某个商品数据怪）也照样发这家店的库存 / 销量 / 价格：扫码枪会按销量估一个
@@ -509,7 +624,7 @@ def store_data(settings, rows, quotes, log=print, stores=STORE_IDS, with_ctx=Fal
                     if boxes and pack and price and boxes * pack * float(price) >= BIG_ADVICE_EUR:
                         big.append(f"{x.get('name') or ean} {boxes} × {pack:g} = €{boxes * pack * float(price):,.0f}")
                 out.append(store_row(ean, m, tb, (cheapest(quotes, ean) or pr.get("PrezzoForn")) if SEND_COST else None,
-                                     pr.get("PrezzoVedi1"), promos.get(code), boxes, pack))
+                                     pr.get("PrezzoVedi1"), promos.get(code), boxes, pack, hist.get(code)))
             name = R.STORES.get(sid, sid)
             if n_cens or n_cap or n_month:
                 log(f"扫码枪建议 {name}：断货补算 {n_cens} 个 · 封顶砍过 {n_cap} 个 · 不到一个月补 1 箱 {n_month} 个")
@@ -525,6 +640,7 @@ def store_data(settings, rows, quotes, log=print, stores=STORE_IDS, with_ctx=Fal
                     out[sid] = f.result()
                 except Exception as e:
                     log(f"⚠ 扫码枪门店数据：{R.STORES.get(sid, sid)} 没算出来（{e}）")
+        add_others(out)
         return (out, ctx) if with_ctx else out
     finally:
         try:
@@ -545,6 +661,7 @@ def _store_cache_path():
 
 
 _STORE_LOCK = __import__("threading").Lock()
+STORE_DATA_VER = 2      # 门店数据行的样子改了加 1（2 = 多了到货记录 / 每月销量 / 别的门店库存），旧缓存作废
 
 
 def cached_store_data(settings, rows, quotes, log=print, force=False, path=None, now=None, with_ctx=False):
@@ -559,7 +676,7 @@ def cached_store_data(settings, rows, quotes, log=print, force=False, path=None,
             with open(path, encoding="utf-8") as f:
                 c = json.load(f)
             if now - float(c.get("at") or 0) < STORE_MAX_AGE and c.get("data") \
-                    and (c.get("day") or day) == day:
+                    and (c.get("day") or day) == day and c.get("ver") == STORE_DATA_VER:
                 data = {int(k): v for k, v in c["data"].items()}
                 return (data, c.get("ctx")) if with_ctx else data
         except (OSError, ValueError):
@@ -572,7 +689,7 @@ def cached_store_data(settings, rows, quotes, log=print, force=False, path=None,
             try:                      # 等的时候另一边刚算完：直接用它的
                 with open(path, encoding="utf-8") as f:
                     c = json.load(f)
-                if c.get("data") and (c.get("day") or day) == day:
+                if c.get("data") and (c.get("day") or day) == day and c.get("ver") == STORE_DATA_VER:
                     data = {int(k): v for k, v in c["data"].items()}
                     log("扫码枪门店数据：用刚算好的那份")
                     return (data, c.get("ctx")) if with_ctx else data
@@ -592,7 +709,7 @@ def _compute_store_cache(settings, rows, quotes, log, path, now, day, with_ctx):
     if path and data:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w", encoding="utf-8", newline="") as f:
-            json.dump({"at": now, "day": day, "ctx": ctx, "data": {str(k): v for k, v in data.items()}}, f)
+            json.dump({"at": now, "day": day, "ver": STORE_DATA_VER, "ctx": ctx, "data": {str(k): v for k, v in data.items()}}, f)
     return (data, ctx) if with_ctx else data
 
 
@@ -893,3 +1010,149 @@ def sort_devices(devs):
 def pretty_code(code):
     c = str(code or "")
     return f"{c[:4]}-{c[4:]}" if len(c) == 8 else c
+
+
+# ===================================================================== 下一期 VOLANTINO（扫码枪上的备货清单）
+# 2026-11-27 用户：门店拿着下一期 VOLANTINO 的表去货架前备货 → 「发布目录」时可以导入这一期的名单一起发布；
+# 只放 DETERSIVO 能订的（这周批发商报价里有的，volantino_plan.compute 本来就只算这些），直厂的不发；
+# 没导入（或这一期已经结束）时扫码枪上写「办公室还没有上传 VOLANTINO」。
+# 发的是每家店每个商品「这一期大概要卖几件」（以前几期促销期每天的销量 × 天数；没上过的用平时销量 × 这家店的放大倍数），
+# 扫码枪按自己最新的库存和在途算还差几箱，所以每天自动发布时不用重算。
+VOL_BASIS = {"hist": 0, "est": 1, "none": 2}
+
+
+def _vol_path():
+    try:
+        from settings import app_dir
+        return os.path.join(app_dir(), "cache", "scanner_volantino.json")
+    except Exception:
+        return None
+
+
+def volantino_rows(res):
+    """volantino_plan.compute 的结果 → {门店号: [[条码, 促销价, 预计卖几件, 0 以前上过 / 1 估算 / 2 没销量, 上一期名称, 上一期卖了几件, 要看 0/1]]}"""
+    from datetime import date
+    out = {}
+    for r in res.get("rows") or []:
+        last_name, last_sold = "", None
+        if r.get("periods"):
+            nm, a, b, per_day, _base = r["periods"][0]
+            last_name = nm
+            try:
+                last_sold = round(per_day * ((date.fromisoformat(b) - date.fromisoformat(a)).days + 1))
+            except (TypeError, ValueError):
+                last_sold = None
+        out.setdefault(int(r["store"]), []).append([
+            _ean(r["ean"]), _r2(r.get("price")), _r2(r.get("expected")), VOL_BASIS.get(r.get("basis"), 2),
+            last_name, last_sold, 1 if r.get("warn") else 0])
+    return out
+
+
+def compute_volantino(settings, path, log=print, today=None):
+    """读这一期名单（Excel）+ 以前几期 + 这周报价 + 各门店销量 → 存好、以后每次发布都带上。返回存的内容"""
+    import commands as CMD
+    import price_check as PC
+    import reorder_service as R
+    import volantino_plan as VP
+    import workspace as W
+    new = VP.read_list(path, marks=True)
+    new["file"] = path
+    if not new.get("start") or not new.get("end"):
+        raise ValueError("名单里看不出促销是哪几天（start / end 两列）")
+    root = VP.promo_root(settings)
+    ws = (settings or {}).get("wholesale_root") or ""
+    db = R.make_db((settings or {}).get("db") or None)
+    try:
+        hist = VP.history(root, new, db, log=log) if root else []
+        files = CMD.read_quote_files(settings, W.price_dir(ws), log) if ws and os.path.isdir(W.price_dir(ws)) else {}
+        if not files:
+            raise ValueError("DETERSIVO 工作文件夹里没有这周的批发商报价（只发批发商能订到的商品，要先有报价）")
+        res = VP.compute(db, new, hist, PC.best_quotes(files), {}, None, log=log, today=today, deduct_transit=False)
+    finally:
+        try:
+            db.engine.dispose()
+        except Exception:
+            pass
+    data = {"on": True, "file": path, "name": res.get("name") or os.path.splitext(os.path.basename(path))[0],
+            "start": res["start"], "end": res["end"], "days": res["days"], "periods": len(res.get("periods") or []),
+            "skipped": len(res.get("skipped") or []), "stores": {str(k): v for k, v in volantino_rows(res).items()}}
+    save_volantino(data)
+    n = len({r["ean"] for r in res.get("rows") or []})
+    log(f"扫码枪 VOLANTINO：{data['name']} {data['start']} – {data['end']}，批发商能订的 {n} 个商品"
+        f"（名单里其他 {data['skipped']} 个不发：直厂 / 数据库没有 / 名单标了不订），以前 {data['periods']} 期可以参考")
+    return data
+
+
+def save_volantino(data, path=None):
+    path = path or _vol_path()
+    if not path:
+        return
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8", newline="") as f:
+        json.dump(data, f, ensure_ascii=False)
+
+
+def load_volantino(path=None):
+    path = path or _vol_path()
+    if not path or not os.path.exists(path):
+        return None
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
+def set_volantino_on(on, path=None):
+    """勾选 / 取消「一起发布 VOLANTINO」（取消 = 以后发布不再带，扫码枪上变回「还没有上传」）"""
+    d = load_volantino(path)
+    if d is None:
+        return None
+    d["on"] = bool(on)
+    save_volantino(d, path)
+    return d
+
+
+def active_volantino(today=None, path=None):
+    """正在发布的那一期：勾着、而且还没结束；没有 None"""
+    from datetime import date
+    d = load_volantino(path)
+    if not d or not d.get("on"):
+        return None
+    today = today or date.today()
+    try:
+        if date.fromisoformat(d["end"]) < today:
+            return None
+    except (KeyError, TypeError, ValueError):
+        return None
+    return d
+
+
+def with_volantino(settings, meta, stores, vol=None, today=None):
+    """发布前把 VOLANTINO 带上：meta["volantino"] = {name, start, end, days, items} 或 None（扫码枪显示「还没有上传」）；
+    每家店的门店数据行补到第 16 项 = [促销价, 预计卖几件, 依据, 上一期, 上一期卖了几件, 要看]。不改传进来的行（缓存里的）"""
+    vol = vol if vol is not None else active_volantino(today)
+    meta = dict(meta or {})
+    if not vol:
+        meta["volantino"] = None
+        return meta, stores
+    stores = dict(stores or {})
+    eans = set()
+    for sid, vrows in (vol.get("stores") or {}).items():
+        sid = int(sid)
+        rows = [list(r) for r in stores.get(sid) or []]
+        idx = {r[0]: r for r in rows}
+        for v in vrows:
+            r = idx.get(v[0])
+            if r is None:
+                r = [v[0]]
+                rows.append(r)
+                idx[v[0]] = r
+            while len(r) < 15:
+                r.append(None)
+            r[15:16] = [v[1:]]
+            eans.add(v[0])
+        stores[sid] = rows
+    meta["volantino"] = {"name": vol.get("name") or "", "start": vol.get("start"), "end": vol.get("end"),
+                         "days": vol.get("days"), "items": len(eans)}
+    return meta, stores

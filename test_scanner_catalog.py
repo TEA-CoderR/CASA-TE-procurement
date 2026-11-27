@@ -92,7 +92,7 @@ def test_store_data_row_advice_and_prices():
     from datetime import date
     m = {"stock": 9.0, "s30": 22, "s90": 60, "last_days": 1, "pack": 6.0}
     r = SC.store_row("8001", m, 1, 1.104, 2.49, {"price": 1.99, "end": date(2026, 11, 30)}, sys_box=3)
-    assert r == ["8001", 9.0, 22.0, 1.0, 3, 1.1, 2.49, 1.99, "30/11", 6.0, 1, 0]   # 建议已经扣过在途（store_advice）
+    assert r == ["8001", 9.0, 22.0, 1.0, 3, 1.1, 2.49, 1.99, "30/11", 6.0, 1, 0, None, None]   # 建议已经扣过在途（store_advice）
     assert SC.store_row("8001", {}, 0, None, None, None)[4] is None              # 不在 Griglia：没有建议箱数，价格照样有
     assert SC.store_row("8001", {"pack": 56}, 0, None, None, None, sys_box=1, pack=1)[9] == 1   # 审核用的箱规（批发商的）
     assert SC.cheapest(QUOTES, "8001") == 1.1 and SC.cheapest(QUOTES, "8002") is None
@@ -201,3 +201,73 @@ def test_office_note_tells_store_why():
     assert SC.office_note({"fbox": 4, "sbox": 2}, 2, 4) == "Aumentato da 2 a 4 dall'ufficio acquisti"
     assert SC.office_note({"list_reason": "URGENTE", "urgent": True, "fbox": 2, "sbox": 2}, 2, 2) in ("", "Accettato · motivo: URGENTE")
     assert SC.office_note(None, 2, 2) == ""
+
+
+def _hist_db(monkeypatch):
+    """sqlite 模拟：caricolistalist（到货）+ vendite_list_1（销量）"""
+    import sqlite3
+    import pandas as pd
+    import reorder_service as R
+    con = sqlite3.connect(":memory:")
+    con.create_function("YEAR", 1, lambda s: int(str(s)[:4]))
+    con.create_function("MONTH", 1, lambda s: int(str(s)[5:7]))
+    con.execute("CREATE TABLE caricolistalist (CodArticolo INT, Cdata TEXT, Quantita REAL, Tipo TEXT, Fornitore INT, Negozio INT)")
+    con.execute("CREATE TABLE vendite_list_1 (CodArticolo INT, Data TEXT, Qta REAL)")
+    rows = [(1, "2026-11-12 09:00:00", 12, "CA", 7, 1), (1, "2026-11-12 15:00:00", 12, "CA", 7, 1),   # 同一天两行 → 24
+            (1, "2026-10-15 10:00:00", 6, "CI", 4, 1),          # 从 S.MARCO 调过来
+            (1, "2026-09-01 10:00:00", 6, "CI", 0, 1),          # 从仓库
+            (1, "2026-11-20 10:00:00", -3, "CA", 7, 1),         # 退货：不算
+            (1, "2026-11-20 10:00:00", 30, "CA", 7, 2),         # 别的门店：不算
+            (1, "2026-11-21 10:00:00", 5, "UI", 7, 1),          # 调出：不算
+            (2, "2024-12-20 10:00:00", 48, "CA", 7, 1)]         # 2025-01-08 以前（记录是错的）+ 一年以前：不算
+    con.executemany("INSERT INTO caricolistalist VALUES (?,?,?,?,?,?)", rows)
+    con.executemany("INSERT INTO vendite_list_1 VALUES (?,?,?)",
+                    [(1, "2026-11-02", 3), (1, "2026-11-20", 2), (1, "2026-07-05", 9), (1, "2025-10-30", 50), (3, "2026-11-01", 1)])
+    con.commit()
+
+    def fake(q, db, params, tries=2, wait=3):
+        p = tuple(str(x) if hasattr(x, "isoformat") else x for x in params)
+        return pd.read_sql_query(q.replace("%s", "?"), con, params=p)
+    monkeypatch.setattr(R, "read_sql_retry", fake)
+
+
+def test_store_history_arrivals_months_and_other_stores(monkeypatch):
+    from datetime import date
+    _hist_db(monkeypatch)
+    h = SC.store_history(object(), 1, ["1", "2", "3"], today=date(2026, 11, 27), sup_names={7: "MELONI"})
+    assert h["1"]["arr"] == [[20261112, 24.0, 0, "MELONI", 2.0], [20261015, 6.0, 1, "S.MARCO"], [20260901, 6.0, 1, "BMS"]]
+    m = h["1"]["months"]
+    assert len(m) == 12 and m[-1] == 5 and m[-5] == 9 and sum(m) == 14       # 2025-10 在 12 个月以外
+    assert "2" not in h                                                       # 只有错的老记录
+    assert h["3"]["arr"] == [] and h["3"]["months"][-1] == 1
+    row = SC.store_row("8001", {"stock": 6, "s30": 5}, 0, None, 2.5, None, hist=h["1"])
+    assert len(row) == 14 and row[12][0][0] == 20261112 and row[13][-1] == 5
+    stores = {1: [list(row)], 2: [["8001", 30.0], ["8002", 0.0]], 4: [["8001", 0.0]]}
+    SC.add_others(stores)
+    assert stores[1][0][14] == [["MARLIA", 30.0], ["S.MARCO", 0.0]]
+    assert stores[2][0][14] == [["FOIANO", 6.0], ["S.MARCO", 0.0]]
+    assert stores[2][1][14] is None                                           # 别家都没货：不发
+
+
+def test_volantino_published_with_catalog_until_it_ends(tmp_path):
+    from datetime import date
+    res = {"rows": [
+        {"store": 1, "ean": "08001", "price": 1.49, "expected": 54.0, "basis": "hist",
+         "periods": [("OTT 26", "2026-10-15", "2026-11-01", 2.5, 1.0)], "warn": []},
+        {"store": 2, "ean": "8009", "price": 4.99, "expected": 14.0, "basis": "est", "periods": [], "warn": ["金额 €1,200"]}]}
+    v = SC.volantino_rows(res)
+    assert v[1] == [["8001", 1.49, 54.0, 0, "OTT 26", 45, 0]] and v[2][0][3] == 1 and v[2][0][6] == 1
+    path = str(tmp_path / "vol.json")
+    SC.save_volantino({"on": True, "name": "DIC 26", "start": "2026-12-03", "end": "2026-12-20", "days": 18,
+                       "stores": {str(k): x for k, x in v.items()}}, path)
+    vol = SC.active_volantino(date(2026, 11, 28), path)
+    stores = {1: [["8001", 6.0, 20.0]]}
+    meta, out = SC.with_volantino({}, {"week": "x"}, stores, vol=vol)
+    assert meta["volantino"]["items"] == 2 and meta["volantino"]["name"] == "DIC 26"
+    assert out[1][0][15] == [1.49, 54.0, 0, "OTT 26", 45, 0] and len(stores[1][0]) == 3     # 缓存里的行不改
+    assert out[2][0][0] == "8009" and out[2][0][15][0] == 4.99                              # 这家店没有门店数据行：新加一行
+    assert SC.active_volantino(date(2026, 12, 21), path) is None                            # 结束了不再发
+    SC.set_volantino_on(False, path)
+    assert SC.active_volantino(date(2026, 11, 28), path) is None
+    meta, out = SC.with_volantino({}, {}, stores, vol=None)
+    assert meta["volantino"] is None and out is stores                                       # 扫码枪：「还没有上传」

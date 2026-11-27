@@ -291,7 +291,8 @@ class RequestPage:
 
     def _said(self, g):
         rs = g["open"] or g["reqs"]
-        reasons = sorted({tr(PR.REASON_ZH.get(r.get("reason"), r.get("reason") or "")) for r in rs})
+        # 2026-11-27 起扫码枪不再选原因（门店都选「其他」再自己写）：「其他」不写出来
+        reasons = sorted({tr(PR.REASON_ZH.get(r.get("reason"), r.get("reason") or "")) for r in rs if r.get("reason") != "other"})
         notes = [str(r.get("note") or "") for r in rs if r.get("note")]
         return " · ".join(reasons + notes[:1])
 
@@ -449,14 +450,24 @@ class RequestPage:
         v = self._section(tr("门店说的"))
         for r in g["reqs"]:
             line = " · ".join(x for x in (
-                PR.store_name(r.get("entityCode")), tr(PR.REASON_ZH.get(r.get("reason"), r.get("reason") or "")),
+                PR.store_name(r.get("entityCode")),
+                tr(PR.REASON_ZH.get(r.get("reason"), r.get("reason") or "")) if r.get("reason") != "other" else "",
                 tr("{0} 箱", r["boxes"]) if r.get("boxes") else "", (r.get("createdAt") or "")[:16].replace("T", " ")) if x)
             v.addWidget(self._lbl(line, 13, bold=r.get("status") in ("open", "info")))
-            if r.get("note"):
+            msgs = r.get("messages") or []
+            if msgs:                    # 整段对话（平台 0009 起）：门店说的、办公室回的，按先后
+                for m in msgs:
+                    who = tr("门店") if m.get("by") != "office" else tr("办公室")
+                    extra = " · ".join(x for x in ((m.get("at") or "")[5:16].replace("T", " "),
+                                                    tr("{0} 箱", m["boxes"]) if m.get("boxes") else "",
+                                                    tr("照片") if m.get("photo") else "") if x)
+                    v.addWidget(self._lbl(f"{who}：{m.get('text') or '—'}" + (f"（{extra}）" if extra else ""), 12,
+                                          "accent" if m.get("by") != "office" else "faint"))
+            elif r.get("note"):
                 v.addWidget(self._lbl("“" + r["note"] + "”", 12))
-            if r.get("storeReply"):
+            if r.get("storeReply") and not msgs:
                 v.addWidget(self._lbl(tr("门店补充：{0}", r["storeReply"]), 12, "accent"))
-            if r.get("status") in ("answered", "info") and r.get("answer"):
+            if r.get("status") in ("answered", "info") and r.get("answer") and not msgs:
                 v.addWidget(self._lbl(tr("已回复（{0}）：{1}", tr(PR.ANSWER_ZH.get(r.get("answerKind"), "")), r["answer"]),
                                       12, "faint"))
             if r.get("hasPhoto"):

@@ -12,7 +12,7 @@ from PySide6.QtCore import Qt, QTime, QUrl
 from PySide6.QtGui import QColor, QDesktopServices, QFont
 from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QPushButton, QLineEdit,
                                QComboBox, QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView, QMessageBox,
-                               QTabWidget, QWidget, QTimeEdit)
+                               QTabWidget, QWidget, QTimeEdit, QCheckBox, QFileDialog)
 
 from i18n import tr
 import booking_api as BA
@@ -34,6 +34,11 @@ def _when(iso):
 
 def _day(ymd):
     s = str(ymd or "")
+    return f"{s[8:10]}/{s[5:7]}" if len(s) >= 10 else s
+
+
+def _dm(iso):
+    s = str(iso or "")
     return f"{s[8:10]}/{s[5:7]}" if len(s) >= 10 else s
 
 
@@ -154,6 +159,22 @@ class ScannerDialog(QDialog):
                                  self.POLL_FAST // 1000))
         self.b_ref.clicked.connect(lambda: self.load(quiet=True))
         cat.addWidget(self.b_ref)
+        # 下一期 VOLANTINO：勾上 = 选这一期的名单，发布目录时一起发（只发批发商能订的）；以后每天自动发布也带着，直到这一期结束
+        self._vol_file = None
+        self.vol_cb = QCheckBox(tr("一起发布 VOLANTINO"))
+        self.vol_cb.setToolTip(tr("勾上后选下一期 VOLANTINO 名单（Excel），发布目录时一起发到扫码枪：每家店按以前几期的销量算好这一期要备多少，"
+                                  "门店在扫码枪上一点就加进 DETERSIVO 清单。只发这周批发商报价里有的（DETERSIVO 能订的），直厂的不发。"
+                                  "之后每天自动发布也会带上，这一期结束就不再发；取消勾选 = 扫码枪上显示「办公室还没有上传 VOLANTINO」"))
+        self.vol_cb.toggled.connect(self._vol_toggled)
+        cat.addWidget(self.vol_cb)
+        self.vol_lbl = QLabel("")
+        self.vol_lbl.setObjectName("PageSub")
+        cat.addWidget(self.vol_lbl)
+        self.vol_pick = QPushButton(tr("更换名单"))
+        self.vol_pick.setObjectName("Link")
+        self.vol_pick.clicked.connect(lambda: self._vol_choose())
+        cat.addWidget(self.vol_pick)
+        self._vol_paint()
         b = QPushButton(tr("发布目录"))
         b.setToolTip(tr("把现在的 Griglia、这周批发商报价、替代商品、直厂商品，还有每家门店的库存 / 销量 / 在途 / 建议箱数 / 进价 / 卖价 / "
                         "打折价发到扫码枪（每家店只收到自己的；Griglia 页刷新时也会自动发布，门店数据最多 4 小时重算一次）"))
@@ -188,6 +209,48 @@ class ScannerDialog(QDialog):
         v.addLayout(bl)
         self._sel()
         return w
+
+    # ------------------------------------------------------------------ VOLANTINO
+    def _vol_paint(self):
+        d = SC.active_volantino()
+        on = bool(self._vol_file) or bool(d)
+        self.vol_cb.blockSignals(True)
+        self.vol_cb.setChecked(on)
+        self.vol_cb.blockSignals(False)
+        self.vol_pick.setVisible(on)
+        if self._vol_file:
+            self.vol_lbl.setText(tr("{0} · 发布时计算", os.path.basename(self._vol_file)))
+        elif d:
+            n = len({v[0] for rows in (d.get("stores") or {}).values() for v in rows})
+            self.vol_lbl.setText(tr("{0} · {1} – {2} · {3} 个商品", d.get("name") or "", _dm(d.get("start")), _dm(d.get("end")), n))
+        else:
+            self.vol_lbl.setText("")
+
+    def _vol_choose(self):
+        import volantino_plan as VP
+        root = VP.promo_root(self.settings)
+        start = os.path.dirname(VP.newest_list(root)) if root else ""
+        path, _ = QFileDialog.getOpenFileName(self, tr("选下一期的 VOLANTINO 名单"), start or os.path.expanduser("~"),
+                                              "Excel (*.xlsx *.xlsm)")
+        if path:
+            self._vol_file = path
+        self._vol_paint()
+        return bool(path)
+
+    def _vol_toggled(self, on):
+        if on:
+            if not self._vol_choose():
+                self._vol_paint()
+            return
+        self._vol_file = None
+        if SC.active_volantino():
+            if QMessageBox.question(self, tr("一起发布 VOLANTINO"),
+                                    tr("以后发布目录不再带 VOLANTINO，扫码枪上会显示「办公室还没有上传 VOLANTINO」（下次发布后生效）。继续吗？")) \
+                    != QMessageBox.Yes:
+                self._vol_paint()
+                return
+            SC.set_volantino_on(False)
+        self._vol_paint()
 
     def _picked(self):
         rows = sorted({i.row() for i in self.t.selectedIndexes()})
@@ -513,7 +576,11 @@ class ScannerDialog(QDialog):
         me = (self.settings.get("tracking") or {}).get("me") or self.settings.get("user_name") or ""
         logs = []
 
+        vol_file = self._vol_file
+
         def work():
+            if vol_file:                # 这一期名单：先算好存起来（每家店要备多少），下面发布时带上
+                excel_call(lambda: SC.compute_volantino(self.settings, vol_file, log=logs.append))
             meta, rows, quotes = excel_call(lambda: SC.build_from_workspace(self.settings, log=lambda *_: None, with_quotes=True))
             stores, ctx = SC.cached_store_data(self.settings, rows, quotes, log=logs.append, force=True, with_ctx=True)
             if ctx:
@@ -532,7 +599,11 @@ class ScannerDialog(QDialog):
                 hint = "\n\n" + (tr(R.BIG_QUERY_HINT) if blocked else tr("多半是数据库连接断了一下，过一会再点一次「发布目录」"))
             QMessageBox.warning(self, tr("发布目录"), tr("没发布：{0}", txt) + hint)
             return
-        self.win.show_toast(tr("✓ 扫码枪目录已发布：{0} 个商品，{1} 家门店的数据", res[1], res[2]))
+        self._vol_file = None
+        self._vol_paint()
+        vol = SC.active_volantino()
+        self.win.show_toast(tr("✓ 扫码枪目录已发布：{0} 个商品，{1} 家门店的数据", res[1], res[2])
+                            + (tr("，VOLANTINO {0}", vol.get("name") or "") if vol else ""))
         self.load()
 
     # ------------------------------------------------------------------ 门店清单
