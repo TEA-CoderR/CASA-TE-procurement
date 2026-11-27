@@ -51,13 +51,15 @@ def when_text(t, today=None):
     return f"{t:%d/%m}"
 
 
-def ready_items(lists, prices, elim, grid, today=None):
+def ready_items(lists, prices, elim, grid, today=None, requests=0):
     """
     「准备好了吗」几行：[(状态 1 好 / 0 要看 / -1 没关系, 标题, 小字)]
     lists = [(门店编号或 None, 修改时间)]；prices = [(名称, 修改时间, 邮件里有新的)]；elim = {门店编号: [文件]}；
-    grid = (文件名, 修改时间) 或 None
+    grid = (文件名, 修改时间) 或 None；requests = 门店申请里还没回复的商品个数
     """
     out = []
+    if requests:
+        out.append((0, tr("{0} 个门店申请没回复", requests), tr("Griglia → 门店申请：截止前回复，门店这周就能订")))
     known = [s for s, _t in lists if s]
     unknown = len(lists) - len(known)
     if not lists:
@@ -573,7 +575,8 @@ def render_collect(win, st, root):
     g = G.find_file(root)
     grid = (os.path.basename(g), datetime.fromtimestamp(os.path.getmtime(g))) if g else None
     _clear(win._dc_ready)
-    items = ready_items(lists_t, prices_t, st["elim"], grid, today)
+    items = ready_items(lists_t, prices_t, st["elim"], grid, today,
+                        requests=getattr(getattr(win, "grid_req", None), "waiting", 0))
     for state, title, sub in items:
         h = QHBoxLayout()
         h.setSpacing(10)

@@ -37,10 +37,13 @@ def _ean(v):
 SEND_COST = False      # 进价（批发商最便宜件价 / 数据库进价）发不发给门店扫码枪：2026-11-22 用户定不显示，也不发
 
 
-def build(grid, quotes, subs=None, scheda=None, week=""):
+def build(grid, quotes, subs=None, scheda=None, week="", aliases=None, added=None):
     """
     grid = griglia.load 的结果（可以 None）；quotes = {批发商: {条码: {desc, price…}}}；
     subs = griglia_replace.substitutes（旧条码 → {ean, name}）；scheda = store_orders.scheda_index（直厂）。
+    aliases = 门店申请回复「换成别的商品」的 {门店扫的条码: (该订的条码, 名称)}（product_requests.aliases）：
+      这个条码在扫码枪上显示 SOSTITUITO → 该订的那个（它自己在 Griglia 里的不动）；
+    added = 程序里的 Griglia 新加、Excel 里还没有的商品 {条码: {name, pack}}（门店申请「加进 Griglia」）：算在 Griglia。
     → (meta, items)
     """
     grid = grid or {}
@@ -67,6 +70,12 @@ def build(grid, quotes, subs=None, scheda=None, week=""):
             x = get(k)
             x["g"], x["name"] = 1, it.get("name") or x["name"]
             x["pk"] = _pack(it.get("pack")) or x["pk"]
+    for e, it in (added or {}).items():
+        k = _ean(e)
+        if k and get(k)["g"] != 1:
+            x = get(k)
+            x["g"], x["name"] = 1, (it or {}).get("name") or x["name"]
+            x["pk"] = _pack((it or {}).get("pack")) or x["pk"]
     for sup in sources:
         for e, q in (quotes.get(sup) or {}).items():
             k = _ean(e)
@@ -93,6 +102,13 @@ def build(grid, quotes, subs=None, scheda=None, week=""):
         if k and new and new != k:
             x = get(k)
             x["s"], x["sn"] = new, (s or {}).get("name") or ""
+    for e, (new, name) in (aliases or {}).items():
+        k, new = _ean(e), _ean(new)
+        if k and new and new != k and get(k)["g"] != 1:
+            x = get(k)
+            x["g"] = 2                                 # 不是 Griglia 商品本身：扫码枪按「已替换」显示（替代 = 该订的）
+            x["s"], x["sn"] = new, name or (items.get(new) or {}).get("name") or ""
+            x["name"] = x["name"] or x["sn"]
     for e, sup in ((scheda or {}).get("ean") or {}).items():
         k = _ean(e)
         if not k or not sup:
@@ -202,8 +218,48 @@ def build_from_workspace(settings, log=print, with_quotes=False):
     quotes = CMD.read_quotes(settings, W.price_dir(root), log) or {}
     GR.set_shared((settings.get("griglia") or {}).get("source") or "")
     subs = GR.substitutes(GR.load_done(os.path.dirname(grid["path"])), grid)
-    meta, rows = build(grid, quotes, subs, direct_index(settings, log), week=date.today().strftime("%G-W%V"))
+    meta, rows = build(grid, quotes, subs, direct_index(settings, log), week=date.today().strftime("%G-W%V"),
+                       aliases=request_aliases(settings, log), added=program_added(root, grid, log))
     return (meta, rows, quotes) if with_quotes else (meta, rows)
+
+
+def request_aliases(settings, log=print, path=None):
+    """门店申请里回复「换成别的商品」的条码（预约平台上读，读不了用上次存的 cache/scanner_aliases.json）"""
+    from settings import app_dir
+    path = path or os.path.join(app_dir(), "cache", "scanner_aliases.json")
+    try:
+        import product_requests as PR
+        al = PR.aliases(PR.fetch(settings, status="answered", days=3650))
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8", newline="") as f:
+                json.dump({k: list(v) for k, v in al.items()}, f, ensure_ascii=False)
+        except OSError:
+            pass
+        return al
+    except Exception as e:
+        try:
+            with open(path, encoding="utf-8") as f:
+                return {k: tuple(v) for k, v in json.load(f).items()}
+        except (OSError, ValueError):
+            if BA.ready(settings):
+                log(f"⚠ 门店申请（换新条码）读不了：{e}")
+            return {}
+
+
+def program_added(root, grid, log=print):
+    """程序里的 Griglia（griglia_db）有、Excel Griglia 里还没有的在售 / 新品商品 {条码: {name, pack}}"""
+    try:
+        import griglia_db as D
+        cat = D.load(root)
+    except Exception as e:
+        log(f"⚠ 程序里的 Griglia 读不了：{e}")
+        return {}
+    if cat is None:
+        return {}
+    have = {_ean(e) for e in list((grid or {}).get("items") or {}) + list((grid or {}).get("struck") or {})}
+    return {_ean(x["ean"]): {"name": x["name"], "pack": x.get("pack")} for x in cat.items
+            if x.get("status") in ("new", "active", "paused") and _ean(x["ean"]) and _ean(x["ean"]) not in have}
 
 
 def direct_index(settings, log=print):

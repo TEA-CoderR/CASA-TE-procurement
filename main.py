@@ -2907,7 +2907,7 @@ class MainWindow(QMainWindow):
                  "order": [("order", tr("比价处理")), ("result", tr("比价结果")), ("history", tr("历史记录")),
                            ("rules", tr("起订规则")), ("search", tr("缺失查找"))],
                  # 2026-11-24 Griglia 搬进程序（第 1 步）：图标栏「订单」下面一个入口，商品目录 + 原来的统计页
-                 "grid_db": [("grid_db", tr("Griglia 商品目录")), ("grid_cats", tr("Griglia 分类")),
+                 "grid_db": [("grid_db", tr("Griglia 商品目录")), ("grid_req", tr("门店申请")), ("grid_cats", tr("Griglia 分类")),
                              ("grid_hist", tr("Griglia 改动记录")), ("griglia", tr("Griglia 统计"))]}
     SUB_PARENT = {k: parent for parent, subs in SUB_PAGES.items() for k, _ in subs}
     NAV_SIDE = [item for _, items in NAV_GROUPS for item in items]          # 侧边栏上的
@@ -2920,7 +2920,7 @@ class MainWindow(QMainWindow):
             ("buy", tr("采购"), "cart",
              ["store_orders", "store_pdv", "order", "result", "history", "rules", "search"]),
             ("tracking", tr("订单"), "truck", ["tracking"]),
-            ("grid", tr("Griglia"), "griglia", ["grid_db", "grid_cats", "grid_hist", "griglia"]),
+            ("grid", tr("Griglia"), "griglia", ["grid_db", "grid_req", "grid_cats", "grid_hist", "griglia"]),
             ("analysis", tr("分析"), "result", ["sellout", "volantino"]),
             ("data", tr("数据"), "db", ["distribution", "import"]),
             ("settings", tr("设置"), "rules", ["settings", "log"])]
@@ -2999,6 +2999,8 @@ class MainWindow(QMainWindow):
         from griglia_edit_page import HistoryPage, CategoryPage
         self.grid_hist = HistoryPage(self, settings, _UI)
         self.grid_cats = CategoryPage(self, settings, _UI)
+        from request_page import RequestPage              # 2026-11-27 门店在扫码枪上问的商品，办公室在这里回复
+        self.grid_req = RequestPage(self, settings, _UI)
         from tracking_page import TrackingPage
         self.tracking = TrackingPage(self, settings, _UI)
         from volantino_page import VolantinoPage
@@ -3019,6 +3021,7 @@ class MainWindow(QMainWindow):
             "griglia": lambda: (self.griglia_page.build(), False),
             "grid_db": lambda: (self.grid_db.build(), False),
             "grid_cats": lambda: (self.grid_cats.build(), False),
+            "grid_req": lambda: (self.grid_req.build(), False),
             "grid_hist": lambda: (self.grid_hist.build(), False),
             "tracking": lambda: (self.tracking.build(), False),
             "volantino": lambda: (self.volantino.build(), False),
@@ -3872,7 +3875,7 @@ class MainWindow(QMainWindow):
     # 每一页的「页面对象」（有 restyle()）：换颜色时只马上刷新正在看的这一页，别的页第一次切过去时再刷新
     PAGE_OBJ = {"home": "dashboard", "store_orders": "store_orders", "store_pdv": "store_pdv",
                 "settings": "settings_page", "order": "order_check", "distribution": "distribution",
-                "import": "import_page", "griglia": "griglia_page", "grid_db": "grid_db", "grid_cats": "grid_cats",
+                "import": "import_page", "griglia": "griglia_page", "grid_db": "grid_db", "grid_req": "grid_req", "grid_cats": "grid_cats",
                 "grid_hist": "grid_hist", "tracking": "tracking",
                 "volantino": "volantino", "sellout": "sellout"}
 
