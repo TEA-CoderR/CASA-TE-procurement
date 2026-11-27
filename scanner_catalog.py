@@ -369,25 +369,25 @@ def _days(d, today):
 def light_numbers(db, sid, codes, today=None):
     """一家店这些商品的 库存 / 30 天和 90 天销量 / 最后卖出（几天前），只读、三条查询（不算建议量，几千个商品也快）
     → {编号: {stock, s30, s90, last_days}}"""
-    import pandas as pd
+    import reorder_service as R
     from datetime import date, timedelta
     today = today or date.today()
     sid = int(sid)
     out = {str(c): {"stock": 0.0, "s30": 0.0, "s90": 0.0, "last_days": None} for c in codes}
     d30, d90, d365 = (today - timedelta(days=k) for k in (30, 90, 365))
     for chunk, ph in _chunks(codes):
-        df = pd.read_sql(f"SELECT CodArticolo, G{sid} AS g FROM giacenza WHERE CodArticolo IN ({ph})", db.engine,
-                         params=tuple(chunk))
+        df = R.read_sql_retry(f"SELECT CodArticolo, G{sid} AS g FROM giacenza WHERE CodArticolo IN ({ph})", db,
+                              tuple(chunk))
         for r in df.to_dict("records"):
             out[str(int(r["CodArticolo"]))]["stock"] = float(r["g"] or 0)
-        df = pd.read_sql(f"SELECT CodArticolo, SUM(CASE WHEN Data >= %s THEN Qta ELSE 0 END) AS q30, SUM(Qta) AS q90 "
-                         f"FROM vendite_list_{sid} WHERE CodArticolo IN ({ph}) AND Data >= %s GROUP BY CodArticolo",
-                         db.engine, params=(d30, *chunk, d90))
+        df = R.read_sql_retry(f"SELECT CodArticolo, SUM(CASE WHEN Data >= %s THEN Qta ELSE 0 END) AS q30, SUM(Qta) AS q90 "
+                              f"FROM vendite_list_{sid} WHERE CodArticolo IN ({ph}) AND Data >= %s GROUP BY CodArticolo",
+                              db, (d30, *chunk, d90))
         for r in df.to_dict("records"):
             x = out[str(int(r["CodArticolo"]))]
             x["s30"], x["s90"] = float(r["q30"] or 0), float(r["q90"] or 0)
-        df = pd.read_sql(f"SELECT CodArticolo, MAX(Data) AS d FROM vendite_list_{sid} WHERE CodArticolo IN ({ph}) "
-                         f"AND Qta > 0 AND Data >= %s GROUP BY CodArticolo", db.engine, params=(*chunk, d365))
+        df = R.read_sql_retry(f"SELECT CodArticolo, MAX(Data) AS d FROM vendite_list_{sid} WHERE CodArticolo IN ({ph}) "
+                              f"AND Qta > 0 AND Data >= %s GROUP BY CodArticolo", db, (*chunk, d365))
         for r in df.to_dict("records"):
             out[str(int(r["CodArticolo"]))]["last_days"] = _days(r["d"], today)
     return out
@@ -463,10 +463,9 @@ def store_data(settings, rows, quotes, log=print, stores=STORE_IDS, with_ctx=Fal
             log(f"⚠ 扫码枪门店数据：在途没读到（{e}）")
         prod = {}
         try:
-            import pandas as pd
             for chunk, ph in _chunks(code_list):
-                df = pd.read_sql(f"SELECT CodArticolo, PrezzoVedi1, PrezzoForn, qtasmallbox FROM prodotti "
-                                 f"WHERE CodArticolo IN ({ph})", db.engine, params=tuple(chunk))
+                df = R.read_sql_retry(f"SELECT CodArticolo, PrezzoVedi1, PrezzoForn, qtasmallbox FROM prodotti "
+                                      f"WHERE CodArticolo IN ({ph})", db, tuple(chunk))
                 for r in df.to_dict("records"):
                     prod[str(int(r["CodArticolo"]))] = r
         except Exception as e:

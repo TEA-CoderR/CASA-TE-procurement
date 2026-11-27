@@ -254,17 +254,30 @@ def db_error_text(e):
 _RETRY_CODES = (2002, 2003, 2006, 2013, 2055)     # 连不上 / 连接断了（VPN 一下断开、服务器忙）
 
 
+def _retryable(txt):
+    """连不上 / 连接断了：MySQL 错误码，或连接断了以后 SQLAlchemy 不让再用这条连接（PendingRollback）"""
+    return (any(f"({c}," in txt for c in _RETRY_CODES) or "invalid transaction" in txt
+            or "Can't reconnect" in txt or "PendingRollback" in txt or "has been invalidated" in txt)
+
+
 def read_sql_retry(q, db, params, tries=2, wait=3):
-    """pd.read_sql；连接断了等几秒再试一次（只读查询，重试没有副作用）"""
+    """
+    只读查询；连接断了丢掉旧连接、等几秒再试一次（只读，重试没有副作用）。
+    用 read_sql_query 不用 read_sql：read_sql 会先拿整条 SQL 当表名去问数据库有没有这张表，
+    这一步连接断了 pandas 不报错，接着在同一条坏掉的连接上查 → 「Can't reconnect until invalid transaction is rolled back」
+    """
     import time
     import pandas as pd
     for n in range(tries):
         try:
-            return pd.read_sql(q, db.engine, params=params)
+            return pd.read_sql_query(q, db.engine, params=params)
         except Exception as e:
-            txt = str(e)
-            if n + 1 >= tries or not any(f"({c}," in txt for c in _RETRY_CODES):
+            if n + 1 >= tries or not _retryable(str(e)):
                 raise
+            try:
+                db.engine.dispose()          # 池里的旧连接都不要了，下次重新连
+            except Exception:
+                pass
             time.sleep(wait)
 
 

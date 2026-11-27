@@ -300,6 +300,7 @@ def test_db_lookup_prefill_and_codes(monkeypatch):
     con.commit()
     orig = pd.read_sql
     monkeypatch.setattr(pd, "read_sql", lambda q, engine, params=None: orig(q.replace("%s", "?"), con, params=params))
+    monkeypatch.setattr(pd, "read_sql_query", lambda q, engine, params=None: orig(q.replace("%s", "?"), con, params=params))
     db = type("DB", (), {"engine": None})()
     p = D.db_lookup(db, "8001090000057")
     assert p == {"code": "123", "name": "PROVA 1L", "pack": 6, "cod_forn": "AB-9", "direct": "HENKEL ITALIA SRL"}

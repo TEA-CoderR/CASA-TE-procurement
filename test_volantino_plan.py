@@ -58,6 +58,7 @@ def test_plan_from_past_volantino_and_estimate_then_write_and_undo(monkeypatch, 
     import reorder_service as R
     db, fake = _db()
     monkeypatch.setattr(pd, "read_sql", fake)
+    monkeypatch.setattr(pd, "read_sql_query", fake)
     root = tmp_path / "PROMO MESILE"
     (root / "2026" / "OTT 2026").mkdir(parents=True)
     (root / "2026" / "PROMO NATALIZIA").mkdir(parents=True)

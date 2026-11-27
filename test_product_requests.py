@@ -86,29 +86,40 @@ def test_db_error_shows_reason_not_the_sql_and_retries_lost_connection():
     assert R.db_error_text(e) == "(2013, 'Lost connection to MySQL server during query')"
     calls = []
 
+    class Eng:
+        disposed = 0
+
+        def dispose(self):
+            Eng.disposed += 1
+
     class Db:
-        engine = None
+        engine = Eng()
     import pandas as pd
-    real = pd.read_sql
+    real = pd.read_sql_query
 
     def flaky(q, eng, params=None):
         calls.append(1)
         if len(calls) == 1:
             raise e
         return pd.DataFrame({"CodArticolo": [7], "CodBarre": ["800"]})
-    pd.read_sql = flaky
+    pd.read_sql_query = flaky
     try:
         assert R.read_sql_retry("q", Db(), (), wait=0).iloc[0]["CodArticolo"] == 7
-        assert len(calls) == 2
+        assert len(calls) == 2 and Eng.disposed == 1
+        # 连接断了以后 SQLAlchemy 不让再用这条连接：也要丢掉旧连接重来（用户 11-27 截图）
         calls.clear()
-        pd.read_sql = lambda *a, **k: (_ for _ in ()).throw(Exception("(1054, 'Unknown column')"))
+        e = Exception("Can't reconnect until invalid transaction is rolled back.  Please rollback() fully before proceeding")
+        assert R.read_sql_retry("q", Db(), (), wait=0).iloc[0]["CodArticolo"] == 7
+        assert len(calls) == 2 and Eng.disposed == 2
+        calls.clear()
+        pd.read_sql_query = lambda *a, **k: (_ for _ in ()).throw(Exception("(1054, 'Unknown column')"))
         try:
             R.read_sql_retry("q", Db(), (), wait=0)
             raise AssertionError("should raise")
         except Exception as x:
             assert "1054" in str(x)
     finally:
-        pd.read_sql = real
+        pd.read_sql_query = real
 
 
 def test_two_publishes_do_not_query_the_database_twice(tmp_path, monkeypatch):
