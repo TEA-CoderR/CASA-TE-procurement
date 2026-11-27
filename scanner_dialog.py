@@ -525,7 +525,11 @@ class ScannerDialog(QDialog):
         if err:
             import reorder_service as R
             txt = R.db_error_text(err)
-            hint = ("\n\n" + tr("多半是数据库连接断了一下，过一会再点一次「发布目录」")) if ("数据库" in txt or "MySQL" in txt) else ""
+            hint = ""
+            if "数据库" in txt or "MySQL" in txt:
+                blocked, _e = _busy(self, tr("正在检查数据库连接…"),
+                                    lambda: R.big_query_blocked(R.make_db(self.settings.get("db") or None)))
+                hint = "\n\n" + (tr(R.BIG_QUERY_HINT) if blocked else tr("多半是数据库连接断了一下，过一会再点一次「发布目录」"))
             QMessageBox.warning(self, tr("发布目录"), tr("没发布：{0}", txt) + hint)
             return
         self.win.show_toast(tr("✓ 扫码枪目录已发布：{0} 个商品，{1} 家门店的数据", res[1], res[2]))

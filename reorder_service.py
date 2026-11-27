@@ -281,6 +281,35 @@ def read_sql_retry(q, db, params, tries=2, wait=3):
             time.sleep(wait)
 
 
+def big_query_blocked(db):
+    """
+    连接断了的时候看一下是不是网络（VPN）发不出大一点的查询：小查询能查、3 KB 的查询断开 → True。
+    2026-11-27 用户电脑上实测：≤ 1.2 KB 的查询都行，2 KB 以上一律 2013 Lost connection（下载大结果没问题）
+    = VPN 网卡 MTU 太大、大包被丢。查不了 / 判断不出来返回 False
+    """
+    from sqlalchemy import text
+    try:
+        with db.engine.connect() as c:
+            c.execute(text("SELECT 1")).fetchall()
+    except Exception:
+        return False                  # 小查询都不行：整个连不上，不是这个问题
+    try:
+        with db.engine.connect() as c:
+            c.execute(text("SELECT LENGTH('" + "x" * 3000 + "')")).fetchall()
+        return False
+    except Exception:
+        try:
+            db.engine.dispose()
+        except Exception:
+            pass
+        return True
+
+
+BIG_QUERY_HINT = ("电脑到数据库的网络现在只能发很小的查询：小的能查，超过约 1 KB 的就断开。"
+                  "这是 VPN 的问题，不是程序的问题，现在程序里查数据库的地方（发布目录、总仓采购计算、检查清单）都会失败。"
+                  "先断开 VPN 再重新连接；还不行就把 VPN 网卡的 MTU 改小（例如 1300），或者找管 VPN 的人")
+
+
 def codes_from_eans(db, eans):
     """
     条码 → 商品编号：先查 prodotti.CodBarre，再查 codbarre 表（一个商品多个条码）。

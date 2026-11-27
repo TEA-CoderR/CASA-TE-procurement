@@ -142,3 +142,37 @@ def test_two_publishes_do_not_query_the_database_twice(tmp_path, monkeypatch):
     for t in ts:
         t.join()
     assert len(n) == 1 and out[0] == out[1]
+
+
+def test_big_query_blocked_detects_vpn_dropping_large_queries():
+    """2026-11-27：小查询能查、大于约 1 KB 的查询一律断开 = 网络（VPN）问题，要告诉用户，不是让他过一会再点"""
+    import reorder_service as R
+
+    class Conn:
+        def __init__(self, limit):
+            self.limit = limit
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def execute(self, q):
+            if len(str(q)) > self.limit:
+                raise Exception("(2013, 'Lost connection to server during query')")
+            return type("Res", (), {"fetchall": lambda self: [(1,)]})()
+
+    class Eng:
+        def __init__(self, limit):
+            self.limit = limit
+
+        def connect(self):
+            return Conn(self.limit)
+
+        def dispose(self):
+            pass
+
+    assert R.big_query_blocked(type("DB", (), {"engine": Eng(1200)})()) is True
+    assert R.big_query_blocked(type("DB", (), {"engine": Eng(10 ** 6)})()) is False
+    assert R.big_query_blocked(type("DB", (), {"engine": Eng(0)})()) is False      # 什么都查不了：不是这个问题
