@@ -27,7 +27,12 @@ def test_group_by_barcode_waiting_first_and_late_after_two_workdays():
     g = gs[0]
     assert g["stores"] == [1, 3] and g["boxes"] == 3 and g["status"] == "open"
     assert g["waited"] == 4 and g["late"]
-    assert PR.waiting_count(reqs) == 1
+    assert PR.waiting_count(reqs) == 2              # 每家店每个商品算一个
+    assert PR.waiting_count(reqs, store=3) == 1
+    # 每家门店单独一行（门店申请页）：回复只发给这家店
+    sp = PR.group(reqs, NOW, split=True)
+    assert [(g["stores"], g["ean"]) for g in sp][:2] == [([1], "800123"), ([3], "800123")]
+    assert sp[0]["key"] == "1|800123" and sp[0]["boxes"] == 2 and [r["id"] for r in sp[0]["open"]] == [1]
 
 
 def test_aliases_only_from_use_answers():

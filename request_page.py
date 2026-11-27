@@ -39,6 +39,7 @@ class RequestPage:
         self.ctx, self.ctx_t = None, 0.0
         self.waiting = 0
         self.filter = "open"
+        self.store = (settings.get("requests_view") or {}).get("store")    # 选的门店（None = 全部），每台电脑自己的
         self.page = None
         self.cur = None
         self._loaded_once = False
@@ -86,6 +87,24 @@ class RequestPage:
         body = QHBoxLayout()
         body.setSpacing(14)
         card = Card(margins=(16, 12, 16, 12))
+        # 门店：一家店一个按钮（带待回复几个），选了只看这家店的申请，回复也只发给这家
+        sbar = QHBoxLayout()
+        sbar.setSpacing(6)
+        self.store_btns = {}
+        sgrp = QButtonGroup(w)
+        sgrp.setExclusive(True)
+        for code, label in [(None, tr("全部门店"))] + [(c, PR.store_name(c)) for c in PR.STORE_CODES]:
+            b = CountButton(label, None)
+            b.setObjectName("Chip")
+            b.setCheckable(True)
+            b.setChecked(code == self.store)
+            b.setToolTip(tr("只看这家店的申请；回复只发给这家店") if code is not None else tr("五家店的申请都列出来，每家店一行"))
+            b.clicked.connect(lambda _=False, c=code: self._set_store(c))
+            sgrp.addButton(b)
+            self.store_btns[code] = b
+            sbar.addWidget(b)
+        sbar.addStretch()
+        card.v.addLayout(sbar)
         bar = QHBoxLayout()
         bar.setSpacing(6)
         self.chips = {}
@@ -241,12 +260,12 @@ class RequestPage:
 
     def _apply(self, res):
         self.reqs, self.ctx = res
-        self.groups = PR.group(self.reqs)
+        self.groups = PR.group(self.reqs, split=True)
         self.checks = {}
         c = self.ctx or {}
         for g in self.groups:
             if g["status"] != "answered":
-                self.checks[g["ean"]] = PR.checks(g, c.get("grid"), c.get("best"), c.get("scheda"), self.db)
+                self.checks[g.get("key") or g["ean"]] = PR.checks(g, c.get("grid"), c.get("best"), c.get("scheda"), self.db)
         n = {k: 0 for k, _l in FILTERS}
         for g in self.groups:
             n[g["status"]] += 1
@@ -257,7 +276,8 @@ class RequestPage:
         late = sum(1 for g in self.groups if g["late"])
         self.hero.set_sub(tr("{0} 个待回复", n["open"]) + (tr(" · {0} 个超过 2 个工作日", late) if late else "")
                           + tr(" · {0} 个等门店补充", n["info"]) + tr(" · 最近 60 天共 {0} 个", n["all"]))
-        keep = self.cur["ean"] if self.cur else None
+        self._paint_stores()
+        keep = self.cur["key"] if self.cur else None
         self.ctl.render()
         if keep:
             self._select(keep)
@@ -267,6 +287,20 @@ class RequestPage:
             self._show(None)
 
     # ------------------------------------------------------------------ 表格
+    def _paint_stores(self):
+        for code, b in self.store_btns.items():
+            n = PR.waiting_count(self.reqs, code)
+            b.set_count(n or None)
+
+    def _set_store(self, code):
+        self.store = code
+        self.settings.setdefault("requests_view", {})["store"] = code
+        self.ctl.render()
+        if self.ctl.visible:
+            self.t.selectRow(0)
+        else:
+            self._show(None)
+
     def _set_filter(self, k):
         self.filter = k
         self.ctl.render()
@@ -279,15 +313,17 @@ class RequestPage:
         g = self.groups[i]
         if self.filter != "all" and g["status"] != self.filter:
             return True
+        if self.store is not None and self.store not in g["stores"]:
+            return True
         q = self.search.text().strip().lower()
         if not q:
             return False
-        hay = " ".join([g["ean"], g["name"], (self.checks.get(g["ean"]) or {}).get("name") or ""]
+        hay = " ".join([g["ean"], g["name"], (self.checks.get(g.get("key") or g["ean"]) or {}).get("name") or ""]
                        + [PR.store_name(s) for s in g["stores"]] + [str(r.get("note") or "") for r in g["reqs"]])
         return q not in hay.lower()
 
     def _name(self, g):
-        return g["name"] or (self.checks.get(g["ean"]) or {}).get("name") or tr("（门店不知道是什么）")
+        return g["name"] or (self.checks.get(g.get("key") or g["ean"]) or {}).get("name") or tr("（门店不知道是什么）")
 
     def _said(self, g):
         rs = g["open"] or g["reqs"]
@@ -316,7 +352,7 @@ class RequestPage:
         if c == 6:
             return (tr("{0} 天", g["waited"]) if g["waited"] else tr("今天")) if g["status"] == "open" else ""
         if c == 7:
-            ch = self.checks.get(g["ean"])
+            ch = self.checks.get(g.get("key") or g["ean"])
             return tr(PR.ANSWER_ZH[ch["suggest"]]) if ch else ""
         return ""
 
@@ -363,9 +399,9 @@ class RequestPage:
     def _sel(self):
         self._show(self._picked())
 
-    def _select(self, ean):
+    def _select(self, key):
         for k, i in enumerate(self.ctl.visible):
-            if self.groups[i]["ean"] == ean:
+            if self.groups[i]["key"] == key:
                 self.t.selectRow(k)
                 return
         self._show(None)
@@ -406,7 +442,7 @@ class RequestPage:
             self.dv.addWidget(self._lbl(tr("选一行看门店说的和程序查到的"), 13, "faint"))
             self.dv.addStretch()
             return
-        ch = self.checks.get(g["ean"]) or {}
+        ch = self.checks.get(g.get("key") or g["ean"]) or {}
         head = QHBoxLayout()
         img = QLabel()
         img.setFixedSize(84, 84)
@@ -420,6 +456,12 @@ class RequestPage:
         if g["status"] == "open":
             st += tr(" · 等了 {0} 个工作日", g["waited"]) if g["waited"] else tr(" · 今天提的")
         hv.addWidget(self._lbl(st, 12, "err" if g["late"] else ("warn" if g["status"] == "info" else "accent"), True))
+        # 每家店单独处理：这一行只是这家店的；别的店也问了同一个商品写一句（要分别回复）
+        hv.addWidget(self._lbl(tr("门店：{0}（回复只发给这家店）", "、".join(PR.store_name(s) for s in g["stores"])), 12, bold=True))
+        others = sorted({PR.store_name(x["stores"][0]) for x in self.groups
+                         if x["ean"] == g["ean"] and x["key"] != g["key"] and x["status"] != "answered"})
+        if others:
+            hv.addWidget(self._lbl(tr("{0} 也问了这个商品，要分别回复", "、".join(others)), 12, "warn"))
         hv.addStretch()
         head.addLayout(hv, 1)
         hw = QWidget()
@@ -445,6 +487,7 @@ class RequestPage:
                     b.setObjectName("Primary")
                 b.setToolTip(tr(tips[kind]))
                 b.clicked.connect(lambda _=False, k=kind: self._answer(k))
+                b.setMinimumHeight(34)          # 右边栏滚动区里会被压扁（字只露一半）
                 grid.addWidget(b, n // 2, n % 2)
             v.addLayout(grid)
         v = self._section(tr("门店说的"))
@@ -533,7 +576,7 @@ class RequestPage:
         g = self.cur
         if not g or not g["open"]:
             return
-        ch = self.checks.get(g["ean"]) or {}
+        ch = self.checks.get(g.get("key") or g["ean"]) or {}
         if kind == "griglia" and not self._add_to_griglia(g, ch):
             return
         dlg = AnswerDialog(self, g, kind, ch)

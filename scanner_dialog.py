@@ -87,7 +87,7 @@ class ScannerDialog(QDialog):
         head = QHBoxLayout()
         from erp_widgets import tip_label
         t = tip_label(tr("门店扫码枪"), tr("门店用 Zebra 扫码枪扫要订的 DETERSIVO 商品，当场看到能不能订、本店库存 / 销量 / 价格，"
-                                        "做成这一周的清单交给采购部。一台扫码枪一个账号：新增后在扫码枪上输入配对码。"))
+                                        "做成这一周的清单交给办公室。一台扫码枪一个账号：新增后在扫码枪上输入配对码。"))
         t.setObjectName("SectionTitle")
         head.addWidget(t)
         head.addStretch()

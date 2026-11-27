@@ -151,6 +151,8 @@ def load_settings():
         pass
     if new_defaults or moved:
         save_settings(data)
+    if data.get("user_name") in ("采购部", "Purchasing", "Ufficio acquisti"):   # 以前的默认名字（2026-11-28 用户：程序里不要出现「采购部」）
+        data["user_name"] = ""
     return data
 
 

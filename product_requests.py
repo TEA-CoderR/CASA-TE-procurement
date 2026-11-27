@@ -46,6 +46,7 @@ WARN_BOXES = 6           # 超过这个数确认时黄字提醒
 SURE = 0.8               # 和 Griglia 某个商品相似度这么高：多半是同一个商品换了条码
 
 STORE_NAMES = {1: "FOIANO", 2: "MARLIA", 3: "S.FILIPPO", 4: "S.MARCO", 5: "S.CONCORDIO", 0: "BMS"}
+STORE_CODES = (1, 2, 3, 4, 5)
 
 
 def _ean(v):
@@ -121,18 +122,21 @@ def waited_days(created, now=None):
     return OT.workdays_between(c.astimezone().date(), now.astimezone().date())
 
 
-def group(reqs, now=None):
+def group(reqs, now=None, split=False):
     """
-    每个条码一行：几家店问的合在一起。→ [{ean, name, kinds, reqs, open, status, boxes, stores, first, waited, late}]
+    每个条码一行：几家店问的合在一起；split = 每家门店单独一行（2026-11-28 用户：门店的请求要每家店分开处理，
+    回复只发给这一家）。→ [{key, ean, name, kinds, reqs, open, status, boxes, stores, first, waited, late}]
     status：有门店在等回复 open > 等门店补充 info > answered；待回复的排前面，等得久的在前
     """
     by = {}
     for r in reqs or []:
         if r.get("status") == "cancelled":
             continue
-        by.setdefault(_ean(r.get("ean")), []).append(r)
+        k = (int(r.get("entityCode") or 0), _ean(r.get("ean"))) if split else _ean(r.get("ean"))
+        by.setdefault(k, []).append(r)
     out = []
-    for e, rs in by.items():
+    for key, rs in by.items():
+        e = key[1] if split else key
         rs = sorted(rs, key=lambda r: r.get("createdAt") or "")
         opn = [r for r in rs if r.get("status") == "open"]
         info = [r for r in rs if r.get("status") == "info"]
@@ -140,7 +144,7 @@ def group(reqs, now=None):
         cur = opn or info or rs
         first = min((r.get("createdAt") or "") for r in cur)
         waited = waited_days(first, now) if st == "open" else 0
-        out.append({"ean": e, "name": next((r.get("name") for r in rs if r.get("name")), ""),
+        out.append({"key": f"{key[0]}|{e}" if split else e, "ean": e, "name": next((r.get("name") for r in rs if r.get("name")), ""),
                     "kinds": sorted({r.get("kind") or "unknown" for r in rs}), "reqs": rs,
                     "open": opn + info, "status": st, "boxes": sum(int(r.get("boxes") or 0) for r in opn),
                     "stores": sorted({int(r.get("entityCode") or 0) for r in (opn + info or rs)}),
@@ -152,9 +156,10 @@ def group(reqs, now=None):
     return todo + done
 
 
-def waiting_count(reqs):
-    """待回复的商品个数（图标栏 / DETERSIVO 第 1 步的提醒）"""
-    return len({_ean(r.get("ean")) for r in reqs or [] if r.get("status") == "open"})
+def waiting_count(reqs, store=None):
+    """待回复的个数（图标栏 / DETERSIVO 第 1 步的提醒）：每家店每个商品算一个；store = 只算这家店"""
+    return len({(int(r.get("entityCode") or 0), _ean(r.get("ean"))) for r in reqs or []
+                if r.get("status") == "open" and (store is None or int(r.get("entityCode") or 0) == int(store))})
 
 
 def aliases(reqs):

@@ -551,9 +551,12 @@ class DashboardPage:
         skip = set((self.settings.get("store_orders") or {}).get("skip") or [])
         files = [(d, p) for d, p in files if S.supplier_short_name(p) not in skip]
         hour = now.hour
-        who = self.settings.get("user_name") or tr("采购部")
-        self.greet.setText(tr("早上好，{0}", who) if hour < 12 else tr("下午好，{0}", who) if hour < 18
-                           else tr("晚上好，{0}", who))
+        who = (self.settings.get("user_name") or "").strip()
+        if who:
+            self.greet.setText(tr("早上好，{0}", who) if hour < 12 else tr("下午好，{0}", who) if hour < 18
+                               else tr("晚上好，{0}", who))
+        else:
+            self.greet.setText(tr("早上好") if hour < 12 else tr("下午好") if hour < 18 else tr("晚上好"))
         self.win.set_badge("store_orders", len(files) if files else "")
         todo_moq = [p for _, p in files if p not in getattr(so, "moq", {})]
         if todo_moq:

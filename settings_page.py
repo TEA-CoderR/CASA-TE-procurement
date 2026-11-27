@@ -516,7 +516,7 @@ class SettingsPage:
         tv.setSpacing(4)
         t = QLabel(tr("公司统一设置"))
         t.setObjectName("SetCardTitle")
-        s = QLabel(tr("发布新版本时从采购部电脑同步"))
+        s = QLabel(tr("发布新版本时从发布人的电脑同步"))
         s.setObjectName("ConnSub")
         tv.addWidget(t)
         tv.addWidget(s)
@@ -564,7 +564,8 @@ class SettingsPage:
         v.addLayout(g)
         r = QHBoxLayout()
         r.addWidget(_row_label(tr("用户名称"), tr("用户名称显示在驾驶舱的问候里")))
-        self.user_name = QLineEdit(self.settings.get("user_name") or tr("采购部"))
+        self.user_name = QLineEdit(self.settings.get("user_name") or "")
+        self.user_name.setPlaceholderText(tr("例如 Lucas"))
         self.user_name.setMaximumWidth(240)
         self.user_name.editingFinished.connect(self._save_user)
         r.addWidget(self.user_name)
@@ -1170,7 +1171,7 @@ class SettingsPage:
             self.win.show_toast(tr("已保存"))
 
     def _save_user(self):
-        name = self.user_name.text().strip() or tr("采购部")
+        name = self.user_name.text().strip()
         site = self.user_site.text().strip() or tr("BMS 总仓")
         if (name, site) == (self.settings.get("user_name"), self.settings.get("user_site")):
             return

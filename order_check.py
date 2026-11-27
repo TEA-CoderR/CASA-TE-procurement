@@ -1485,7 +1485,7 @@ class OrderCheck:
                        tr("门店在扫码枪上清点：实际 {0} 件（系统 {1} 件），{2} 点的。库存和建议箱数已经按门店点的数算。请在 ERP 里改好库存后，在 系统设置 → 扫码枪 → 库存报错 里点「已在 ERP 改好」",
                           sr.get("counted"), sr.get("system"), sr.get("by") or "")))
         if x.get("protect") == "store" and VP.is_tag(x.get("list_reason")):
-            rv.append(("store", tr("VOLANTINO"), tr("采购部按以前 VOLANTINO 促销期的销量算的备货量（{0}），写进了门店清单；"
+            rv.append(("store", tr("VOLANTINO"), tr("办公室按以前 VOLANTINO 促销期的销量算的备货量（{0}），写进了门店清单；"
                                                      "系统按平时销量算会少订，这里照清单订，请确认", x.get("list_reason") or "—")))
         elif x.get("protect") == "store":
             rv.append(("store", tr("门店说明"), tr("系统本来不订（库存够 / 已在途），门店在扫码枪上说明了还要订：{0}。按门店清单订，请确认",

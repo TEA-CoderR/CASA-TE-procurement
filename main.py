@@ -3347,13 +3347,13 @@ class MainWindow(QMainWindow):
                 self.nav_badges[k] = badge
             v.addWidget(b, 0, Qt.AlignHCenter)
         # 最下面：头像（点开：通知 / 深浅色 / 语言）——设计稿里顶栏只放搜索、数据库状态、助手
-        name = settings.get("user_name") or tr("采购部")
+        name = (settings.get("user_name") or "").strip()
         self.avatar = QToolButton()
         self.avatar.setObjectName("RailAvatar")
-        self.avatar.setText(name[:1])
+        self.avatar.setText(name[:1].upper() if name else "C")
         self.avatar.setFixedSize(36, 36)
         self.avatar.setCursor(Qt.PointingHandCursor)
-        self.avatar.setToolTip(f"{name} · {settings.get('user_site') or tr('BMS 总仓')}")
+        self.avatar.setToolTip(" · ".join(x for x in (name, settings.get('user_site') or tr('BMS 总仓')) if x))
         self.avatar.clicked.connect(self._avatar_menu)
         v.addSpacing(6)
         v.addWidget(self.avatar, 0, Qt.AlignHCenter)

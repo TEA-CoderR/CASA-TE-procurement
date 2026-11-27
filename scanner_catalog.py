@@ -18,6 +18,7 @@
 import hashlib
 import math
 import json
+import re
 import os
 import uuid
 
@@ -224,7 +225,73 @@ def build_from_workspace(settings, log=print, with_quotes=False):
     subs = GR.substitutes(GR.load_done(os.path.dirname(grid["path"])), grid)
     meta, rows = build(grid, quotes, subs, direct_index(settings, log), week=date.today().strftime("%G-W%V"),
                        aliases=request_aliases(settings, log), added=program_added(root, grid, log))
+    meta["phrases"] = store_phrases(settings, log)
     return (meta, rows, quotes) if with_quotes else (meta, rows)
+
+
+# 扫码枪「问办公室」的快捷句子（2026-11-28 用户：要实用的，参考门店发来的消息）：
+# 五家店发给办公室的话拆成一句一句，写得最多的发给扫码枪；扫码枪上自己写过 2 次以上的排在前面。
+PHRASES_MAX = 8
+_SPLIT = re.compile(r"[.;!?\n]+|,\s+")
+
+
+def phrase_pieces(text):
+    """一条消息里值得记的句子（3–60 个字，和扫码枪 Phrases.pieces 一样拆）"""
+    out = []
+    for p in _SPLIT.split(str(text or "")):
+        p = re.sub(r"\s+", " ", p.strip().rstrip(",:"))
+        if 3 <= len(p) <= 60 and not re.fullmatch(r"[\d\s.,x×]+", p):
+            out.append(p)
+    return out
+
+
+def common_phrases(reqs, top=PHRASES_MAX):
+    """门店写给办公室的话（每条申请的整段对话里门店说的）→ 写得最多的句子（同一句不分大小写）；
+    一条申请里重复的只算一次，至少 2 条申请写过才算"""
+    count, spell = {}, {}
+    for r in reqs or []:
+        texts = [m.get("text") for m in (r.get("messages") or []) if (m.get("by") or "store") != "office"]
+        if not texts:
+            texts = [r.get("note"), r.get("storeReply")]
+        seen = set()
+        for t in texts:
+            for p in phrase_pieces(t):
+                k = p.lower()
+                if k in seen:
+                    continue
+                seen.add(k)
+                count[k] = count.get(k, 0) + 1
+                spell.setdefault(k, {}).setdefault(p, 0)
+                spell[k][p] += 1
+    best = sorted((k for k, n in count.items() if n >= 2), key=lambda k: (-count[k], k))[:top]
+    return [max(spell[k].items(), key=lambda kv: kv[1])[0] for k in best]
+
+
+def store_phrases(settings, log=print, path=None):
+    """预约平台上近半年全部门店申请 → common_phrases；读不了用上次存的 cache/scanner_phrases.json"""
+    from settings import app_dir
+    path = path or os.path.join(app_dir(), "cache", "scanner_phrases.json")
+    try:
+        import product_requests as PR
+        reqs = PR.fetch(settings, status="all", days=180)
+        ph = common_phrases(reqs)
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8", newline="") as f:
+                json.dump(ph, f, ensure_ascii=False)
+        except OSError:
+            pass
+        if ph:
+            log("扫码枪快捷句子（门店写得最多的）：" + " | ".join(ph))
+        return ph
+    except Exception as e:
+        try:
+            with open(path, encoding="utf-8") as f:
+                return list(json.load(f))
+        except (OSError, ValueError):
+            if BA.ready(settings):
+                log(f"⚠ 门店申请（快捷句子）读不了：{e}")
+            return []
 
 
 def request_aliases(settings, log=print, path=None):
