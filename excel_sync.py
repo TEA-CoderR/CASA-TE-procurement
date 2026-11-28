@@ -51,7 +51,8 @@ CONFLICT_DIR = "冲突副本"       # Backup Excel 下面：合并过的同步�
 MARK_RGB = "FFDDEBF7"
 UNMARKED = "\x00"             # xbase["_m_字段"] 是这个 = 标记已经去掉了
 _FIELD_COLS = {"date": (0,), "supplier": (1,), "buyer": (2,), "amount": (3,), "confirmed": (4,), "arrived": (5, 6),
-               "state": (5,), "cen": (6,)}
+               "state": (5,), "cen": (6,), "kind": (4, 5)}
+DETER_TEXT = "DETER"          # DETERSIVO 批发商的单：同事在确认 / 到货两格写 DETER（不跟踪确认、到货）
 
 
 # ===================================================================== 程序里的单 → Excel 里该是什么样
@@ -130,6 +131,8 @@ def pending(st, me=None, now=None, everyone=False):
                 continue
             who, t = _owner(st, oid, ["origin", "draft", "date"])
             v = excel_view(o)
+            if o.get("kind") == "deter":
+                v["kind"] = "deter"                      # 新加的 DETERSIVO 单：确认 / 到货格写 DETER（和同事手填的一样）
             if (everyone or _mine(who, t, me, now)) and not skip("append", oid, v):
                 ops.append(("append", oid, v))
     for oid, src in st.deleted.items():
@@ -265,6 +268,10 @@ def _write(ws, blk, r, fields):
             cell.value = CEN_TEXT
         elif str(cell.value or "").strip().upper().startswith(CEN_TEXT):
             cell.value = None
+    if fields.get("kind") == "deter":
+        for k in (4, 5):
+            if ws.cell(r, c + k).value in (None, ""):
+                ws.cell(r, c + k).value = DETER_TEXT
     if "note" in fields:
         if note_col:
             ws.cell(r, note_col).value = fields["note"]

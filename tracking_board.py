@@ -94,6 +94,15 @@ def lane_sort(lane, rs):
     return sorted(rs, key=lambda r: (r.get("expected") or far, r.get("supplier") or ""))
 
 
+def piano_text(r):
+    """详情栏一行：这张单在 PIANO ACQUISTO MESILE 的哪一格 / 还没写进去（程序发的单发完自动写）"""
+    if r.get("ref"):
+        return tr("PIANO：{0}", r["ref"])
+    if r.get("status") in ("draft", "void", "cancel") or r.get("origin") in ("excel", "group") or r.get("virtual"):
+        return ""
+    return tr("PIANO：还没写进去（Excel 没人打开时自动写）")
+
+
 def action_of(r):
     """详情里的主按钮：(动作键, 按钮文字)"""
     lane = lane_of(r)
@@ -618,7 +627,7 @@ class OrderDrawer(QFrame):
         share_txt = (tr("凑单：") + " · ".join(f"{_OT.STORE_NAMES.get(str(k), k)} €{float(v):,.2f}"
                                                for k, v in sorted(sh.items(), key=lambda kv: str(kv[0])))) \
             if r.get("group") and sh else ""
-        txt = "\n".join(x for x in (share_txt, (tr("预约卸货：{0}", BA.text(bk)) if bk else ""),
+        txt = "\n".join(x for x in (piano_text(r), share_txt, (tr("预约卸货：{0}", BA.text(bk)) if bk else ""),
                                    (tr("收货：{0}", RC.summary(rc)) if rc else ""), r.get("note") or "") if x)
         self.note.setText(txt)
         self.note.setVisible(bool(txt))

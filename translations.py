@@ -5468,4 +5468,18 @@ TRANSLATIONS = {
     '标了 CEN、下单日期空着': ('Marked CEN, order date empty', 'CEN presente, data ordine vuota'),
     '文件里没有门店页 / 没有数量': ('No store pages / quantities in file', 'Nessuna pagina PDV / quantità nel file'),
     '但文件汇总页这家店写的是 DIRETTO，要看一下': ('but the file summary says DIRETTO for this store: please check', 'ma il riepilogo del file indica DIRETTO per questo PDV: da verificare'),
+    # 2026-11-28 用程序发订单 → 自动登记 PIANO
+    '发完这些单变成「已下单」（下单日期 = 今天），自动写进 PIANO（下单人 {0}），订单跟踪里大家都看得到。': ('These orders become «Ordered» (order date = today) and are written into PIANO (ordered by {0}); everyone sees them in order tracking.', 'Gli ordini diventano «Ordinato» (data = oggi) e vengono scritti nel PIANO (Ordine Da {0}); tutti li vedono nel tracking ordini.'),
+    '下一步': ('Next', 'Avanti'),
+    '下单人': ('Ordered by', 'Ordine Da'),
+    '发完这些单自动写进 PIANO ACQUISTO MESILE，这一格就是「Ordine Da」（谁下的单）': ('After sending, these orders are written into PIANO ACQUISTO MESILE; this is the «Ordine Da» cell', 'Dopo l\'invio gli ordini vengono scritti nel PIANO ACQUISTO MESILE; questa è la cella «Ordine Da»'),
+    '发完这张单自动写进 PIANO ACQUISTO MESILE，这一格就是「Ordine Da」（谁下的单）': ('After sending, this order is written into PIANO ACQUISTO MESILE; this is the «Ordine Da» cell', 'Dopo l\'invio l\'ordine viene scritto nel PIANO ACQUISTO MESILE; questa è la cella «Ordine Da»'),
+    '请填下单人': ('Enter who placed the order', 'Indica chi ha fatto l\'ordine'),
+    '下单人：{0}（发完自动写进 PIANO）': ('Ordered by: {0} (written into PIANO after sending)', 'Ordine Da: {0} (scritto nel PIANO dopo l\'invio)'),
+    'PIANO：还没写进去（Excel 没人打开时自动写）': ('PIANO: not written yet (written automatically when nobody has Excel open)', 'PIANO: non ancora scritto (si scrive da solo quando l\'Excel non è aperto)'),
+    'PIANO：{0}': ('PIANO: {0}', 'PIANO: {0}'),
+    ' · 正在写进 PIANO': (' · writing into PIANO', ' · scrittura nel PIANO'),
+    '⚠ 订单跟踪：PIANO {0} 是手填的 {1} · {2} · €{3}，和程序已登记的 {4} 是同一张单，请删掉手填那一行': ('⚠ Order tracking: PIANO {0} was filled in by hand ({1} · {2} · €{3}) and is the same order the program already registered at {4}: delete the hand-written row', '⚠ Tracking ordini: PIANO {0} è compilata a mano ({1} · {2} · €{3}) ed è lo stesso ordine già registrato dal programma in {4}: cancella la riga scritta a mano'),
+    '⚠ PIANO 里有 {0} 行手填的单和程序已登记的重复（看日志）': ('⚠ {0} hand-written rows in PIANO duplicate orders the program already registered (see log)', '⚠ {0} righe scritte a mano nel PIANO duplicano ordini già registrati dal programma (vedi log)'),
+    '那一行': ('that row', 'quella riga'),
 }

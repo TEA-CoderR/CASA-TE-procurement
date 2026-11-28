@@ -24,6 +24,7 @@ import getpass
 import hashlib
 import unicodedata
 from datetime import datetime, date, timedelta, timezone
+from collections import Counter
 
 DATA_DIR = "Tracking ordini (programma)"
 STORES = [("1", "FOIANO"), ("2", "MARLIA"), ("3", "S.FILIPPO"), ("4", "S.MARCO"), ("5", "S.CONCORDIO"), ("BMS", "BMS")]
@@ -1218,8 +1219,44 @@ def import_file(st, path):
     import mail_match as MM
     res["absorbed"], res["absorb_undo"], res["absorb_pairs"] = MM.absorb_drafts(st)
     res["groups"] = materialize_groups(st)          # 同事手填的 BMS 凑单（CEN）：建 BMS 单
+    res["hand_dups"] = hand_duplicates(st)
     res["rows"], res["sheets"], res["unknown"] = len(rows_), sheets, info.get("unknown") or []
     return res
+
+
+DUP_DAYS = 3            # 手填的一行和程序登记的单：下单日期前后几天内
+DUP_EUR = 0.05          # 金额差多少以内算一样
+
+
+def hand_duplicates(st):
+    """
+    程序已经把这张单写进 PIANO 了，同事又手填了一行同样的（同一家门店、同一家供应商、日期前后 3 天、金额一样）
+    → [(手填那行的单号, 程序那张单号)]。只列出来让人删掉一行，程序不自己删 Excel 的行
+    （2026-11-28 用户：以后统一用程序发订单、自动登记 PIANO，免得乱——过渡期同事可能还会手填）
+    """
+    prog = {}
+    for oid, o in st.orders.items():
+        if o.get("origin") in ("excel", GROUP_SRC) or not o.get("xid") or o.get("state") == "cancel":
+            continue
+        prog.setdefault((str(o.get("store")), sup_key(o.get("supplier"))), []).append((oid, o))
+    out = []
+    for oid, o in st.orders.items():
+        if o.get("origin") != "excel" or o.get("state") == "cancel" or o.get("part_of"):
+            continue
+        cands = prog.get((str(o.get("store")), sup_key(o.get("supplier"))))
+        d = to_date(o.get("date"))
+        if not cands or not d:
+            continue
+        for pid, p in cands:
+            pd = to_date(p.get("date"))
+            if pid == oid or not pd or abs((pd - d).days) > DUP_DAYS or p.get("xid") == o.get("xid"):
+                continue
+            a, b = o.get("amount"), p.get("amount")
+            if a is None or b is None or abs(float(a) - float(b)) > DUP_EUR:
+                continue
+            out.append((oid, pid))
+            break
+    return out
 
 
 def find_excel(folder):
@@ -1532,8 +1569,68 @@ def register_wholesale(settings, store_name, items, log=None):
     return res
 
 
-def confirm_drafts(st, ids, today=None):
-    """确认已下单：待登记 → 已下单，下单日期 = 今天（发给供应商的那天）；谁下的没填就写自己"""
+def _norm_buyer(b):
+    return re.sub(r"[\s.]+", "", str(b or "")).lower()
+
+
+def buyers(st, days=180, today=None):
+    """
+    PIANO 里「Ordine Da」写过的人（近 days 天，用得多的在前）；同一个人几种写法（Pres. / Pres / pres.）只留最常见的写法。
+    发订单时选「下单人」用（2026-11-28 用户：以后统一用程序发、自动登记 PIANO——写进去的要和同事手填的一样）
+    """
+    since = (today or date.today()) - timedelta(days=days)
+    cnt, spell = Counter(), {}
+    for o in st.orders.values():
+        b = str(o.get("buyer") or "").strip()
+        d = to_date(o.get("date"))
+        if not b or o.get("origin") != "excel" or (d and d < since):
+            continue
+        k = _norm_buyer(b)
+        cnt[k] += 1
+        spell.setdefault(k, Counter())[b] += 1
+    return [spell[k].most_common(1)[0][0] for k, _n in cnt.most_common()]
+
+
+def excel_spelling(st, supplier, days=365, today=None):
+    """
+    这家供应商同事在 PIANO 里最常用的写法（只认 sup_key 一样的：PETRILLO → Petrillo）；没写过就照原样。
+    程序登记进 PIANO 时用它，免得同事还要手改名字、表里一家供应商两种写法
+    """
+    k = sup_key(supplier)
+    since = (today or date.today()) - timedelta(days=days)
+    c = Counter()
+    for o in st.orders.values():
+        if o.get("origin") != "excel" or sup_key(o.get("supplier")) != k:
+            continue
+        d = to_date(o.get("date"))
+        if d and d < since:
+            continue
+        c[str(o.get("supplier") or "").strip()] += 1
+    c.pop("", None)
+    return c.most_common(1)[0][0] if c else supplier
+
+
+def ordered_fields(st, o, buyer=None):
+    """
+    待登记 → 已下单时一起改的字段（发订单邮件 / 确认已下单都用）：下单人、供应商照 PIANO 的写法、
+    DETERSIVO 的单标 DETER（同事手填 PIANO 时确认 / 到货格写 DETER、不跟踪确认到货；程序登记时照写，不用人再改）
+    """
+    f = {}
+    b = str(buyer or "").strip()
+    if b:
+        f["buyer"] = b
+    elif not o.get("buyer"):
+        f["buyer"] = st.me
+    sp = excel_spelling(st, o.get("supplier"))
+    if sp and sp != o.get("supplier"):
+        f["supplier"] = sp
+    if str(o.get("origin") or "") == "wholesale" and o.get("kind") != "deter":
+        f["kind"] = "deter"
+    return f
+
+
+def confirm_drafts(st, ids, today=None, buyer=None):
+    """确认已下单：待登记 → 已下单，下单日期 = 今天（发给供应商的那天）；下单人 = buyer（没给、单上也没有就写自己）"""
     day = (today or date.today()).isoformat()
     ch = []
     for oid in ids:
@@ -1541,8 +1638,7 @@ def confirm_drafts(st, ids, today=None):
         if not o or not o.get("draft") or (o.get("state") == "cancel" and not o.get("void")):
             continue
         f = {"draft": None, "date": day}
-        if not o.get("buyer"):
-            f["buyer"] = st.me
+        f.update(ordered_fields(st, o, buyer))
         ch.append((oid, f))
     st.set_many(ch)
     return len(ch)

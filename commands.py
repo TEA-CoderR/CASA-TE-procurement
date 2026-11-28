@@ -459,11 +459,11 @@ def list_drafts(st):
     return [dict(o, id=oid) for oid, o in st.orders.items() if OT.is_draft(o)]
 
 
-def confirm_orders(st, ids, via="desktop", today=None):
+def confirm_orders(st, ids, via="desktop", today=None, buyer=None):
     """确认已下单：待登记 → 已下单（下单日期 = 今天）。返回确认了几张；记审计日志"""
     import order_tracking as OT
     ids = list(ids)
-    n = OT.confirm_drafts(st, ids, today=today)
+    n = OT.confirm_drafts(st, ids, today=today, buyer=buyer)
     audit(st.me, via, "confirm_orders", {"ids": ids}, {"confirmed": n})
     return n
 
@@ -908,7 +908,7 @@ def order_mail_last_body(settings, d, subject=None, factory=None):
 
 
 def send_order(settings, st, ids, frm, to, cc, subject, body, files, via="desktop", force=False,
-               smtp_factory=None, imap_factory=None, today=None):
+               smtp_factory=None, imap_factory=None, today=None, buyer=None):
     """
     发订单邮件 → 这几张单变「已下单」（下单日期 = 今天）、收件人存进共享通讯录、记审计日志。
     files = [(路径, 附件名)]。已经发过的单不再发（force=True 才发）。发信失败抛错，什么都不改
@@ -940,7 +940,8 @@ def send_order(settings, st, ids, frm, to, cc, subject, body, files, via="deskto
     msg = MS.build(acc["address"], to, cc, subject, body, files)
     mid, saved = MS.send(acc, pw, msg, smtp_factory=smtp_factory, imap_factory=imap_factory)
     supplier = str(st.orders[ids[0]].get("supplier") or "")
-    n = MS.mark_sent(st, ids, {"to": to, "from": acc["address"], "subject": subject, "mid": mid}, today=today)
+    n = MS.mark_sent(st, ids, {"to": to, "from": acc["address"], "subject": subject, "mid": mid}, today=today,
+                     buyer=buyer)
     try:
         MS.save_contact(st, supplier, to)
     except OSError:

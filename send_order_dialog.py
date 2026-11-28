@@ -31,6 +31,63 @@ def open_send(parent, st, settings, oid, on_sent=None):
     return dlg.result_info
 
 
+def buyer_box(st, settings):
+    """「下单人」下拉：PIANO 里写过的人（用得多的在前），能输入；默认这台电脑上次选的"""
+    import order_tracking as OT
+    box = QComboBox()
+    box.setEditable(True)
+    names = OT.buyers(st) if st is not None else []
+    last = str(((settings or {}).get("tracking") or {}).get("last_buyer") or "").strip()
+    if last and last not in names:
+        names.insert(0, last)
+    box.addItems(names)
+    box.setCurrentText(last or (names[0] if names else ""))
+    return box
+
+
+def remember_buyer(settings, buyer):
+    """记住这台电脑上次选的下单人（个人设置，不随发布同步）"""
+    if not buyer or settings is None:
+        return
+    settings.setdefault("tracking", {})["last_buyer"] = buyer
+    try:
+        import settings as ST
+        ST.save_settings(settings)
+    except Exception:
+        pass
+
+
+def pick_buyer(parent, st, settings, title):
+    """一次发好几封（DETERSIVO 全部发送）之前问一次下单人；取消 → None"""
+    dlg = QDialog(parent)
+    dlg.setWindowTitle(title)
+    v = QVBoxLayout(dlg)
+    v.setContentsMargins(20, 16, 20, 14)
+    row = QHBoxLayout()
+    from erp_widgets import tip_label
+    row.addWidget(tip_label(tr("下单人"), tr("发完这些单自动写进 PIANO ACQUISTO MESILE，这一格就是「Ordine Da」（谁下的单）")))
+    box = buyer_box(st, settings)
+    box.setMinimumWidth(220)
+    row.addWidget(box, 1)
+    v.addLayout(row)
+    foot = QHBoxLayout()
+    foot.addStretch()
+    cancel = QPushButton(tr("取消"))
+    cancel.clicked.connect(dlg.reject)
+    ok = QPushButton(tr("下一步"))
+    ok.setObjectName("Primary")
+    ok.setDefault(True)
+    ok.clicked.connect(lambda: dlg.accept() if box.currentText().strip() else None)
+    foot.addWidget(cancel)
+    foot.addWidget(ok)
+    v.addLayout(foot)
+    if dlg.exec() != QDialog.Accepted:
+        return None
+    b = box.currentText().strip()
+    remember_buyer(settings, b)
+    return b
+
+
 class SendOrderDialog(QDialog):
     def __init__(self, parent, st, settings, d, on_sent=None):
         super().__init__(parent)
@@ -82,6 +139,9 @@ class SendOrderDialog(QDialog):
         lab(tr("主题"), "", 3)
         self.e_subj = QLineEdit(d["subject"])
         g.addWidget(self.e_subj, 3, 1)
+        lab(tr("下单人"), tr("发完这张单自动写进 PIANO ACQUISTO MESILE，这一格就是「Ordine Da」（谁下的单）"), 4)
+        self.e_buyer = buyer_box(st, settings)
+        g.addWidget(self.e_buyer, 4, 1)
         g.setColumnStretch(1, 1)
         lay.addLayout(g)
         nos = " · ".join(dict.fromkeys((d.get("nos") or {}).values()))
@@ -196,20 +256,26 @@ class SendOrderDialog(QDialog):
         if bad:
             self.status.setText(tr("这几个地址不对：{0}", ", ".join(bad)))
             return
+        buyer = self.e_buyer.currentText().strip()
+        if not buyer:
+            self.status.setText(tr("请填下单人"))
+            return
         files = [(p, n) for cb, p, n in self.att if cb.isChecked()]
         frm = self.e_from.currentData()
         names = ", ".join(n for _p, n in files) or tr("（没有附件）")
         msg = tr("用 {0} 发给：\n{1}\n抄送：{2}\n附件：{3}\n\n发完 {4} 张单变「已下单」（下单日期 = 今天），收件人存进共享通讯录。\n"
                  "邮件发出去撤不回，确定发送？", frm, ", ".join(to), ", ".join(cc) or "—", names, len(self.d["ids"]))
+        msg = msg.replace("\n\n", "\n" + tr("下单人：{0}（发完自动写进 PIANO）", buyer) + "\n\n", 1)
         if QMessageBox.question(self, tr("发送订单"), msg) != QMessageBox.Yes:
             return
         force = bool(self.d["sent_before"])
         res, err = BusyDialog.run(self, tr("发送订单"), tr("正在发送…"), lambda: CMD.send_order(
             self.settings, self.st, self.d["ids"], frm, to, cc, self.e_subj.text().strip(),
-            self.e_body.toPlainText(), files, force=force))
+            self.e_body.toPlainText(), files, force=force, buyer=buyer))
         if err:
             self.status.setText(tr("没发出去：{0}", err))
             return
+        remember_buyer(self.settings, buyer)
         self.result_info = dict(res, to=to, ids=self.d["ids"])
         if self.on_sent:
             self.on_sent(self.result_info)

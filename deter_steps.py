@@ -1104,7 +1104,7 @@ def _send_one(win):
     if res:
         refresh_send(win)
         if getattr(win, "tracking", None) is not None:
-            win.tracking.check_badge()
+            win.tracking.write_soon()
 
 
 def send_all(win):
@@ -1117,6 +1117,10 @@ def send_all(win):
     from erp_widgets import BusyDialog
     todo = [oid for oid, o in (getattr(win, "_sd_rows", None) or []) if OT.is_draft(o)]
     if not todo:
+        return
+    from send_order_dialog import pick_buyer
+    buyer = pick_buyer(win, st, S, tr("全部发送"))
+    if not buyer:
         return
 
     def prep():
@@ -1149,7 +1153,7 @@ def send_all(win):
     msg = tr("发 {0} 封订单邮件？发出去撤不回。\n\n{1}", len(go), "\n".join(lines))
     if skip:
         msg += "\n\n" + tr("这些先不发（要单独处理）：\n{0}", "\n".join(skip))
-    msg += "\n\n" + tr("发完这些单变成「已下单」（下单日期 = 今天），订单跟踪里大家都看得到。")
+    msg += "\n\n" + tr("发完这些单变成「已下单」（下单日期 = 今天），自动写进 PIANO（下单人 {0}），订单跟踪里大家都看得到。", buyer)
     if QMessageBox.question(win, tr("全部发送"), msg) != QMessageBox.Yes:
         return
 
@@ -1158,7 +1162,7 @@ def send_all(win):
         for d in go:
             try:
                 CMD.send_order(S, st, d["ids"], d["from"], d["to"], d.get("cc") or [], d["subject"], d["body"],
-                               [(p, n) for p, n, _ok in d.get("files") or []])
+                               [(p, n) for p, n, _ok in d.get("files") or []], buyer=buyer)
                 done += 1
             except Exception as e:
                 bad.append(f"{d['supplier']}: {e}")
@@ -1173,7 +1177,7 @@ def send_all(win):
         win.show_toast(tr("已发送 {0} 封订单邮件", done))
     refresh_send(win)
     if getattr(win, "tracking", None) is not None:
-        win.tracking.check_badge()
+        win.tracking.write_soon()
 
 
 def open_scanner_lists(win):

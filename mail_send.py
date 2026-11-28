@@ -562,8 +562,12 @@ def send(acc, password, msg, smtp_factory=None, imap_factory=None, wait=(0, 2, 3
     return msg["Message-ID"], saved
 
 
-def mark_sent(st, ids, mail, today=None):
-    """发出去了：待登记 → 已下单（下单日期 = 今天），单上记发了什么（同一张单不会再发一次）、订单号（之后不再变）"""
+def mark_sent(st, ids, mail, today=None, buyer=None):
+    """
+    发出去了：待登记 → 已下单（下单日期 = 今天），单上记发了什么（同一张单不会再发一次）、订单号（之后不再变）、
+    下单人（buyer）；供应商照 PIANO 的写法、DETERSIVO 标 DETER（OT.ordered_fields）。之后 excel_sync 自动写进 PIANO
+    """
+    import order_tracking as OT
     day = (today or date.today()).isoformat()
     gno = (find_order_nos(mail.get("subject")) or [None])[0]
     ch = []
@@ -576,8 +580,7 @@ def mark_sent(st, ids, mail, today=None):
                                                    "mid": mail.get("mid") or ""}}
         if gno and gno != f["no"]:
             f["gno"] = gno                     # 几家店一封信：主题里写的那个号（回信用它也能对上这几张）
-        if not o.get("buyer"):
-            f["buyer"] = st.me
+        f.update(OT.ordered_fields(st, o, buyer))
         mails = list(o.get("mails") or [])
         ev = {"k": "order", "d": datetime.now().strftime("%Y-%m-%d %H:%M"), "s": mail["subject"][:120], "f": mail["from"]}
         if mail.get("mid"):

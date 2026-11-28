@@ -423,6 +423,7 @@ class TrackingPage:
         self.transit = None                          # order_record.compute 的结果（每张没到货的单对上哪个订单文件）
         self._transit_busy = self._transit_again = False
         self.syncing = False
+        self._dups_told = set()          # 已经提醒过的「手填的和程序登记的重复」（这次打开程序里只提醒一次）
         self._bad_mtime = self._try_mtime = None
         self._shown = False
         self.store_sel = None                        # 选的门店（None = 全部）
@@ -1222,7 +1223,10 @@ class TrackingPage:
             msg = tr("✓ 已发送给 {0} · {1} 张单已下单", ", ".join(info["to"]), info["n"])
             if not info.get("saved"):
                 msg += tr("（邮箱「已发送」里没放进去，信是发出去了的）")
+            if self._write_on():
+                msg += tr(" · 正在写进 PIANO")
             self.win.show_toast(msg, 5000)
+            self.write_soon()
         open_send(self.win, self.st, self.settings, r["id"], on_sent=done)
 
     def _double(self, k, c):
@@ -2004,6 +2008,11 @@ class TrackingPage:
     def _write_on(self):
         return self.cfg.get("write_excel") is not False
 
+    def write_soon(self):
+        """发完订单 / 确认已下单：马上把新单写进 PIANO（不等每分钟那一次）；Excel 开着就排队，关掉后自动写"""
+        self._last_write_try = 0
+        self.check_badge()
+
     def sync_excel(self, manual=True):
         x = self._excel()
         if not x or self.st is None or self.syncing:
@@ -2074,6 +2083,15 @@ class TrackingPage:
         if w.get("failed"):
             self.win.show_toast(tr("⚠ {0} 处修改没写进 Excel（看日志）", len(w["failed"])))
         self._write_state = None
+        dups = [p for p in res.get("hand_dups") or [] if p not in self._dups_told]
+        for hid, pid in dups:                     # 程序已经写进 PIANO 了，同事又手填了一行一样的：告诉人删掉一行
+            self._dups_told.add((hid, pid))
+            h, p = (self.st.orders.get(hid) or {}), (self.st.orders.get(pid) or {})
+            self.win.log(tr("⚠ 订单跟踪：PIANO {0} 是手填的 {1} · {2} · €{3}，和程序已登记的 {4} 是同一张单，请删掉手填那一行",
+                            h.get("ref") or "?", h.get("supplier") or "", OT.STORE_NAMES.get(str(h.get("store")), ""),
+                            f"{float(h.get('amount') or 0):,.2f}", p.get("ref") or tr("那一行")))
+        if dups:
+            self.win.show_toast(tr("⚠ PIANO 里有 {0} 行手填的单和程序已登记的重复（看日志）", len(dups)), 8000)
         if res.get("absorbed"):                   # 待登记在 Excel 里已经手填了 → 合并掉（以 Excel 为准）
             for kind, oid, f in res.get("absorb_undo") or []:
                 if kind == "restore":
