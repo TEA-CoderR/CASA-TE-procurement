@@ -3,6 +3,8 @@ BMS 凑单核对窗口（订单跟踪 ⋯ →「BMS 凑单核对」）。规则�
 两页：没标 CEN 的（订单文件说是 BMS / 几家店一起）/ 标了 CEN、日期空着的；勾选 →「标为 BMS 凑单」先确认、能撤销。
 程序自己只认标了 CEN 的行；这里列出来的一定要人看过、点了才算。
 """
+import re
+
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QTableWidget, QTableWidgetItem,
@@ -19,7 +21,12 @@ def _d(d):
 
 
 def _why(t):
-    return "; ".join(tr(p) for p in str(t or "").split("；") if p)
+    def one(p):
+        m = re.search(r"「([^」]*)」", p)          # 邮件主题原样放回去，只翻译外面的话
+        if not m:
+            return tr(p)
+        return tr(p[:m.start()] + "「{0}」" + p[m.end():]).format(m.group(1))
+    return "; ".join(one(p) for p in str(t or "").split("；") if p)
 
 
 def _base(path):

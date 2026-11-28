@@ -5482,4 +5482,5 @@ TRANSLATIONS = {
     '⚠ 订单跟踪：PIANO {0} 是手填的 {1} · {2} · €{3}，和程序已登记的 {4} 是同一张单，请删掉手填那一行': ('⚠ Order tracking: PIANO {0} was filled in by hand ({1} · {2} · €{3}) and is the same order the program already registered at {4}: delete the hand-written row', '⚠ Tracking ordini: PIANO {0} è compilata a mano ({1} · {2} · €{3}) ed è lo stesso ordine già registrato dal programma in {4}: cancella la riga scritta a mano'),
     '⚠ PIANO 里有 {0} 行手填的单和程序已登记的重复（看日志）': ('⚠ {0} hand-written rows in PIANO duplicate orders the program already registered (see log)', '⚠ {0} righe scritte a mano nel PIANO duplicano ordini già registrati dal programma (vedi log)'),
     '那一行': ('that row', 'quella riga'),
+    '但这家店自己发了订单信「{0}」，多半是直送，要看一下': ('but this store sent its own order email «{0}»: probably a direct order, please check', 'ma questo negozio ha inviato un proprio ordine via mail «{0}»: probabilmente è diretto, da controllare'),
 }

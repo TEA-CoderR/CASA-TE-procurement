@@ -84,13 +84,58 @@ def _excel_orders(st):
         yield oid, o
 
 
-def find(st, files, index, log=None):
+def store_mails(mails):
+    """
+    我们发出的、只写了一家门店的订单信（「Ordine SODASTREAM S.CONCORDIO 2611」，门店自己的邮箱发的）→
+    [(日期, 主题, 门店号)]。这家店这张单是直送的，不是 BMS 凑单（2026-11-28：BMS 凑单核对把 SODASTREAM S.CONCORDIO
+    标成了 CEN，邮件里却是门店自己发的单）。写了 BMS / nPDV 的信不算
+    """
+    import mail_match as MM
+    out = []
+    for m in mails or []:
+        subj = str(m.get("subject") or "")
+        frm = str(m.get("from") or "").strip().lower()
+        if not (frm.endswith("@casa-te.com") or frm.endswith("@bmspsrl.com")) or MM.is_reply(subj):
+            continue
+        atts = m.get("attachments") or []
+        if isinstance(atts, str):
+            atts = re.findall(r"'([^']+)'", atts)
+        s = MM.clean_subject(subj)
+        if not (MM._ORDER_SUBJ.match(s) or any(re.match(r"ordine", a or "", re.I) for a in atts)):
+            continue
+        text = " ".join([subj] + list(atts))
+        if bms_named(subj) or MM._PDV.search(text) or re.search(r"(?<![A-Z])BMS(?![A-Z])", text, re.I):
+            continue
+        stores = [s_ for s_ in MM.stores_in(subj) if s_ != "BMS"]
+        if not stores:
+            mine = MM.default_store(frm)          # 门店自己的邮箱发的、主题没写门店
+            stores = [mine] if mine and mine != "BMS" else []
+        d = OT.to_date(str(m.get("date") or "")[:10])
+        if len(stores) == 1 and d:
+            out.append((d, subj, stores[0]))
+    return out
+
+
+def _direct_mail(o, sid, smails):
+    """这家店自己发过这家供应商的订单信（前后 DAYS_TOL 天）→ 主题，没有 None"""
+    d = OT.to_date(o.get("date"))
+    if not d:
+        return None
+    for md, subj, s_ in smails or []:
+        if s_ == sid and abs((md - d).days) <= DAYS_TOL and \
+                REC.supplier_score(o.get("supplier"), re.findall(r"[A-Za-z0-9']+", subj)) >= 0.9:
+            return subj
+    return None
+
+
+def find(st, files, index, log=None, mails=None):
     """
     files = order_record.list_files 的结果（只看 06 那个文件夹的）；index = order_record.Index。
     → {"add": [要标 CEN 的], "date": [CEN 行要填日期的], "unsure": [对上好几行 / 文件里没有门店页的，只列出来]}
       每一项 {"id", "store", "supplier", "date", "amount", "ref", "file", "file_date", "file_amount", "why", "cen_others"}
     """
     orders = list(_excel_orders(st))
+    smails = store_mails(mails)
     cen_keys = {}
     for oid, o in orders:
         if o.get("cen"):
@@ -133,6 +178,10 @@ def find(st, files, index, log=None):
                 why = "同一张单别的店已标 CEN" if others else "文件名写的是 BMS / 几家店一起"
                 if direct:
                     why += "；但文件汇总页这家店写的是 DIRETTO，要看一下"
+                own_mail = _direct_mail(o, sid, smails)
+                if own_mail:
+                    direct = True
+                    why += "；但这家店自己发了订单信「{0}」，多半是直送，要看一下".format(own_mail)
                 add.append(dict(base, id=oid, supplier=o.get("supplier"), date=d, amount=o.get("amount"),
                                 ref=o.get("ref"), cen_others=others, mark=marks.get(sid), sure=not direct,
                                 why=why))
@@ -155,7 +204,12 @@ def scan(settings, st, log=None, today=None):
     files = [f for f in REC.list_files(root, today=today, days=SCAN_DAYS) if f.get("store") == "C"]
     index = REC.Index(REC.cache_path())
     try:
-        return find(st, files, index, log)
+        import commands as C
+        mails = C._cached_mails()                 # 邮件核对读过的信头（不连网）：门店自己发的订单信 = 直送
+    except Exception:
+        mails = []
+    try:
+        return find(st, files, index, log, mails=mails)
     finally:
         index.save()
 

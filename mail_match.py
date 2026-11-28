@@ -104,6 +104,17 @@ _BMS_CO = re.compile(r"\bBMS\s*(?:P(?:A?R?T?\w*)?\b|PSRL)\.?", re.I)     # BMS P
 _PDV = re.compile(r"\b\d\s*PDV\b", re.I)                                  # 「Ordine X 5PDV」= 几家门店一起的单
 
 
+def _bms_only(st, cand):
+    """
+    我们发出的 BMS / nPDV 订单信能对上的单：BMS 那张（几家店凑的一张单）；没有 BMS 单、对上的是 DETERSIVO 批发商的单
+    （origin wholesale：一封信写五家店、每家店各送各的）→ 每家店那张。别的（总仓采购的门店直送单）一律不算
+    """
+    b = [o for o in cand if str(st.orders[o].get("store")) == "BMS"]
+    if b:
+        return b
+    return [o for o in cand if st.orders[o].get("origin") == "wholesale" or st.orders[o].get("kind") == "deter"]
+
+
 def stores_in(text):
     ws = words(_BMS_CO.sub(" ", str(text or "")))
     j = "".join(ws)
@@ -311,7 +322,16 @@ def analyze(mails, st, own, mailbox_store=None, today=None, ignored=None, ks=Non
             if k:
                 by_no.setdefault(str(k).upper(), []).append(oid)
     by_void = {}
+    try:                                       # BMS 凑单里每家店那一份（PIANO 标 CEN 的）：邮件只对 BMS 单，不对每家店
+        members = {m_ for g in OT.groups(st).values() for m_ in g["members"]}
+    except Exception:
+        members = set()
+    by_member = {}                             # BMS 凑单里每家店那一份：只有信里写了这家门店才对它（不然对 BMS 单）
     for oid, o in st.orders.items():
+        if oid in members or o.get("part_of"):
+            if oid not in twins and o.get("state") != "cancel":
+                by_member.setdefault(st.canon(OT.sup_key(o.get("supplier"))), []).append(oid)
+            continue
         if oid in twins:
             continue
         if o.get("kind") == "deter":                  # DETERSIVO 批发商的单不跟踪确认 / 到货
@@ -351,6 +371,9 @@ def analyze(mails, st, own, mailbox_store=None, today=None, ignored=None, ks=Non
                     stores.append(s_)
         day = m["_date"].date()
         multi = bool(_PDV.search(subj))
+        # 我们发出的「Ordine X 4PDV / BMS」= 几家店凑成的一张 BMS 单（2026-11-28 用户：L'OREAL 4PDV 是一张 BMS 单，
+        # 邮件核对却给五家门店的待登记都对上了）→ 只对 BMS 那张单；DETERSIVO 批发商的 nPDV 信才是每家店一张（照旧）
+        bms_sent = sent and (multi or "BMS" in stores)
         src = "name" if stores else ""
         addr_cands = []
         if not sent and ks and (m.get("body") or m.get("att_text")):
@@ -373,6 +396,7 @@ def analyze(mails, st, own, mailbox_store=None, today=None, ignored=None, ks=Non
         by_code = list(dict.fromkeys(oid for c in OT.find_order_nos(" ".join([subj] + atts + [m.get("body") or ""]))
                                      for oid in by_no.get(c, [])))
         how = ""
+        covered = False
         mid = (m.get("message_id") or "").strip()
         if mid and mid in linked and not sent:
             oids, how = list(linked[mid]), "link"          # 以前已经关联过（人选的 / 应用过的）
@@ -388,18 +412,30 @@ def analyze(mails, st, own, mailbox_store=None, today=None, ignored=None, ks=Non
                 lo, hi = day - timedelta(days=ORDER_WINDOW[0]), day + timedelta(days=ORDER_WINDOW[1])
             else:
                 lo, hi = day - timedelta(days=FOLLOW_WINDOW), day
+            shop = [s_ for s_ in stores if s_ != "BMS"]
             for sk in sups:
                 cand = []
-                for k2, ids in by_sup.items():
+                for k2, ids in list(by_sup.items()) + (list(by_member.items()) if shop else []):
                     if k2 == sk or (len(sk) >= 4 and len(k2) >= 4 and (sk in k2 or k2 in sk)):
                         cand += ids
                 cand = [oid for oid in cand if lo <= (OT.to_date(st.orders[oid].get("date")) or date.min) <= hi
                         and (not stores or str(st.orders[oid].get("store")) in stores)]
-                if sent and not cand:
+                hand = []
+                if bms_sent:
+                    # 同事已经在 PIANO 各门店那一块手填了这张单的每家店那一份（没标 CEN）：不再把作废的 BMS 待登记
+                    # 恢复出来（不然 BMS 单 + 每家店的又算一遍）；要标 CEN 用「BMS 凑单核对」
+                    hand = [o for o in cand if str(st.orders[o].get("store")) != "BMS" and not st.orders[o].get("draft")
+                            and st.orders[o].get("origin") != "wholesale"]
+                    cand = _bms_only(st, cand)
+                    if hand and not cand:
+                        covered = True
+                if sent and not cand and not hand:
                     for k2, ids in by_void.items():
                         if k2 == sk or (len(sk) >= 4 and len(k2) >= 4 and (sk in k2 or k2 in sk)):
                             cand += [oid for oid in ids if lo <= (OT.to_date(st.orders[oid].get("date")) or date.min) <= hi
                                      and (not stores or str(st.orders[oid].get("store")) in stores)]
+                    if bms_sent:
+                        cand = _bms_only(st, cand)
                 if not sent and any(not st.orders[oid].get("draft") for oid in cand):
                     # 供应商的确认 / 发货信只可能是发出去了的单：有已下单的就不算待登记（Royal 8044 = BMS 那张，不是三张待登记）
                     cand = [oid for oid in cand if not st.orders[oid].get("draft")]
@@ -464,7 +500,7 @@ def analyze(mails, st, own, mailbox_store=None, today=None, ignored=None, ks=Non
         events.append(ev)
         if sent and m.get("message_id"):
             thread[m["message_id"].strip()] = oids
-        if sent and not oids and sups and not any(_like(sups[0], d) for d in deter):
+        if sent and not oids and sups and not covered and not any(_like(sups[0], d) for d in deter):
             ev["supplier_name"] = idx.best_name(sups, " ".join([subj] + atts))
             ev["multi"] = multi
             ev["want"] = want

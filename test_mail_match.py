@@ -390,3 +390,44 @@ def test_excel_sync_absorbs_drafts_already_written_by_hand(tmp_path):
     r = OT.register_drafts(st, "store_orders", [{"store": "1", "supplier": "FACCO GIUSEPPE & C. SPA", "amount": 900.0},
                                                  {"store": "1", "supplier": "MELONI", "amount": 50.0}])
     assert r["new"] == 0
+
+
+def test_bms_order_mail_only_matches_the_bms_order_not_each_store(tmp_path):
+    """2026-11-28 用户：L'OREAL「Ordine L'OREAL 4PDV 1911」是一张 BMS 单，邮件核对却给五家门店的待登记都对上了"""
+    st = _st(tmp_path)
+    sup = "L'OREAL ITALIA spa"
+    OT.register_drafts(st, "store_orders", [{"store": s, "supplier": sup, "amount": a} for s, a in
+                                            (("1", 251.16), ("2", 18.61), ("3", 19.71), ("4", 82.13), ("5", 144.91))],
+                       today=date(2026, 11, 17))
+    OT.register_drafts(st, "store_orders", [{"store": "BMS", "supplier": sup, "amount": 1750.04}], today=date(2026, 11, 19))
+    stores = [oid for oid, o in st.orders.items() if o.get("store") != "BMS"]
+    bms = next(oid for oid, o in st.orders.items() if o.get("store") == "BMS")
+    OT.void_drafts(st, [{"id": oid, "why": "superseded", "by": "2026-11-19"} for oid in stores + [bms]])
+    mail = _mail(**{"from": "info@bmspsrl.com", "folder": "已发送", "subject": "Ordine L'OREAL 4PDV 1911",
+                    "date": datetime(2026, 11, 19, 15, 13), "message_id": "<m1>"})
+    res = MM.analyze([mail], st, OWN)
+    assert [s["id"] for s in res["suggest"]] == [bms]                  # 只对 BMS 那一张
+    # 没有 BMS 单、只有门店直送单：一封 nPDV 信也不算到门店直送单上
+    st2 = _st(tmp_path / "b")
+    OT.register_drafts(st2, "store_orders", [{"store": "1", "supplier": sup, "amount": 251.16},
+                                             {"store": "2", "supplier": sup, "amount": 18.61}], today=date(2026, 11, 19))
+    assert MM.analyze([mail], st2, OWN)["suggest"] == []
+    # DETERSIVO 批发商：一封信五家店，每家店一张（照旧）
+    st3 = _st(tmp_path / "c")
+    OT.register_drafts(st3, "wholesale", [{"store": "1", "supplier": "MELONI", "amount": 10},
+                                          {"store": "2", "supplier": "MELONI", "amount": 20}], today=date(2026, 11, 22))
+    m3 = _mail(**{"from": "info@bmspsrl.com", "folder": "已发送", "subject": "Ordine MELONI 2PDV 2211",
+                  "date": datetime(2026, 11, 22, 18, 4)})
+    assert len(MM.analyze([m3], st3, OWN)["suggest"]) == 2
+
+
+def test_cen_store_rows_not_matched_by_mail_only_bms_order(tmp_path):
+    st = _st(tmp_path)
+    st.set("x1", {"date": "2026-11-19", "store": "1", "supplier": "Marchetti", "amount": 300, "origin": "excel", "cen": True})
+    st.set("x2", {"date": "2026-11-19", "store": "3", "supplier": "Marchetti", "amount": 100, "origin": "excel", "cen": True})
+    OT.materialize_groups(st)
+    gid = next(iter(OT.groups(st)))
+    mail = _mail(**{"from": "ordini@marchetti.it", "subject": "Conferma ordine Marchetti BMS",
+                    "date": datetime(2026, 11, 20, 9, 0), "mailbox": "info@bmspsrl.com"})
+    res = MM.analyze([mail], st, OWN)
+    assert {s["id"] for s in res["suggest"]} <= {gid}

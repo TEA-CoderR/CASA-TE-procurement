@@ -178,3 +178,24 @@ def test_bms_names():
     assert BC.bms_named("Ordine MARCHETTI BMS 1911.xlsx") and BC.bms_named("Ordine_EURSHOSE_BMS_2611.xlsx")
     assert BC.bms_named("Ordine BAMA 5PDV1011.xlsx") and BC.bms_named("Ordine COLZANI 3 PDV 1511.xlsx")
     assert not BC.bms_named("Ordine_BIACCHI ETTORE SRL_0411.xlsx") and not BC.bms_named("Ordine E-ENERGY S.Filippo 1111.xlsx")
+
+
+def test_bms_check_not_sure_when_store_sent_its_own_order_mail():
+    """SODASTREAM S.CONCORDIO 2611（2026-11-28）：门店自己发了订单信 = 直送，BMS 凑单核对不能默认标 CEN"""
+    d1 = datetime(2026, 11, 26)
+    d, x, st = _store([("1", d1, "SODASTREAM", 100.0, None, None, "CEN"),
+                       ("3", d1, "SODASTREAM", 50.0, None, None, None)])
+    files = [{"rel": "NOVEMBRE/Ordine SODASTREAM BMS 2611.xlsx", "path": "/x", "store": "C",
+              "date": date(2026, 11, 26), "words": ["SODASTREAM", "BMS"]}]
+    lines = {"/x": {"1": [{"colli": 2, "pack": 1, "price": 50.0}], "3": [{"colli": 1, "pack": 1, "price": 50.0}]}}
+
+    class Idx:
+        def lines(self, f, log=None):
+            return lines[f["path"]]
+    mails = [{"from": "ordine.sfilippo@casa-te.com", "subject": "Ordine SODASTREAM S.FILIPPO 2611",
+              "date": "2026-11-26T10:00:00", "attachments": "['Ordine SODASTREAM.xlsx']"},
+             {"from": "info@bmspsrl.com", "subject": "Ordine SODASTREAM 2PDV 2611", "date": "2026-11-26T10:00:00"}]
+    assert [s for _d, _t, s in BC.store_mails(mails)] == ["3"]                 # nPDV 的信不算门店自己的单
+    res = BC.find(st, files, Idx(), mails=mails)
+    assert len(res["add"]) == 1 and not res["add"][0]["sure"] and "自己发了订单信" in res["add"][0]["why"]
+    assert BC.find(st, files, Idx())["add"][0]["sure"]
