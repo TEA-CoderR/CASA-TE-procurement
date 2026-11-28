@@ -151,7 +151,7 @@ class Store:
 
     def adopt(self, other):
         """把另一个 Store 刚读好的内容换进来（后台线程读、界面线程换；这个对象别处还拿着）"""
-        for k in ("orders", "meta", "hist", "budgets", "budget_meta", "aliases", "xbase", "xstate", "deleted", "_seen", "_sig"):
+        for k in ("orders", "meta", "hist", "budgets", "budget_meta", "aliases", "xbase", "xstate", "deleted", "deleted_at", "_seen", "_sig"):
             setattr(self, k, getattr(other, k))
         return self
 
@@ -162,6 +162,7 @@ class Store:
         # （"_budget" 键下是预算）；xstate {键: 值}（"write" = 最后一次写 Excel：文件修改时间 / 大小 / 谁）
         self.xbase, self.xstate = {}, {}
         self.deleted = {}          # {单号: 来源}：程序里删掉的单，从 Excel 同步时不再加回来
+        self.deleted_at = {}       # {单号: 删掉的时间}（从 Excel 同步时：本地 Excel 比删掉的时候还旧 → 不加回来）
         self._seen = set()
 
     # ---- 读 ----
@@ -207,8 +208,45 @@ class Store:
         self._reset()
         for e in sorted(evs, key=lambda e: (str(e["t"]), str(e["e"]))):
             self._apply(e)
+        self._heal_orphans()
         self._sig = sig
         return self
+
+    # 只有这些字段的单不算一张单（没有门店 / 供应商 / 日期）
+    _ID_FIELDS = ("store", "supplier", "date")
+    _CONTENT = ("confirmed", "arrived", "amount", "ref", "buyer", "note", "kind", "state", "shipped", "colli")
+
+    def _heal_orphans(self):
+        """
+        2026-11-28 查到的 bug（看板上没有供应商、没有门店的空白卡片）：两台电脑同步 Excel 时，
+        一台电脑的同步盘还没收到新的 PIANO（本地 Excel 旧），把别的电脑刚读进来的单当成「Excel 里删了」删掉；
+        另一台电脑之后只写了改动的那几格（确认日期 / 到货日期…）→ 单又出现了，但只剩这几格。
+        这里按修改记录修回来：
+          · 这个单号是程序写进 Excel 那一行的 xid → 是那张单的重复，不要
+          · 删掉以后从 Excel 又写过内容 → 这一行 Excel 里还在：用全部修改记录拼回完整的单
+          · 拼不出门店 / 供应商 → 不要
+        """
+        xid = {o.get("xid"): k for k, o in self.orders.items() if o.get("xid")}
+        for oid in [k for k, o in self.orders.items() if not any(o.get(f) for f in self._ID_FIELDS)]:
+            hist = self.hist.get(oid, [])
+            dels = [i for i, e in enumerate(hist) if e.get("op") == "del"]
+            after = [e for e in hist[(dels[-1] + 1 if dels else 0):] if e.get("op") == "set"]
+            redo = any(k in self._CONTENT for e in after if (e.get("src") or "app") == "excel"
+                       for k in (e.get("f") or {}))
+            full, meta = {}, {}
+            for e in hist:
+                if e.get("op") == "set":
+                    who = (e["t"], e.get("by") or "?", e.get("src") or "app")
+                    for k, v in (e.get("f") or {}).items():
+                        full[k] = v
+                        meta[k] = who
+            if xid.get(oid) or not dels or not redo or not (full.get("store") and full.get("supplier")):
+                self.orders.pop(oid, None)
+                self.meta.pop(oid, None)
+                self.deleted.setdefault(oid, "excel")
+                continue
+            self.orders[oid] = full
+            self.meta[oid] = meta
 
     def _apply(self, e):
         if e["e"] in self._seen:                # 同步盘的「冲突副本」里会有重复的
@@ -234,11 +272,13 @@ class Store:
                 o[k] = v
                 m[k] = who
             self.deleted.pop(oid, None)
+            self.deleted_at.pop(oid, None)
             self.hist.setdefault(oid, []).append(e)
         elif op == "del" and oid:
             self.orders.pop(oid, None)
             self.meta.pop(oid, None)
             self.deleted[oid] = who[2]
+            self.deleted_at[oid] = who[0]
             self.hist.setdefault(oid, []).append(e)
         elif op == "budget" and oid:
             if e.get("v") is None:
@@ -821,7 +861,9 @@ def sync_excel(st, rows, budgets, sheets, blocks=None, mtime=None):
         if st.deleted.get(oid) == "app":
             continue                                    # 程序里删了：excel_sync 会把 Excel 那一行清掉
         cur, meta = st.orders.get(oid), st.meta.get(oid, {})
-        base = st.xbase.get(oid, {})
+        if cur is None and oid in st.deleted and xt is not None and str(st.deleted_at.get(oid) or "") > xt:
+            continue                                    # 删掉的时候已经是比这份本地 Excel 新的了（同步盘还没传过来）→ 不加回来
+        base = st.xbase.get(oid, {}) if cur is not None else {}   # 没有这张单：整行都写（以前只写改了的格 → 空白的单）
         ch, nb = {}, {}
         for f in EXCEL_FIELDS:
             v = r.get(f)
@@ -862,6 +904,10 @@ def sync_excel(st, rows, budgets, sheets, blocks=None, mtime=None):
             continue
         m = st.meta.get(oid, {})
         last_app = max((w[0] for w in m.values() if w[2] != "excel"), default=None)
+        last_x = max((w[0] for w in m.values() if w[2] == "excel"), default=None)
+        if xt is not None and last_x and last_x > xt:
+            res["kept"] += 1                            # 别的电脑从更新的 Excel 读到的：这台电脑的 Excel 还旧，不算删了
+            continue
         if last_app is None or (xt is not None and xt > last_app):
             gone.append(oid)                            # Excel 里删了这一行（比程序里最后一次改得晚）
         else:

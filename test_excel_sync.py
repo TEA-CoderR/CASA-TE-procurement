@@ -1,5 +1,6 @@
 """采购订单跟踪 ↔ PIANO Excel 双向同步（excel_sync + order_tracking.sync_excel 三方比较）"""
 import os
+import json
 import time
 import tempfile
 from datetime import date, datetime
@@ -275,6 +276,15 @@ def test_deleted_program_row_not_restored_again_and_identical_row_adopted():
     OT.import_file(st2, x)
     for oid in [k for k, o in st2.orders.items() if o.get("supplier") == "NEW SUP"]:
         st2.delete([oid], src="excel")
+    # 删得比 Excel 存盘晚（这里 Excel 的修改时间是假的「以后」）→ 同步时不加回来：删的记录时间也挪到以后
+    with open(st2.file, encoding="utf-8") as f:
+        evs = [json.loads(line) for line in f if line.strip()]
+    for e in evs:
+        if e["op"] == "del":
+            e["t"] = "9999-01-01T00:00:00Z"
+    with open(st2.file, "w", encoding="utf-8", newline="") as f:
+        f.write("".join(json.dumps(e, ensure_ascii=False) + "\n" for e in evs))
+    st2.reload()
     again = st2.add({"date": "2026-11-04", "store": "1", "supplier": "New Sup", "amount": 10.0, "buyer": "Monica"})
     n0 = len(OT.read_excel(x)[0])
     XS.writeback(st2, x, "pc2")

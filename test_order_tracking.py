@@ -361,3 +361,55 @@ def test_background_load_adopted_into_same_store_and_local_writes_counted():
         assert a.writes == w0 + 1                             # 读的时候这台电脑又写了 → 界面不换进来
     finally:
         shutil.rmtree(d, ignore_errors=True)
+
+
+def _xrow(oid, store="2", sup="IDRO-BRIC", amount=100.0, confirmed=None, ref="NOV!J74"):
+    return {"id": oid, "date": "2026-11-25", "store": store, "supplier": sup, "buyer": "pres.", "amount": amount,
+            "confirmed": confirmed, "arrived": None, "state": None, "kind": None, "note": None, "ref": ref,
+            "origin": "excel"}
+
+
+def test_stale_excel_on_other_pc_does_not_delete_and_no_blank_orders():
+    """
+    2026-11-28 看板上的空白卡片：一台电脑的同步盘还没收到新 PIANO，把别的电脑刚读进来的单当成「Excel 里删了」，
+    另一台电脑之后只写了改了的那一格 → 只剩「确认 25/11」没有门店 / 供应商的单。
+    """
+    import time
+    d = tempfile.mkdtemp()
+    a = OT.Store(d, me="A", host="PC1").reload()
+    OT.sync_excel(a, [_xrow("x1")], [], ["NOV"], {("NOV", "2")}, mtime=time.time())
+    # 另一台电脑：本地 Excel 是一小时前的（还没这一行）→ 不删
+    b = OT.Store(d, me="B", host="PC2").reload()
+    res = OT.sync_excel(b, [], [], ["NOV"], {("NOV", "2")}, mtime=time.time() - 3600)
+    assert res["removed"] == 0 and "x1" in b.orders
+    # Excel 真的删了这一行（存得比读进来晚）→ 删
+    res = OT.sync_excel(b, [], [], ["NOV"], {("NOV", "2")}, mtime=time.time() + 5)
+    assert res["removed"] == 1 and "x1" not in b.orders
+    # 删掉以后，旧 Excel 的电脑看到这一行还在：本地 Excel 比删的时候旧 → 不加回来
+    a.reload()
+    res = OT.sync_excel(a, [_xrow("x1", confirmed="2026-11-26")], [], ["NOV"], {("NOV", "2")}, mtime=time.time() - 3600)
+    assert "x1" not in a.orders
+    # 新的 Excel 里又有这一行（有人加回去了）→ 整行都写，不是只写改了的那一格
+    res = OT.sync_excel(a, [_xrow("x1", confirmed="2026-11-26")], [], ["NOV"], {("NOV", "2")}, mtime=time.time() + 60)
+    o = a.orders["x1"]
+    assert o["store"] == "2" and o["supplier"] == "IDRO-BRIC" and o["confirmed"] == "2026-11-26"
+
+
+def test_blank_orders_from_old_logs_healed_or_dropped():
+    d = tempfile.mkdtemp()
+    st = OT.Store(d, me="A", host="PC1").reload()
+    full = {"date": "2026-11-25", "store": "2", "supplier": "IDRO-BRIC", "ref": "NOV!J74", "origin": "excel"}
+    st._write([st._ev("set", "x1", "excel", f=full), st._ev("del", "x1", "excel"),
+               st._ev("set", "x1", "excel", f={"amount": 1171.73, "confirmed": "2026-11-25"})])
+    # 程序写进 Excel 的那一行（xid）又被当成一张新单读进来 → 是重复的
+    st.set("a1", {"date": "2026-11-22", "store": "1", "supplier": "Meloni", "xid": "x2", "origin": "wholesale"})
+    st._write([st._ev("set", "x2", "excel", f={"date": "2026-11-22", "store": "1", "supplier": "Meloni"}),
+               st._ev("del", "x2", "excel"), st._ev("set", "x2", "excel", f={"kind": "deter"})])
+    # 删了以后只写了 origin（这一行 Excel 里其实已经没了）→ 不要
+    st._write([st._ev("set", "x3", "excel", f=dict(full, supplier="Colzani")), st._ev("del", "x3", "excel"),
+               st._ev("set", "x3", "excel", f={"origin": "excel"})])
+    st.reload()
+    o = st.orders["x1"]
+    assert o["store"] == "2" and o["supplier"] == "IDRO-BRIC" and o["amount"] == 1171.73 and o["confirmed"] == "2026-11-25"
+    assert "x2" not in st.orders and "a1" in st.orders and "x3" not in st.orders
+    assert all(o.get("store") or o.get("supplier") for o in st.orders.values())
