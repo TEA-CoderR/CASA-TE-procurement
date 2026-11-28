@@ -5431,4 +5431,7 @@ TRANSLATIONS = {
     '五家店的申请都列出来，每家店一行': ("All five stores' requests, one row per store", 'Le richieste dei cinque negozi, una riga per negozio'),
     '门店：{0}（回复只发给这家店）': ('Store: {0} (the answer goes only to this store)', 'Negozio: {0} (la risposta va solo a questo negozio)'),
     '{0} 也问了这个商品，要分别回复': ('{0} also asked about this item: answer each separately', '{0} ha chiesto anche questo articolo: rispondi separatamente'),
+    # 2026-11-28 预约平台连不上只记一次
+    '（隔一会再试，好了会写一句）': (' (will retry later and note when it works again)', ' (riprovo più tardi e lo segnalo quando torna)'),
+    '✔ 预约平台又连上了': ('✔ Booking platform reachable again', '✔ Piattaforma prenotazioni di nuovo raggiungibile'),
 }

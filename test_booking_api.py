@@ -92,8 +92,11 @@ def test_booking_sync_writes_platform_bookings_on_open_orders(tmp_path):
     BA.set_token("k" * 40)
     st = OT.Store(str(tmp_path), me="T").reload()
     a = st.add({"date": "2026-11-19", "store": "1", "supplier": "MELONI", "amount": 100})
-    b = st.add({"date": "2026-11-19", "store": "2", "supplier": "BAMA", "amount": 50, "arrived": "2026-11-20"})
+    b = st.add({"date": "2026-11-19", "store": "2", "supplier": "BAMA", "amount": 50, "arrived": "2026-11-20",
+                "no": "MA-1911-B0B0"})
+    c = st.add({"date": "2026-11-19", "store": "3", "supplier": "SAIS", "amount": 80})   # 没从程序发过：没有订单号
     no = MS.order_no(a, st.orders[a])
+    st.set_many([(a, {"no": no})])
     rows = [{"id": 3, "code": "P1", "status": "requested", "date": "2026-11-25", "time": "11:15", "carrierName": "SDA",
              "orderNo": no}]
     s = FakeSession({("GET", "/api/erp/bookings"): (200, {"bookings": rows})})
@@ -101,6 +104,7 @@ def test_booking_sync_writes_platform_bookings_on_open_orders(tmp_path):
     assert [oid for oid, _f in ch] == [a]
     asked = [v for k, v in s.calls[0][2]]
     assert no.upper() in asked and MS.order_no(b, st.orders[b]).upper() not in asked   # 到货了的不查
+    assert MS.order_no(c, st.orders[c]).upper() not in asked      # 没发过订单号的不可能有预约，不查
     st.reload()
     assert st.orders[a]["booking"]["time"] == "11:15" and st.orders[a]["expected"] == "2026-11-25"
     assert CMD.booking_sync({}, st, log=lambda *_: None, session=s, now=datetime(2026, 11, 21, 10, 5)) == []
@@ -109,3 +113,19 @@ def test_booking_sync_writes_platform_bookings_on_open_orders(tmp_path):
 def test_receipt_result_maps_to_platform_status():
     assert BA.receipt_status("full") == "completed" and BA.receipt_status("partial") == "completed"
     assert BA.receipt_status("refused") == "refused"
+
+
+def test_nothing_to_ask_no_network_and_short_reason():
+    import commands as CMD
+    import order_tracking as OT
+    import tempfile
+    BA.set_token("k" * 40)
+    st = OT.Store(tempfile.mkdtemp(), me="T").reload()
+    st.add({"date": "2026-11-19", "store": "1", "supplier": "MELONI", "amount": 100})
+    s = FakeSession({})
+    assert CMD.booking_sync({}, st, log=lambda *_: None, session=s, now=datetime(2026, 11, 21)) == [] and not s.calls
+    # 连不上的原因一句话，不带网址和单号
+    e = Exception("HTTPSConnectionPool(host='prenota.casaete.top', port=443): Max retries exceeded with url: "
+                  "/api/erp/bookings?order=FO-0101-AAAA (Caused by NameResolutionError(getaddrinfo failed))")
+    t = BA.net_reason(e)
+    assert "DNS" in t and "order=" not in t

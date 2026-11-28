@@ -1621,7 +1621,7 @@ def store_allocate(settings, calc, suppliers=None, log=print, progress=None, act
 
 
 # ===================================================================== 卸货预约平台（2026-11-21）
-def booking_sync(settings, st, log=print, session=None, now=None, days=60):
+def booking_sync(settings, st, log=print, session=None, now=None, days=45):
     """
     没到货的单按订单号去预约平台查预约（承运商在网上约的、仓库在平台上改的），有变化就写进订单：
     o["booking"]、约好的日期写进预计到货。返回改了的 [(单号, 字段)]。没填密钥 → []
@@ -1643,7 +1643,9 @@ def booking_sync(settings, st, log=print, session=None, now=None, days=60):
             continue
         if str(o.get("date") or "")[:10] < oldest:
             continue
-        if str(o.get("kind") or "") == "deter" and not o.get("no"):
+        # 平台上的预约只能按我们发给供应商的订单号找：程序发出过（单上有订单号）或已经有预约的才查
+        # （2026-11-28：以前每张没到货的单都去查，八十多个单号一次，查的大多根本不可能有预约）
+        if not (o.get("no") or o.get("gno") or bk):
             continue
         want[MS.order_no(oid, o).upper()] = oid
     if not want:

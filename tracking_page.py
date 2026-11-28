@@ -1922,7 +1922,9 @@ class TrackingPage:
     def _check_bookings(self):
         """预约平台上的预约（承运商在网上约的、仓库改的）写进订单：后台查，最多 5 分钟一次；没填密钥不查"""
         import booking_api as BA
-        if self.st is None or getattr(self, "_bk_busy", False) or time.time() - getattr(self, "_bk_t", 0) < 300 \
+        # 连不上以后隔久一点再试：5 分钟 → 15 → 30 → 60 分钟（_bk_fail = 连着失败几次）
+        wait = (300, 900, 1800, 3600)[min(getattr(self, "_bk_fail", 0), 3)]
+        if self.st is None or getattr(self, "_bk_busy", False) or time.time() - getattr(self, "_bk_t", 0) < wait \
                 or not BA.ready(self.settings):
             return
         self._bk_busy, self._bk_t = True, time.time()
@@ -1935,9 +1937,9 @@ class TrackingPage:
                 st = OT.Store(folder, me=me)
                 st.reload()
                 ch = CMD.booking_sync(settings, st, log=msgs.append)
-                self.sig.bookings.emit((ch, msgs))
+                self.sig.bookings.emit((ch, msgs, None))
             except Exception as e:
-                self.sig.bookings.emit(([], [tr("⚠ 预约平台读不了：{0}", e)]))
+                self.sig.bookings.emit(([], [], str(e)))
         threading.Thread(target=work, daemon=True).start()
 
     def _check_files(self):
@@ -1964,10 +1966,21 @@ class TrackingPage:
         threading.Thread(target=work, daemon=True).start()
 
     def _bookings_done(self, payload):
-        ch, msgs = payload
+        ch, msgs, err = payload
         self._bk_busy = False
         for m in msgs:
             self.win.log(tr("订单跟踪：") + m)
+        # 连不上：同一个原因只记一次（以前每 5 分钟一整段），恢复了记一句
+        if err:
+            self._bk_fail = getattr(self, "_bk_fail", 0) + 1
+            if err != getattr(self, "_bk_err", None):
+                self.win.log(tr("订单跟踪：") + tr("⚠ 预约平台读不了：{0}", err) + tr("（隔一会再试，好了会写一句）"))
+            self._bk_err = err
+        elif getattr(self, "_bk_err", None):
+            self.win.log(tr("订单跟踪：") + tr("✔ 预约平台又连上了"))
+            self._bk_err, self._bk_fail = None, 0
+        else:
+            self._bk_fail = 0
         if ch:
             self.check_badge()
 

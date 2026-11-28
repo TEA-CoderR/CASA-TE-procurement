@@ -95,7 +95,7 @@ def _call(settings, method, path, params=None, body=None, session=None, tok=None
         r = s.request(method, base_url(settings) + path, params=params, json=body, timeout=TIMEOUT,
                       headers={"Authorization": "Bearer " + tok, "Accept": "application/json"})
     except Exception as e:
-        raise BookingApiError("NETWORK", f"连不上预约平台（{base_url(settings)}）：{e}")
+        raise BookingApiError("NETWORK", f"连不上预约平台（{base_url(settings)}）：{net_reason(e)}")
     try:
         data = r.json()
     except Exception:
@@ -107,6 +107,26 @@ def _call(settings, method, path, params=None, body=None, session=None, tok=None
     return data
 
 
+def net_reason(e):
+    """
+    连不上的原因写成一句话（2026-11-28：以前把整个网址 + 八十多个订单号都写进日志）。
+    找不到网址 = 这台电脑的网络 / DNS 查不到 prenota.casaete.top（VPN、路由器）；被断开 / 超时 = 网络不稳。
+    """
+    t = f"{type(e).__name__} {e}"
+    low = t.lower()
+    if "nameresolution" in low or "getaddrinfo" in low or "name or service not known" in low or "11001" in low:
+        return "这台电脑找不到这个网址（网络 / DNS 的问题，平台本身不一定有事）"
+    if "timed out" in low or "timeout" in low:
+        return "等了太久没有回应（网络慢或平台忙）"
+    if "10054" in low or "reset" in low or "aborted" in low:
+        return "连接被断开了（网络不稳）"
+    if "refused" in low or "10061" in low:
+        return "平台拒绝连接（服务器可能在重启）"
+    if "ssl" in low or "certificate" in low:
+        return "安全连接（证书）出错"
+    return type(e).__name__
+
+
 def test(settings, tok=None, session=None):
     """测试连接：查一下今天的预约（只读）。返回今天几张"""
     d = date.today().isoformat()
@@ -114,12 +134,15 @@ def test(settings, tok=None, session=None):
     return len(data.get("bookings") or [])
 
 
+CHUNK = 25
+
+
 def bookings_for(settings, order_nos, session=None):
     """这几个订单号在平台上的预约 → {订单号: [预约…]}（新的在后）"""
     nos = [n for n in dict.fromkeys(str(x).strip().upper() for x in order_nos or []) if n]
     out = {n: [] for n in nos}
-    for k in range(0, len(nos), 80):                     # 网址别太长
-        part = nos[k:k + 80]
+    for k in range(0, len(nos), CHUNK):                  # 网址别太长：一次最多 CHUNK 个单号
+        part = nos[k:k + CHUNK]
         data = _call(settings, "GET", "/api/erp/bookings", [("order", n) for n in part], session=session)
         for b in data.get("bookings") or []:
             text = " ".join(str(b.get(f) or "") for f in ("orderNo", "notes", "ddtNo")).upper()
