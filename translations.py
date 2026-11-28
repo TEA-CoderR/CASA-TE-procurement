@@ -5483,4 +5483,5 @@ TRANSLATIONS = {
     '⚠ PIANO 里有 {0} 行手填的单和程序已登记的重复（看日志）': ('⚠ {0} hand-written rows in PIANO duplicate orders the program already registered (see log)', '⚠ {0} righe scritte a mano nel PIANO duplicano ordini già registrati dal programma (vedi log)'),
     '那一行': ('that row', 'quella riga'),
     '但这家店自己发了订单信「{0}」，多半是直送，要看一下': ('but this store sent its own order email «{0}»: probably a direct order, please check', 'ma questo negozio ha inviato un proprio ordine via mail «{0}»: probabilmente è diretto, da controllare'),
+    '下单人要写人名，和同事在 PIANO「Ordine Da」里写的一样（例如 LUCAS、Pamela），不要写「采购部」': ('The buyer must be a person\'s name, written as colleagues do in the PIANO «Ordine Da» column (e.g. LUCAS, Pamela), not «Purchasing»', 'Chi ordina deve essere il nome di una persona, scritto come fanno i colleghi nella colonna «Ordine Da» del PIANO (es. LUCAS, Pamela), non «Ufficio acquisti»'),
 }

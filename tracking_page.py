@@ -1634,7 +1634,7 @@ class TrackingPage:
         for r in self.rows:
             if r["supplier"]:
                 sup[r["supplier"]] = sup.get(r["supplier"], 0) + 1
-            if r["buyer"]:
+            if r["buyer"] and OT.is_buyer_name(r["buyer"]):      # 「采购部」这种不列出来
                 b = r["buyer"].strip()
                 buy[b] = buy.get(b, 0) + 1
         order = lambda d: [k for k, _v in sorted(d.items(), key=lambda kv: (-kv[1], kv[0].lower()))]
@@ -2282,6 +2282,7 @@ class OrderDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle(tr("改订单") if row else tr("新订单"))
         self.order, self.changes, self.values, self.deleted = dict(order or {}), {}, {}, False
+        self._page = page
         o = self.order
         sups, buys = page.known()
         v = QVBoxLayout(self)
@@ -2435,6 +2436,14 @@ class OrderDialog(QDialog):
         if not sup:
             QMessageBox.warning(self, tr("保存"), tr("请填供应商"))
             return
+        buy = self.e_buy.currentText().strip()
+        if buy and buy != str(self.order.get("buyer") or "").strip():
+            from send_order_dialog import checked_buyer, BUYER_HINT
+            b2 = checked_buyer(getattr(self._page, "st", None), buy)
+            if not b2:
+                QMessageBox.warning(self, tr("保存"), tr(BUYER_HINT))
+                return
+            self.e_buy.setCurrentText(b2)             # 照同事在 PIANO 的写法
         amt = round(self.e_amt.value(), 2)
         old_amt = self.order.get("amount")
         vals = {"date": self.e_date.date().toString("yyyy-MM-dd"), "store": self.e_store.currentData(),

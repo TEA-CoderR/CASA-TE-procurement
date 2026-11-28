@@ -684,7 +684,8 @@ def add_missing(st, sugs):
             continue
         m = s["mail"]
         ch.append((oid, {"date": s["value"], "store": s["store"], "supplier": s["supplier"], "origin": "mail",
-                         "buyer": st.me, "mails": [dict({"k": "order", "d": m["date"].strftime("%Y-%m-%d %H:%M"),
+                         "buyer": OT.piano_buyer(st, st.me, {"store": s["store"], "supplier": s["supplier"]}),
+                         "mails": [dict({"k": "order", "d": m["date"].strftime("%Y-%m-%d %H:%M"),
                                                           "s": m["subject"][:120], "f": m["from"]},
                                                          **({"id": m["message_id"]} if m.get("message_id") else {}))]}))
         undo_.append(("drop", oid, None))
@@ -745,8 +746,11 @@ def apply(st, sugs, src="mail"):
             if e not in mails:
                 mails.append(e)
         f["mails"] = mails[-20:]
-        if "buyer" in f and o.get("buyer"):
-            f.pop("buyer")
+        f.pop("buyer", None)
+        if f.get("draft", 0) is None and not OT.is_buyer_name(o.get("buyer")):
+            b = OT.piano_buyer(st, o.get("buyer") or st.me, o)     # 照同事在 PIANO 的写法，不写「采购部」
+            if b:
+                f["buyer"] = b
         undo.append(("set", oid, {k: o.get(k) for k in f}))
         out.append((oid, f))
     st.set_many(out, src=src)

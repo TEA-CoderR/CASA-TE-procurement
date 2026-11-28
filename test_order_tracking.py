@@ -193,7 +193,7 @@ def test_auto_register_drafts():
     assert rs[("1", "DOPLA")]["amount"] == 150.0 and ("BMS", "DOPLA") not in rs and ("2", "LAMPA") in rs
     assert OT.confirm_drafts(st, [rs[("1", "DOPLA")]["id"]]) == 1
     r = {x["id"]: x for x in OT.rows(st)}[rs[("1", "DOPLA")]["id"]]
-    assert r["status"] == "ordered" and r["buyer"] == "x"
+    assert r["status"] == "ordered" and r["buyer"] == ""      # 「x」不是人名、PIANO 里也没同事可学 → 不写（2026-11-28）
     # 比价：门店名认得出才登记
     assert OT.register_wholesale(settings, "S.FILIPPO", [{"supplier": "MELONI", "amount": 900, "colli": 20, "file": "f"}])["new"] == 1
     assert OT.register_wholesale(settings, "???", [{"supplier": "MELONI", "amount": 1}]) is None

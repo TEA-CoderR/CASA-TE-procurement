@@ -1591,6 +1591,74 @@ def buyers(st, days=180, today=None):
     return [spell[k].most_common(1)[0][0] for k, _n in cnt.most_common()]
 
 
+# 不是人名、不能写进 PIANO「Ordine Da」的（2026-11-28 用户：PIANO 表里不要用「采购部」，学同事的写法）
+NOT_BUYER = {"采购部", "办公室", "ufficio", "ufficioacquisti", "acquisti", "purchasing", "amministrazione", "admin",
+             "administrator", "user", "utente", "programma", "program", "casate", "?"}
+
+
+def is_buyer_name(b):
+    """像同事在 PIANO 里写的名字：拉丁字母、不是「采购部 / 办公室 / 电脑用户名」这种（至少 3 个字母）"""
+    b = str(b or "").strip()
+    if not b or re.search(r"[\u3000-\u9fff]", b) or _norm_buyer(b) in NOT_BUYER:
+        return False
+    return len(re.sub(r"[^A-Za-zÀ-ÿ]", "", b)) >= 3
+
+
+def usual_buyer(st, o, today=None):
+    """
+    同事平时谁下这家供应商的单（PIANO 手填的）：先看这家门店近 90 天、再这家供应商近 90 天、近一年，
+    都没有看这家门店近 90 天谁下得最多；写法照同事最常用的
+    """
+    today = today or date.today()
+    names = {_norm_buyer(n): n for n in buyers(st, days=365, today=today)}
+    k = st.canon(sup_key(o.get("supplier"))) if o.get("supplier") else ""
+    sid = str(o.get("store") or "")
+    tiers = [Counter() for _ in range(4)]
+
+    def same_sup(x):
+        k2 = st.canon(sup_key(x.get("supplier")))
+        return bool(k and k2) and (k2 == k or (min(len(k), len(k2)) >= 4 and (k in k2 or k2 in k)))
+    for x in st.orders.values():
+        b = str(x.get("buyer") or "").strip()
+        if x.get("origin") != "excel" or not is_buyer_name(b) or _norm_buyer(b) not in names:
+            continue
+        d = to_date(x.get("date"))
+        age = (today - d).days if d else 999
+        if age > 365:
+            continue
+        nb = _norm_buyer(b)
+        here = str(x.get("store") or "") == sid
+        if same_sup(x):
+            if here and age <= 90:
+                tiers[0][nb] += 1
+            if age <= 90:
+                tiers[1][nb] += 1
+            tiers[2][nb] += 1
+        if here and age <= 90:
+            tiers[3][nb] += 1
+    for c in tiers:
+        if c:
+            return names[c.most_common(1)[0][0]]
+    return None
+
+
+def piano_buyer(st, name=None, o=None, today=None):
+    """
+    写进 PIANO「Ordine Da」的下单人：同事写过的人照同事最常用的写法（pamela → Pamela、Pres → Pres.）；
+    新同事的名字照写；「采购部」/ 电脑用户名这种不是人名的不写 → 改成同事平时谁下这家 / 这家门店的单（`usual_buyer`），
+    再没有就同事里下单最多的那个。都没有 None
+    """
+    names = buyers(st, days=365, today=today)
+    b = str(name or "").strip()
+    if b:
+        for n in names:
+            if _norm_buyer(n) == _norm_buyer(b):
+                return n
+        if is_buyer_name(b):
+            return b
+    return (usual_buyer(st, o or {}, today=today) if o is not None else None) or (names[0] if names else None)
+
+
 def excel_spelling(st, supplier, days=365, today=None):
     """
     这家供应商同事在 PIANO 里最常用的写法（只认 sup_key 一样的：PETRILLO → Petrillo）；没写过就照原样。
@@ -1616,11 +1684,9 @@ def ordered_fields(st, o, buyer=None):
     DETERSIVO 的单标 DETER（同事手填 PIANO 时确认 / 到货格写 DETER、不跟踪确认到货；程序登记时照写，不用人再改）
     """
     f = {}
-    b = str(buyer or "").strip()
-    if b:
+    b = piano_buyer(st, buyer or o.get("buyer") or st.me, o)
+    if b and b != o.get("buyer"):
         f["buyer"] = b
-    elif not o.get("buyer"):
-        f["buyer"] = st.me
     sp = excel_spelling(st, o.get("supplier"))
     if sp and sp != o.get("supplier"):
         f["supplier"] = sp
@@ -1630,7 +1696,7 @@ def ordered_fields(st, o, buyer=None):
 
 
 def confirm_drafts(st, ids, today=None, buyer=None):
-    """确认已下单：待登记 → 已下单，下单日期 = 今天（发给供应商的那天）；下单人 = buyer（没给、单上也没有就写自己）"""
+    """确认已下单：待登记 → 已下单，下单日期 = 今天（发给供应商的那天）；下单人 = buyer（照同事在 PIANO 的写法，`piano_buyer`）"""
     day = (today or date.today()).isoformat()
     ch = []
     for oid in ids:

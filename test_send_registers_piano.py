@@ -89,3 +89,25 @@ def test_buyer_spellings_merged():
         st.add({"date": "2026-11-10", "store": "3", "supplier": f"S{i}", "buyer": b, "origin": "excel"})
     names = OT.buyers(st, today=date(2026, 11, 28))
     assert names[0] == "Pres." and "Pres" not in names and "Elena" in names
+
+
+def test_piano_never_gets_purchasing_dept_and_learns_colleague_names():
+    """2026-11-28 用户：PIANO 表里不要用「采购部」，学同事的写法"""
+    d0 = datetime(2026, 11, 10)
+    d, x, st = _store([("1", d0, "Facco", 100.0, None, None, None),
+                       ("1", d0, "Facco", 120.0, None, None, None),
+                       ("3", d0, "SAIS", 50.0, None, None, None)])
+    for i, b in enumerate(["Monica", "Monica", "Pamela"]):
+        st.add({"date": "2026-11-12", "store": "3", "supplier": f"MELONI{i and ' WALTER' or ''}", "buyer": b,
+                "origin": "excel"})
+    assert not OT.is_buyer_name("采购部") and not OT.is_buyer_name("XH") and OT.is_buyer_name("Pres.")
+    assert OT.piano_buyer(st, "lucas") == "LUCAS" and OT.piano_buyer(st, "Giulia") == "Giulia"
+    oid = _draft(st, "wholesale", "3", "MELONI", 400.0, date(2026, 11, 25))
+    st.me = "采购部"
+    OT.confirm_drafts(st, [oid], today=date(2026, 11, 26))               # 没选下单人：照同事平时谁下这家店这家的单
+    assert st.orders[oid]["buyer"] == "Monica"
+    o2 = _draft(st, "store_orders", "1", "FACCO", 300.0, date(2026, 11, 25))
+    MS.mark_sent(st, [o2], MAIL, today=date(2026, 11, 26), buyer="采购部")
+    assert st.orders[o2]["buyer"] == "LUCAS"
+    import send_order_dialog as SD
+    assert SD.checked_buyer(st, "采购部") is None and SD.checked_buyer(st, "pamela") == "Pamela"

@@ -38,11 +38,32 @@ def buyer_box(st, settings):
     box.setEditable(True)
     names = OT.buyers(st) if st is not None else []
     last = str(((settings or {}).get("tracking") or {}).get("last_buyer") or "").strip()
+    if not OT.is_buyer_name(last):
+        last = ""                                    # 以前存的「采购部」这种不是人名的不用
     if last and last not in names:
         names.insert(0, last)
     box.addItems(names)
     box.setCurrentText(last or (names[0] if names else ""))
     return box
+
+
+def checked_buyer(st, text):
+    """
+    下单人照同事在 PIANO 的写法（pamela → Pamela）；不是人名的（「采购部」、空）→ None
+    （2026-11-28 用户：PIANO 表里不要用「采购部」，学同事的写法）
+    """
+    import order_tracking as OT
+    t = str(text or "").strip()
+    if not t:
+        return None
+    if st is not None:
+        for n in OT.buyers(st, days=365):
+            if OT._norm_buyer(n) == OT._norm_buyer(t):
+                return n
+    return t if OT.is_buyer_name(t) else None
+
+
+BUYER_HINT = "下单人要写人名，和同事在 PIANO「Ordine Da」里写的一样（例如 LUCAS、Pamela），不要写「采购部」"
 
 
 def remember_buyer(settings, buyer):
@@ -77,13 +98,22 @@ def pick_buyer(parent, st, settings, title):
     ok = QPushButton(tr("下一步"))
     ok.setObjectName("Primary")
     ok.setDefault(True)
-    ok.clicked.connect(lambda: dlg.accept() if box.currentText().strip() else None)
+    hint = QLabel("")
+    hint.setObjectName("Muted")
+    v.insertWidget(1, hint)
+
+    def _ok():
+        if checked_buyer(st, box.currentText()):
+            dlg.accept()
+        else:
+            hint.setText(tr(BUYER_HINT))
+    ok.clicked.connect(_ok)
     foot.addWidget(cancel)
     foot.addWidget(ok)
     v.addLayout(foot)
     if dlg.exec() != QDialog.Accepted:
         return None
-    b = box.currentText().strip()
+    b = checked_buyer(st, box.currentText())
     remember_buyer(settings, b)
     return b
 
@@ -256,9 +286,9 @@ class SendOrderDialog(QDialog):
         if bad:
             self.status.setText(tr("这几个地址不对：{0}", ", ".join(bad)))
             return
-        buyer = self.e_buyer.currentText().strip()
+        buyer = checked_buyer(self.st, self.e_buyer.currentText())
         if not buyer:
-            self.status.setText(tr("请填下单人"))
+            self.status.setText(tr(BUYER_HINT))
             return
         files = [(p, n) for cb, p, n in self.att if cb.isChecked()]
         frm = self.e_from.currentData()
