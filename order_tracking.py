@@ -75,7 +75,15 @@ def sent_day(o):
 LEAD_DEFAULT = 10         # 没有历史时按 10 天到货
 LEAD_MIN_SAMPLES = 2      # 一家供应商至少 2 张到货的单才用它自己的天数
 EXCEL_FIELDS = ("date", "store", "supplier", "buyer", "amount", "confirmed", "arrived", "state", "kind", "note", "ref",
-                "origin")
+                "origin", "cen")
+# BMS 凑单（2026-11-28 用户定 B）：几家门店凑成的一张 BMS 单（送 BMS 仓库分货）= 一张单、一个状态；
+# 每家店那一份写在那家店那一块、Gg.cons. 写 CEN（cen = True），算进那家店的预算。
+#   · 以前同事手填的：同一张表、同一家供应商、同一天、标了 CEN 的几行 = 一张 BMS 单（groups）；
+#     BMS 那一块有同一家同一天的一行就是这张单，没有就由程序建一张（origin "group"，不写进 Excel）
+#   · 程序生成的 BMS 单：shares = {门店: 金额}；发出去以后（不再是待登记）每家店一行 part_of = 这张单（cen = True），
+#     写进 PIANO：BMS 那一块一行（金额空着，和同事的写法一样，免得重复算）+ 每家店那一块一行标 CEN
+GROUP_SYNC = ("confirmed", "shipped", "arrived", "state")   # 在 BMS 单上改的这几项，每家店那一份跟着改
+GROUP_SRC = "group"
 
 # 状态（显示顺序）
 # draft = 待登记：程序生成了订单文件、还没人确认真的发给供应商（2026-11-02 用户：以后都由程序自动登记，不手填）
@@ -331,10 +339,13 @@ class Store:
     def set(self, oid, fields, src="app"):
         fields = {k: v for k, v in fields.items()}
         if fields:
-            self._write([self._ev("set", oid, src, f=fields)])
+            self.set_many([(oid, fields)], src)
 
     def set_many(self, changes, src="app"):
-        """[(单号, {字段: 值})] 一次写完"""
+        """[(单号, {字段: 值})] 一次写完（BMS 凑单：在 BMS 单上改确认 / 发货 / 到货，每家店那一份跟着改，见 group_expand）"""
+        changes = [(oid, f) for oid, f in changes if f]
+        if src not in ("excel", "file", GROUP_SRC):
+            changes = group_expand(self, changes)
         self._write([self._ev("set", oid, src, f=f) for oid, f in changes if f])
 
     def add(self, fields):
@@ -373,6 +384,190 @@ class Store:
 
 
 # ===================================================================== 状态、预计到货
+# ===================================================================== BMS 凑单
+def _ref_sheet(o):
+    return str(o.get("ref") or "").split("!")[0]
+
+
+def group_key(o):
+    """标了 CEN 的门店那一行 → 「表|供应商|下单日期」（同一张 BMS 单的几家店一样）；不是 → None"""
+    if not o.get("cen") or str(o.get("store")) not in BMS_ABBR:
+        return None
+    return f"{_ref_sheet(o)}|{sup_key(o.get('supplier'))}|{iso(o.get('date')) or ''}"
+
+
+def group_id(key):
+    return "g" + hashlib.sha1(str(key).encode("utf-8")).hexdigest()[:12]
+
+
+def share_id(parent, store):
+    return "s" + hashlib.sha1(f"{parent}|{store}".encode("utf-8")).hexdigest()[:12]
+
+
+def groups(st):
+    """
+    BMS 凑单：{BMS 单号: {"parent": 单号 或 None（还没建）, "members": [每家店那一份的单号], "key": 表|供应商|日期}}。
+    ① 程序建的：门店那一份 part_of = BMS 单号；② 同事手填的：标 CEN、同一张表同一家同一天的几行一组；
+    BMS 那一块有同一家同一天的一行（Excel 里的，不是程序拆过的）就是这张单，没有 = group_id(key)（程序建，不写 Excel）
+    """
+    out = {}
+    bms_rows = {}
+    for oid, o in st.orders.items():
+        if str(o.get("store")) == "BMS" and o.get("ref") and not o.get("shares"):
+            bms_rows.setdefault(f"{_ref_sheet(o)}|{sup_key(o.get('supplier'))}|{iso(o.get('date')) or ''}", oid)
+    for oid, o in st.orders.items():
+        p = o.get("part_of")
+        if p:
+            g = out.setdefault(p, {"parent": p if p in st.orders else None, "members": [], "key": None})
+            g["members"].append(oid)
+            continue
+        k = group_key(o)
+        if not k:
+            continue
+        gid = bms_rows.get(k) or group_id(k)
+        g = out.setdefault(gid, {"parent": gid if gid in st.orders else None, "members": [], "key": k})
+        g["members"].append(oid)
+        g["key"] = g["key"] or k
+    for g in out.values():
+        g["members"].sort(key=lambda m: (str(st.orders[m].get("store")), m))
+    return out
+
+
+def _parent_base(st, g):
+    """还没建的 BMS 单（同事手填的 CEN）：照第一家店那一份写 门店 BMS · 供应商 · 日期"""
+    m0 = st.orders[g["members"][0]]
+    return {"store": "BMS", "supplier": m0.get("supplier"), "date": m0.get("date"), "origin": GROUP_SRC,
+            "group_key": g["key"]}
+
+
+def _share_fields(p, sid, amount):
+    f = {"store": str(sid), "supplier": p.get("supplier"), "date": p.get("date"), "amount": amount, "cen": True,
+         "origin": p.get("origin") or "app"}
+    for k in ("buyer", "file", "kind"):
+        if p.get(k):
+            f[k] = p[k]
+    return f
+
+
+def group_expand(st, changes):
+    """
+    写之前：① 写到还没建的 BMS 单（CEN 那一组）→ 先把这张单建出来；② 在 BMS 单上改确认 / 发货 / 到货 / 状态 →
+    每家店那一份也改；③ 程序生成的 BMS 单（shares）发出去了（不是待登记、没取消）→ 每家店建一份（part_of，标 CEN），
+    金额 / 日期跟着 BMS 单。门店那一份自己改的不往回传（BMS 单的状态是几家店合起来算的，见 merge_group）。
+    """
+    gs = None
+    out, extra = [], []
+    for oid, f in changes:
+        o = st.orders.get(oid)
+        if o is not None and o.get("part_of"):
+            out.append((oid, f))
+            continue
+        if gs is None:
+            gs = groups(st)
+        g = gs.get(oid)
+        f = dict(f)
+        if g is not None and oid not in st.orders:
+            base = _parent_base(st, g)
+            base.update(f)
+            f = base
+        out.append((oid, f))
+        if g is not None:
+            sync = {k: v for k, v in f.items() if k in GROUP_SYNC}
+            if sync:
+                for m in g["members"]:
+                    extra.append((m, dict(sync)))
+        p = dict(o or {})
+        p.update(f)
+        shares = p.get("shares")
+        if shares and not p.get("draft") and p.get("state") != "cancel" and str(p.get("store")) == "BMS":
+            for sid, amt in sorted(shares.items(), key=lambda kv: str(kv[0])):
+                cid = share_id(oid, sid)
+                want = _share_fields(p, sid, round(float(amt or 0), 2))
+                want["part_of"] = oid
+                for k in GROUP_SYNC:
+                    if p.get(k) is not None:
+                        want[k] = p[k]
+                cur = st.orders.get(cid) or {}
+                diff = {k: v for k, v in want.items() if cur.get(k) != v}
+                if diff:
+                    extra.append((cid, diff))
+    # 同一张单的几次改合在一起（后面的盖前面的）
+    merged, order = {}, []
+    for oid, f in out + extra:
+        if oid not in merged:
+            merged[oid] = {}
+            order.append(oid)
+        merged[oid].update(f)
+    return [(oid, merged[oid]) for oid in order]
+
+
+def merge_group(p, members):
+    """BMS 单显示的样子：确认 / 发货 = 几家店里最早的；几家店都到了才算到货（有的到了 = 部分到货）；金额 = 几家店加起来"""
+    o = dict(p)
+    active = [m for m in members if m.get("state") != "cancel"]
+    shares = {}
+    for m in active:
+        sid = str(m.get("store"))
+        shares[sid] = round(shares.get(sid, 0.0) + float(m.get("amount") or 0), 2)
+    o["_shares"] = shares
+    o["bms_of"] = sorted(shares) or list(p.get("bms_of") or [])
+    if members and not active:
+        o.setdefault("state", None)
+        if not o.get("state"):
+            o["state"] = "cancel"
+        return o
+    # BMS 那一块自己那一行有金额的（同事有时写总额、有时只写没分到门店的那部分）：多出来的那部分算 BMS 自己的
+    own = p.get("amount") if isinstance(p.get("amount"), (int, float)) and not p.get("shares") else None
+    tot = round(sum(shares.values()), 2)
+    o["_own"] = round(max(0.0, float(own) - tot), 2) if own is not None else 0.0
+    if any(m.get("amount") is not None for m in active):
+        o["amount"] = round(max(tot, float(own or 0)), 2)
+    for k in ("confirmed", "shipped"):
+        if not o.get(k):
+            vals = sorted(str(m[k]) for m in active if m.get(k))
+            if vals:
+                o[k] = vals[0]
+    if not o.get("arrived") and active:
+        arr = [m.get("arrived") for m in active]
+        if all(arr):
+            o["arrived"] = max(str(x) for x in arr)
+            if any(m.get("state") == "partial" for m in active):
+                o["state"] = "partial"
+        elif any(arr) and not o.get("state"):
+            o["state"] = "partial"
+    if not o.get("state") and any(m.get("state") == "stuck" for m in active):
+        o["state"] = "stuck"
+    return o
+
+
+def materialize_groups(st):
+    """同事手填的 CEN 那一组还没有 BMS 单的：建出来（origin "group"，不写进 Excel）。返回建了几张"""
+    ch = [(gid, _parent_base(st, g)) for gid, g in groups(st).items() if g["parent"] is None and g["key"]]
+    if ch:
+        st.set_many(ch, src=GROUP_SRC)
+    return len(ch)
+
+
+def counted_amount(r):
+    """
+    算进花费 / 预算的金额：几家店凑的 BMS 单，每家店那一份算进那家店；BMS 单本身只算没分到门店的那部分
+    （BMS 那一块同事写的金额比几家店加起来多的部分，例如 OTT HD 289.14 − S.MARCO 203.64）
+    """
+    if r.get("group"):
+        return float(r.get("own") or 0)
+    return float(r.get("amount") or 0)
+
+
+def in_store(r, store):
+    """这张单算不算这家店的（看板 / 列表按门店看：这家店的单 + 这家店参与的 BMS 单）"""
+    return not store or r.get("store") == store or (r.get("group") and store in (r.get("bms_of") or []))
+
+
+def units(rs, store=None):
+    """要跟进的单（每家店的那一份不单独算，跟着 BMS 单）"""
+    return [r for r in rs if not r.get("share") and in_store(r, store)]
+
+
 def status(o):
     if o.get("state") == "cancel":
         return "void" if o.get("void") else "cancel"
@@ -445,8 +640,22 @@ def rows(st, today=None):
     for k, c in spell.items():
         own = {n: x for n, x in c.items() if sup_key(n) == k} or c
         disp[k] = max(own.items(), key=lambda kv: (kv[1], kv[0] != kv[0].upper(), " " in kv[0], len(kv[0])))[0]
-    out = []
+    # BMS 凑单：BMS 单按几家店合起来算状态 / 金额；每家店那一份跟着 BMS 单的状态（share = True，看板 / 列表里不单独出现）
+    gs = groups(st)
+    member_of = {m: gid for gid, g in gs.items() for m in g["members"]}
+    view = {}
     for oid, o in st.orders.items():
+        if o.get("origin") == GROUP_SRC and oid not in gs:
+            continue                                    # 那一组的 CEN 都去掉了：这张 BMS 单不要了
+        view[oid] = o
+    for gid, g in gs.items():
+        base = st.orders.get(gid) or _parent_base(st, g)
+        view[gid] = merge_group(base, [st.orders[m] for m in g["members"]])
+    out = []
+    parent_row = {}
+    order = sorted(view, key=lambda x: x in member_of)          # BMS 单先算，每家店那一份照抄它的状态
+    for oid in order:
+        o = view[oid]
         s = status(o)
         k = st.canon(sup_key(o.get("supplier")))
         d0 = to_date(o.get("date"))
@@ -475,7 +684,21 @@ def rows(st, today=None):
                     "shipped": to_date(o.get("shipped")), "mails": list(o.get("mails") or []),
                     "receipts": list(o.get("receipts") or []), "booking": dict(o.get("booking") or {}),
                     "from_file": any((m.get(k) or ("", "", ""))[2] == "file" for k in ("amount", "colli")),
-                    "late_by": (today - exp).days if overdue else 0})
+                    "late_by": (today - exp).days if overdue else 0,
+                    "cen": bool(o.get("cen")), "share": False, "part_of": None,
+                    "group": bool(gs.get(oid) and gs[oid]["members"]), "virtual": oid not in st.orders,
+                    "shares": dict(o.get("_shares") or o.get("shares") or {}), "own": o.get("_own") or 0.0,
+                    "members": list((gs.get(oid) or {}).get("members") or [])})
+        r = out[-1]
+        if oid in gs:
+            parent_row[oid] = r
+        pid = member_of.get(oid)
+        if pid and pid in parent_row:
+            pr = parent_row[pid]
+            r.update({"share": True, "part_of": pid, "status": pr["status"], "expected": pr["expected"],
+                      "expected_manual": pr["expected_manual"], "lead": pr["lead"], "overdue": pr["overdue"],
+                      "late_by": pr["late_by"], "open": pr["open"], "pending": False, "wait_days": 0,
+                      "wait_level": 0})
     return out
 
 
@@ -483,14 +706,19 @@ def month_of(r):
     return r["date"].strftime("%Y-%m") if r.get("date") else ""
 
 
-def summary(rs, st, month, today=None):
-    """顶上几张卡：待登记 / 待确认 / 已超期 / 卡住了 / 本月下单和预算（都不含税）"""
-    spent = sum(float(r["amount"] or 0) for r in rs if month_of(r) == month and r["status"] not in NOT_ORDERED)
-    budget = sum(v for k, v in st.budgets.items() if k.startswith(month + "|"))
-    return {"pending": sum(1 for r in rs if r["pending"]), "overdue": sum(1 for r in rs if r["overdue"]),
-            "stuck": sum(1 for r in rs if r["status"] == "stuck"),
-            "draft": sum(1 for r in rs if r["status"] == "draft"),
-            "open": sum(1 for r in rs if r["open"]),
+def summary(rs, st, month, today=None, store=None):
+    """
+    顶上几张卡：待登记 / 待确认 / 已超期 / 卡住了 / 本月下单和预算（都不含税）。
+    rs = 全部的行（rows）；store = 只看这家店。张数按要跟进的单数（BMS 凑单算一张）；金额按每家店那一份算
+    """
+    us = units(rs, store)
+    spent = sum(counted_amount(r) for r in rs if month_of(r) == month and r["status"] not in NOT_ORDERED
+                and (not store or r["store"] == store))
+    budget = sum(v for k, v in st.budgets.items() if k.startswith(month + "|") and (not store or k.endswith("|" + store)))
+    return {"pending": sum(1 for r in us if r["pending"]), "overdue": sum(1 for r in us if r["overdue"]),
+            "stuck": sum(1 for r in us if r["status"] == "stuck"),
+            "draft": sum(1 for r in us if r["status"] == "draft"),
+            "open": sum(1 for r in us if r["open"]),
             "spent": spent, "spent_iva": spent * (1 + IVA), "budget": budget}
 
 
@@ -498,7 +726,7 @@ def supplier_stats(rs):
     """按供应商：单数、金额、到货天数（平均 / 中位 / 最长）、还没到的、超期的、最近一次下单"""
     out = {}
     for r in rs:
-        if r["status"] in NOT_ORDERED:
+        if r["status"] in NOT_ORDERED or r.get("share"):     # BMS 凑单算一张（金额 = 几家店加起来）
             continue
         s = out.setdefault(r["sup_key"], {"key": r["sup_key"], "supplier": r["supplier"], "n": 0, "amount": 0.0,
                                          "leads": [], "open": 0, "overdue": 0, "last": None, "deter": 0,
@@ -528,9 +756,11 @@ def budget_rows(rs, st):
     for r in rs:
         if r["status"] in NOT_ORDERED or not r["date"]:
             continue
+        if r.get("group") and not r.get("own"):  # BMS 凑单：算在每家店那一份上（BMS 自己的那部分才算 BMS）
+            continue
         k = (month_of(r), r["store"])
         a = agg.setdefault(k, [0.0, 0])
-        a[0] += float(r["amount"] or 0)
+        a[0] += counted_amount(r)
         a[1] += 1
     months = {m for m, _s in agg} | {k.split("|", 1)[0] for k in st.budgets}
     keys = {(m, s) for m in months for s, _n in STORES}             # 每个月每家店都有一行（没预算也能双击填）
@@ -802,6 +1032,7 @@ def read_excel(path, info=None):
                 if atext:
                     out["_notes"].append(tr_amount(atext))
                 buyer = ws.cell(r, c + 2).value
+                cen = str(ws.cell(r, c + 6).value or "").strip().upper().startswith("CEN") and store != "BMS"
                 k = (iso(d), sup_key(sup))
                 occ[k] = occ.get(k, 0) + 1
                 key = f"{ws.title}|{store}|{k[0]}|{k[1]}|{occ[k]}"
@@ -811,7 +1042,7 @@ def read_excel(path, info=None):
                        "amount": round(amt, 2) if amt is not None else None, "confirmed": iso(conf),
                        "arrived": iso(arr), "state": out.get("state"), "kind": out.get("kind"),
                        "note": " · ".join(notes) or None, "ref": f"{ws.title}!{get_column_letter(c + 1)}{r}",
-                       "origin": "excel"}
+                       "origin": "excel", "cen": True if cen else None}
                 rows.append(row)
     return rows, budgets, sheets
 
@@ -986,6 +1217,7 @@ def import_file(st, path):
     # Excel 里手填了的单，程序还挂着同一张「待登记」→ 合并掉（2026-11-09），以 Excel 为准
     import mail_match as MM
     res["absorbed"], res["absorb_undo"], res["absorb_pairs"] = MM.absorb_drafts(st)
+    res["groups"] = materialize_groups(st)          # 同事手填的 BMS 凑单（CEN）：建 BMS 单
     res["rows"], res["sheets"], res["unknown"] = len(rows_), sheets, info.get("unknown") or []
     return res
 
@@ -1211,6 +1443,8 @@ def register_drafts(st, source, items, in_scope=None, today=None):
              "colli": it.get("colli"), "file": it.get("file") or None, "origin": source}
         if it.get("bms_of"):                 # BMS 单是哪几家店凑的（"1".."5"）
             f["bms_of"] = sorted(str(x) for x in it["bms_of"])
+        if it.get("shares"):                 # 每家店那一份的金额（发出去以后拆成每家店一行，写进 PIANO 标 CEN）
+            f["shares"] = {str(k): round(float(v or 0), 2) for k, v in it["shares"].items()}
         cur = st.orders.get(oid)
         if cur is None and st.deleted.get(oid) in ("mail", "merged"):
             continue                    # 已经和 Excel 手填的那张合并了（mail_match.merge_duplicates），重新配货不再生成
@@ -1262,7 +1496,8 @@ def register_store_orders(settings, written, log=None, source="store_orders"):
     if st is None:
         return None
     items = [{"store": store_code(w[2]), "supplier": w[1], "colli": w[3], "amount": w[4], "file": w[0],
-              "bms_of": list(w[7]) if len(w) > 7 and w[7] else None}
+              "bms_of": list(w[7]) if len(w) > 7 and w[7] else None,
+              "shares": dict(w[8]) if len(w) > 8 and w[8] else None}
              for w in written or []]
     sups = {sup_key(x["supplier"]) for x in items}
     res = register_drafts(st, source, items, in_scope=lambda o: sup_key(o.get("supplier")) in sups)
@@ -1486,10 +1721,11 @@ def month_summary(rs, st, year, month, store=None):
         if store and r["store"] != store:
             continue
         w = weeks[min(_week_of(d), len(weeks) - 1)]
-        v = float(r["amount"] or 0)
-        w["n"] += 1
+        v = counted_amount(r)                      # BMS 凑单的金额算在每家店那一份上
+        c = 1 if (store or not r.get("share")) else 0   # 全部门店：BMS 凑单算一张
+        w["n"] += c
         w["amount"] += v
-        n += 1
+        n += c
         amt += v
     vals = [v for k, v in st.budgets.items() if k.startswith(ym + "|") and (not store or k.split("|", 1)[1] == store)]
     return {"budget": sum(vals) if vals else None, "amount": amt, "n": n, "weeks": weeks}

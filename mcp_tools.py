@@ -228,7 +228,7 @@ def tracking_summary(ctx, args):
     import commands as C
     st = C.tracking_store(ctx["settings"])
     today = date.today()
-    rs = OT.rows(st, today=today)
+    rs = OT.units(OT.rows(st, today=today))          # BMS 凑单算一张
     lanes = collections.Counter(TB.lane_of(r) or "其他" for r in rs)
     status = collections.Counter(r["status"] for r in rs)
     origin = collections.Counter((r["status"], r["origin"] or "excel") for r in rs if r["status"] in ("draft", "void"))

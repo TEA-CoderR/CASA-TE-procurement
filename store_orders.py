@@ -2188,7 +2188,16 @@ def write_plans(results, out_root, date_tag=None, on_file=None, calc=None, image
             write_order_file(sc, per, p, extra, heads, marks={k: (v if k in names else "") for k, v in marks.items()})
             _slim(p, _is_data_sheet, image_url)
             members = tuple(str(sid) for sid in sorted(per, key=str) if per.get(sid))
-            written.append((p, sc["name"], BMS, b["colli"], b["amount"], b["status"], sc["path"], members))
+            # 第 9 项：每家店那一份多少钱（订单跟踪：发出去以后每家店一行、标 CEN，算进那家店的预算）
+            by_row = {it["row"]: it for it in sc.get("items") or []}
+            shares = {}
+            for sid in members:
+                try:
+                    shares[sid] = round(_totals(per[sid], by_row)[1], 2)
+                except KeyError:                      # 行号对不上（不应该发生）：不拆这一家，订单跟踪里看 BMS 单
+                    shares = None
+                    break
+            written.append((p, sc["name"], BMS, b["colli"], b["amount"], b["status"], sc["path"], members, shares))
         p = os.path.join(folder, f"{SUMMARY_PREFIX}{safe}_{date_tag}.xlsx")
         if len(direct) + (1 if b else 0) < 2:
             if os.path.exists(p):              # 重新配货后只剩一个去向：以前的汇总文件删掉，免得对不上

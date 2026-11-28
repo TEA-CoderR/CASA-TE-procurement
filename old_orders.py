@@ -27,6 +27,8 @@ def candidates(st, before, rows=None):
     rows = rows if rows is not None else OT.rows(st)
     out = []
     for r in rows:
+        if r.get("share"):                    # BMS 凑单每家店那一份：跟着 BMS 单查（货进 BMS 仓库）
+            continue
         if r["status"] not in OT.OPEN or not r["date"] or r["date"] >= before:
             continue
         if (st.orders.get(r["id"]) or {}).get("old_ok"):

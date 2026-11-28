@@ -613,7 +613,12 @@ class OrderDrawer(QFrame):
         rc = RC.last(r)
         import booking_api as BA
         bk = r.get("booking") or {}
-        txt = "\n".join(x for x in ((tr("预约卸货：{0}", BA.text(bk)) if bk else ""),
+        sh = r.get("shares") or {}
+        import order_tracking as _OT
+        share_txt = (tr("凑单：") + " · ".join(f"{_OT.STORE_NAMES.get(str(k), k)} €{float(v):,.2f}"
+                                               for k, v in sorted(sh.items(), key=lambda kv: str(kv[0])))) \
+            if r.get("group") and sh else ""
+        txt = "\n".join(x for x in (share_txt, (tr("预约卸货：{0}", BA.text(bk)) if bk else ""),
                                    (tr("收货：{0}", RC.summary(rc)) if rc else ""), r.get("note") or "") if x)
         self.note.setText(txt)
         self.note.setVisible(bool(txt))

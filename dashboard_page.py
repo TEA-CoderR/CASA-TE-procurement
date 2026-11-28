@@ -320,6 +320,7 @@ class DashboardPage:
                 import order_tracking as OT
                 rows = OT.rows(st)
                 s = OT.summary(rows, st, datetime.now().strftime("%Y-%m"))
+                rows = OT.units(rows)                 # BMS 凑单算一张（每家店那一份不单独数）
                 self._month = s
                 try:                             # 在途卡片的小走势：最近 10 周每周下了几张单
                     today = datetime.now().date()

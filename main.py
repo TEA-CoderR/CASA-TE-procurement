@@ -3614,7 +3614,7 @@ class MainWindow(QMainWindow):
         if tp.rows:
             return tp.rows
         import order_tracking as OT
-        return OT.rows(tp.st)
+        return OT.units(OT.rows(tp.st))
 
     def open_palette(self, text=""):
         from command_palette import CommandPalette

@@ -68,12 +68,13 @@ def FIELD_LABELS():
     return {"date": tr("下单日期"), "store": tr("门店"), "supplier": tr("供应商"), "buyer": tr("谁下的"),
             "amount": tr("金额"), "confirmed": tr("确认"), "arrived": tr("到货"), "expected": tr("预计到货"),
             "state": tr("情况"), "kind": tr("类型"), "note": tr("备注"), "ref": tr("Excel 位置"), "origin": tr("来源"),
-            "draft": tr("待登记"), "colli": tr("箱数"), "file": tr("订单文件"), "shipped": tr("发货"), "mails": tr("邮件")}
+            "draft": tr("待登记"), "colli": tr("箱数"), "file": tr("订单文件"), "shipped": tr("发货"), "mails": tr("邮件"),
+            "cen": tr("BMS 凑单（CEN）"), "part_of": tr("属于哪张 BMS 单"), "shares": tr("每家店那一份")}
 
 
 def ORIGINS():
     return {"store_orders": tr("总仓采购"), "store_pdv": tr("门店采购"), "wholesale": tr("DETERSIVO采购"),
-            "app": tr("程序"), "excel": "Excel", "mail": tr("邮件")}
+            "app": tr("程序"), "excel": "Excel", "mail": tr("邮件"), "group": tr("BMS 凑单（PIANO 里标 CEN 的几家店）")}
 
 
 def _d(v):
@@ -497,6 +498,7 @@ class TrackingPage:
         m.addAction(tr("马上同步 Excel"), lambda: self.sync_excel(manual=True))
         m.addSeparator()
         m.addAction(tr("历史未结订单核对…"), self.check_old)
+        m.addAction(tr("BMS 凑单核对…"), self.check_bms)
         m.addAction(tr("名字相近的供应商…"), self.suggest_merge)
         m.addAction(tr("导出成 PIANO 表（和原表一样）…"), self.export_piano)
         m.addAction(tr("导出 Excel（显示的订单）"), self.export)
@@ -893,7 +895,8 @@ class TrackingPage:
                             10000, action=(tr("撤销"), undo))
 
     def _srows(self):
-        return [r for r in self.rows if not self.store_sel or r["store"] == self.store_sel]
+        # 要跟进的单：BMS 凑单算一张（每家店那一份不单独出现）；按门店看 = 这家店的单 + 这家店参与的 BMS 单
+        return OT.units(self.rows, self.store_sel)
 
     def update_view(self):
         """门店 / 月份 / 周变了：数字、本月面板、三张表按选的门店重算（不重读数据）"""
@@ -908,7 +911,7 @@ class TrackingPage:
             c = sum(1 for r in srows if _in_view(r, k))
             self.f_view.setItemText(i, f"{n}（{c}）" if k != "all" else n)
         self.f_view.blockSignals(False)
-        s = OT.summary(srows, st, date.today().strftime("%Y-%m"))
+        s = OT.summary(self.rows, st, date.today().strftime("%Y-%m"), store=self.store_sel)
         late = max((r["late_by"] for r in srows if r["overdue"]), default=0)
         labels = {"draft": tr("待登记"), "pending": tr("待确认"), "overdue": tr("已超期"), "stuck": tr("卡住了")}
         T = self.ui.T
@@ -1117,8 +1120,8 @@ class TrackingPage:
         q = self.search.text().strip().lower()
         if q and q not in f"{r['supplier']} {r['raw_supplier']} {r['buyer']} {r['note']} {r['store_name']} {r['ref']}".lower():
             return True
-        if self.store_sel and r["store"] != self.store_sel:
-            return True
+        if r.get("share") or not OT.in_store(r, self.store_sel):
+            return True                              # BMS 凑单每家店那一份：跟着 BMS 单那一行
         if self.week_sel:
             if not r["date"] or not (self.week_sel[0] <= r["date"] <= self.week_sel[1]):
                 return True
@@ -1511,6 +1514,11 @@ class TrackingPage:
         if len(sel) > limit:
             lines.append(tr("… 还有 {0} 张", len(sel) - limit))
         return "\n".join(lines)
+
+    def check_bms(self):
+        """没标 CEN、订单文件说是 BMS 凑单的行：列出来确认（bms_check_dialog）"""
+        from bms_check_dialog import open_dialog
+        open_dialog(self)
 
     def check_old(self):
         """以前下的、还开着的单：按数据库入库记录核对（old_orders_dialog）"""

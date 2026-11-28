@@ -26,7 +26,8 @@ from datetime import date, datetime, timedelta, timezone
 
 import order_tracking as OT
 
-WRITE_FIELDS = ("date", "supplier", "buyer", "amount", "confirmed", "arrived", "state", "note")
+WRITE_FIELDS = ("date", "supplier", "buyer", "amount", "confirmed", "arrived", "state", "note", "cen")
+CEN_TEXT = "CEN"               # Gg.cons. 格写 CEN = 这一行是 BMS 凑单里这家店的那一份（同事一直这样写）
 BACKUP_DIR = "Backup Excel"
 KEEP_BACKUPS = 30
 # 「写不进去的不再重试」的记录换代号：读 PIANO 的规矩改了（2026-11-22 表头 Fornitore 空着的块也认）→ 以前写不进去的再试一次
@@ -50,7 +51,7 @@ CONFLICT_DIR = "冲突副本"       # Backup Excel 下面：合并过的同步�
 MARK_RGB = "FFDDEBF7"
 UNMARKED = "\x00"             # xbase["_m_字段"] 是这个 = 标记已经去掉了
 _FIELD_COLS = {"date": (0,), "supplier": (1,), "buyer": (2,), "amount": (3,), "confirmed": (4,), "arrived": (5, 6),
-               "state": (5,)}
+               "state": (5,), "cen": (6,)}
 
 
 # ===================================================================== 程序里的单 → Excel 里该是什么样
@@ -58,9 +59,12 @@ def excel_view(o):
     """程序里的单写进 Excel 再读回来应该是什么（和 read_excel 读出来的字段一样）"""
     st = o.get("state")
     amt = o.get("amount")
+    if o.get("shares") and str(o.get("store")) == "BMS":
+        amt = None                     # 程序拆成每家店一份的 BMS 单：BMS 那一行金额空着（每家店那一行有金额，不重复算）
     return {"date": OT.iso(o.get("date")), "supplier": str(o.get("supplier") or "").strip() or None,
             "buyer": str(o.get("buyer") or "").strip() or None,
             "amount": round(float(amt), 2) if isinstance(amt, (int, float)) else None,
+            "cen": True if (o.get("cen") and str(o.get("store")) != "BMS") else None,
             "confirmed": OT.iso(o.get("confirmed")), "arrived": OT.iso(o.get("arrived")),
             "state": st if st in ("partial", "stuck", "cancel") else None,
             "note": str(o.get("note") or "").strip() or None}
@@ -118,6 +122,8 @@ def pending(st, me=None, now=None, everyone=False):
                   and base.get(f) != base["_m_" + f] and f not in diff]
             if un:
                 ops.append(("unmark", oid, un))
+        elif o.get("origin") == OT.GROUP_SRC:
+            continue                                     # 程序为同事手填的 CEN 那一组建的 BMS 单：不写进 Excel
         elif gone or (base is None and o.get("origin") != "excel" and not o.get("xid")):
             s = OT.status(o)
             if s in ("draft", "cancel", "void") or not o.get("date") or not o.get("store") or not o.get("supplier"):
@@ -250,7 +256,15 @@ def _write(ws, blk, r, fields):
             _comment(cell, PARTIAL_TEXT if cur_state == "partial" else None)
         d0 = OT.parse_date(ws.cell(r, c).value)[0]
         days = (arr - d0).days if (arr and d0) else None
-        ws.cell(r, c + 6).value = days
+        cen_now = str(ws.cell(r, c + 6).value or "").strip().upper().startswith(CEN_TEXT)
+        if not (cen_now or fields.get("cen")):       # 标了 CEN 的行：Gg.cons. 留着 CEN（不写天数）
+            ws.cell(r, c + 6).value = days
+    if "cen" in fields:
+        cell = ws.cell(r, c + 6)
+        if fields["cen"]:
+            cell.value = CEN_TEXT
+        elif str(cell.value or "").strip().upper().startswith(CEN_TEXT):
+            cell.value = None
     if "note" in fields:
         if note_col:
             ws.cell(r, note_col).value = fields["note"]
